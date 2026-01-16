@@ -1,0 +1,10 @@
+[mgr]
+prepend_keymap = [
+  { on = "j", run = "arrow -1", desc = "Move up" },
+  { on = "k", run = "arrow 1", desc = "Move down" },
+  { on = "<Up>", run = "arrow -1", desc = "Move up" },
+  { on = "<Down>", run = "arrow 1", desc = "Move down" },
+  { on = "<Left>", run = "leave", desc = "Go parent" },
+  { on = "<Right>", run = "enter", desc = "Enter dir" },
+  { on = "<Enter>", run = "plugin open-finder", desc = "Open directory in Finder, or open file" },
+]

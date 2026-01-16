@@ -1,0 +1,22 @@
+[mgr]
+ratio = [1, 2, 5]
+title_format = ""
+
+[[plugin.prepend_previewers]]
+mime = "text/*"
+run = 'piper -- bat --color=always --paging=never --style=numbers "$1"'
+
+[[plugin.prepend_previewers]]
+mime = "application/json"
+run = 'piper -- bat --color=always --paging=never --style=numbers "$1"'
+
+[opener]
+edit = [
+  { run = 'open -a "Coda 2" "$@"', desc = "Open with Coda 2" },
+]
+
+[open]
+rules = [
+  { mime = "text/*", use = "edit" },
+  { mime = "application/json", use = "edit" },
+]

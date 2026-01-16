@@ -1,0 +1,13 @@
+# Logs
+*.log
+firebase-debug.log
+
+# Plans (temporary)
+plans/
+
+# OS
+.DS_Store
+
+# Editor
+*.swp
+*~

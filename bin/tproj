@@ -1,0 +1,50 @@
+#!/bin/zsh
+set -euo pipefail
+
+# 使い方:
+#   tproj        # 現在ディレクトリからプロジェクト起動（更新あり）
+#   tproj -n     # アップデートなしで起動（オフライン用）
+
+NO_UPDATE=false
+[[ "${1:-}" == "-n" || "${1:-}" == "--no-update" ]] && NO_UPDATE=true
+
+root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+name="$(basename "$root")"
+
+# tmuxセッション名に使えない文字を潰す
+session="${name//[^A-Za-z0-9_-]/_}"
+
+# “プロジェクトのルート”を作業ディレクトリにする（gitならroot、無ければcwd）
+root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# 既存セッションがあればアタッチ、無ければ作る
+if ! tmux has-session -t "$session" 2>/dev/null; then
+  # 1) dev window を作成
+  tmux new-session -d -s "$session" -c "$root" -n dev
+
+  # 2) VSCodeっぽい3ペイン（左メイン / 右上watch / 右下logs）
+  tmux split-window -h -t "$session:dev" -c "$root"
+  tmux split-window -v -t "$session:dev.2" -c "$root"
+
+  # 3) コマンドを自動起動
+  if [[ "$NO_UPDATE" == "true" ]]; then
+    # アップデートなし（オフライン用）
+    tmux send-keys -t "$session:dev.1" "claude --continue" C-m
+    tmux send-keys -t "$session:dev.2" "codex" C-m
+    tmux send-keys -t "$session:dev.3" "yazi" C-m
+  else
+    # アップデートあり（デフォルト）
+    tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code && claude --continue" C-m
+    tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex && codex" C-m
+    tmux send-keys -t "$session:dev.3" "brew upgrade yazi 2>/dev/null; yazi" C-m
+  fi
+
+  # 4) git window（差分やログ用）
+  tmux new-window -t "$session" -n git -c "$root"
+  tmux send-keys -t "$session:git" "echo '🌿 git (status/diff/log)'" C-m
+
+  tmux select-window -t "$session:dev"
+  tmux select-pane -t "$session:dev.1"
+fi
+
+exec tmux attach -t "$session"
