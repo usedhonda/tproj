@@ -24,7 +24,7 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
 
   # 2) VSCodeっぽい3ペイン（左メイン / 右上watch / 右下logs）
   tmux split-window -h -t "$session:dev" -c "$root"
-  tmux split-window -v -t "$session:dev.2" -c "$root"
+  tmux split-window -v -t "$session:dev.2" -c "$root" -l 70%
 
   # 3) コマンドを自動起動
   if [[ "$NO_UPDATE" == "true" ]]; then
