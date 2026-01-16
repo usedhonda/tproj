@@ -1,6 +1,7 @@
 [mgr]
 ratio = [1, 2, 5]
 title_format = ""
+show_hidden = true
 
 [[plugin.prepend_previewers]]
 mime = "text/*"
