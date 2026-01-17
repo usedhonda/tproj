@@ -30,12 +30,12 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
   if [[ "$NO_UPDATE" == "true" ]]; then
     # アップデートなし（オフライン用）
     tmux send-keys -t "$session:dev.1" "claude --continue" C-m
-    tmux send-keys -t "$session:dev.2" "codex" C-m
+    tmux send-keys -t "$session:dev.2" "codex resume --last --ask-for-approval never || codex --ask-for-approval never" C-m
     tmux send-keys -t "$session:dev.3" "yazi" C-m
   else
     # アップデートあり（デフォルト）
     tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code && claude --continue" C-m
-    tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex && codex" C-m
+    tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex && (codex resume --last --ask-for-approval never || codex --ask-for-approval never)" C-m
     tmux send-keys -t "$session:dev.3" "brew upgrade yazi 2>/dev/null; yazi" C-m
   fi
 
