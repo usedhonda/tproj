@@ -10,10 +10,12 @@ tproj/
 ├── bin/tproj                     # tmuxセッション起動スクリプト
 ├── config/
 │   ├── tmux/tmux.conf           # tmux設定
-│   └── yazi/                    # yaziファイルマネージャー設定
-│       ├── yazi.toml
-│       ├── keymap.toml
-│       └── plugins/open-finder.yazi/
+│   ├── yazi/                    # yaziファイルマネージャー設定
+│   │   ├── yazi.toml
+│   │   ├── keymap.toml
+│   │   └── plugins/open-finder.yazi/
+│   └── claude/commands/         # Claude Codeカスタムコマンド
+│       └── ask-codex.md
 └── docs/
 ```
 
@@ -28,9 +30,9 @@ tproj -n   # アップデートなしで起動（オフライン用）
 
 ```
 ┌─────────────────┬─────────────┐
-│                 │   codex     │
+│                 │   codex 30% │
 │     claude      ├─────────────┤
-│                 │    yazi     │
+│                 │   yazi  70% │
 └─────────────────┴─────────────┘
          dev window
 
@@ -39,6 +41,14 @@ tproj -n   # アップデートなしで起動（オフライン用）
 └─────────────────────────────────┘
          git window
 ```
+
+## ask-codex コマンド
+
+Claude Code内で `/ask-codex` を実行すると、Codexペインに質問を送信。
+
+- tprojレイアウト固定でペイン検出（dev.2=Codex）
+- Codex未起動時は自動起動
+- 引数なしなら直近の作業から自動で質問を構築
 
 ## インストール
 
@@ -63,3 +73,4 @@ tproj -n   # アップデートなしで起動（オフライン用）
 - j/k: 上下移動（反転）
 - Enter: ディレクトリ→Finder、ファイル→オープン
 - batによるシンタックスハイライトプレビュー
+- 隠しファイル表示デフォルトON

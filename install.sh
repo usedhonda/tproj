@@ -31,12 +31,18 @@ if command -v ya &> /dev/null; then
     (cd ~/.config/yazi && ya pack -i 2>/dev/null || true)
 fi
 
+# 5. Claude Code カスタムコマンド
+echo "📦 Claude Code commands → ~/.claude/commands/"
+mkdir -p ~/.claude/commands
+cp "$SCRIPT_DIR/config/claude/commands/"*.md ~/.claude/commands/
+
 echo ""
-echo "✅ インストール完了！"
+echo "✅ インストール完了!"
 echo ""
 echo "📍 インストール先:"
 echo "   ~/bin/tproj"
 echo "   ~/.tmux.conf"
 echo "   ~/.config/yazi/"
+echo "   ~/.claude/commands/"
 echo ""
 echo "💡 使い方: cd <project> && tproj"

@@ -1,51 +1,98 @@
 # tproj
 
-tmuxベースの開発環境セットアップ。Claude Code + Codex + yaziの3ペイン構成。
+tmuxベースのAI開発環境。Claude Code + Codex + yaziの3ペイン構成で、AIペアプログラミングを効率化。
+
+## クイックスタート
+
+```bash
+# 前提: tmux, yazi, bat, Claude Code, Codex がインストール済み
+git clone https://github.com/usedhonda/tproj.git ~/projects/claude/tproj
+cd ~/projects/claude/tproj
+./install.sh
+
+# 任意のプロジェクトで起動
+cd ~/my-project
+tproj
+```
+
+## 特徴
+
+- **3ペインレイアウト**: Claude Code（メイン）+ Codex（サブ）+ yazi（ファイルブラウザ）
+- **自動アップデート**: 起動時にClaude Code / Codex / yaziを自動更新
+- **履歴継続**: Codexはプロジェクトごとに履歴を保持、次回起動時に継続
+- **ask-codexコマンド**: Claude CodeからCodexに質問を送信
+- **Ghostty連携**: 🔔通知でタブに完了を表示
 
 ## インストール
 
+### 前提条件
+
 ```bash
-git clone <repo> ~/projects/claude/tproj
+# Homebrew
+brew install tmux yazi bat
+
+# npm
+npm install -g @anthropic-ai/claude-code @openai/codex
+```
+
+| ツール | 説明 |
+|--------|------|
+| [tmux](https://github.com/tmux/tmux) | ターミナルマルチプレクサ |
+| [yazi](https://github.com/sxyazi/yazi) | ファイルマネージャー |
+| [bat](https://github.com/sharkdp/bat) | シンタックスハイライト付きcat |
+| [Claude Code](https://claude.ai/claude-code) | Anthropic公式CLI |
+| [Codex](https://github.com/openai/codex) | OpenAI公式CLI |
+
+### 手順
+
+```bash
+git clone https://github.com/usedhonda/tproj.git ~/projects/claude/tproj
 cd ~/projects/claude/tproj
 ./install.sh
 ```
 
-### 前提条件
-
-- tmux
-- [yazi](https://github.com/sxyazi/yazi) - ファイルマネージャー
-- [bat](https://github.com/sharkdp/bat) - シンタックスハイライト付きcat
-- [Claude Code](https://claude.ai/claude-code)
-- [Codex](https://github.com/openai/codex)
-
-```bash
-brew install tmux yazi bat
-npm install -g @anthropic-ai/claude-code @openai/codex
-```
-
 ## 使い方
+
+### 基本
 
 ```bash
 cd ~/my-project
-tproj          # 開発環境を起動
+tproj          # 開発環境を起動（自動アップデート）
 tproj -n       # アップデートなしで起動（オフライン用）
+```
+
+### ask-codexコマンド
+
+Claude Code内で `/ask-codex` を実行すると、Codexペインに質問を送信できます。
+
+```
+/ask-codex ロードマップを考えて
+/ask-codex              # 引数なし: 直近の作業から自動で質問を構築
 ```
 
 ## レイアウト
 
 ```
-┌─────────────────┬─────────────┐
-│                 │   codex     │
-│     claude      ├─────────────┤
-│                 │    yazi     │
-└─────────────────┴─────────────┘
+┌─────────────────────────┬───────────────┐
+│                         │  codex (30%)  │
+│      claude (左50%)     ├───────────────┤
+│                         │  yazi  (70%)  │
+└─────────────────────────┴───────────────┘
+            dev window
+
+┌─────────────────────────────────────────┐
+│               git window                │
+└─────────────────────────────────────────┘
 ```
 
 - **claude**: Claude Code（メイン作業）
-- **codex**: OpenAI Codex（サブ）
-- **yazi**: ファイルブラウザ
+- **codex**: OpenAI Codex（セカンドオピニオン）
+- **yazi**: ファイルブラウザ（プレビュー付き）
+- **git**: git操作用ウィンドウ
 
-## tmux操作
+## 操作方法
+
+### tmux
 
 | キー | 動作 |
 |------|------|
@@ -55,13 +102,14 @@ tproj -n       # アップデートなしで起動（オフライン用）
 | `C-a u` | 🔔通知クリア |
 | マウス | ペイン選択・リサイズ・スクロール |
 
-## yazi操作
+### yazi
 
 | キー | 動作 |
 |------|------|
 | `j/k` | 上/下移動 |
 | `Enter` | ディレクトリ→Finder、ファイル→オープン |
 | `←/→` | 親へ/中へ |
+| `.` | 隠しファイル表示切替 |
 
 ## カスタマイズ
 
@@ -77,3 +125,41 @@ tproj -n       # アップデートなしで起動（オフライン用）
 | `config/yazi/yazi.toml` | yazi基本設定 |
 | `config/yazi/keymap.toml` | yaziキーバインド |
 | `config/yazi/plugins/open-finder.yazi/` | Finderで開くプラグイン |
+| `config/claude/commands/ask-codex.md` | ask-codexコマンド |
+
+## 推奨環境
+
+- **ターミナル**: [Ghostty](https://ghostty.org/) - 高速でモダン、tmux連携が優秀
+- **macOS**: テスト済み
+
+## トラブルシューティング
+
+### tprojコマンドが見つからない
+
+```bash
+# ~/bin がPATHに含まれているか確認
+echo $PATH | grep ~/bin
+
+# 含まれていなければ .zshrc に追加
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+### Codexの履歴が継続しない
+
+```bash
+# Codexのセッションを確認
+ls ~/.codex/sessions/
+```
+
+### tmux設定が反映されない
+
+```bash
+# tmuxを完全に終了して再起動
+tmux kill-server
+tproj
+```
+
+## ライセンス
+
+MIT
