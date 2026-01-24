@@ -95,7 +95,14 @@ fi
 # 2.5 Claude Code カスタムコマンド
 echo "📦 Claude Code commands → ~/.claude/commands/"
 mkdir -p ~/.claude/commands
-cp "$SCRIPT_DIR/config/claude/commands/"*.md ~/.claude/commands/
+if ls "$SCRIPT_DIR/config/claude/commands/"*.md &>/dev/null; then
+  cp "$SCRIPT_DIR/config/claude/commands/"*.md ~/.claude/commands/
+fi
+
+# 2.6 Claude Code スキル
+echo "📦 Claude Code skills → ~/.claude/skills/"
+mkdir -p ~/.claude/skills
+cp -r "$SCRIPT_DIR/config/claude/skills/"* ~/.claude/skills/
 
 # ========== 3. PATH確認 ==========
 
@@ -116,5 +123,6 @@ echo "   ~/bin/tproj"
 echo "   ~/.tmux.conf"
 echo "   ~/.config/yazi/"
 echo "   ~/.claude/commands/"
+echo "   ~/.claude/skills/"
 echo ""
 echo "💡 使い方: cd <project> && tproj"
