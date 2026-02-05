@@ -3,6 +3,8 @@ ratio = [1, 2, 5]
 title_format = ""
 show_hidden = true
 
+# ========== プレビュー（bat使用） ==========
+
 [[plugin.prepend_previewers]]
 mime = "text/*"
 run = 'piper -- bat --color=always --paging=never --style=numbers "$1"'
@@ -11,13 +13,601 @@ run = 'piper -- bat --color=always --paging=never --style=numbers "$1"'
 mime = "application/json"
 run = 'piper -- bat --color=always --paging=never --style=numbers "$1"'
 
+# ========== オープナー定義 ==========
+# 他のエディタを使う場合は text_editor のアプリ名を変更してください
+# 例: "Visual Studio Code", "Cursor", "Zed", "Sublime Text"
+
 [opener]
-edit = [
-  { run = 'open -a "Coda 2" "$@"', desc = "Open with Coda 2" },
+# テキストエディタ（メイン）
+text_editor = [
+  { run = 'open -a "Coda 2" %s', desc = "Open with text editor", orphan = true, for = "macos" },
 ]
 
+# OSデフォルト（fallback）
+default = [
+  { run = 'open %s', desc = "Open (default)", orphan = true, for = "macos" },
+]
+
+# Finderで表示
+reveal = [
+  { run = 'open -R %s', desc = "Reveal in Finder", orphan = true, for = "macos" },
+]
+
+# ========== オープンルール ==========
+
 [open]
-rules = [
-  { mime = "text/*", use = "edit" },
-  { mime = "application/json", use = "edit" },
+prepend_rules = [
+  # ----- コード系（既存） -----
+  { url = "*.py",   use = "text_editor" },
+  { url = "*.js",   use = "text_editor" },
+  { url = "*.ts",   use = "text_editor" },
+  { url = "*.tsx",  use = "text_editor" },
+  { url = "*.jsx",  use = "text_editor" },
+  { url = "*.go",   use = "text_editor" },
+  { url = "*.rs",   use = "text_editor" },
+  { url = "*.c",    use = "text_editor" },
+  { url = "*.cpp",  use = "text_editor" },
+  { url = "*.h",    use = "text_editor" },
+  { url = "*.swift", use = "text_editor" },
+  { url = "*.java", use = "text_editor" },
+  { url = "*.lua",  use = "text_editor" },
+  { url = "*.rb",   use = "text_editor" },
+  { url = "*.php",  use = "text_editor" },
+
+  # ----- プログラミング言語（追加） -----
+  # モダン言語
+  { url = "*.kt",   use = "text_editor" },  # Kotlin
+  { url = "*.kts",  use = "text_editor" },  # Kotlin Script
+  { url = "*.dart", use = "text_editor" },  # Dart
+  { url = "*.d.ts", use = "text_editor" },  # TypeScript定義
+  { url = "*.vue",  use = "text_editor" },  # Vue
+  { url = "*.svelte", use = "text_editor" },  # Svelte
+
+  # 関数型言語
+  { url = "*.hs",   use = "text_editor" },  # Haskell
+  { url = "*.ex",   use = "text_editor" },  # Elixir
+  { url = "*.exs",  use = "text_editor" },  # Elixir Script
+  { url = "*.erl",  use = "text_editor" },  # Erlang
+  { url = "*.clj",  use = "text_editor" },  # Clojure
+  { url = "*.cljs", use = "text_editor" },  # ClojureScript
+  { url = "*.cljc", use = "text_editor" },  # Clojure Common
+  { url = "*.fs",   use = "text_editor" },  # F#
+  { url = "*.fsx",  use = "text_editor" },  # F# Script
+  { url = "*.ml",   use = "text_editor" },  # OCaml
+  { url = "*.mli",  use = "text_editor" },  # OCaml Interface
+  { url = "*.scala", use = "text_editor" },  # Scala
+
+  # スクリプト言語
+  { url = "*.pl",   use = "text_editor" },  # Perl
+  { url = "*.pm",   use = "text_editor" },  # Perl Module
+  { url = "*.r",    use = "text_editor" },  # R
+  { url = "*.R",    use = "text_editor" },  # R
+  { url = "*.jl",   use = "text_editor" },  # Julia
+  { url = "*.ps1",  use = "text_editor" },  # PowerShell
+  { url = "*.psm1", use = "text_editor" },  # PowerShell Module
+  { url = "*.psd1", use = "text_editor" },  # PowerShell Data
+
+  # システムプログラミング
+  { url = "*.zig",  use = "text_editor" },  # Zig
+  { url = "*.nim",  use = "text_editor" },  # Nim
+  { url = "*.cr",   use = "text_editor" },  # Crystal
+  { url = "*.asm",  use = "text_editor" },  # Assembly
+  { url = "*.s",    use = "text_editor" },  # Assembly
+
+  # その他
+  { url = "*.vim",  use = "text_editor" },  # Vim script
+  { url = ".vimrc", use = "text_editor" },  # Vim config
+  { url = "*.fish", use = "text_editor" },  # Fish shell
+  { url = "*.bat",  use = "text_editor" },  # Batch
+  { url = "*.cmd",  use = "text_editor" },  # Windows Command
+
+  # ブロックチェーン
+  { url = "*.sol",  use = "text_editor" },  # Solidity
+  { url = "*.vy",   use = "text_editor" },  # Vyper
+  { url = "*.move", use = "text_editor" },  # Move
+
+  # ハードウェア記述言語
+  { url = "*.v",    use = "text_editor" },  # Verilog
+  { url = "*.vh",   use = "text_editor" },  # Verilog Header
+  { url = "*.vhd",  use = "text_editor" },  # VHDL
+  { url = "*.vhdl", use = "text_editor" },  # VHDL
+  { url = "*.sv",   use = "text_editor" },  # SystemVerilog
+
+  # ゲーム開発
+  { url = "*.gd",   use = "text_editor" },  # GDScript (Godot)
+  { url = "*.shader", use = "text_editor" },  # Shader
+  { url = "*.compute", use = "text_editor" },  # Compute Shader
+  { url = "*.ino",  use = "text_editor" },  # Arduino
+
+  # Emacs
+  { url = "*.el",   use = "text_editor" },  # Emacs Lisp
+  { url = ".emacs", use = "text_editor" },  # Emacs config
+  { url = "init.el", use = "text_editor" },  # Emacs init
+
+  # その他言語
+  { url = "*.applescript", use = "text_editor" },  # AppleScript
+
+  # ----- シェル系（既存） -----
+  { url = "*.sh",   use = "text_editor" },
+  { url = "*.zsh",  use = "text_editor" },
+  { url = "*.bash", use = "text_editor" },
+
+  # シェル設定ファイル
+  { url = ".zshrc",     use = "text_editor" },
+  { url = ".zprofile",  use = "text_editor" },
+  { url = ".zshenv",    use = "text_editor" },
+  { url = ".zlogin",    use = "text_editor" },
+  { url = ".zlogout",   use = "text_editor" },
+  { url = ".bashrc",    use = "text_editor" },
+  { url = ".bash_profile", use = "text_editor" },
+  { url = ".bash_login",   use = "text_editor" },
+  { url = ".bash_logout",  use = "text_editor" },
+  { url = ".profile",   use = "text_editor" },
+  { url = "config.fish", use = "text_editor" },
+
+  # ----- Web系（既存） -----
+  { url = "*.html", use = "text_editor" },
+  { url = "*.css",  use = "text_editor" },
+  { url = "*.scss", use = "text_editor" },
+  { url = "*.less", use = "text_editor" },
+
+  # Web系（追加）
+  { url = "*.sass",     use = "text_editor" },  # Sass
+  { url = "*.styl",     use = "text_editor" },  # Stylus
+  { url = "*.pcss",     use = "text_editor" },  # PostCSS
+  { url = "*.graphql",  use = "text_editor" },  # GraphQL
+  { url = "*.gql",      use = "text_editor" },  # GraphQL
+  { url = "*.wat",      use = "text_editor" },  # WebAssembly Text
+
+  # テンプレート
+  { url = "*.hbs",      use = "text_editor" },  # Handlebars
+  { url = "*.pug",      use = "text_editor" },  # Pug
+  { url = "*.jade",     use = "text_editor" },  # Jade
+  { url = "*.ejs",      use = "text_editor" },  # EJS
+  { url = "*.mustache", use = "text_editor" },  # Mustache
+  { url = "*.njk",      use = "text_editor" },  # Nunjucks
+  { url = "*.template", use = "text_editor" },  # Template
+  { url = "*.tpl",      use = "text_editor" },  # Template
+  { url = "*.tmpl",     use = "text_editor" },  # Template
+
+  # ----- 設定/データ系（既存） -----
+  { url = "*.json", use = "text_editor" },
+  { url = "*.yaml", use = "text_editor" },
+  { url = "*.yml",  use = "text_editor" },
+  { url = "*.toml", use = "text_editor" },
+  { url = "*.xml",  use = "text_editor" },
+  { url = "*.ini",  use = "text_editor" },
+  { url = "*.env",  use = "text_editor" },
+  { url = ".env*",  use = "text_editor" },
+
+  # データフォーマット（追加）
+  { url = "*.tsv",        use = "text_editor" },  # TSV
+  { url = "*.jsonl",      use = "text_editor" },  # JSON Lines
+  { url = "*.ndjson",     use = "text_editor" },  # Newline Delimited JSON
+  { url = "*.json5",      use = "text_editor" },  # JSON5
+  { url = "*.hjson",      use = "text_editor" },  # Human JSON
+  { url = "*.geojson",    use = "text_editor" },  # GeoJSON
+  { url = "*.topojson",   use = "text_editor" },  # TopoJSON
+  { url = "*.har",        use = "text_editor" },  # HTTP Archive
+  { url = "*.webmanifest", use = "text_editor" },  # Web App Manifest
+  { url = "*.properties", use = "text_editor" },  # Properties
+  { url = "*.conf",       use = "text_editor" },  # Config
+  { url = "*.config",     use = "text_editor" },  # Config
+  { url = "*.cfg",        use = "text_editor" },  # Config
+  { url = "*.hcl",        use = "text_editor" },  # HCL
+  { url = "*.tf",         use = "text_editor" },  # Terraform
+  { url = "*.tfvars",     use = "text_editor" },  # Terraform Variables
+  { url = "*.proto",      use = "text_editor" },  # Protobuf
+
+  # SQL
+  { url = "*.sql",    use = "text_editor" },
+  { url = "*.mysql",  use = "text_editor" },
+  { url = "*.pgsql",  use = "text_editor" },
+  { url = "*.sqlite", use = "text_editor" },
+  { url = "*.plsql",  use = "text_editor" },
+
+  # クエリ言語
+  { url = "*.sparql", use = "text_editor" },
+  { url = "*.rq",     use = "text_editor" },
+  { url = "*.cypher", use = "text_editor" },
+
+  # スキーマ定義
+  { url = "*.thrift", use = "text_editor" },
+  { url = "*.avsc",   use = "text_editor" },  # Avro Schema
+  { url = "*.capnp",  use = "text_editor" },  # Cap'n Proto
+
+  # パーサー生成
+  { url = "*.g4",     use = "text_editor" },  # ANTLR
+  { url = "*.rl",     use = "text_editor" },  # Ragel
+  { url = "*.l",      use = "text_editor" },  # Lex
+  { url = "*.y",      use = "text_editor" },  # Yacc
+  { url = "*.yy",     use = "text_editor" },  # Yacc
+  { url = "*.ll",     use = "text_editor" },  # Lex
+
+  # ----- テキスト/ドキュメント系（既存） -----
+  { url = "*.md",   use = "text_editor" },
+  { url = "*.mdx",  use = "text_editor" },
+  { url = "*.txt",  use = "text_editor" },
+  { url = "*.log",  use = "text_editor" },
+  { url = "*.csv",  use = "text_editor" },
+
+  # ドキュメント系（追加）
+  { url = "*.rst",       use = "text_editor" },  # reStructuredText
+  { url = "*.adoc",      use = "text_editor" },  # AsciiDoc
+  { url = "*.asciidoc",  use = "text_editor" },  # AsciiDoc
+  { url = "*.org",       use = "text_editor" },  # Org mode
+  { url = "*.tex",       use = "text_editor" },  # LaTeX
+  { url = "*.bib",       use = "text_editor" },  # BibTeX
+  { url = "*.textile",   use = "text_editor" },  # Textile
+  { url = "*.Rmd",       use = "text_editor" },  # R Markdown
+  { url = "*.qmd",       use = "text_editor" },  # Quarto
+
+  # グラフ/ダイアグラム
+  { url = "*.dot",       use = "text_editor" },  # Graphviz
+  { url = "*.gv",        use = "text_editor" },  # Graphviz
+  { url = "*.puml",      use = "text_editor" },  # PlantUML
+  { url = "*.plantuml",  use = "text_editor" },  # PlantUML
+  { url = "*.mmd",       use = "text_editor" },  # Mermaid
+  { url = "*.drawio",    use = "text_editor" },  # Draw.io
+  { url = "*.d2",        use = "text_editor" },  # D2
+
+  # 字幕/メディアメタデータ
+  { url = "*.srt",  use = "text_editor" },  # SubRip
+  { url = "*.ass",  use = "text_editor" },  # Advanced SubStation Alpha
+  { url = "*.ssa",  use = "text_editor" },  # SubStation Alpha
+  { url = "*.vtt",  use = "text_editor" },  # WebVTT
+  { url = "*.sub",  use = "text_editor" },  # MicroDVD
+  { url = "*.lrc",  use = "text_editor" },  # Lyrics
+  { url = "*.cue",  use = "text_editor" },  # CUE Sheet
+
+  # ローカライゼーション
+  { url = "*.po",      use = "text_editor" },  # Gettext
+  { url = "*.pot",     use = "text_editor" },  # Gettext Template
+  { url = "*.strings", use = "text_editor" },  # iOS/macOS
+  { url = "*.resx",    use = "text_editor" },  # ASP.NET
+  { url = "*.xliff",   use = "text_editor" },  # XLIFF
+  { url = "*.arb",     use = "text_editor" },  # Flutter
+
+  # 3D/CAD (テキスト形式)
+  { url = "*.obj",  use = "text_editor" },  # Wavefront OBJ
+  { url = "*.mtl",  use = "text_editor" },  # Wavefront Material
+  { url = "*.stl",  use = "text_editor" },  # STL ASCII
+  { url = "*.svg",  use = "text_editor" },  # SVG
+  { url = "*.dxf",  use = "text_editor" },  # AutoCAD DXF
+
+  # バイオインフォマティクス
+  { url = "*.fasta",    use = "text_editor" },
+  { url = "*.fa",       use = "text_editor" },
+  { url = "*.fna",      use = "text_editor" },
+  { url = "*.ffn",      use = "text_editor" },
+  { url = "*.faa",      use = "text_editor" },
+  { url = "*.frn",      use = "text_editor" },
+  { url = "*.fastq",    use = "text_editor" },
+  { url = "*.fq",       use = "text_editor" },
+  { url = "*.pdb",      use = "text_editor" },
+  { url = "*.gff",      use = "text_editor" },
+  { url = "*.gff3",     use = "text_editor" },
+  { url = "*.gtf",      use = "text_editor" },
+  { url = "*.bed",      use = "text_editor" },
+  { url = "*.vcf",      use = "text_editor" },
+  { url = "*.sam",      use = "text_editor" },
+  { url = "*.wig",      use = "text_editor" },
+  { url = "*.bedgraph", use = "text_editor" },
+
+  # フォント
+  { url = "*.sfd",  use = "text_editor" },  # FontForge
+  { url = "*.fea",  use = "text_editor" },  # OpenType Feature
+  { url = "*.glyphs", use = "text_editor" },  # Glyphs
+
+  # eBook
+  { url = "*.opf",  use = "text_editor" },  # EPUB metadata
+  { url = "*.ncx",  use = "text_editor" },  # EPUB navigation
+
+  # カレンダー/連絡先
+  { url = "*.ics",       use = "text_editor" },  # iCalendar
+  { url = "*.ical",      use = "text_editor" },
+  { url = "*.ifb",       use = "text_editor" },
+  { url = "*.icalendar", use = "text_editor" },
+  { url = "*.vcard",     use = "text_editor" },  # vCard
+
+  # ネットワーク/セキュリティ
+  { url = "*.rules", use = "text_editor" },  # Snort/Suricata
+  { url = "*.yar",   use = "text_editor" },  # YARA
+  { url = "*.yara",  use = "text_editor" },  # YARA
+  { url = "*.zeek",  use = "text_editor" },  # Zeek
+
+  # チェックサム/ハッシュ
+  { url = "*.md5",    use = "text_editor" },
+  { url = "*.sha1",   use = "text_editor" },
+  { url = "*.sha256", use = "text_editor" },
+  { url = "*.sha512", use = "text_editor" },
+  { url = "CHECKSUMS", use = "text_editor" },
+
+  # パッチ
+  { url = "*.diff",  use = "text_editor" },
+  { url = "*.patch", use = "text_editor" },
+  { url = "*.rej",   use = "text_editor" },
+
+  # ノート/TODO
+  { url = "*.todo",      use = "text_editor" },
+  { url = "*.taskpaper", use = "text_editor" },
+
+  # マニュアルページ
+  { url = "*.man", use = "text_editor" },
+  { url = "*.1",   use = "text_editor" },
+  { url = "*.2",   use = "text_editor" },
+  { url = "*.3",   use = "text_editor" },
+  { url = "*.4",   use = "text_editor" },
+  { url = "*.5",   use = "text_editor" },
+  { url = "*.6",   use = "text_editor" },
+  { url = "*.7",   use = "text_editor" },
+  { url = "*.8",   use = "text_editor" },
+  { url = "*.9",   use = "text_editor" },
+
+  # その他テキスト
+  { url = "*.list",    use = "text_editor" },
+  { url = "*.exclude", use = "text_editor" },
+  { url = "*.include", use = "text_editor" },
+  { url = "*.trace",   use = "text_editor" },
+  { url = "*.fixture", use = "text_editor" },
+  { url = "*.mock",    use = "text_editor" },
+  { url = "*.stub",    use = "text_editor" },
+  { url = "*.regex",   use = "text_editor" },
+  { url = "*.regexp",  use = "text_editor" },
+
+  # ----- エディタ/フォーマッタ設定 -----
+  { url = ".editorconfig",   use = "text_editor" },
+  { url = ".prettierrc",     use = "text_editor" },
+  { url = ".prettierrc.json", use = "text_editor" },
+  { url = ".prettierrc.yml",  use = "text_editor" },
+  { url = ".prettierrc.js",   use = "text_editor" },
+  { url = ".prettierrc.cjs",  use = "text_editor" },
+  { url = ".prettierignore",  use = "text_editor" },
+  { url = ".eslintrc",       use = "text_editor" },
+  { url = ".eslintrc.json",  use = "text_editor" },
+  { url = ".eslintrc.yml",   use = "text_editor" },
+  { url = ".eslintrc.js",    use = "text_editor" },
+  { url = ".eslintrc.cjs",   use = "text_editor" },
+  { url = "eslint.config.js", use = "text_editor" },
+  { url = ".eslintignore",   use = "text_editor" },
+  { url = ".babelrc",        use = "text_editor" },
+  { url = ".babelrc.json",   use = "text_editor" },
+  { url = ".babelrc.js",     use = "text_editor" },
+  { url = ".babelrc.cjs",    use = "text_editor" },
+  { url = ".babelrc.mjs",    use = "text_editor" },
+  { url = "babel.config.js",  use = "text_editor" },
+  { url = "babel.config.cjs", use = "text_editor" },
+  { url = "babel.config.mjs", use = "text_editor" },
+  { url = ".stylelintrc",    use = "text_editor" },
+  { url = ".stylelintrc.js",  use = "text_editor" },
+  { url = ".stylelintrc.cjs", use = "text_editor" },
+  { url = ".stylelintignore", use = "text_editor" },
+  { url = ".clang-format",   use = "text_editor" },
+  { url = ".clang-tidy",     use = "text_editor" },
+
+  # ----- ビルドツール設定 -----
+  { url = "webpack.config.js",  use = "text_editor" },
+  { url = "webpack.config.ts",  use = "text_editor" },
+  { url = "rollup.config.js",   use = "text_editor" },
+  { url = "rollup.config.ts",   use = "text_editor" },
+  { url = "vite.config.js",     use = "text_editor" },
+  { url = "vite.config.ts",     use = "text_editor" },
+  { url = "esbuild.config.js",  use = "text_editor" },
+  { url = "tsup.config.ts",     use = "text_editor" },
+
+  # テストツール設定
+  { url = "jest.config.js",      use = "text_editor" },
+  { url = "jest.config.ts",      use = "text_editor" },
+  { url = "jest.setup.js",       use = "text_editor" },
+  { url = "vitest.config.js",    use = "text_editor" },
+  { url = "vitest.config.ts",    use = "text_editor" },
+  { url = "playwright.config.js", use = "text_editor" },
+  { url = "playwright.config.ts", use = "text_editor" },
+  { url = "cypress.config.js",   use = "text_editor" },
+  { url = "cypress.config.ts",   use = "text_editor" },
+  { url = "karma.conf.js",       use = "text_editor" },
+
+  # ----- パッケージマネージャ -----
+  { url = "Gemfile",         use = "text_editor" },
+  { url = "Gemfile.lock",    use = "text_editor" },
+  { url = "Podfile",         use = "text_editor" },
+  { url = "Podfile.lock",    use = "text_editor" },
+  { url = "Brewfile",        use = "text_editor" },
+  { url = "requirements.txt", use = "text_editor" },
+  { url = "Pipfile",         use = "text_editor" },
+  { url = "Pipfile.lock",    use = "text_editor" },
+  { url = "poetry.lock",     use = "text_editor" },
+  { url = "yarn.lock",       use = "text_editor" },
+
+  # バージョン管理
+  { url = ".gitattributes",  use = "text_editor" },
+  { url = ".gitmodules",     use = "text_editor" },
+  { url = ".gitkeep",        use = "text_editor" },
+  { url = ".gitconfig",      use = "text_editor" },
+  { url = ".npmrc",          use = "text_editor" },
+  { url = ".yarnrc",         use = "text_editor" },
+  { url = ".pnpmrc",         use = "text_editor" },
+  { url = ".nvmrc",          use = "text_editor" },
+  { url = ".ruby-version",   use = "text_editor" },
+  { url = ".python-version", use = "text_editor" },
+  { url = ".node-version",   use = "text_editor" },
+  { url = ".tool-versions",  use = "text_editor" },
+  { url = ".hgrc",           use = "text_editor" },
+  { url = ".hgignore",       use = "text_editor" },
+  { url = ".svnignore",      use = "text_editor" },
+
+  # ----- CI/CD -----
+  { url = ".travis.yml",         use = "text_editor" },
+  { url = ".gitlab-ci.yml",      use = "text_editor" },
+  { url = "Jenkinsfile",         use = "text_editor" },
+  { url = "azure-pipelines.yml", use = "text_editor" },
+  { url = "bitbucket-pipelines.yml", use = "text_editor" },
+  { url = ".drone.yml",          use = "text_editor" },
+  { url = "appveyor.yml",        use = "text_editor" },
+  { url = "buildkite.yml",       use = "text_editor" },
+  { url = ".woodpecker.yml",     use = "text_editor" },
+  { url = "cloudbuild.yaml",     use = "text_editor" },
+
+  # ----- コード品質/Git設定 -----
+  { url = "CODEOWNERS",          use = "text_editor" },
+  { url = ".mailmap",            use = "text_editor" },
+  { url = "renovate.json",       use = "text_editor" },
+  { url = "renovate.json5",      use = "text_editor" },
+  { url = "dependabot.yml",      use = "text_editor" },
+  { url = "lefthook.yml",        use = "text_editor" },
+  { url = ".huskyrc",            use = "text_editor" },
+  { url = ".huskyrc.json",       use = "text_editor" },
+  { url = ".lintstagedrc",       use = "text_editor" },
+  { url = ".lintstagedrc.json",  use = "text_editor" },
+  { url = ".commitlintrc",       use = "text_editor" },
+  { url = ".commitlintrc.json",  use = "text_editor" },
+  { url = ".releaserc",          use = "text_editor" },
+  { url = ".releaserc.json",     use = "text_editor" },
+  { url = ".sentryclirc",        use = "text_editor" },
+  { url = ".browserslistrc",     use = "text_editor" },
+
+  # ----- 無視ファイル -----
+  { url = ".npmignore",      use = "text_editor" },
+  { url = ".vercelignore",   use = "text_editor" },
+  { url = ".gcloudignore",   use = "text_editor" },
+
+  # ----- Git/Docker等（既存） -----
+  { url = ".gitignore",    use = "text_editor" },
+  { url = ".dockerignore", use = "text_editor" },
+  { url = "Dockerfile",    use = "text_editor" },
+  { url = "Makefile",      use = "text_editor" },
+
+  # ビルドツール（追加）
+  { url = "GNUmakefile",     use = "text_editor" },
+  { url = "makefile",        use = "text_editor" },
+  { url = "CMakeLists.txt",  use = "text_editor" },
+  { url = "meson.build",     use = "text_editor" },
+  { url = "meson_options.txt", use = "text_editor" },
+  { url = "build.gradle",    use = "text_editor" },
+  { url = "build.gradle.kts", use = "text_editor" },
+  { url = "settings.gradle", use = "text_editor" },
+  { url = "BUILD",           use = "text_editor" },
+  { url = "WORKSPACE",       use = "text_editor" },
+
+  # ----- コンテナ/デプロイ -----
+  { url = "Vagrantfile",       use = "text_editor" },
+  { url = "docker-compose.yml", use = "text_editor" },
+  { url = "docker-compose.yaml", use = "text_editor" },
+  { url = "compose.yml",       use = "text_editor" },
+  { url = "compose.yaml",      use = "text_editor" },
+  { url = "Procfile",          use = "text_editor" },
+  { url = "vercel.json",       use = "text_editor" },
+  { url = "netlify.toml",      use = "text_editor" },
+  { url = "render.yaml",       use = "text_editor" },
+  { url = "railway.json",      use = "text_editor" },
+  { url = "railway.toml",      use = "text_editor" },
+
+  # ----- Infrastructure as Code -----
+  { url = ".terraformrc",      use = "text_editor" },
+  { url = ".ansible.cfg",      use = "text_editor" },
+  { url = "playbook.yml",      use = "text_editor" },
+  { url = "inventory.ini",     use = "text_editor" },
+  { url = "ansible.cfg",       use = "text_editor" },
+  { url = "kustomization.yaml", use = "text_editor" },
+  { url = "deployment.yaml",   use = "text_editor" },
+  { url = "service.yaml",      use = "text_editor" },
+  { url = "configmap.yaml",    use = "text_editor" },
+  { url = "openapi.yaml",      use = "text_editor" },
+  { url = "openapi.yml",       use = "text_editor" },
+  { url = "swagger.yaml",      use = "text_editor" },
+  { url = "swagger.yml",       use = "text_editor" },
+
+  # ----- 証明書/暗号鍵 (注意: 機密情報の可能性) -----
+  { url = "*.pem",  use = "text_editor" },  # 証明書・秘密鍵
+  { url = "*.crt",  use = "text_editor" },  # 証明書
+  { url = "*.cert", use = "text_editor" },  # 証明書
+  { url = "*.csr",  use = "text_editor" },  # 証明書署名要求
+  { url = "*.pub",  use = "text_editor" },  # 公開鍵
+
+  # ----- Webサーバー/プロキシ設定 -----
+  { url = "httpd.conf",    use = "text_editor" },
+  { url = "apache2.conf",  use = "text_editor" },
+  { url = ".htaccess",     use = "text_editor" },
+  { url = ".htpasswd",     use = "text_editor" },
+  { url = "nginx.conf",    use = "text_editor" },
+  { url = "mime.types",    use = "text_editor" },
+  { url = "Caddyfile",     use = "text_editor" },
+
+  # ----- データベース設定 -----
+  { url = "my.cnf",          use = "text_editor" },
+  { url = ".my.cnf",         use = "text_editor" },
+  { url = "postgresql.conf", use = "text_editor" },
+  { url = "pg_hba.conf",     use = "text_editor" },
+  { url = "redis.conf",      use = "text_editor" },
+  { url = "mongod.conf",     use = "text_editor" },
+
+  # ----- Systemd -----
+  { url = "*.service", use = "text_editor" },
+  { url = "*.timer",   use = "text_editor" },
+  { url = "*.mount",   use = "text_editor" },
+  { url = "*.socket",  use = "text_editor" },
+  { url = "*.target",  use = "text_editor" },
+  { url = "*.path",    use = "text_editor" },
+
+  # ----- X Window System / ウィンドウマネージャ -----
+  { url = ".xinitrc",    use = "text_editor" },
+  { url = ".xsession",   use = "text_editor" },
+  { url = ".Xresources", use = "text_editor" },
+  { url = ".Xdefaults",  use = "text_editor" },
+
+  # ----- Linux/Unix設定 -----
+  { url = ".desktop",    use = "text_editor" },
+  { url = ".url",        use = "text_editor" },
+  { url = ".muttrc",     use = "text_editor" },
+  { url = ".fetchmailrc", use = "text_editor" },
+  { url = ".nanorc",     use = "text_editor" },
+  { url = ".tmux.conf",  use = "text_editor" },
+  { url = "tmux.conf",   use = "text_editor" },
+  { url = ".screenrc",   use = "text_editor" },
+
+  # ----- ツール設定 -----
+  { url = ".curlrc",     use = "text_editor" },
+  { url = ".wgetrc",     use = "text_editor" },
+  { url = ".inputrc",    use = "text_editor" },
+  { url = ".ripgreprc",  use = "text_editor" },
+
+  # ----- SSH関連 -----
+  { url = "known_hosts",      use = "text_editor" },
+  { url = "authorized_keys",  use = "text_editor" },
+  { url = "id_rsa.pub",       use = "text_editor" },
+  { url = "id_ed25519.pub",   use = "text_editor" },
+
+  # ----- ゲーム開発設定 -----
+  { url = "platformio.ini", use = "text_editor" },
+
+  # ----- その他設定 -----
+  { url = "crontab",       use = "text_editor" },
+  { url = "hosts",         use = "text_editor" },
+  { url = "robots.txt",    use = "text_editor" },
+  { url = "humans.txt",    use = "text_editor" },
+  { url = "security.txt",  use = "text_editor" },
+  { url = "FUNDING.yml",   use = "text_editor" },
+
+  # ----- 拡張子なし特殊ファイル -----
+  { url = "LICENSE",       use = "text_editor" },
+  { url = "README",        use = "text_editor" },
+  { url = "CHANGELOG",     use = "text_editor" },
+  { url = "CONTRIBUTING",  use = "text_editor" },
+  { url = "AUTHORS",       use = "text_editor" },
+  { url = "CONTRIBUTORS",  use = "text_editor" },
+  { url = "TODO",          use = "text_editor" },
+  { url = "INSTALL",       use = "text_editor" },
+  { url = "COPYING",       use = "text_editor" },
+  { url = "NOTICE",        use = "text_editor" },
+  { url = ".keep",         use = "text_editor" },
+  { url = "VERSION",       use = "text_editor" },
+  { url = "MANIFEST",      use = "text_editor" },
+
+  # ----- フォールバック: すべてのテキストファイル -----
+  { mime = "text/*", use = "text_editor" },
+]
+
+append_rules = [
+  # それ以外 → OSデフォルト
+  { url = "*", use = "default" },
 ]
