@@ -13,7 +13,7 @@ return {
       local path = tostring(h.url)
       ya.emit("shell", { "open " .. ya.quote(path) })
     else
-      -- ファイル → 通常通りオープン
+      -- ファイル → yazi.toml の [open] 設定に従って開く
       ya.emit("open", { hovered = true })
     end
   end,

@@ -7,4 +7,9 @@ prepend_keymap = [
   { on = "<Left>", run = "leave", desc = "Go parent" },
   { on = "<Right>", run = "enter", desc = "Enter dir" },
   { on = "<Enter>", run = "plugin open-finder", desc = "Open directory in Finder, or open file" },
+  { on = "c", run = "plugin copy-file", desc = "Copy file content to clipboard" },
+  { on = "p", run = "plugin copy-path", desc = "Copy file path to clipboard" },
+  { on = "v", run = "paste", desc = "Paste file/directory" },
+  { on = "T", run = "plugin open-terminal", desc = "Toggle tmux terminal pane" },
+  { on = "h", run = "help", desc = "Show help" },
 ]
