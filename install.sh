@@ -84,7 +84,7 @@ backup_if_exists ~/.config/yazi/yazi.toml
 backup_if_exists ~/.config/yazi/keymap.toml
 cp "$SCRIPT_DIR/config/yazi/yazi.toml" ~/.config/yazi/
 cp "$SCRIPT_DIR/config/yazi/keymap.toml" ~/.config/yazi/
-cp -r "$SCRIPT_DIR/config/yazi/plugins/open-finder.yazi" ~/.config/yazi/plugins/
+cp -r "$SCRIPT_DIR/config/yazi/plugins/"* ~/.config/yazi/plugins/
 
 # 2.4 yaziパッケージ（piperプラグイン）
 if command -v ya &> /dev/null; then
