@@ -13,7 +13,10 @@ tproj/
 │   ├── yazi/                    # yaziファイルマネージャー設定
 │   │   ├── yazi.toml
 │   │   ├── keymap.toml
-│   │   └── plugins/open-finder.yazi/
+│   │   └── plugins/
+│   │       ├── open-finder.yazi/
+│   │       ├── open-terminal.yazi/
+│   │       └── copy-path.yazi/
 │   └── claude/commands/         # Claude Codeカスタムコマンド
 │       └── ask-codex.md
 └── docs/
@@ -70,7 +73,27 @@ Claude Code内で `/ask-codex` を実行すると、Codexペインに質問を�
 - Ghosttyタブ連携（🔔通知）
 
 ### yazi (`config/yazi/`)
-- j/k: 上下移動（反転）
-- Enter: ディレクトリ→Finder、ファイル→オープン
+
+**基本操作:**
+- `j`/`k`: 上下移動（反転）
+- `←`/`→`: 親/子ディレクトリ移動
+- `Enter`: ディレクトリ→Finder、ファイル→オープン
+- `y`: ファイル/ディレクトリをコピー（yank）
+- `x`: ファイル/ディレクトリをカット
+- `v`: ペースト
+- `c`: ファイル内容をクリップボードにコピー
+- `p`: ファイルパス（フルパス）をクリップボードにコピー
+- `T`: ターミナルペインをトグル（開く/閉じる）
+- `h`: ヘルプ表示
+- `q`: 終了
+
+**コマンドモードから抜ける:**
+- `Esc`: 入力モードをキャンセル
+- `Ctrl+C`: 強制中断
+- `Ctrl+[`: Escの代替
+
+**再起動:** `q` で終了後、`yazi` で再起動
+
+**その他:**
 - batによるシンタックスハイライトプレビュー
 - 隠しファイル表示デフォルトON
