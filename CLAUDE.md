@@ -17,8 +17,8 @@ tproj/
 │   │       ├── open-finder.yazi/
 │   │       ├── open-terminal.yazi/
 │   │       └── copy-path.yazi/
-│   └── claude/commands/         # Claude Codeカスタムコマンド
-│       └── ask-codex.md
+│   └── claude/skills/           # Claude Codeスキル
+│       └── codex/               # Codex連携スキル
 └── docs/
 ```
 
@@ -45,13 +45,18 @@ tproj -n   # アップデートなしで起動（オフライン用）
          git window
 ```
 
-## ask-codex コマンド
+## codex スキル
 
-Claude Code内で `/ask-codex` を実行すると、Codexペインに質問を送信。
+Claude Code内で `/codex` を実行すると、Codexペインと連携。
 
+**モード:**
+- **ask**（デフォルト）: `/codex`, `Codexに聞いて` - 質問・相談・レビュー
+- **impl**: `/codex impl`, `Codexに任せて` - 実装タスク（完全自動）
+
+**機能:**
 - tprojレイアウト固定でペイン検出（dev.2=Codex）
-- Codex未起動時は自動起動
 - 引数なしなら直近の作業から自動で質問を構築
+- impl モードは承認を自動で行う
 
 ## インストール
 

@@ -1,22 +1,39 @@
 ---
-name: ask-codex
+name: codex
 description: |
-  Codexへの質問・相談スキル。tmux上でCodexペインが存在する場合に使用可能。
-  「Codexに聞いて」「Codexに相談」「ask-codex」で発動。
-  設計の相談、セカンドオピニオン、不確実な判断時に活用。
-argument-hint: <質問内容（省略可）>
-allowed-tools: [Bash]
+  Codex連携スキル。2つのモードがある。
+  モード1: ask（「Codexに聞いて」「/codex」）- 質問・相談・レビュー依頼
+  モード2: impl（「Codexに任せて」「/codex impl」）- 実装タスク
+argument-hint: <質問/タスク内容>
+allowed-tools: [Bash, Read]
 compression-anchors:
-  - "tmuxセッション内でCodexペインに質問を送信"
+  - "tmuxセッション内でCodexペインに質問/タスクを送信"
   - "回答完了を自動検知して結果を取得"
-  - "事前にCodexの起動状態を確認"
+  - "ask/impl 2モード対応"
 ---
 
-# Codexに質問を送信
+# Codex連携スキル
 
 ## 概要
 
-tprojセッション内で、Claude Code（dev.1）からCodex（dev.2）に質問を送信する。
+tprojセッション内で、Claude Code（dev.1）からCodex（dev.2）に質問またはタスクを送信する。
+
+## モード
+
+| モード | トリガー | 動作 | ログ先 |
+|--------|----------|------|--------|
+| ask | `/codex`, `/codex ask`, 「Codexに聞いて」「Codexに相談」「Codexにレビュー」 | 調査・分析・提案のみ（実装禁止） | docs/log/codex/ |
+| impl | `/codex impl`, 「Codexに任せて」「Codexで実装」 | 指示されたタスクを実装 | docs/log/codex-impl/ |
+
+**デフォルト**: ask モード（引数なし or モード指定なし）
+
+## モード判定ロジック
+
+```
+1. $ARGUMENTS の先頭が "impl" → impl モード
+2. トリガーワードに「任せて」「実装」含む → impl モード
+3. それ以外 → ask モード（デフォルト）
+```
 
 ## 使用条件
 
@@ -32,9 +49,9 @@ CCは以下の場合に自律的にこのスキルを使用すべき：
 2. **セカンドオピニオンが欲しい時** - 自分の判断に自信がない
 3. **プロジェクト固有の知識が必要な時** - Codexが詳しいはず
 4. **リスクの高い変更を行う前** - 大きな影響がある変更
-5. **ユーザーが「Codexに聞いて」と言った時**
+5. **ユーザーが「Codexに聞いて」「Codexに任せて」等と言った時**
 
-## 質問の構築（必須）
+## 質問/タスクの構築（必須）
 
 $ARGUMENTS はユーザーからの問いかけ。これをそのままCodexに渡すのではなく、**あなた自身の言葉で**Codexに伝えよ。
 
@@ -42,7 +59,7 @@ $ARGUMENTS はユーザーからの問いかけ。これをそのままCodexに�
 
 1. ユーザーの意図を咀嚼
 2. 必要なプロジェクト背景・直近の作業を選定
-3. 自然な文章でCodexに話しかける質問を構築
+3. 自然な文章でCodexに話しかける質問/タスクを構築
 
 ### $ARGUMENTSが空の場合
 
@@ -50,7 +67,7 @@ $ARGUMENTS はユーザーからの問いかけ。これをそのままCodexに�
 
 ### 例
 
-ユーザー: `/ask-codex ロードマップを考えて`
+ユーザー: `/codex ロードマップを考えて`
 
 構築する質問:
 ```
@@ -62,14 +79,25 @@ $ARGUMENTS はユーザーからの問いかけ。これをそのままCodexに�
 ## 実行
 
 **重要**: 以下のスクリプト全体を**1回のBash呼び出し**で実行せよ。
-`YOUR_QUESTION_HERE` を構築した質問に置き換えること。
+
+### Step 1: モード判定
+
+$ARGUMENTS を解析し、モードを決定:
+- 先頭が "impl" → CODEX_MODE="impl"、ARGUMENTSから "impl" を除去
+- それ以外 → CODEX_MODE="ask"
+
+### Step 2: スクリプト実行
+
+`YOUR_MESSAGE_HERE` を構築した質問/タスクに置き換えること。
+`CODEX_MODE_HERE` を判定したモード（ask または impl）に置き換えること。
 
 ```bash
 #!/bin/bash
 set -euo pipefail
 
 # === 設定 ===
-MESSAGE_TO_CODEX="YOUR_QUESTION_HERE"
+MESSAGE_TO_CODEX="YOUR_MESSAGE_HERE"
+CODEX_MODE="CODEX_MODE_HERE"  # ask または impl
 
 # === trusted登録 ===
 PROJECT_PATH=$(pwd)
@@ -92,14 +120,11 @@ if ! tmux list-panes -t "$CODEX_PANE" &>/dev/null; then
 fi
 
 # === Codex起動確認 ===
-# tprojで起動していればCodexは常に起動している前提
-# 起動していない場合（手動終了/クラッシュ）はエラー
 CURRENT_CMD=$(tmux display-message -t "$CODEX_PANE" -p '#{pane_current_command}')
 PANE_CONTENT=$(tmux capture-pane -t "$CODEX_PANE" -p)
 
 CODEX_RUNNING=false
 [[ "$CURRENT_CMD" == "node" ]] && CODEX_RUNNING=true
-# 直近20行だけ検索（過去ログの誤検出防止）
 RECENT_LINES=$(echo "$PANE_CONTENT" | tail -20)
 echo "$RECENT_LINES" | grep -q "context left" && CODEX_RUNNING=true
 echo "$RECENT_LINES" | grep -q "esc to interrupt" && CODEX_RUNNING=true
@@ -110,11 +135,24 @@ if [[ "$CODEX_RUNNING" == "false" ]]; then
   exit 1
 fi
 
-# === 質問送信 ===
-QUESTION="【重要ルール】
+# === モード別ルール構築 ===
+if [[ "$CODEX_MODE" == "impl" ]]; then
+  LOG_DIR="docs/log/codex-impl"
+  RULES="【実装ルール】
+1. 指示されたタスクを実装せよ。
+2. 変更前に影響範囲を説明すること。
+3. 結果は $LOG_DIR にマークダウンで残すこと（連番: 001-xxxx.md）
+4. 不明点があれば実装前に質問すること。"
+else
+  LOG_DIR="docs/log/codex"
+  RULES="【重要ルール】
 1. 実装は禁止。調査・分析・提案のみ行うこと。
-2. 結果は必ず docs/log/codex/ にマークダウンで残すこと（連番: 001-xxxx.md）
-3. 追加の質問があれば遠慮なく聞いてください。詳細を文章で回答します。
+2. 結果は $LOG_DIR にマークダウンで残すこと（連番: 001-xxxx.md）
+3. 追加の質問があれば遠慮なく聞いてください。詳細を文章で回答します。"
+fi
+
+# === 質問/タスク送信 ===
+QUESTION="$RULES
 
 $MESSAGE_TO_CODEX"
 
@@ -128,7 +166,6 @@ COMPLETED=false
 PREV_OUTPUT=""
 NO_CHANGE_COUNT=0
 NO_CHANGE_THRESHOLD=30  # 0.3秒×30=9秒
-LOG_DIR="docs/log/codex"
 START_TIME=$(date +%s)
 
 for i in {1..1000}; do
@@ -136,9 +173,11 @@ for i in {1..1000}; do
   OUTPUT=$(tmux capture-pane -t "$CODEX_PANE" -p | tr -cd '\11\12\15\40-\176')
   LAST_LINES=$(echo "$OUTPUT" | tail -15)
 
-  # 承認待ち検出
+  # 承認待ち検出（impl モードでは自動承認）
   if echo "$LAST_LINES" | grep -qE "Would you like|Yes, proceed|Press enter to confirm"; then
-    tmux send-keys -t "$CODEX_PANE" "y" Enter
+    if [[ "$CODEX_MODE" == "impl" ]]; then
+      tmux send-keys -t "$CODEX_PANE" "y" Enter
+    fi
     NO_CHANGE_COUNT=0
     continue
   fi
@@ -167,9 +206,8 @@ for i in {1..1000}; do
     fi
   fi
 
-  # 変化なし検知（処理中でなければ）
+  # 変化なし検知
   if echo "$LAST_LINES" | grep -q "esc to interrupt"; then
-    # 処理中は変化なしカウントをリセット
     NO_CHANGE_COUNT=0
   elif [[ "$OUTPUT" == "$PREV_OUTPUT" ]]; then
     ((NO_CHANGE_COUNT++)) || true
