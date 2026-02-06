@@ -9,6 +9,19 @@ NO_UPDATE=false
 [[ "${1:-}" == "-n" || "${1:-}" == "--no-update" ]] && NO_UPDATE=true
 
 root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# セッション存在チェック関数
+has_claude_session() {
+  local abs_path="$1"
+  local encoded="${abs_path//\//-}"
+  [[ -f "$HOME/.claude/projects/$encoded/sessions-index.json" ]]
+}
+
+has_codex_session() {
+  local abs_path="$1"
+  find "$HOME/.codex/sessions" -type f -name "*.jsonl" -print0 2>/dev/null | \
+    xargs -0 grep -l "\"cwd\":\"$abs_path\"" 2>/dev/null | head -1 | grep -q .
+}
 name="$(basename "$root")"
 
 # tmuxセッション名に使えない文字を潰す
@@ -26,20 +39,33 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
   tmux split-window -h -t "$session:dev" -c "$root"
   tmux split-window -v -t "$session:dev.2" -c "$root" -l 70%
 
-  # 3) コマンドを自動起動
+  # 3) セッション有無に応じた起動コマンドを構築
+  if has_claude_session "$root"; then
+    claude_cmd="claude --continue"
+  else
+    claude_cmd="claude"
+  fi
+
+  if has_codex_session "$root"; then
+    codex_cmd="codex resume --last --sandbox workspace-write -a never"
+  else
+    codex_cmd="codex --sandbox workspace-write -a never"
+  fi
+
+  # 4) コマンドを自動起動
   if [[ "$NO_UPDATE" == "true" ]]; then
     # アップデートなし（オフライン用）
-    tmux send-keys -t "$session:dev.1" "claude --continue" C-m
-    tmux send-keys -t "$session:dev.2" "codex resume --last --sandbox workspace-write -a never || codex --sandbox workspace-write -a never" C-m
+    tmux send-keys -t "$session:dev.1" "$claude_cmd" C-m
+    tmux send-keys -t "$session:dev.2" "$codex_cmd" C-m
     tmux send-keys -t "$session:dev.3" "yazi" C-m
   else
     # アップデートあり（デフォルト）
-    tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code && claude --continue" C-m
-    tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex && (codex resume --last --sandbox workspace-write -a never || codex --sandbox workspace-write -a never)" C-m
+    tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code && $claude_cmd" C-m
+    tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex && $codex_cmd" C-m
     tmux send-keys -t "$session:dev.3" "yazi" C-m
   fi
 
-  # 4) git window（差分やログ用）
+  # 5) git window（差分やログ用）
   tmux new-window -t "$session" -n git -c "$root"
   tmux send-keys -t "$session:git" "echo '🌿 git (status/diff/log)'" C-m
 
