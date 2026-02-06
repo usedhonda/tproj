@@ -64,20 +64,30 @@ fi
 echo ""
 echo "🚀 tproj インストール開始"
 
-# ========== 2. バックアップ & コピー ==========
+# ========== 2. Terminfo セットアップ ==========
 
-# 2.1 tproj スクリプト
+# Ghostty terminfoがなければインストール
+if ! infocmp xterm-ghostty &>/dev/null; then
+  echo "📦 xterm-ghostty terminfo → ~/.terminfo/"
+  tic -x "$SCRIPT_DIR/config/terminfo/xterm-ghostty.terminfo"
+else
+  echo "✅ xterm-ghostty terminfo (already installed)"
+fi
+
+# ========== 3. バックアップ & コピー ==========
+
+# 3.1 tproj スクリプト
 echo "📦 tproj → ~/bin/"
 mkdir -p ~/bin
 cp "$SCRIPT_DIR/bin/tproj" ~/bin/tproj
 chmod +x ~/bin/tproj
 
-# 2.2 tmux 設定
+# 3.2 tmux 設定
 echo "📦 tmux.conf → ~/.tmux.conf"
 backup_if_exists ~/.tmux.conf
 cp "$SCRIPT_DIR/config/tmux/tmux.conf" ~/.tmux.conf
 
-# 2.3 yazi 設定
+# 3.3 yazi 設定
 echo "📦 yazi設定 → ~/.config/yazi/"
 mkdir -p ~/.config/yazi/plugins
 backup_if_exists ~/.config/yazi/yazi.toml
@@ -86,25 +96,25 @@ cp "$SCRIPT_DIR/config/yazi/yazi.toml" ~/.config/yazi/
 cp "$SCRIPT_DIR/config/yazi/keymap.toml" ~/.config/yazi/
 cp -r "$SCRIPT_DIR/config/yazi/plugins/"* ~/.config/yazi/plugins/
 
-# 2.4 yaziパッケージ（piperプラグイン）
+# 3.4 yaziパッケージ（piperプラグイン）
 if command -v ya &> /dev/null; then
     echo "📦 yazi plugins (ya pack)"
     (cd ~/.config/yazi && ya pack -i 2>/dev/null || true)
 fi
 
-# 2.5 Claude Code カスタムコマンド
+# 3.5 Claude Code カスタムコマンド
 echo "📦 Claude Code commands → ~/.claude/commands/"
 mkdir -p ~/.claude/commands
 if ls "$SCRIPT_DIR/config/claude/commands/"*.md &>/dev/null; then
   cp "$SCRIPT_DIR/config/claude/commands/"*.md ~/.claude/commands/
 fi
 
-# 2.6 Claude Code スキル
+# 3.6 Claude Code スキル
 echo "📦 Claude Code skills → ~/.claude/skills/"
 mkdir -p ~/.claude/skills
 cp -r "$SCRIPT_DIR/config/claude/skills/"* ~/.claude/skills/
 
-# ========== 3. PATH確認 ==========
+# ========== 4. PATH確認 ==========
 
 if [[ ":$PATH:" != *":$HOME/bin:"* ]]; then
   echo ""
@@ -113,7 +123,7 @@ if [[ ":$PATH:" != *":$HOME/bin:"* ]]; then
   echo '   export PATH="$HOME/bin:$PATH"'
 fi
 
-# ========== 4. 完了メッセージ ==========
+# ========== 5. 完了メッセージ ==========
 
 echo ""
 echo "✅ インストール完了!"
