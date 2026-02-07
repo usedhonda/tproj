@@ -251,9 +251,11 @@ else
 fi
 backup_if_exists ~/.config/yazi/yazi.toml
 backup_if_exists ~/.config/yazi/keymap.toml
+backup_if_exists ~/.config/yazi/package.toml
 if ! $DRY_RUN; then
   cp "$SCRIPT_DIR/config/yazi/yazi.toml" ~/.config/yazi/
   cp "$SCRIPT_DIR/config/yazi/keymap.toml" ~/.config/yazi/
+  cp "$SCRIPT_DIR/config/yazi/package.toml" ~/.config/yazi/
   cp -r "$SCRIPT_DIR/config/yazi/plugins/"* ~/.config/yazi/plugins/
 fi
 
