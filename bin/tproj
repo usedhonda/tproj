@@ -57,12 +57,10 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
     # アップデートなし（オフライン用）
     tmux send-keys -t "$session:dev.1" "$claude_cmd" C-m
     tmux send-keys -t "$session:dev.2" "$codex_cmd" C-m
-    tmux send-keys -t "$session:dev.3" "yazi" C-m
   else
     # アップデートあり（デフォルト）
     tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code && $claude_cmd" C-m
     tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex && $codex_cmd" C-m
-    tmux send-keys -t "$session:dev.3" "yazi" C-m
   fi
 
   # 5) ペインに @role タグを設定（Agent Teams 動的ペイン管理用）
@@ -70,7 +68,11 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
   tmux set-option -pt "$session:dev.2" @role "codex"
   tmux set-option -pt "$session:dev.3" @role "yazi"
 
-  # 6) git window（差分やログ用）
+  # 6) yazi を遅延起動（TUI初期化のエスケープシーケンスが他ペインに漏れるのを防止）
+  sleep 0.3
+  tmux send-keys -t "$session:dev.3" "yazi" C-m
+
+  # 7) git window（差分やログ用）
   tmux new-window -t "$session" -n git -c "$root"
   tmux send-keys -t "$session:git" "echo '🌿 git (status/diff/log)'" C-m
 
