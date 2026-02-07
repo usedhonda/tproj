@@ -65,7 +65,12 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
     tmux send-keys -t "$session:dev.3" "yazi" C-m
   fi
 
-  # 5) git window（差分やログ用）
+  # 5) ペインに @role タグを設定（Agent Teams 動的ペイン管理用）
+  tmux set-option -pt "$session:dev.1" @role "claude"
+  tmux set-option -pt "$session:dev.2" @role "codex"
+  tmux set-option -pt "$session:dev.3" @role "yazi"
+
+  # 6) git window（差分やログ用）
   tmux new-window -t "$session" -n git -c "$root"
   tmux send-keys -t "$session:git" "echo '🌿 git (status/diff/log)'" C-m
 

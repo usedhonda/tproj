@@ -1,0 +1,103 @@
+#!/bin/bash
+# team-watcher - Agent Teams hook-based pane management daemon
+# Sets up tmux after-split-window hook so Agent Teams panes are
+# automatically repositioned above Codex. Polls config.json to
+# resolve agent-pending tags to actual agent names.
+set -eo pipefail
+
+SESSION=$(tmux display-message -p '#S' 2>/dev/null) || exit 0
+TEAM_DIR="$HOME/.claude/teams"
+declare -a KNOWN_AGENTS=()
+
+cleanup() {
+  # Unset tmux hook and environment variable
+  tmux set-hook -u -t "$SESSION" after-split-window 2>/dev/null || true
+  tmux set-environment -u -t "$SESSION" TPROJ_AGENTS_ACTIVE 2>/dev/null || true
+
+  # Remove ONLY agent panes on exit (never touch claude/codex/yazi)
+  local pane_info role pane_id
+  local protected="claude codex yazi"
+  for pane_info in $(tmux list-panes -t "$SESSION:dev" \
+    -F "#{pane_id}:#{@role}" 2>/dev/null); do
+    role="${pane_info#*:}"
+    pane_id="${pane_info%%:*}"
+    [[ " $protected " == *" $role "* ]] && continue
+    [[ -z "$role" ]] && continue
+    if [[ "$role" == agent-* ]]; then
+      tmux kill-pane -t "$pane_id" 2>/dev/null || true
+    fi
+  done
+
+  # Clean up lock file
+  rm -f "/tmp/tproj-reflow-${SESSION}.lock" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Helper: check if value is in array
+in_array() {
+  local needle="$1"; shift
+  local item
+  for item in "$@"; do
+    [[ "$item" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+# === Setup: enable hook and signal ===
+
+# Signal reflow-agent-pane to act on new splits
+tmux set-environment -t "$SESSION" TPROJ_AGENTS_ACTIVE 1
+
+# Install after-split-window hook: runs reflow-agent-pane on every new split
+tmux set-hook -t "$SESSION" after-split-window \
+  "run-shell -b '$HOME/bin/reflow-agent-pane \"$SESSION\"'"
+
+# === Main loop: resolve pending tags + detect departures ===
+
+while true; do
+  declare -a CURRENT_AGENTS=()
+
+  # Collect current team members from config.json
+  for config in "$TEAM_DIR"/*/config.json; do
+    [[ -f "$config" ]] || continue
+    while IFS= read -r name; do
+      [[ -n "$name" ]] && CURRENT_AGENTS+=("$name")
+    done < <(jq -r '.members[].name' "$config" 2>/dev/null)
+  done
+
+  # Resolve agent-pending panes: match to new team members
+  while IFS=: read -r pane_id role; do
+    [[ "$role" == "agent-pending" ]] || continue
+
+    # Find a team member that doesn't have a pane yet
+    for agent in "${CURRENT_AGENTS[@]}"; do
+      # Skip the team-lead (that's the main claude pane)
+      # Check if this agent already has a tagged pane
+      EXISTING=$(tmux list-panes -t "$SESSION:dev" \
+        -F '#{@role}' 2>/dev/null | grep -c "^agent-${agent}$") || true
+      if [[ "$EXISTING" -eq 0 ]]; then
+        # Also skip if it was already known (has a pane from previous cycle)
+        if ! in_array "$agent" "${KNOWN_AGENTS[@]}"; then
+          tmux set-option -pt "$pane_id" @role "agent-$agent" 2>/dev/null || true
+          # Set pane title to agent name for border display
+          tmux select-pane -t "$pane_id" -T "$agent" 2>/dev/null || true
+          break
+        fi
+      fi
+    done
+  done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
+
+  # Track if we've ever seen agents
+  if [[ ${#CURRENT_AGENTS[@]} -gt 0 ]]; then
+    HAS_SEEN_AGENTS=true
+  fi
+
+  KNOWN_AGENTS=("${CURRENT_AGENTS[@]}")
+
+  # Exit when all agents are gone and no config remains
+  if [[ "${HAS_SEEN_AGENTS:-false}" == "true" && ${#CURRENT_AGENTS[@]} -eq 0 ]]; then
+    ls "$TEAM_DIR"/*/config.json &>/dev/null 2>&1 || break
+  fi
+
+  sleep 3
+done

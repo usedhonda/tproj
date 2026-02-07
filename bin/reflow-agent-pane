@@ -1,0 +1,57 @@
+#!/bin/bash
+# reflow-agent-pane - Move Agent Teams panes above Codex
+# Called by tmux after-split-window hook via team-watcher.
+#
+# Usage: reflow-agent-pane <session_name>
+set -eo pipefail
+
+SESSION="${1:-}"
+[[ -z "$SESSION" ]] && exit 0
+
+# Only act on dev window
+CURRENT_WINDOW=$(tmux display-message -t "$SESSION" -p '#{window_name}' 2>/dev/null) || exit 0
+[[ "$CURRENT_WINDOW" != "dev" ]] && exit 0
+
+# Only act when agents are active (team-watcher sets this)
+AGENTS_ACTIVE=$(tmux show-environment -t "$SESSION" TPROJ_AGENTS_ACTIVE 2>/dev/null | cut -d= -f2) || true
+[[ "$AGENTS_ACTIVE" != "1" ]] && exit 0
+
+# The newly created pane is the active one after split-window
+NEW_PANE=$(tmux display-message -t "$SESSION:dev" -p '#{pane_id}' 2>/dev/null) || exit 0
+
+# If the new pane already has a @role tag, it was created by tproj itself -> skip
+EXISTING_ROLE=$(tmux display-message -t "$NEW_PANE" -p '#{@role}' 2>/dev/null) || true
+[[ -n "$EXISTING_ROLE" ]] && exit 0
+
+# Use flock to prevent concurrent reflow operations
+LOCK_FILE="/tmp/tproj-reflow-${SESSION}.lock"
+exec 200>"$LOCK_FILE"
+flock -n 200 || exit 0
+
+# Find Codex pane by @role tag
+CODEX_PANE=""
+while IFS=: read -r pane_id role; do
+  if [[ "$role" == "codex" ]]; then
+    CODEX_PANE="$pane_id"
+    break
+  fi
+done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
+
+[[ -z "$CODEX_PANE" ]] && exit 0
+
+# Move the new pane above Codex (vertical split, before target, detached)
+tmux move-pane -d -v -b -s "$NEW_PANE" -t "$CODEX_PANE" -p 20 2>/dev/null || exit 0
+
+# Tag the pane as agent-pending (team-watcher will rename it)
+tmux set-option -pt "$NEW_PANE" @role "agent-pending" 2>/dev/null || true
+
+# Restore focus to claude pane
+CLAUDE_PANE=""
+while IFS=: read -r pane_id role; do
+  if [[ "$role" == "claude" ]]; then
+    CLAUDE_PANE="$pane_id"
+    break
+  fi
+done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
+
+[[ -n "$CLAUDE_PANE" ]] && tmux select-pane -t "$CLAUDE_PANE" 2>/dev/null || true
