@@ -39,6 +39,9 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
   tmux split-window -h -t "$session:dev" -c "$root"
   tmux split-window -v -t "$session:dev.2" -c "$root" -l 70%
 
+  # split直後のPTYバッファ安定待ち（エスケープシーケンス漏れ防止）
+  sleep 0.3
+
   # 3) セッション有無に応じた起動コマンドを構築
   if has_claude_session "$root"; then
     claude_cmd="claude --continue"
@@ -56,10 +59,12 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
   if [[ "$NO_UPDATE" == "true" ]]; then
     # アップデートなし（オフライン用）
     tmux send-keys -t "$session:dev.1" "$claude_cmd" C-m
+    sleep 0.1
     tmux send-keys -t "$session:dev.2" "$codex_cmd" C-m
   else
     # アップデートあり（デフォルト）
     tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code && $claude_cmd" C-m
+    sleep 0.1
     tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex && $codex_cmd" C-m
   fi
 
