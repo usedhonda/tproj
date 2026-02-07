@@ -16,7 +16,7 @@ compression-anchors:
 
 ## 概要
 
-tprojセッション内で、Claude Code（dev.1）からCodex（dev.2）に質問またはタスクを送信する。
+tprojセッション内で、Claude Code（dev.1）からCodex（@role=codex）に質問またはタスクを送信する。
 
 ## モード
 
@@ -38,7 +38,7 @@ tprojセッション内で、Claude Code（dev.1）からCodex（dev.2）に質�
 ## 使用条件
 
 - tprojで起動したtmuxセッション内であること
-- Codexペイン（dev.2）が存在すること
+- Codexペイン（@role=codex）が存在すること
 - Codexが起動していること
 
 ## 自律使用の判断基準
@@ -108,13 +108,13 @@ if [[ -f "$CONFIG_FILE" ]] && ! grep -q "\\[projects.\"$PROJECT_PATH\"\\]" "$CON
   echo 'trust_level = "trusted"' >> "$CONFIG_FILE"
 fi
 
-# === ペイン検出（tprojレイアウト固定）===
+# === ペイン検出（@roleタグベース）===
 SESSION=$(tmux display-message -p '#S')
-CODEX_PANE="$SESSION:dev.2"
+CODEX_PANE=$(tmux list-panes -t "$SESSION:dev" \
+  -F "#{pane_id}:#{@role}" 2>/dev/null | grep ":codex$" | cut -d: -f1)
 
-# ペインが存在するか確認
-if ! tmux list-panes -t "$CODEX_PANE" &>/dev/null; then
-  echo "エラー: Codexペイン($CODEX_PANE)が見つかりません"
+if [[ -z "$CODEX_PANE" ]]; then
+  echo "エラー: Codexペイン(@role=codex)が見つかりません"
   echo "tprojで起動したセッション内で実行してください"
   exit 1
 fi

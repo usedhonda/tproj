@@ -1,0 +1,31 @@
+#!/bin/bash
+# agent-monitor - Agent Teams individual agent status display
+# Usage: agent-monitor <agent-name>
+set -eo pipefail
+
+AGENT_NAME="${1:?Usage: agent-monitor <agent-name>}"
+TASK_DIR="$HOME/.claude/tasks"
+
+while true; do
+  clear
+  echo "Agent: $AGENT_NAME"
+  echo "---"
+
+  found=false
+  for dir in "$TASK_DIR"/*/; do
+    [ -d "$dir" ] || continue
+    for f in "$dir"*.json; do
+      [ -f "$f" ] || continue
+      owner=$(jq -r '.owner // ""' "$f" 2>/dev/null)
+      [ "$owner" = "$AGENT_NAME" ] || continue
+      found=true
+      jq -r '"[\(.status)] \(.subject)"' "$f" 2>/dev/null
+    done
+  done
+
+  if [ "$found" = "false" ]; then
+    echo "(no tasks assigned)"
+  fi
+
+  sleep 2
+done

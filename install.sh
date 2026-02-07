@@ -226,11 +226,17 @@ fi
 # 4.1 tproj スクリプト
 if $DRY_RUN; then
   echo "[DRY-RUN] 📦 tproj -> ~/bin/"
+  echo "[DRY-RUN] 📦 agent-monitor -> ~/bin/"
+  echo "[DRY-RUN] 📦 team-watcher -> ~/bin/"
+  echo "[DRY-RUN] 📦 reflow-agent-pane -> ~/bin/"
 else
-  echo "📦 tproj -> ~/bin/"
+  echo "📦 tproj, agent-monitor, team-watcher, reflow-agent-pane -> ~/bin/"
   mkdir -p ~/bin
   cp "$SCRIPT_DIR/bin/tproj" ~/bin/tproj
-  chmod +x ~/bin/tproj
+  cp "$SCRIPT_DIR/bin/agent-monitor" ~/bin/agent-monitor
+  cp "$SCRIPT_DIR/bin/team-watcher" ~/bin/team-watcher
+  cp "$SCRIPT_DIR/bin/reflow-agent-pane" ~/bin/reflow-agent-pane
+  chmod +x ~/bin/tproj ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane
 fi
 
 # 4.2 tmux 設定
@@ -339,6 +345,9 @@ fi
 echo ""
 echo "📍 インストール先:"
 echo "   ~/bin/tproj"
+echo "   ~/bin/agent-monitor"
+echo "   ~/bin/team-watcher"
+echo "   ~/bin/reflow-agent-pane"
 echo "   ~/.tmux.conf"
 echo "   ~/.config/yazi/"
 echo "   ~/.claude/commands/"
