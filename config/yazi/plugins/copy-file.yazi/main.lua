@@ -14,7 +14,7 @@ return {
     end
 
     local path = tostring(h.url)
-    ya.emit("shell", { "cat " .. ya.quote(path) .. " | pbcopy" })
+    ya.emit("shell", { "printf '\\033]52;c;%s\\a' $(cat " .. ya.quote(path) .. " | base64)" })
 
     ya.notify({
       title = "File content copied",

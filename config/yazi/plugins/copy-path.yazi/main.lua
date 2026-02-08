@@ -10,7 +10,7 @@ return {
 
     local path = tostring(h.url)
 
-    ya.emit("shell", { "echo " .. ya.quote(path) .. " | pbcopy" })
+    ya.emit("shell", { "printf '\\033]52;c;%s\\a' $(echo -n " .. ya.quote(path) .. " | base64)" })
 
     ya.notify({
       title = "Path copied",
