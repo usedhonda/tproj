@@ -458,3 +458,43 @@ teammate 数 x フルコンテキスト = 総コスト
 - 20億入力トークン、1.4億出力トークン、約$20,000（2週間）
 - 10万行の Rust コードベースを生成
 - オーケストレーションエージェントなし（git 操作のみで協調）
+
+---
+
+## 10. テスト手順
+
+### 10.1 テスト前のクリーンアップ（必須）
+
+TeamCreate は **1チーム/セッション** の制約がある。
+前回のチームが残っているとエラーになるため、テスト前に必ず削除する。
+
+```bash
+# 残存チームの確認
+ls ~/.claude/teams/
+
+# 残存チームの削除
+rm -rf ~/.claude/teams/<team-name>
+
+# セッション再起動（/exit -> claude）
+```
+
+### 10.2 reflow テスト手順
+
+**前提:** `teammateMode: "tmux"` が設定済み
+
+1. クリーンアップ（10.1 参照）
+2. セッション再起動
+3. ペイン状態を記録:
+   ```bash
+   tmux list-panes -t tproj:dev -F '#{pane_id}:#{@role}:#{pane_width}x#{pane_height}'
+   ```
+4. TeamCreate + 2人の teammate spawn
+5. 確認項目:
+   - エージェントペインが codex の上に配置される
+   - claude ペインの横幅が reflow 前後で変わっていない
+   - 全ペインに `@role` タグがある
+   - claude ペインにフォーカスが戻っている
+6. 終了後のクリーンアップ:
+   ```bash
+   rm -rf ~/.claude/teams/<team-name>
+   ```

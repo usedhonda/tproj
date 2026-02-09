@@ -1,3 +1,6 @@
+# Local runtime data
+.local/
+
 # Logs
 *.log
 firebase-debug.log
