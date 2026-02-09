@@ -1,6 +1,7 @@
 #!/bin/bash
 # reflow-agent-pane - Move Agent Teams panes above Codex
 # Called by tmux after-split-window hook via team-watcher.
+# Serialization is handled by the caller (wait-for -L/U).
 #
 # Usage: reflow-agent-pane <session_name>
 set -eo pipefail
@@ -16,36 +17,21 @@ CURRENT_WINDOW=$(tmux display-message -t "$SESSION" -p '#{window_name}' 2>/dev/n
 AGENTS_ACTIVE=$(tmux show-environment -t "$SESSION" TPROJ_AGENTS_ACTIVE 2>/dev/null | cut -d= -f2) || true
 [[ "$AGENTS_ACTIVE" != "1" ]] && exit 0
 
-# The newly created pane is the active one after split-window
-NEW_PANE=$(tmux display-message -t "$SESSION:dev" -p '#{pane_id}' 2>/dev/null) || exit 0
-
-# If the new pane already has a @role tag, it was created by tproj itself -> skip
-EXISTING_ROLE=$(tmux display-message -t "$NEW_PANE" -p '#{@role}' 2>/dev/null) || true
-[[ -n "$EXISTING_ROLE" ]] && exit 0
-
-# Use flock to prevent concurrent reflow operations
-LOCK_FILE="/tmp/tproj-reflow-${SESSION}.lock"
-exec 200>"$LOCK_FILE"
-flock -n 200 || exit 0
-
-# Find Codex pane by @role tag
+# Find Codex pane by @role tag (retry up to 2s for timing issues)
 CODEX_PANE=""
-while IFS=: read -r pane_id role; do
-  if [[ "$role" == "codex" ]]; then
-    CODEX_PANE="$pane_id"
-    break
-  fi
-done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
-
+for _attempt in 1 2 3 4; do
+  while IFS=: read -r pane_id role; do
+    if [[ "$role" == "codex" ]]; then
+      CODEX_PANE="$pane_id"
+      break
+    fi
+  done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
+  [[ -n "$CODEX_PANE" ]] && break
+  sleep 0.5
+done
 [[ -z "$CODEX_PANE" ]] && exit 0
 
-# Move the new pane above Codex (vertical split, before target, detached)
-tmux move-pane -d -v -b -s "$NEW_PANE" -t "$CODEX_PANE" -p 20 2>/dev/null || exit 0
-
-# Tag the pane as agent-pending (team-watcher will rename it)
-tmux set-option -pt "$NEW_PANE" @role "agent-pending" 2>/dev/null || true
-
-# Restore focus to claude pane
+# Get claude pane ID and original width (saved by team-watcher BEFORE any agent splits)
 CLAUDE_PANE=""
 while IFS=: read -r pane_id role; do
   if [[ "$role" == "claude" ]]; then
@@ -53,5 +39,50 @@ while IFS=: read -r pane_id role; do
     break
   fi
 done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
+CLAUDE_WIDTH=$(tmux show-environment -t "$SESSION" TPROJ_CLAUDE_WIDTH 2>/dev/null | cut -d= -f2) || true
+# Validate: must be a positive integer (show-environment returns "-VAR" when unset)
+[[ "$CLAUDE_WIDTH" =~ ^[0-9]+$ ]] || CLAUDE_WIDTH=""
 
+# Collect untagged panes first (array, not streaming - pane list changes during loop)
+UNTAGGED=()
+while IFS=: read -r pane_id role; do
+  [[ -n "$role" ]] && continue
+  UNTAGGED+=("$pane_id")
+done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
+
+# Relocate each untagged pane above Codex without disrupting horizontal width
+for pane_id in "${UNTAGGED[@]}"; do
+  # 1. Create empty pane above Codex (vertical split in right column only)
+  NEW_PANE=$(tmux split-window -v -b -t "$CODEX_PANE" -l 20% -d -P -F '#{pane_id}' 2>/dev/null) || continue
+  # 2. Swap: agent pane moves to correct position, empty shell moves to old position
+  tmux swap-pane -s "$pane_id" -t "$NEW_PANE" 2>/dev/null || { tmux kill-pane -t "$NEW_PANE" 2>/dev/null; continue; }
+  # 3. Kill the empty shell (NEW_PANE) in the old position - NOT the agent pane
+  tmux kill-pane -t "$NEW_PANE" 2>/dev/null || true
+  # 4. Tag the original pane (now in correct position, keeps its pane ID for Agent Teams)
+  tmux set-option -pt "$pane_id" @role "agent-pending" 2>/dev/null || true
+done
+
+# Restore claude pane width
+if [[ -n "$CLAUDE_PANE" && -n "$CLAUDE_WIDTH" ]]; then
+  tmux resize-pane -t "$CLAUDE_PANE" -x "$CLAUDE_WIDTH" 2>/dev/null || true
+fi
+
+# Equalize right column pane heights
+RIGHT_PANES=()
+while IFS=: read -r pane_id role; do
+  [[ "$pane_id" == "$CLAUDE_PANE" ]] && continue
+  RIGHT_PANES+=("$pane_id")
+done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
+
+if [[ ${#RIGHT_PANES[@]} -gt 1 ]]; then
+  TOTAL_H=$(tmux display-message -t "$CODEX_PANE" -p '#{window_height}' 2>/dev/null) || true
+  if [[ "$TOTAL_H" =~ ^[0-9]+$ && "$TOTAL_H" -gt 0 ]]; then
+    EACH_H=$(( TOTAL_H / ${#RIGHT_PANES[@]} ))
+    for p in "${RIGHT_PANES[@]}"; do
+      tmux resize-pane -t "$p" -y "$EACH_H" 2>/dev/null || true
+    done
+  fi
+fi
+
+# Restore focus to claude pane
 [[ -n "$CLAUDE_PANE" ]] && tmux select-pane -t "$CLAUDE_PANE" 2>/dev/null || true
