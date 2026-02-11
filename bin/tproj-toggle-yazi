@@ -1,0 +1,82 @@
+#!/bin/bash
+set -euo pipefail
+
+SESSION="${1:-}"
+ACTIVE_PANE="${2:-}"
+
+[[ -z "$SESSION" || -z "$ACTIVE_PANE" ]] && exit 0
+
+# モード判定
+if [[ "$SESSION" == "tproj-workspace" ]]; then
+  WORKSPACE_MODE=true
+else
+  WORKSPACE_MODE=false
+fi
+
+if [[ "$WORKSPACE_MODE" == "true" ]]; then
+  # === マルチプロジェクトモード ===
+  ACTIVE_COLUMN=$(tmux display-message -t "$ACTIVE_PANE" -p '#{@column}')
+
+  if [[ -z "$ACTIVE_COLUMN" ]]; then
+    echo "Error: Active pane does not belong to a project column" >&2
+    exit 1
+  fi
+
+  # yazi の存在確認
+  YAZI_PANE=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null \
+    | grep "yazi-p${ACTIVE_COLUMN}$" | cut -d: -f1) || true
+
+  if [[ -n "$YAZI_PANE" ]]; then
+    # yazi が存在 -> 削除
+    tmux kill-pane -t "$YAZI_PANE"
+  else
+    # yazi が存在しない -> 作成
+    CODEX_PANE=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' \
+      | grep "codex-p${ACTIVE_COLUMN}$" | cut -d: -f1)
+
+    if [[ -z "$CODEX_PANE" ]]; then
+      echo "Error: Cannot find codex pane for column $ACTIVE_COLUMN" >&2
+      exit 1
+    fi
+
+    PROJECT=$(tmux display-message -t "$CODEX_PANE" -p '#{@project}')
+
+    # Codex の下に yazi を作成
+    NEW_YAZI=$(tmux split-window -v -t "$CODEX_PANE" -c "$PROJECT" -l 70% -P -F '#{pane_id}')
+    sleep 0.3
+
+    # タグ設定
+    tmux set-option -pt "$NEW_YAZI" @role "yazi-p${ACTIVE_COLUMN}"
+    tmux set-option -pt "$NEW_YAZI" @project "$PROJECT"
+    tmux set-option -pt "$NEW_YAZI" @column "$ACTIVE_COLUMN"
+    tmux send-keys -t "$NEW_YAZI" "yazi" C-m
+  fi
+
+else
+  # === 単一プロジェクトモード（従来の動作） ===
+  YAZI_PANE=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null \
+    | grep ":yazi$" | cut -d: -f1) || true
+
+  if [[ -n "$YAZI_PANE" ]]; then
+    # yazi が存在 -> 削除
+    tmux kill-pane -t "$YAZI_PANE"
+  else
+    # yazi が存在しない -> 作成
+    CODEX_PANE=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' \
+      | grep ":codex$" | cut -d: -f1)
+
+    if [[ -z "$CODEX_PANE" ]]; then
+      echo "Error: Cannot find codex pane" >&2
+      exit 1
+    fi
+
+    # プロジェクトルート取得
+    root="$(git -C "$(tmux display-message -t "$CODEX_PANE" -p '#{pane_current_path}')" rev-parse --show-toplevel 2>/dev/null || tmux display-message -t "$CODEX_PANE" -p '#{pane_current_path}')"
+
+    NEW_YAZI=$(tmux split-window -v -t "$CODEX_PANE" -c "$root" -l 70% -P -F '#{pane_id}')
+    sleep 0.3
+
+    tmux set-option -pt "$NEW_YAZI" @role "yazi"
+    tmux send-keys -t "$NEW_YAZI" "yazi" C-m
+  fi
+fi

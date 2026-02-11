@@ -17,28 +17,72 @@ CURRENT_WINDOW=$(tmux display-message -t "$SESSION" -p '#{window_name}' 2>/dev/n
 AGENTS_ACTIVE=$(tmux show-environment -t "$SESSION" TPROJ_AGENTS_ACTIVE 2>/dev/null | cut -d= -f2) || true
 [[ "$AGENTS_ACTIVE" != "1" ]] && exit 0
 
+# ワークスペースモード判定
+if [[ "$SESSION" == "tproj-workspace" ]]; then
+  WORKSPACE_MODE=true
+else
+  WORKSPACE_MODE=false
+fi
+
 # Find Codex pane by @role tag (retry up to 2s for timing issues)
 CODEX_PANE=""
-for _attempt in 1 2 3 4; do
-  while IFS=: read -r pane_id role; do
-    if [[ "$role" == "codex" ]]; then
-      CODEX_PANE="$pane_id"
-      break
-    fi
-  done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
-  [[ -n "$CODEX_PANE" ]] && break
-  sleep 0.5
-done
+CODEX_COLUMN=""
+
+if [[ "$WORKSPACE_MODE" == "true" ]]; then
+  # マルチプロジェクトモード: アクティブな列の Codex を検出
+  ACTIVE_PANE=$(tmux display-message -p '#{pane_id}' 2>/dev/null) || exit 0
+  ACTIVE_COLUMN=$(tmux display-message -t "$ACTIVE_PANE" -p '#{@column}' 2>/dev/null) || true
+
+  if [[ -n "$ACTIVE_COLUMN" ]]; then
+    for _attempt in 1 2 3 4; do
+      while IFS=: read -r pane_id role; do
+        if [[ "$role" == "codex-p${ACTIVE_COLUMN}" ]]; then
+          CODEX_PANE="$pane_id"
+          CODEX_COLUMN="$ACTIVE_COLUMN"
+          break
+        fi
+      done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
+      [[ -n "$CODEX_PANE" ]] && break
+      sleep 0.5
+    done
+  fi
+else
+  # 単一プロジェクトモード
+  for _attempt in 1 2 3 4; do
+    while IFS=: read -r pane_id role; do
+      if [[ "$role" == "codex" ]]; then
+        CODEX_PANE="$pane_id"
+        break
+      fi
+    done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
+    [[ -n "$CODEX_PANE" ]] && break
+    sleep 0.5
+  done
+fi
+
 [[ -z "$CODEX_PANE" ]] && exit 0
 
 # Get claude pane ID and original width (saved by team-watcher BEFORE any agent splits)
 CLAUDE_PANE=""
-while IFS=: read -r pane_id role; do
-  if [[ "$role" == "claude" ]]; then
-    CLAUDE_PANE="$pane_id"
-    break
-  fi
-done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
+
+if [[ "$WORKSPACE_MODE" == "true" && -n "$CODEX_COLUMN" ]]; then
+  # マルチプロジェクトモード
+  while IFS=: read -r pane_id role; do
+    if [[ "$role" == "claude-p${CODEX_COLUMN}" ]]; then
+      CLAUDE_PANE="$pane_id"
+      break
+    fi
+  done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
+else
+  # 単一プロジェクトモード
+  while IFS=: read -r pane_id role; do
+    if [[ "$role" == "claude" ]]; then
+      CLAUDE_PANE="$pane_id"
+      break
+    fi
+  done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
+fi
+
 CLAUDE_WIDTH=$(tmux show-environment -t "$SESSION" TPROJ_CLAUDE_WIDTH 2>/dev/null | cut -d= -f2) || true
 # Validate: must be a positive integer (show-environment returns "-VAR" when unset)
 [[ "$CLAUDE_WIDTH" =~ ^[0-9]+$ ]] || CLAUDE_WIDTH=""
@@ -59,7 +103,12 @@ for pane_id in "${UNTAGGED[@]}"; do
   # 3. Kill the empty shell (NEW_PANE) in the old position - NOT the agent pane
   tmux kill-pane -t "$NEW_PANE" 2>/dev/null || true
   # 4. Tag the original pane (now in correct position, keeps its pane ID for Agent Teams)
-  tmux set-option -pt "$pane_id" @role "agent-pending" 2>/dev/null || true
+  if [[ "$WORKSPACE_MODE" == "true" && -n "$CODEX_COLUMN" ]]; then
+    tmux set-option -pt "$pane_id" @role "agent-p${CODEX_COLUMN}-pending" 2>/dev/null || true
+    tmux set-option -pt "$pane_id" @column "$CODEX_COLUMN" 2>/dev/null || true
+  else
+    tmux set-option -pt "$pane_id" @role "agent-pending" 2>/dev/null || true
+  fi
 done
 
 # Restore claude pane width
