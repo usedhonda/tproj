@@ -106,7 +106,7 @@ backup_if_exists() {
 echo "🔍 依存関係を確認中..."
 
 # brew でインストール可能なツール
-BREW_DEPS=(npm:node git tmux yazi bat)
+BREW_DEPS=(npm:node git tmux yazi bat yq)
 # npm でインストールするツール
 NPM_DEPS=(claude:@anthropic-ai/claude-code codex:@openai/codex)
 
@@ -226,17 +226,19 @@ fi
 # 4.1 tproj スクリプト
 if $DRY_RUN; then
   echo "[DRY-RUN] 📦 tproj -> ~/bin/"
+  echo "[DRY-RUN] 📦 tproj-toggle-yazi -> ~/bin/"
   echo "[DRY-RUN] 📦 agent-monitor -> ~/bin/"
   echo "[DRY-RUN] 📦 team-watcher -> ~/bin/"
   echo "[DRY-RUN] 📦 reflow-agent-pane -> ~/bin/"
 else
-  echo "📦 tproj, agent-monitor, team-watcher, reflow-agent-pane -> ~/bin/"
+  echo "📦 tproj, tproj-toggle-yazi, agent-monitor, team-watcher, reflow-agent-pane -> ~/bin/"
   mkdir -p ~/bin
   cp "$SCRIPT_DIR/bin/tproj" ~/bin/tproj
+  cp "$SCRIPT_DIR/bin/tproj-toggle-yazi" ~/bin/tproj-toggle-yazi
   cp "$SCRIPT_DIR/bin/agent-monitor" ~/bin/agent-monitor
   cp "$SCRIPT_DIR/bin/team-watcher" ~/bin/team-watcher
   cp "$SCRIPT_DIR/bin/reflow-agent-pane" ~/bin/reflow-agent-pane
-  chmod +x ~/bin/tproj ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane
+  chmod +x ~/bin/tproj ~/bin/tproj-toggle-yazi ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane
 fi
 
 # 4.2 tmux 設定
@@ -345,6 +347,7 @@ fi
 echo ""
 echo "📍 インストール先:"
 echo "   ~/bin/tproj"
+echo "   ~/bin/tproj-toggle-yazi"
 echo "   ~/bin/agent-monitor"
 echo "   ~/bin/team-watcher"
 echo "   ~/bin/reflow-agent-pane"
@@ -353,4 +356,6 @@ echo "   ~/.config/yazi/"
 echo "   ~/.claude/commands/"
 echo "   ~/.claude/skills/"
 echo ""
-echo "💡 使い方: cd <project> && tproj"
+echo "💡 使い方:"
+echo "   単一プロジェクト: cd <project> && tproj"
+echo "   マルチプロジェクト: ~/.config/tproj/workspace.yaml を作成してから tproj"

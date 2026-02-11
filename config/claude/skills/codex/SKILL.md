@@ -108,10 +108,21 @@ if [[ -f "$CONFIG_FILE" ]] && ! grep -q "\\[projects.\"$PROJECT_PATH\"\\]" "$CON
   echo 'trust_level = "trusted"' >> "$CONFIG_FILE"
 fi
 
-# === ペイン検出（@roleタグベース）===
+# === ペイン検出（@roleタグベース、ワークスペース対応）===
 SESSION=$(tmux display-message -p '#S')
-CODEX_PANE=$(tmux list-panes -t "$SESSION:dev" \
-  -F "#{pane_id}:#{@role}" 2>/dev/null | grep ":codex$" | cut -d: -f1)
+
+if [[ "$SESSION" == "tproj-workspace" ]]; then
+  # マルチプロジェクトモード: アクティブな列の Codex を検出
+  ACTIVE_PANE=$(tmux display-message -p '#{pane_id}')
+  ACTIVE_COLUMN=$(tmux display-message -t "$ACTIVE_PANE" -p '#{@column}')
+
+  CODEX_PANE=$(tmux list-panes -t "$SESSION:dev" \
+    -F "#{pane_id}:#{@role}" 2>/dev/null | grep ":codex-p${ACTIVE_COLUMN}$" | cut -d: -f1)
+else
+  # 単一プロジェクトモード
+  CODEX_PANE=$(tmux list-panes -t "$SESSION:dev" \
+    -F "#{pane_id}:#{@role}" 2>/dev/null | grep ":codex$" | cut -d: -f1)
+fi
 
 if [[ -z "$CODEX_PANE" ]]; then
   echo "エラー: Codexペイン(@role=codex)が見つかりません"

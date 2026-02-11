@@ -1,14 +1,26 @@
 #!/bin/zsh
 set -euo pipefail
+setopt KSH_ARRAYS  # 0-based array indexing (bash compatibility)
 
 # 使い方:
-#   tproj        # 現在ディレクトリからプロジェクト起動（更新あり）
-#   tproj -n     # アップデートなしで起動（オフライン用）
+#   tproj              # 現在ディレクトリからプロジェクト起動（更新あり）
+#   tproj -n           # アップデートなしで起動（オフライン用）
+#   tproj -r host      # リモートホストにSSH接続して起動
+#   tproj -n -r host   # アップデートなし + リモート
 
 NO_UPDATE=false
-[[ "${1:-}" == "-n" || "${1:-}" == "--no-update" ]] && NO_UPDATE=true
+REMOTE_HOST=""
 
-root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n|--no-update) NO_UPDATE=true; shift ;;
+    -r|--remote)
+      [[ -z "${2:-}" ]] && { echo "Error: -r requires a hostname" >&2; exit 1; }
+      REMOTE_HOST="$2"; shift 2 ;;
+    -*) echo "Usage: tproj [-n] [-r host]" >&2; exit 1 ;;
+    *) echo "Usage: tproj [-n] [-r host]" >&2; exit 1 ;;
+  esac
+done
 
 # セッション存在チェック関数
 has_claude_session() {
@@ -17,72 +29,286 @@ has_claude_session() {
   [[ -f "$HOME/.claude/projects/$encoded/sessions-index.json" ]]
 }
 
-has_codex_session() {
-  local abs_path="$1"
-  find "$HOME/.codex/sessions" -type f -name "*.jsonl" -print0 2>/dev/null | \
-    xargs -0 grep -l "\"cwd\":\"$abs_path\"" 2>/dev/null | head -1 | grep -q .
+# === YAML パース & ワークスペースモード判定 ===
+WORKSPACE_CONFIG="$HOME/.config/tproj/workspace.yaml"
+WORKSPACE_MODE=false
+PROJECTS=()
+
+if [[ -f "$WORKSPACE_CONFIG" ]]; then
+  # yq の存在確認
+  if ! command -v yq &>/dev/null; then
+    echo "Error: yq is required for workspace mode"
+    echo "Install with: brew install yq"
+    exit 1
+  fi
+
+  # YAML 構文チェック
+  if ! yq eval '.projects[]' "$WORKSPACE_CONFIG" &>/dev/null; then
+    echo "Error: Invalid YAML syntax in $WORKSPACE_CONFIG"
+    echo "Please fix the syntax or remove the file to use single-project mode"
+    exit 1
+  fi
+
+  # YAML パース（zsh 互換）
+  PROJECTS=()
+  while IFS= read -r line; do
+    PROJECTS+=("$line")
+  done < <(yq eval '.projects[]' "$WORKSPACE_CONFIG" 2>/dev/null)
+
+  # バリデーション
+  if [[ ${#PROJECTS[@]} -eq 0 ]]; then
+    echo "Error: workspace.yaml exists but contains no projects"
+    exit 1
+  fi
+
+  # 存在しないパスを警告してスキップ
+  VALID_PROJECTS=()
+  for project in "${PROJECTS[@]}"; do
+    if [[ -d "$project" ]]; then
+      VALID_PROJECTS+=("$project")
+    else
+      echo "Warning: Skipping non-existent path: $project" >&2
+    fi
+  done
+
+  PROJECTS=("${VALID_PROJECTS[@]}")
+
+  if [[ ${#PROJECTS[@]} -eq 0 ]]; then
+    echo "Error: No valid project directories found"
+    exit 1
+  fi
+
+  # プロジェクト数警告（5以上）
+  if [[ ${#PROJECTS[@]} -gt 5 ]]; then
+    echo "Warning: You have ${#PROJECTS[@]} projects configured." >&2
+    echo "This may make panes very narrow. Consider using fewer projects." >&2
+    read -p "Continue anyway? [y/N] " answer
+    case "$answer" in
+      [yY]) ;;
+      *) exit 0 ;;
+    esac
+  fi
+
+  WORKSPACE_MODE=true
+fi
+
+# リモートモード非対応チェック
+if [[ "$WORKSPACE_MODE" == "true" && -n "$REMOTE_HOST" ]]; then
+  echo "Error: Remote mode (-r) is not supported in workspace mode"
+  echo "Please use single-project mode or remove -r option"
+  exit 1
+fi
+
+# === ワークスペースモード用関数 ===
+
+# マルチ列レイアウト構築
+create_workspace_layout() {
+  local session="$1"
+  shift
+  local projects=("$@")
+  local num_projects=${#projects[@]}
+
+  # 最初の列
+  local project="${projects[0]}"
+  tmux new-session -d -s "$session" -c "$project" -n dev
+
+  # 最初の claude ペインの ID を取得
+  local first_claude=$(tmux list-panes -t "$session:dev" -F '#{pane_id}' | head -1)
+
+  # Codex を縦分割
+  local first_codex=$(tmux split-window -v -t "$first_claude" -c "$project" -l 30% -P -F '#{pane_id}')
+  sleep 0.3
+
+  # タグ設定
+  tmux set-option -pt "$first_claude" @role "claude-p1"
+  tmux set-option -pt "$first_codex" @role "codex-p1"
+  tmux set-option -pt "$first_claude" @project "$project"
+  tmux set-option -pt "$first_codex" @project "$project"
+  tmux set-option -pt "$first_claude" @column "1"
+  tmux set-option -pt "$first_codex" @column "1"
+
+  local prev_claude="$first_claude"
+
+  # 追加の列
+  for i in $(seq 2 $num_projects); do
+    local project="${projects[$((i-1))]}"
+
+    # 横分割で新しい Claude 作成
+    local new_claude=$(tmux split-window -h -t "$prev_claude" -c "$project" -P -F '#{pane_id}')
+
+    # 縦分割で Codex 作成
+    local new_codex=$(tmux split-window -v -t "$new_claude" -c "$project" -l 30% -P -F '#{pane_id}')
+    sleep 0.3
+
+    # タグ設定
+    tmux set-option -pt "$new_claude" @role "claude-p$i"
+    tmux set-option -pt "$new_codex" @role "codex-p$i"
+    tmux set-option -pt "$new_claude" @project "$project"
+    tmux set-option -pt "$new_codex" @project "$project"
+    tmux set-option -pt "$new_claude" @column "$i"
+    tmux set-option -pt "$new_codex" @column "$i"
+
+    prev_claude="$new_claude"
+  done
+
+  # 列幅均等化
+  tmux select-layout -t "$session:dev" tiled
+
+  # git window
+  tmux new-window -t "$session" -n git -c "${projects[0]}"
 }
+
+# プロジェクト別ツール起動
+start_workspace_tools() {
+  local session="$1"
+  local no_update="$2"
+  shift 2
+  local projects=("$@")
+
+  for i in $(seq 1 ${#projects[@]}); do
+    local project="${projects[$((i-1))]}"
+    local claude_pane=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
+      | grep ":claude-p$i$" | cut -d: -f1)
+    local codex_pane=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
+      | grep ":codex-p$i$" | cut -d: -f1)
+
+    # Claude Code 起動（セッション継続判定付き）
+    local claude_cmd
+    if has_claude_session "$project"; then
+      claude_cmd="cd \"$project\" && claude --continue"
+    else
+      claude_cmd="cd \"$project\" && claude"
+    fi
+
+    if [[ "$no_update" == "true" ]]; then
+      tmux send-keys -t "$claude_pane" "$claude_cmd" C-m
+    else
+      tmux send-keys -t "$claude_pane" "npm update -g @anthropic-ai/claude-code && $claude_cmd" C-m
+    fi
+
+    sleep 0.2
+
+    # Codex 起動
+    local codex_cmd="cd \"$project\" && codex resume --last -s danger-full-access -a never --search"
+    if [[ "$no_update" == "true" ]]; then
+      tmux send-keys -t "$codex_pane" "$codex_cmd" C-m
+    else
+      tmux send-keys -t "$codex_pane" "npm update -g @openai/codex && $codex_cmd" C-m
+    fi
+  done
+
+  # 最初の Claude ペインを選択
+  local first_claude=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
+    | grep ':claude-p1$' | cut -d: -f1)
+  tmux select-pane -t "$first_claude"
+}
+
+# === 単一プロジェクトモード（従来ロジック） ===
+
+root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 name="$(basename "$root")"
 
-# tmuxセッション名に使えない文字を潰す
-session="${name//[^A-Za-z0-9_-]/_}"
+# === セッション名決定 ===
+if [[ "$WORKSPACE_MODE" == "true" ]]; then
+  session="tproj-workspace"
+else
+  # リモート時はセッション名にホスト名を付加（ローカルと共存可能に）
+  if [[ -n "$REMOTE_HOST" ]]; then
+    safe_host="${REMOTE_HOST//\./-}"
+    session="${name}@${safe_host}"
+  else
+    session="$name"
+  fi
+  # tmuxセッション名に使えない文字を潰す（@は許可）
+  session="${session//[^A-Za-z0-9_@-]/_}"
+fi
 
-# “プロジェクトのルート”を作業ディレクトリにする（gitならroot、無ければcwd）
-root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-
-# 既存セッションがあればアタッチ、無ければ作る
+# === セッション作成 & ツール起動 ===
 if ! tmux has-session -t "$session" 2>/dev/null; then
-  # 1) dev window を作成
-  tmux new-session -d -s "$session" -c "$root" -n dev
+  if [[ "$WORKSPACE_MODE" == "true" ]]; then
+    # --- マルチプロジェクトモード ---
+    create_workspace_layout "$session" "${PROJECTS[@]}"
+    start_workspace_tools "$session" "$NO_UPDATE" "${PROJECTS[@]}"
 
-  # 2) VSCodeっぽい3ペイン（左メイン / 右上watch / 右下logs）
-  tmux split-window -h -t "$session:dev" -c "$root"
-  tmux split-window -v -t "$session:dev.2" -c "$root" -l 70%
-
-  # split直後のPTYバッファ安定待ち（エスケープシーケンス漏れ防止）
-  sleep 0.3
-
-  # 3) セッション有無に応じた起動コマンドを構築
-  if has_claude_session "$root"; then
-    claude_cmd="claude --continue"
+    tmux select-window -t "$session:dev"
   else
-    claude_cmd="claude"
+    # --- 単一プロジェクトモード ---
+    # "プロジェクトのルート"を作業ディレクトリにする（gitならroot、無ければcwd）
+    root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+    # 1) dev window を作成
+    tmux new-session -d -s "$session" -c "$root" -n dev
+
+    # 2) VSCodeっぽい3ペイン（左メイン / 右上watch / 右下logs）
+    tmux split-window -h -t "$session:dev" -c "$root"
+    tmux split-window -v -t "$session:dev.2" -c "$root" -l 70%
+
+    # split直後のPTYバッファ安定待ち（エスケープシーケンス漏れ防止）
+    sleep 0.3
+
+    # 3) ペインに @role タグを設定（Agent Teams 動的ペイン管理用）
+    tmux set-option -pt "$session:dev.1" @role "claude"
+    tmux set-option -pt "$session:dev.2" @role "codex"
+    tmux set-option -pt "$session:dev.3" @role "yazi"
+
+    # 4) git window（差分やログ用）
+    tmux new-window -t "$session" -n git -c "$root"
+
+    # 5) コマンドを自動起動（リモート/ローカルで分岐）
+    if [[ -n "$REMOTE_HOST" ]]; then
+      # --- リモートモード: 先にSSHシェルを起動し、ツールは後から送信 ---
+      # SSHでリモートのログインシェルに入る（ツール終了後もシェルが残る）
+      for pane in 1 2 3; do
+        tmux send-keys -t "$session:dev.$pane" \
+          "ssh -t $REMOTE_HOST 'cd $root && exec \$SHELL -l'" C-m
+      done
+      tmux send-keys -t "$session:git" \
+        "ssh -t $REMOTE_HOST 'cd $root && exec \$SHELL -l'" C-m
+
+      # SSH接続待ち
+      sleep 2
+
+      # リモートシェル内でツールを起動
+      if [[ "$NO_UPDATE" == "true" ]]; then
+        tmux send-keys -t "$session:dev.1" "claude" C-m
+        sleep 0.1
+        tmux send-keys -t "$session:dev.2" "codex resume --last -s danger-full-access -a never --search" C-m
+      else
+        tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code && claude" C-m
+        sleep 0.1
+        tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex && codex resume --last -s danger-full-access -a never --search" C-m
+      fi
+
+      sleep 0.3
+      tmux send-keys -t "$session:dev.3" "yazi" C-m
+    else
+      # --- ローカルモード ---
+      # セッション有無に応じた起動コマンドを構築
+      if has_claude_session "$root"; then
+        claude_cmd="claude --continue"
+      else
+        claude_cmd="claude"
+      fi
+
+      if [[ "$NO_UPDATE" == "true" ]]; then
+        tmux send-keys -t "$session:dev.1" "$claude_cmd" C-m
+        sleep 0.1
+        tmux send-keys -t "$session:dev.2" "codex resume --last -s danger-full-access -a never --search" C-m
+      else
+        tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code && $claude_cmd" C-m
+        sleep 0.1
+        tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex && codex resume --last -s danger-full-access -a never --search" C-m
+      fi
+
+      sleep 0.3
+      tmux send-keys -t "$session:dev.3" "yazi" C-m
+
+      tmux send-keys -t "$session:git" "echo '🌿 git (status/diff/log)'" C-m
+    fi
+
+    tmux select-window -t "$session:dev"
+    tmux select-pane -t "$session:dev.1"
   fi
-
-  if has_codex_session "$root"; then
-    codex_cmd="codex resume --last --sandbox workspace-write -a never"
-  else
-    codex_cmd="codex --sandbox workspace-write -a never"
-  fi
-
-  # 4) コマンドを自動起動
-  if [[ "$NO_UPDATE" == "true" ]]; then
-    # アップデートなし（オフライン用）
-    tmux send-keys -t "$session:dev.1" "$claude_cmd" C-m
-    sleep 0.1
-    tmux send-keys -t "$session:dev.2" "$codex_cmd" C-m
-  else
-    # アップデートあり（デフォルト）
-    tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code && $claude_cmd" C-m
-    sleep 0.1
-    tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex && $codex_cmd" C-m
-  fi
-
-  # 5) ペインに @role タグを設定（Agent Teams 動的ペイン管理用）
-  tmux set-option -pt "$session:dev.1" @role "claude"
-  tmux set-option -pt "$session:dev.2" @role "codex"
-  tmux set-option -pt "$session:dev.3" @role "yazi"
-
-  # 6) yazi を遅延起動（TUI初期化のエスケープシーケンスが他ペインに漏れるのを防止）
-  sleep 0.3
-  tmux send-keys -t "$session:dev.3" "yazi" C-m
-
-  # 7) git window（差分やログ用）
-  tmux new-window -t "$session" -n git -c "$root"
-  tmux send-keys -t "$session:git" "echo '🌿 git (status/diff/log)'" C-m
-
-  tmux select-window -t "$session:dev"
-  tmux select-pane -t "$session:dev.1"
 fi
 
 exec tmux attach -t "$session"
