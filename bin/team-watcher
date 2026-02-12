@@ -159,7 +159,7 @@ tmux set-hook -t "$SESSION" after-split-window \
       if [[ "$WORKSPACE_MODE" == "true" ]]; then
         # ワークスペースモード: agent-p$COLUMN-pending を解決
         [[ "$role" =~ ^agent-p([0-9]+)-pending$ ]] || continue
-        local col="${BASH_REMATCH[1]}"
+        col="${BASH_REMATCH[1]}"
 
         # Find a team member that doesn't have a pane in this column yet
         for agent in "${CURRENT_AGENTS[@]}"; do
@@ -200,7 +200,7 @@ tmux set-hook -t "$SESSION" after-split-window \
     DEAD_AGENTS=()
 
     for agent in "${CURRENT_AGENTS[@]}"; do
-      local agent_found=false
+      agent_found=false
 
       if [[ "$WORKSPACE_MODE" == "true" ]]; then
         # ワークスペースモード: agent-p*-$agent を探す
