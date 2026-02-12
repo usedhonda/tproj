@@ -1,0 +1,62 @@
+# tproj マルチプロジェクトワークスペース設定
+#
+# このファイルを ~/.config/tproj/workspace.yaml にコピーして使用してください:
+#   mkdir -p ~/.config/tproj
+#   cp config/workspace.yaml.example ~/.config/tproj/workspace.yaml
+#
+# 編集後、tproj を実行するとマルチプロジェクトモードで起動します。
+
+# ========== 簡易形式（ローカルプロジェクトのみ） ==========
+#
+# projects:
+#   - /Users/usedhonda/projects/claude/tproj
+#   - /Users/usedhonda/projects/claude/statusline
+#   - /Users/usedhonda/projects/claude/cc-status-bar
+
+# ========== 詳細形式（ローカル + リモートプロジェクト） ==========
+
+projects:
+  # ローカルプロジェクト（起動時に有効）
+  - path: /Users/usedhonda/projects/claude/tproj
+    type: local
+    alias: tproj              # tproj --add tproj で追加可能
+
+  # 別のローカルプロジェクト（起動時はスキップ、--add で追加可能）
+  - path: /Users/usedhonda/projects/claude/statusline
+    type: local
+    alias: sl
+    enabled: false            # 起動時は無効、tproj --add sl で追加
+
+  # リモートプロジェクト（SSH）
+  - path: /Users/usedhonda/projects/others/openclaw_general
+    type: remote
+    host: macmini             # ~/.ssh/config で定義済みのホスト名
+    alias: openclaw
+
+# ========== フィールド説明 ==========
+#
+# path:     プロジェクトのパス
+#           - ローカル: 絶対パス推奨（相対パスも可）
+#           - リモート: リモートホストのパス（~ も使用可）
+#
+# type:     local または remote
+#           - 省略時は local
+#
+# host:     SSH ホスト名（remote の場合のみ必須）
+#           - ~/.ssh/config で定義済みのホスト名を使用
+#           - ユーザー名やポートは ~/.ssh/config で設定すること
+#
+# alias:    プロジェクトの短縮名（tproj --add <alias> で使用）
+#           - 省略時は path の basename
+#           - 例: alias: sl -> tproj --add sl
+#
+# enabled:  起動時の有効/無効（true または false）
+#           - 省略時は true
+#           - false: tproj 起動時はスキップされるが、--add で追加可能
+#           - カタログとして登録しておき、必要な時だけ追加する使い方
+
+# ========== 制限事項 ==========
+#
+# - プロジェクト数は5個以下推奨（画面が狭くなるため）
+# - リモートモード (-r) はマルチプロジェクトモードでは使用不可
+# - 各リモートプロジェクトには claude, codex, yazi が必要

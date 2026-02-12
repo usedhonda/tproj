@@ -30,7 +30,7 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
     # yazi が存在 -> 削除
     tmux kill-pane -t "$YAZI_PANE"
   else
-    # yazi が存在しない -> 作成
+    # yazi が存在しない -> Codex の上（画面最上部）に作成
     CODEX_PANE=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' \
       | grep "codex-p${ACTIVE_COLUMN}$" | cut -d: -f1)
 
@@ -40,16 +40,35 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
     fi
 
     PROJECT=$(tmux display-message -t "$CODEX_PANE" -p '#{@project}')
+    REMOTE_HOST=$(tmux display-message -t "$CODEX_PANE" -p '#{@remote_host}')
+    REMOTE_PATH=$(tmux display-message -t "$CODEX_PANE" -p '#{@remote_path}')
 
-    # Codex の下に yazi を作成
-    NEW_YAZI=$(tmux split-window -v -t "$CODEX_PANE" -c "$PROJECT" -l 70% -P -F '#{pane_id}')
+    # Codex の上に yazi を作成（-b: before = 上側）
+    NEW_YAZI=$(tmux split-window -v -b -t "$CODEX_PANE" -c "/tmp" -l 50% -P -F '#{pane_id}')
     sleep 0.3
 
     # タグ設定
     tmux set-option -pt "$NEW_YAZI" @role "yazi-p${ACTIVE_COLUMN}"
     tmux set-option -pt "$NEW_YAZI" @project "$PROJECT"
     tmux set-option -pt "$NEW_YAZI" @column "$ACTIVE_COLUMN"
-    tmux send-keys -t "$NEW_YAZI" "yazi" C-m
+
+    # リモートかローカルかで起動方法を分岐
+    if [[ "$PROJECT" == ssh://* ]]; then
+      # リモートプロジェクト
+      if [[ -z "$REMOTE_HOST" || -z "$REMOTE_PATH" ]]; then
+        echo "Error: Remote project missing host or path" >&2
+        tmux kill-pane -t "$NEW_YAZI"
+        exit 1
+      fi
+      tmux set-option -pt "$NEW_YAZI" @remote_host "$REMOTE_HOST"
+      tmux set-option -pt "$NEW_YAZI" @remote_path "$REMOTE_PATH"
+      tmux send-keys -t "$NEW_YAZI" "ssh -t $REMOTE_HOST 'cd $REMOTE_PATH && exec \$SHELL -l'" C-m
+      sleep 1
+      tmux send-keys -t "$NEW_YAZI" "yazi" C-m
+    else
+      # ローカルプロジェクト
+      tmux send-keys -t "$NEW_YAZI" "cd \"$PROJECT\" && yazi" C-m
+    fi
   fi
 
 else
@@ -62,18 +81,18 @@ else
     tmux kill-pane -t "$YAZI_PANE"
   else
     # yazi が存在しない -> 作成
-    CODEX_PANE=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' \
-      | grep ":codex$" | cut -d: -f1)
+    CLAUDE_PANE=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' \
+      | grep ":claude$" | cut -d: -f1)
 
-    if [[ -z "$CODEX_PANE" ]]; then
-      echo "Error: Cannot find codex pane" >&2
+    if [[ -z "$CLAUDE_PANE" ]]; then
+      echo "Error: Cannot find claude pane" >&2
       exit 1
     fi
 
     # プロジェクトルート取得
-    root="$(git -C "$(tmux display-message -t "$CODEX_PANE" -p '#{pane_current_path}')" rev-parse --show-toplevel 2>/dev/null || tmux display-message -t "$CODEX_PANE" -p '#{pane_current_path}')"
+    root="$(git -C "$(tmux display-message -t "$CLAUDE_PANE" -p '#{pane_current_path}')" rev-parse --show-toplevel 2>/dev/null || tmux display-message -t "$CLAUDE_PANE" -p '#{pane_current_path}')"
 
-    NEW_YAZI=$(tmux split-window -v -t "$CODEX_PANE" -c "$root" -l 70% -P -F '#{pane_id}')
+    NEW_YAZI=$(tmux split-window -v -t "$CLAUDE_PANE" -c "$root" -l 70% -P -F '#{pane_id}')
     sleep 0.3
 
     tmux set-option -pt "$NEW_YAZI" @role "yazi"

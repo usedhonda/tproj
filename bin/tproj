@@ -2,23 +2,98 @@
 set -euo pipefail
 setopt KSH_ARRAYS  # 0-based array indexing (bash compatibility)
 
-# 使い方:
-#   tproj              # 現在ディレクトリからプロジェクト起動（更新あり）
-#   tproj -n           # アップデートなしで起動（オフライン用）
-#   tproj -r host      # リモートホストにSSH接続して起動
-#   tproj -n -r host   # アップデートなし + リモート
+# Codex バイナリに署名（macOS コード署名問題の回避）
+sign_codex() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    find /opt/homebrew/lib/node_modules/@openai/codex -type f \( -perm +111 -o -name "*.node" \) -exec codesign -s - -f {} \; 2>/dev/null || true
+  fi
+}
 
-NO_UPDATE=false
+# 使い方:
+#   tproj              # 現在ディレクトリからプロジェクト起動
+#   tproj -s           # 単一プロジェクトモード強制（workspace.yaml 無視）
+#   tproj -r host      # リモートホストにSSH接続して起動
+#
+# npm update は自動実行されません。手動で更新してください:
+#   npm update -g @anthropic-ai/claude-code @openai/codex
+
+show_help() {
+  cat << 'EOF'
+tproj - tmux project launcher
+
+Usage:
+  tproj [OPTIONS]
+
+Options:
+  --add [ALIAS]      Add workspace column (no arg: duplicate current, with alias: from workspace.yaml)
+  --check            Show workspace.yaml projects, aliases, and enabled status
+  -s, --single       Force single-project mode (ignore workspace.yaml)
+  -r, --remote HOST  SSH remote connection
+  -h, --help         Show this help message
+
+Note:
+  npm update is NOT run automatically to avoid conflicts.
+  Update manually when needed:
+    npm update -g @anthropic-ai/claude-code @openai/codex
+
+Modes:
+  Single Project Mode (default)
+    - 3-pane layout: Claude Code, Codex, yazi
+    - Session name: <project-name>
+
+  Multi-Project Mode (workspace)
+    - Enabled when ~/.config/tproj/workspace.yaml exists
+    - Multiple columns, each with Claude Code + Codex
+    - Session name: tproj-workspace
+    - Use -s to force single mode
+
+Workspace Configuration:
+  File: ~/.config/tproj/workspace.yaml
+
+  Example:
+    projects:
+      - /path/to/project1
+      - /path/to/project2
+      - /path/to/project3
+
+Key Bindings:
+  Prefix + y    Toggle yazi (in active column)
+  Prefix + arrows    Switch between panes/columns
+
+Examples:
+  tproj                   # Auto-detect mode (workspace or single)
+  tproj --add             # Add one column in running tproj-workspace
+  tproj -s                # Force single mode
+  tproj -r macmini        # SSH remote connection (single mode only)
+
+For more information, see: docs/reference/agent-teams.md
+EOF
+}
+
+NO_UPDATE=true  # npm update は手動で実行してください
 REMOTE_HOST=""
+FORCE_SINGLE_MODE=false
+ADD_MODE=false
+ADD_ALIAS=""
+CHECK_MODE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help) show_help; exit 0 ;;
+    --check) CHECK_MODE=true; shift ;;
+    --add)
+      ADD_MODE=true; shift
+      if [[ $# -gt 0 && "$1" != -* ]]; then
+        ADD_ALIAS="$1"; shift
+      fi
+      ;;
     -n|--no-update) NO_UPDATE=true; shift ;;
+    -s|--single) FORCE_SINGLE_MODE=true; shift ;;
     -r|--remote)
       [[ -z "${2:-}" ]] && { echo "Error: -r requires a hostname" >&2; exit 1; }
       REMOTE_HOST="$2"; shift 2 ;;
-    -*) echo "Usage: tproj [-n] [-r host]" >&2; exit 1 ;;
-    *) echo "Usage: tproj [-n] [-r host]" >&2; exit 1 ;;
+    -*) echo "Unknown option: $1" >&2; echo "Run 'tproj --help' for usage" >&2; exit 1 ;;
+    *) echo "Unexpected argument: $1" >&2; echo "Run 'tproj --help' for usage" >&2; exit 1 ;;
   esac
 done
 
@@ -29,178 +104,694 @@ has_claude_session() {
   [[ -f "$HOME/.claude/projects/$encoded/sessions-index.json" ]]
 }
 
+# ペインラベル生成
+# 形式: [host] project | CC/Codex
+# 引数: project_type project_host project_path tool_kind
+build_pane_label() {
+  local project_type="$1"
+  local project_host="$2"
+  local project_path="$3"
+  local tool_kind="$4"
+
+  local host_label="local"
+  if [[ "$project_type" == "remote" ]]; then
+    host_label="${project_host:-remote}"
+  fi
+
+  local project_name
+  project_name="$(basename "$project_path" 2>/dev/null || true)"
+  [[ -z "$project_name" || "$project_name" == "." || "$project_name" == "/" ]] && project_name="unknown"
+
+  echo "[$host_label] $project_name | $tool_kind"
+}
+
+
+# 既存 tproj-workspace に右列を追加
+# 引数なし: 現在のペインのプロジェクトを複製
+# 引数あり: add_workspace_column <path> <type> <host>
+add_workspace_column() {
+  local explicit_path="${1:-}"
+  local explicit_type="${2:-}"
+  local explicit_host="${3:-}"
+  local session="tproj-workspace"
+  local src_pane src_project src_remote_host src_remote_path
+  local src_type src_host src_path src_dir
+  local parsed parsed_host parsed_path
+  local max_col new_col
+  local right_claude new_claude new_codex
+  local claude_title codex_title claude_cmd
+
+  if [[ -z "${TMUX:-}" ]]; then
+    echo "Error: --add must be run inside tmux" >&2
+    exit 1
+  fi
+
+  tmux has-session -t "$session" 2>/dev/null || {
+    echo "Error: $session is not running" >&2
+    exit 1
+  }
+
+  tmux list-panes -t "$session:dev" >/dev/null 2>&1 || {
+    echo "Error: $session:dev not found" >&2
+    exit 1
+  }
+
+  if [[ -n "$explicit_path" ]]; then
+    # エイリアスモード: 引数をそのまま使用
+    src_type="$explicit_type"
+    src_host="$explicit_host"
+    src_path="$explicit_path"
+    src_dir="$src_path"
+    [[ "$src_type" == "remote" ]] && src_dir="/tmp"
+  else
+    # 現在のペインから取得（既存動作）
+    src_pane="${TMUX_PANE:-}"
+    [[ -z "$src_pane" ]] && src_pane="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+    [[ -z "$src_pane" ]] && {
+      echo "Error: cannot detect current pane" >&2
+      exit 1
+    }
+
+    src_project="$(tmux display-message -t "$src_pane" -p '#{@project}' 2>/dev/null || true)"
+    src_remote_host="$(tmux display-message -t "$src_pane" -p '#{@remote_host}' 2>/dev/null || true)"
+    src_remote_path="$(tmux display-message -t "$src_pane" -p '#{@remote_path}' 2>/dev/null || true)"
+
+    if [[ "$src_project" == ssh://* ]]; then
+      src_type="remote"
+      parsed="${src_project#ssh://}"
+      parsed_host="${parsed%%/*}"
+      parsed_path="/${parsed#*/}"
+      src_host="${src_remote_host:-$parsed_host}"
+      src_path="${src_remote_path:-$parsed_path}"
+      src_dir="/tmp"
+      [[ -z "$src_host" || -z "$src_path" ]] && {
+        echo "Error: failed to resolve remote host/path from current pane" >&2
+        exit 1
+      }
+    else
+      src_type="local"
+      src_host=""
+      src_path="$src_project"
+      [[ -z "$src_path" || "$src_path" == "null" ]] && \
+        src_path="$(tmux display-message -t "$src_pane" -p '#{pane_current_path}' 2>/dev/null || true)"
+      [[ -z "$src_path" ]] && {
+        echo "Error: failed to resolve local project path from current pane" >&2
+        exit 1
+      }
+      src_dir="$src_path"
+    fi
+  fi
+
+  max_col="$(tmux list-panes -t "$session:dev" -F '#{@column}' 2>/dev/null \
+    | awk '/^[0-9]+$/ { if ($1>max) max=$1 } END { print max+0 }')"
+  [[ -z "$max_col" || "$max_col" -lt 1 ]] && {
+    echo "Error: no workspace columns found in $session:dev" >&2
+    exit 1
+  }
+  new_col=$((max_col + 1))
+
+  right_claude="$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' 2>/dev/null \
+    | grep ":claude-p${max_col}$" | cut -d: -f1)"
+  [[ -z "$right_claude" ]] && {
+    echo "Error: rightmost claude pane (claude-p${max_col}) not found" >&2
+    exit 1
+  }
+
+  new_claude="$(tmux split-window -h -t "$right_claude" -c "$src_dir" -P -F '#{pane_id}')"
+  new_codex="$(tmux split-window -v -t "$new_claude" -c "$src_dir" -l 30% -P -F '#{pane_id}')"
+  sleep 0.3
+
+  tmux set-option -pt "$new_claude" @role "claude-p${new_col}"
+  tmux set-option -pt "$new_codex" @role "codex-p${new_col}"
+  tmux set-option -pt "$new_claude" @column "$new_col"
+  tmux set-option -pt "$new_codex" @column "$new_col"
+
+  claude_title="$(build_pane_label "$src_type" "$src_host" "$src_path" "CC")"
+  codex_title="$(build_pane_label "$src_type" "$src_host" "$src_path" "Codex")"
+  tmux set-option -pt "$new_claude" allow-set-title off 2>/dev/null || true
+  tmux select-pane -t "$new_claude" -T "$claude_title" 2>/dev/null || true
+  tmux select-pane -t "$new_codex" -T "$codex_title" 2>/dev/null || true
+
+  if [[ "$src_type" == "remote" ]]; then
+    tmux set-option -pt "$new_claude" @project "ssh://$src_host/$src_path"
+    tmux set-option -pt "$new_codex" @project "ssh://$src_host/$src_path"
+    tmux set-option -pt "$new_claude" @remote_host "$src_host"
+    tmux set-option -pt "$new_codex" @remote_host "$src_host"
+    tmux set-option -pt "$new_claude" @remote_path "$src_path"
+    tmux set-option -pt "$new_codex" @remote_path "$src_path"
+  else
+    tmux set-option -pt "$new_claude" @project "$src_path"
+    tmux set-option -pt "$new_codex" @project "$src_path"
+  fi
+
+  if [[ "$src_type" == "remote" ]]; then
+    tmux send-keys -t "$new_claude" "ssh -t $src_host 'cd $src_path && exec \$SHELL -l'" C-m
+    tmux send-keys -t "$new_codex" "ssh -t $src_host 'cd $src_path && exec \$SHELL -l'" C-m
+    sleep 2
+
+    if [[ "$NO_UPDATE" == "true" ]]; then
+      tmux send-keys -t "$new_claude" "claude --continue || claude" C-m
+      sleep 0.2
+      tmux send-keys -t "$new_codex" "codex resume --last -s danger-full-access -a never --search" C-m
+    else
+      tmux send-keys -t "$new_claude" "npm update -g @anthropic-ai/claude-code; hash -r; claude --continue || claude" C-m
+      sleep 0.2
+      tmux send-keys -t "$new_codex" "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
+    fi
+  else
+    if has_claude_session "$src_path"; then
+      claude_cmd="cd \"$src_path\" && claude --continue"
+    else
+      claude_cmd="cd \"$src_path\" && claude"
+    fi
+
+    if [[ "$NO_UPDATE" == "true" ]]; then
+      tmux send-keys -t "$new_claude" "$claude_cmd" C-m
+      sleep 0.2
+      tmux send-keys -t "$new_codex" "cd \"$src_path\" && codex resume --last -s danger-full-access -a never --search" C-m
+    else
+      tmux send-keys -t "$new_claude" "npm update -g @anthropic-ai/claude-code; hash -r; $claude_cmd" C-m
+      sleep 0.2
+      tmux send-keys -t "$new_codex" "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; cd \"$src_path\" && codex resume --last -s danger-full-access -a never --search" C-m
+    fi
+  fi
+
+  tmux select-pane -t "$new_claude"
+  tmux select-window -t "$session:dev"
+  echo "✅ Added workspace column $new_col: $src_path" >&2
+}
 # === YAML パース & ワークスペースモード判定 ===
 WORKSPACE_CONFIG="$HOME/.config/tproj/workspace.yaml"
 WORKSPACE_MODE=false
-PROJECTS=()
 
-if [[ -f "$WORKSPACE_CONFIG" ]]; then
+# カタログ配列（全プロジェクト、--add エイリアス解決用）
+declare -a CATALOG_PATHS
+declare -a CATALOG_TYPES
+declare -a CATALOG_HOSTS
+declare -a CATALOG_ALIASES
+
+# アクティブ配列（enabled=true のみ、起動レイアウト構築用）
+declare -a PROJECT_PATHS
+declare -a PROJECT_TYPES
+declare -a PROJECT_HOSTS
+
+parse_workspace_yaml() {
+  echo "📋 Workspace: $WORKSPACE_CONFIG" >&2
+
   # yq の存在確認
   if ! command -v yq &>/dev/null; then
-    echo "Error: yq is required for workspace mode"
-    echo "Install with: brew install yq"
+    echo "" >&2
+    echo "❌ Error: yq is not installed (required for workspace mode)" >&2
+    echo "" >&2
+    echo "Options:" >&2
+    echo "  1. Install yq:    brew install yq" >&2
+    echo "  2. Use single mode: tproj -s" >&2
+    echo "  3. Remove workspace.yaml to disable workspace mode" >&2
     exit 1
   fi
 
   # YAML 構文チェック
   if ! yq eval '.projects[]' "$WORKSPACE_CONFIG" &>/dev/null; then
-    echo "Error: Invalid YAML syntax in $WORKSPACE_CONFIG"
-    echo "Please fix the syntax or remove the file to use single-project mode"
+    echo "" >&2
+    echo "❌ Error: Invalid YAML syntax in $WORKSPACE_CONFIG" >&2
+    echo "" >&2
+    echo "Options:" >&2
+    echo "  1. Fix the YAML syntax" >&2
+    echo "  2. Use single mode: tproj -s" >&2
+    echo "  3. Remove workspace.yaml to disable workspace mode" >&2
     exit 1
   fi
 
-  # YAML パース（zsh 互換）
-  PROJECTS=()
-  while IFS= read -r line; do
-    PROJECTS+=("$line")
-  done < <(yq eval '.projects[]' "$WORKSPACE_CONFIG" 2>/dev/null)
+  local num_projects
+  num_projects=$(yq eval '.projects | length' "$WORKSPACE_CONFIG" 2>/dev/null || echo "0")
 
-  # バリデーション
-  if [[ ${#PROJECTS[@]} -eq 0 ]]; then
-    echo "Error: workspace.yaml exists but contains no projects"
+  if [[ "$num_projects" -eq 0 ]]; then
+    echo "" >&2
+    echo "❌ Error: workspace.yaml exists but contains no projects" >&2
+    echo "" >&2
+    echo "Example workspace.yaml:" >&2
+    echo "  projects:" >&2
+    echo "    - path: /path/to/project1" >&2
+    echo "      type: local" >&2
+    echo "    - path: ~/projects/statusline" >&2
+    echo "      type: remote" >&2
+    echo "      host: macmini" >&2
     exit 1
   fi
 
-  # 存在しないパスを警告してスキップ
-  VALID_PROJECTS=()
-  for project in "${PROJECTS[@]}"; do
-    if [[ -d "$project" ]]; then
-      VALID_PROJECTS+=("$project")
+  # 簡易形式（文字列リスト）か詳細形式（オブジェクトリスト）か判定
+  local first_item_type
+  first_item_type=$(yq eval ".projects[0] | type" "$WORKSPACE_CONFIG" 2>/dev/null)
+
+  # NOTE: zsh では path/PATH が連動する特殊変数のため proj_path を使用
+  local i proj_path proj_type proj_host proj_alias proj_enabled
+  for ((i=0; i<num_projects; i++)); do
+    if [[ "$first_item_type" == "!!str" ]]; then
+      # 簡易形式: 文字列リスト
+      proj_path=$(yq eval ".projects[$i]" "$WORKSPACE_CONFIG")
+      proj_type="local"
+      proj_host=""
+      proj_alias="$(basename "$proj_path")"
+      proj_enabled="true"
     else
-      echo "Warning: Skipping non-existent path: $project" >&2
+      # 詳細形式: オブジェクトリスト
+      proj_path=$(yq eval ".projects[$i].path" "$WORKSPACE_CONFIG")
+      proj_type=$(yq eval ".projects[$i].type" "$WORKSPACE_CONFIG")
+      proj_host=$(yq eval ".projects[$i].host" "$WORKSPACE_CONFIG")
+      proj_alias=$(yq eval ".projects[$i].alias" "$WORKSPACE_CONFIG")
+      proj_enabled=$(yq eval ".projects[$i].enabled" "$WORKSPACE_CONFIG")
+
+      # デフォルト値
+      [[ "$proj_type" == "null" ]] && proj_type="local"
+      [[ "$proj_host" == "null" ]] && proj_host=""
+      [[ "$proj_alias" == "null" ]] && proj_alias="$(basename "$proj_path")"
+      [[ "$proj_enabled" == "null" ]] && proj_enabled="true"
+    fi
+
+    # パスを展開（~ や環境変数）
+    proj_path=$(eval echo "$proj_path")
+
+    # 基本バリデーション
+    if [[ "$proj_type" != "local" && "$proj_type" != "remote" ]]; then
+      echo "  ⚠️  Skipping unknown type '$proj_type': $proj_path" >&2
+      continue
+    fi
+    if [[ "$proj_type" == "remote" && -z "$proj_host" ]]; then
+      echo "  ⚠️  Skipping remote project without host: $proj_path" >&2
+      continue
+    fi
+
+    # カタログに追加（enabled 問わず、--add エイリアス解決用）
+    CATALOG_PATHS+=("$proj_path")
+    CATALOG_TYPES+=("$proj_type")
+    CATALOG_HOSTS+=("$proj_host")
+    CATALOG_ALIASES+=("$proj_alias")
+
+    # アクティブ配列には enabled=true + 存在チェック済みのみ
+    if [[ "$proj_enabled" != "true" ]]; then
+      echo "  -- [disabled] $proj_path (alias: $proj_alias)" >&2
+      continue
+    fi
+
+    if [[ "$proj_type" == "local" && ! -d "$proj_path" ]]; then
+      echo "  ⚠️  Skipping non-existent: $proj_path (alias: $proj_alias)" >&2
+      continue
+    fi
+
+    PROJECT_PATHS+=("$proj_path")
+    PROJECT_TYPES+=("$proj_type")
+    PROJECT_HOSTS+=("$proj_host")
+
+    if [[ "$proj_type" == "remote" ]]; then
+      echo "  ✅ [remote@$proj_host] $proj_path (alias: $proj_alias)" >&2
+    else
+      echo "  ✅ [local] $proj_path (alias: $proj_alias)" >&2
     fi
   done
 
-  PROJECTS=("${VALID_PROJECTS[@]}")
+  echo "" >&2
+}
 
-  if [[ ${#PROJECTS[@]} -eq 0 ]]; then
-    echo "Error: No valid project directories found"
-    exit 1
+resolve_alias_to_project() {
+  local target_alias="$1"
+  local i
+  for ((i=0; i<${#CATALOG_ALIASES[@]}; i++)); do
+    if [[ "${CATALOG_ALIASES[$i]}" == "$target_alias" ]]; then
+      RESOLVED_PATH="${CATALOG_PATHS[$i]}"
+      RESOLVED_TYPE="${CATALOG_TYPES[$i]}"
+      RESOLVED_HOST="${CATALOG_HOSTS[$i]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ワークスペースモード判定
+if [[ "$FORCE_SINGLE_MODE" == "false" && -f "$WORKSPACE_CONFIG" ]]; then
+  # --add <alias> / --check 時もパースが必要
+  if [[ "$ADD_MODE" == "false" ]] || [[ -n "$ADD_ALIAS" ]] || [[ "$CHECK_MODE" == "true" ]]; then
+    parse_workspace_yaml
   fi
 
-  # プロジェクト数警告（5以上）
-  if [[ ${#PROJECTS[@]} -gt 5 ]]; then
-    echo "Warning: You have ${#PROJECTS[@]} projects configured." >&2
-    echo "This may make panes very narrow. Consider using fewer projects." >&2
-    read -p "Continue anyway? [y/N] " answer
-    case "$answer" in
-      [yY]) ;;
-      *) exit 0 ;;
-    esac
-  fi
+  if [[ "$ADD_MODE" == "false" && "$CHECK_MODE" == "false" ]]; then
+    if [[ ${#PROJECT_PATHS[@]} -eq 0 ]]; then
+      echo "" >&2
+      echo "❌ Error: No valid project directories found" >&2
+      echo "" >&2
+      echo "Options:" >&2
+      echo "  1. Fix project paths in $WORKSPACE_CONFIG" >&2
+      echo "  2. Use single mode: tproj -s" >&2
+      exit 1
+    fi
 
-  WORKSPACE_MODE=true
+    # プロジェクト数警告（10超）
+    if [[ ${#PROJECT_PATHS[@]} -gt 10 ]]; then
+      echo "⚠️  Warning: ${#PROJECT_PATHS[@]} projects configured (panes may be narrow)" >&2
+      printf "Continue anyway? [y/N] " >&2
+      read -r answer
+      case "$answer" in
+        [yY]) ;;
+        *)
+          echo "Tip: Use 'tproj -s' for single-project mode" >&2
+          exit 0
+          ;;
+      esac
+    fi
+
+    WORKSPACE_MODE=true
+  fi
 fi
 
 # リモートモード非対応チェック
 if [[ "$WORKSPACE_MODE" == "true" && -n "$REMOTE_HOST" ]]; then
-  echo "Error: Remote mode (-r) is not supported in workspace mode"
-  echo "Please use single-project mode or remove -r option"
+  echo "" >&2
+  echo "❌ Error: Remote mode (-r) is not supported in workspace mode" >&2
+  echo "" >&2
+  echo "Options:" >&2
+  echo "  1. Use single mode: tproj -s -r $REMOTE_HOST" >&2
+  echo "  2. Remove -r option for local workspace mode" >&2
   exit 1
+fi
+
+if [[ "$CHECK_MODE" == "true" ]]; then
+  if [[ ! -f "$WORKSPACE_CONFIG" ]]; then
+    echo "No workspace config found: $WORKSPACE_CONFIG" >&2
+    echo "" >&2
+    echo "Create one with:" >&2
+    echo "  mkdir -p ~/.config/tproj" >&2
+    echo "  cp config/workspace.yaml.example ~/.config/tproj/workspace.yaml" >&2
+    exit 1
+  fi
+
+  echo "Catalog (all projects):" >&2
+  for ((i=0; i<${#CATALOG_ALIASES[@]}; i++)); do
+    local_type="${CATALOG_TYPES[$i]}"
+    local_host="${CATALOG_HOSTS[$i]}"
+    local_label="[local]"
+    [[ "$local_type" == "remote" ]] && local_label="[remote@$local_host]"
+
+    # enabled 判定: PROJECT_PATHS に含まれていれば active
+    is_active=false
+    for ((j=0; j<${#PROJECT_PATHS[@]}; j++)); do
+      if [[ "${PROJECT_PATHS[$j]}" == "${CATALOG_PATHS[$i]}" ]]; then
+        is_active=true
+        break
+      fi
+    done
+
+    if [[ "$is_active" == "true" ]]; then
+      printf "  %-20s  %-12s  %s  %s\n" "${CATALOG_ALIASES[$i]}" "$local_label" "${CATALOG_PATHS[$i]}" "" >&2
+    else
+      printf "  %-20s  %-12s  %s  (disabled)\n" "${CATALOG_ALIASES[$i]}" "$local_label" "${CATALOG_PATHS[$i]}" >&2
+    fi
+  done
+
+  echo "" >&2
+  echo "Active: ${#PROJECT_PATHS[@]} / Catalog: ${#CATALOG_ALIASES[@]}" >&2
+
+  if [[ ${#CATALOG_ALIASES[@]} -gt ${#PROJECT_PATHS[@]} ]]; then
+    echo "" >&2
+    echo "Tip: Add disabled projects with: tproj --add <alias>" >&2
+  fi
+  exit 0
+fi
+
+if [[ "$ADD_MODE" == "true" ]]; then
+  [[ -n "$REMOTE_HOST" ]] && {
+    echo "Error: --add cannot be used with -r/--remote" >&2
+    exit 1
+  }
+  [[ "$FORCE_SINGLE_MODE" == "true" ]] && {
+    echo "Error: --add cannot be used with -s/--single" >&2
+    exit 1
+  }
+  if [[ -n "$ADD_ALIAS" ]]; then
+    if resolve_alias_to_project "$ADD_ALIAS"; then
+      add_workspace_column "$RESOLVED_PATH" "$RESOLVED_TYPE" "$RESOLVED_HOST"
+    else
+      echo "Error: Unknown alias '$ADD_ALIAS'" >&2
+      echo "" >&2
+      echo "Available:" >&2
+      for ((i=0; i<${#CATALOG_ALIASES[@]}; i++)); do
+        echo "  ${CATALOG_ALIASES[$i]}  ->  ${CATALOG_PATHS[$i]}" >&2
+      done
+      exit 1
+    fi
+  else
+    add_workspace_column
+  fi
+  exit 0
 fi
 
 # === ワークスペースモード用関数 ===
 
 # マルチ列レイアウト構築
+# 引数: session paths[@] types[@] hosts[@]
 create_workspace_layout() {
   local session="$1"
   shift
-  local projects=("$@")
-  local num_projects=${#projects[@]}
 
-  # 最初の列
-  local project="${projects[0]}"
-  tmux new-session -d -s "$session" -c "$project" -n dev
+  # 配列を分離（paths, types, hosts）
+  local -a paths types hosts
+  local num_projects=0
 
-  # 最初の claude ペインの ID を取得
-  local first_claude=$(tmux list-panes -t "$session:dev" -F '#{pane_id}' | head -1)
+  # 最初の配列終了まで paths に格納
+  while [[ $# -gt 0 && "$1" != "--" ]]; do
+    paths+=("$1")
+    ((num_projects++)) || true
+    shift
+  done
+  shift  # "--" をスキップ
 
-  # Codex を縦分割
-  local first_codex=$(tmux split-window -v -t "$first_claude" -c "$project" -l 30% -P -F '#{pane_id}')
-  sleep 0.3
+  # types を格納
+  while [[ $# -gt 0 && "$1" != "--" ]]; do
+    types+=("$1")
+    shift
+  done
+  shift  # "--" をスキップ
 
-  # タグ設定
-  tmux set-option -pt "$first_claude" @role "claude-p1"
-  tmux set-option -pt "$first_codex" @role "codex-p1"
-  tmux set-option -pt "$first_claude" @project "$project"
-  tmux set-option -pt "$first_codex" @project "$project"
-  tmux set-option -pt "$first_claude" @column "1"
-  tmux set-option -pt "$first_codex" @column "1"
-
-  local prev_claude="$first_claude"
-
-  # 追加の列
-  for i in $(seq 2 $num_projects); do
-    local project="${projects[$((i-1))]}"
-
-    # 横分割で新しい Claude 作成
-    local new_claude=$(tmux split-window -h -t "$prev_claude" -c "$project" -P -F '#{pane_id}')
-
-    # 縦分割で Codex 作成
-    local new_codex=$(tmux split-window -v -t "$new_claude" -c "$project" -l 30% -P -F '#{pane_id}')
-    sleep 0.3
-
-    # タグ設定
-    tmux set-option -pt "$new_claude" @role "claude-p$i"
-    tmux set-option -pt "$new_codex" @role "codex-p$i"
-    tmux set-option -pt "$new_claude" @project "$project"
-    tmux set-option -pt "$new_codex" @project "$project"
-    tmux set-option -pt "$new_claude" @column "$i"
-    tmux set-option -pt "$new_codex" @column "$i"
-
-    prev_claude="$new_claude"
+  # hosts を格納
+  while [[ $# -gt 0 ]]; do
+    hosts+=("$1")
+    shift
   done
 
-  # 列幅均等化
-  tmux select-layout -t "$session:dev" tiled
+  # 全ての Claude ペインを先に横に作成
+  declare -a claude_panes
+  declare -a codex_panes
 
-  # git window
-  tmux new-window -t "$session" -n git -c "${projects[0]}"
+  # 最初のプロジェクトのディレクトリ（ローカル優先、なければ /tmp）
+  local first_dir="${paths[0]}"
+  if [[ "${types[0]}" == "remote" ]]; then
+    first_dir="/tmp"  # リモートの場合は一時的なディレクトリ
+  fi
+
+  tmux new-session -d -s "$session" -c "$first_dir" -n dev
+  tmux set-option -t "$session" @tproj true
+
+  local first_codex=$(tmux list-panes -t "$session:dev" -F '#{pane_id}' | head -1)
+  codex_panes[0]="$first_codex"
+
+  # 追加の Codex ペインを横に作成
+  local prev_codex="$first_codex"
+  for i in $(seq 2 $num_projects); do
+    local proj_path="${paths[$((i-1))]}"
+    local proj_type="${types[$((i-1))]}"
+    local dir="$proj_path"
+    [[ "$proj_type" == "remote" ]] && dir="/tmp"
+
+    local new_codex=$(tmux split-window -h -t "$prev_codex" -c "$dir" -P -F '#{pane_id}')
+    if [[ -z "$new_codex" ]]; then
+      echo "Error: failed to create column $i (window may be too narrow for $num_projects columns)" >&2
+      num_projects=$((i - 1))
+      break
+    fi
+    codex_panes[$((i-1))]="$new_codex"
+    prev_codex="$new_codex"
+
+    # 均等化して次の分割に十分な幅を確保
+    tmux select-layout -t "$session:dev" even-horizontal 2>/dev/null || true
+  done
+
+  sleep 0.3
+
+  # 各 Codex の下に Claude を作成
+  for i in $(seq 1 $num_projects); do
+    local proj_path="${paths[$((i-1))]}"
+    local proj_type="${types[$((i-1))]}"
+    local proj_host="${hosts[$((i-1))]}"
+    local dir="$proj_path"
+    [[ "$proj_type" == "remote" ]] && dir="/tmp"
+
+    local codex_pane="${codex_panes[$((i-1))]}"
+    local claude_pane=$(tmux split-window -v -t "$codex_pane" -c "$dir" -l 70% -P -F '#{pane_id}')
+    claude_panes[$((i-1))]="$claude_pane"
+
+    # タグ設定
+    tmux set-option -pt "$codex_pane" @role "codex-p$i"
+    tmux set-option -pt "$claude_pane" @role "claude-p$i"
+    tmux set-option -pt "$codex_pane" @column "$i"
+    tmux set-option -pt "$claude_pane" @column "$i"
+
+    # ペインタイトル設定
+    local codex_title claude_title
+    codex_title="$(build_pane_label "$proj_type" "$proj_host" "$proj_path" "Codex")"
+    claude_title="$(build_pane_label "$proj_type" "$proj_host" "$proj_path" "CC")"
+    # Claude が OSC タイトルで pane_title を上書きするため固定化
+    tmux set-option -pt "$claude_pane" allow-set-title off 2>/dev/null || true
+    tmux select-pane -t "$codex_pane" -T "$codex_title" 2>/dev/null || true
+    tmux select-pane -t "$claude_pane" -T "$claude_title" 2>/dev/null || true
+
+    # プロジェクト情報のタグ設定
+    if [[ "$proj_type" == "remote" ]]; then
+      tmux set-option -pt "$codex_pane" @project "ssh://$proj_host/$proj_path"
+      tmux set-option -pt "$claude_pane" @project "ssh://$proj_host/$proj_path"
+      tmux set-option -pt "$codex_pane" @remote_host "$proj_host"
+      tmux set-option -pt "$claude_pane" @remote_host "$proj_host"
+      tmux set-option -pt "$codex_pane" @remote_path "$proj_path"
+      tmux set-option -pt "$claude_pane" @remote_path "$proj_path"
+    else
+      tmux set-option -pt "$codex_pane" @project "$proj_path"
+      tmux set-option -pt "$claude_pane" @project "$proj_path"
+    fi
+
+    sleep 0.2
+  done
+
+  # 列幅を均等化
+  local window_width=$(tmux display-message -t "$session:dev" -p '#{window_width}')
+  local column_width=$((window_width / num_projects))
+
+  for i in $(seq 0 $((num_projects - 1))); do
+    local codex_pane="${codex_panes[$i]}"
+    [[ -z "$codex_pane" ]] && continue
+    tmux resize-pane -t "$codex_pane" -x "$column_width" 2>/dev/null || true
+  done
+
+  # git window（最初のローカルプロジェクトのディレクトリ、なければ /tmp）
+  local git_dir="/tmp"
+  for i in $(seq 0 $((num_projects - 1))); do
+    if [[ "${types[$i]}" == "local" ]]; then
+      git_dir="${paths[$i]}"
+      break
+    fi
+  done
+  tmux new-window -t "$session" -n git -c "$git_dir"
 }
 
 # プロジェクト別ツール起動
+# 引数: session no_update paths[@] types[@] hosts[@]
 start_workspace_tools() {
   local session="$1"
   local no_update="$2"
   shift 2
-  local projects=("$@")
 
-  for i in $(seq 1 ${#projects[@]}); do
-    local project="${projects[$((i-1))]}"
+  # 配列を分離（paths, types, hosts）
+  local -a paths types hosts
+  local num_projects=0
+
+  # 最初の配列終了まで paths に格納
+  while [[ $# -gt 0 && "$1" != "--" ]]; do
+    paths+=("$1")
+    ((num_projects++)) || true
+    shift
+  done
+  shift  # "--" をスキップ
+
+  # types を格納
+  while [[ $# -gt 0 && "$1" != "--" ]]; do
+    types+=("$1")
+    shift
+  done
+  shift  # "--" をスキップ
+
+  # hosts を格納
+  while [[ $# -gt 0 ]]; do
+    hosts+=("$1")
+    shift
+  done
+
+  for i in $(seq 1 $num_projects); do
+    local proj_path="${paths[$((i-1))]}"
+    local proj_type="${types[$((i-1))]}"
+    local proj_host="${hosts[$((i-1))]}"
+
+    # ペイン ID 取得（エラーチェック付き）
     local claude_pane=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
       | grep ":claude-p$i$" | cut -d: -f1)
     local codex_pane=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
       | grep ":codex-p$i$" | cut -d: -f1)
 
-    # Claude Code 起動（セッション継続判定付き）
-    local claude_cmd
-    if has_claude_session "$project"; then
-      claude_cmd="cd \"$project\" && claude --continue"
-    else
-      claude_cmd="cd \"$project\" && claude"
+    if [[ -z "$claude_pane" ]]; then
+      echo "Error: Cannot find claude-p$i pane for proj_path: $proj_path" >&2
+      echo "Available panes:" >&2
+      tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' >&2
+      continue
     fi
 
-    if [[ "$no_update" == "true" ]]; then
-      tmux send-keys -t "$claude_pane" "$claude_cmd" C-m
-    else
-      tmux send-keys -t "$claude_pane" "npm update -g @anthropic-ai/claude-code && $claude_cmd" C-m
+    if [[ -z "$codex_pane" ]]; then
+      echo "Error: Cannot find codex-p$i pane for proj_path: $proj_path" >&2
+      echo "Available panes:" >&2
+      tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' >&2
+      continue
     fi
 
-    sleep 0.2
+    if [[ "$proj_type" == "remote" ]]; then
+      # --- リモートプロジェクト ---
+      # SSH 接続してリモートパスに移動
+      tmux send-keys -t "$claude_pane" \
+        "ssh -t $proj_host 'cd $proj_path && exec \$SHELL -l'" C-m
+      tmux send-keys -t "$codex_pane" \
+        "ssh -t $proj_host 'cd $proj_path && exec \$SHELL -l'" C-m
 
-    # Codex 起動
-    local codex_cmd="cd \"$project\" && codex resume --last -s danger-full-access -a never --search"
-    if [[ "$no_update" == "true" ]]; then
-      tmux send-keys -t "$codex_pane" "$codex_cmd" C-m
+      # SSH 接続待ち
+      sleep 2
+
+      # リモートシェル内でツールを起動
+      if [[ "$no_update" == "true" ]]; then
+        tmux send-keys -t "$claude_pane" "claude --continue || claude" C-m
+        sleep 0.2
+        tmux send-keys -t "$codex_pane" "codex resume --last -s danger-full-access -a never --search" C-m
+      else
+        tmux send-keys -t "$claude_pane" "npm update -g @anthropic-ai/claude-code; hash -r; claude --continue || claude" C-m
+        sleep 0.2
+        tmux send-keys -t "$codex_pane" "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
+      fi
     else
-      tmux send-keys -t "$codex_pane" "npm update -g @openai/codex && $codex_cmd" C-m
+      # --- ローカルプロジェクト ---
+      # Claude Code 起動（セッション継続判定付き）
+      local claude_cmd
+      if has_claude_session "$proj_path"; then
+        claude_cmd="cd \"$proj_path\" && claude --continue"
+      else
+        claude_cmd="cd \"$proj_path\" && claude"
+      fi
+
+      if [[ "$no_update" == "true" ]]; then
+        tmux send-keys -t "$claude_pane" "$claude_cmd" C-m
+      else
+        tmux send-keys -t "$claude_pane" "npm update -g @anthropic-ai/claude-code; $claude_cmd" C-m
+      fi
+
+      sleep 0.2
+
+      # Codex 起動
+      local codex_cmd="cd \"$proj_path\" && codex resume --last -s danger-full-access -a never --search"
+      if [[ "$no_update" == "true" ]]; then
+        tmux send-keys -t "$codex_pane" "$codex_cmd" C-m
+      else
+        tmux send-keys -t "$codex_pane" "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; $codex_cmd" C-m
+      fi
     fi
   done
 
   # 最初の Claude ペインを選択
   local first_claude=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
     | grep ':claude-p1$' | cut -d: -f1)
-  tmux select-pane -t "$first_claude"
+
+  if [[ -n "$first_claude" ]]; then
+    tmux select-pane -t "$first_claude"
+  fi
 }
 
 # === 単一プロジェクトモード（従来ロジック） ===
@@ -223,12 +814,18 @@ else
   session="${session//[^A-Za-z0-9_@-]/_}"
 fi
 
+# === tproj 関連セッションの一掃 ===
+tmux list-sessions -F '#{session_name} #{@tproj}' 2>/dev/null | while read sname tag; do
+  if [[ "$tag" == "true" ]]; then
+    tmux kill-session -t "$sname" 2>/dev/null || true
+  fi
+done
+
 # === セッション作成 & ツール起動 ===
-if ! tmux has-session -t "$session" 2>/dev/null; then
-  if [[ "$WORKSPACE_MODE" == "true" ]]; then
+if [[ "$WORKSPACE_MODE" == "true" ]]; then
     # --- マルチプロジェクトモード ---
-    create_workspace_layout "$session" "${PROJECTS[@]}"
-    start_workspace_tools "$session" "$NO_UPDATE" "${PROJECTS[@]}"
+    create_workspace_layout "$session" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}"
+    start_workspace_tools "$session" "$NO_UPDATE" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}"
 
     tmux select-window -t "$session:dev"
   else
@@ -238,6 +835,7 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
 
     # 1) dev window を作成
     tmux new-session -d -s "$session" -c "$root" -n dev
+    tmux set-option -t "$session" @tproj true
 
     # 2) VSCodeっぽい3ペイン（左メイン / 右上watch / 右下logs）
     tmux split-window -h -t "$session:dev" -c "$root"
@@ -250,6 +848,18 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
     tmux set-option -pt "$session:dev.1" @role "claude"
     tmux set-option -pt "$session:dev.2" @role "codex"
     tmux set-option -pt "$session:dev.3" @role "yazi"
+
+    # 3.1) ペインタイトル設定（Claude/Codexのみ）
+    title_host="local"
+    [[ -n "$REMOTE_HOST" ]] && title_host="$REMOTE_HOST"
+    claude_title=""
+    codex_title=""
+    claude_title="$(build_pane_label "${REMOTE_HOST:+remote}" "$title_host" "$root" "CC")"
+    codex_title="$(build_pane_label "${REMOTE_HOST:+remote}" "$title_host" "$root" "Codex")"
+    # 単一モードの Claude でもタイトル上書きを抑止
+    tmux set-option -pt "$session:dev.1" allow-set-title off 2>/dev/null || true
+    tmux select-pane -t "$session:dev.1" -T "$claude_title" 2>/dev/null || true
+    tmux select-pane -t "$session:dev.2" -T "$codex_title" 2>/dev/null || true
 
     # 4) git window（差分やログ用）
     tmux new-window -t "$session" -n git -c "$root"
@@ -270,13 +880,13 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
 
       # リモートシェル内でツールを起動
       if [[ "$NO_UPDATE" == "true" ]]; then
-        tmux send-keys -t "$session:dev.1" "claude" C-m
+        tmux send-keys -t "$session:dev.1" "claude --continue || claude" C-m
         sleep 0.1
         tmux send-keys -t "$session:dev.2" "codex resume --last -s danger-full-access -a never --search" C-m
       else
-        tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code && claude" C-m
+        tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code; hash -r; claude --continue || claude" C-m
         sleep 0.1
-        tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex && codex resume --last -s danger-full-access -a never --search" C-m
+        tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
       fi
 
       sleep 0.3
@@ -295,9 +905,9 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
         sleep 0.1
         tmux send-keys -t "$session:dev.2" "codex resume --last -s danger-full-access -a never --search" C-m
       else
-        tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code && $claude_cmd" C-m
+        tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code; hash -r; $claude_cmd" C-m
         sleep 0.1
-        tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex && codex resume --last -s danger-full-access -a never --search" C-m
+        tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
       fi
 
       sleep 0.3
@@ -308,7 +918,6 @@ if ! tmux has-session -t "$session" 2>/dev/null; then
 
     tmux select-window -t "$session:dev"
     tmux select-pane -t "$session:dev.1"
-  fi
 fi
 
 exec tmux attach -t "$session"

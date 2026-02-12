@@ -16,7 +16,7 @@ compression-anchors:
 
 ## 概要
 
-tprojセッション内で、Claude Code（dev.1）からCodex（@role=codex）に質問またはタスクを送信する。
+tprojセッション内で、Claude Code（@role=claude）からCodex（@role=codex）に質問またはタスクを送信する。
 
 ## モード
 
@@ -113,7 +113,8 @@ SESSION=$(tmux display-message -p '#S')
 
 if [[ "$SESSION" == "tproj-workspace" ]]; then
   # マルチプロジェクトモード: アクティブな列の Codex を検出
-  ACTIVE_PANE=$(tmux display-message -p '#{pane_id}')
+  # $TMUX_PANE は自ペインのID（フォーカス位置に非依存で確実）
+  ACTIVE_PANE="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
   ACTIVE_COLUMN=$(tmux display-message -t "$ACTIVE_PANE" -p '#{@column}')
 
   CODEX_PANE=$(tmux list-panes -t "$SESSION:dev" \
@@ -142,7 +143,7 @@ echo "$RECENT_LINES" | grep -q "esc to interrupt" && CODEX_RUNNING=true
 
 if [[ "$CODEX_RUNNING" == "false" ]]; then
   echo "エラー: Codexが起動していません"
-  echo "dev.2ペインでcodexを起動してください"
+  echo "Codexペイン(@role=codex)でcodexを起動してください"
   exit 1
 fi
 

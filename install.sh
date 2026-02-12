@@ -231,14 +231,15 @@ if $DRY_RUN; then
   echo "[DRY-RUN] 📦 team-watcher -> ~/bin/"
   echo "[DRY-RUN] 📦 reflow-agent-pane -> ~/bin/"
 else
-  echo "📦 tproj, tproj-toggle-yazi, agent-monitor, team-watcher, reflow-agent-pane -> ~/bin/"
+  echo "📦 tproj, tproj-toggle-yazi, agent-monitor, team-watcher, reflow-agent-pane, sign-codex -> ~/bin/"
   mkdir -p ~/bin
   cp "$SCRIPT_DIR/bin/tproj" ~/bin/tproj
   cp "$SCRIPT_DIR/bin/tproj-toggle-yazi" ~/bin/tproj-toggle-yazi
   cp "$SCRIPT_DIR/bin/agent-monitor" ~/bin/agent-monitor
   cp "$SCRIPT_DIR/bin/team-watcher" ~/bin/team-watcher
   cp "$SCRIPT_DIR/bin/reflow-agent-pane" ~/bin/reflow-agent-pane
-  chmod +x ~/bin/tproj ~/bin/tproj-toggle-yazi ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane
+  cp "$SCRIPT_DIR/bin/sign-codex" ~/bin/sign-codex
+  chmod +x ~/bin/tproj ~/bin/tproj-toggle-yazi ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/sign-codex
 fi
 
 # 4.2 tmux 設定
