@@ -1,0 +1,54 @@
+#!/bin/bash
+set -euo pipefail
+
+SESSION="${1:-}"
+if [[ -z "$SESSION" ]]; then
+  SESSION=$(tmux display-message -p '#S' 2>/dev/null || true)
+fi
+[[ -z "$SESSION" ]] && exit 0
+
+# Workspace dev window が無ければ何もしない
+tmux list-panes -t "$SESSION:dev" >/dev/null 2>&1 || exit 0
+
+# Agentペインが存在する間は列幅再配分をスキップ（構造が一時的に不安定）
+if tmux list-panes -t "$SESSION:dev" -F "#{@role}" 2>/dev/null | grep -Eq "^agent-|^agent-p"; then
+  exit 0
+fi
+
+# codex列番号を収集
+COLUMNS=()
+while IFS= read -r col; do
+  [[ -n "$col" ]] && COLUMNS+=("$col")
+done < <(
+  tmux list-panes -t "$SESSION:dev" -F '#{@role}' 2>/dev/null \
+    | awk '/^codex-p[0-9]+$/ {sub(/^codex-p/, ""); print $0}' \
+    | sort -n -u
+)
+
+NUM_COLS=${#COLUMNS[@]}
+if (( NUM_COLS <= 1 )); then
+  exit 0
+fi
+
+WINDOW_WIDTH=$(tmux display-message -t "$SESSION:dev" -p '#{window_width}' 2>/dev/null || echo 0)
+if [[ -z "$WINDOW_WIDTH" || "$WINDOW_WIDTH" -le 0 ]]; then
+  exit 0
+fi
+
+TARGET=$(( (WINDOW_WIDTH - (NUM_COLS - 1)) / NUM_COLS ))
+if (( TARGET < 20 )); then
+  TARGET=20
+fi
+
+# 右端は残差を吸収させる。tmuxの木構造都合で1回で収束しないため複数回実行。
+for _ in 1 2 3 4; do
+  LAST_INDEX=$((NUM_COLS - 1))
+  for ((i=0; i<LAST_INDEX; i++)); do
+    col="${COLUMNS[$i]}"
+    pane_id=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null \
+      | awk -F: -v role="codex-p${col}" '$2==role {print $1; exit}')
+    if [[ -n "$pane_id" ]]; then
+      tmux resize-pane -t "$pane_id" -x "$TARGET" 2>/dev/null || true
+    fi
+  done
+done

@@ -276,6 +276,9 @@ add_workspace_column() {
     fi
   fi
 
+  # 列追加後は必ず横幅を均等化
+  "$HOME/bin/rebalance-workspace-columns" "$session" 2>/dev/null || true
+
   tmux select-pane -t "$new_claude"
   tmux select-window -t "$session:dev"
   echo "✅ Added workspace column $new_col: $src_path" >&2
@@ -585,9 +588,10 @@ create_workspace_layout() {
   if [[ "${types[0]}" == "remote" ]]; then
     first_dir="/tmp"  # リモートの場合は一時的なディレクトリ
   fi
-
   tmux new-session -d -s "$session" -c "$first_dir" -n dev
   tmux set-option -t "$session" @tproj true
+  # 列削除時にも自動で横幅均等化
+  tmux set-hook -t "$session" after-kill-pane "run-shell -b '$HOME/bin/rebalance-workspace-columns \"$session\"'"
 
   local first_codex=$(tmux list-panes -t "$session:dev" -F '#{pane_id}' | head -1)
   codex_panes[0]="$first_codex"
@@ -814,12 +818,10 @@ else
   session="${session//[^A-Za-z0-9_@-]/_}"
 fi
 
-# === tproj 関連セッションの一掃 ===
-tmux list-sessions -F '#{session_name} #{@tproj}' 2>/dev/null | while read sname tag; do
-  if [[ "$tag" == "true" ]]; then
-    tmux kill-session -t "$sname" 2>/dev/null || true
-  fi
-done
+# === 同名セッションがあれば再作成 ===
+if tmux has-session -t "$session" 2>/dev/null; then
+  tmux kill-session -t "$session" 2>/dev/null || true
+fi
 
 # === セッション作成 & ツール起動 ===
 if [[ "$WORKSPACE_MODE" == "true" ]]; then

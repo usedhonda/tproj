@@ -61,6 +61,21 @@ tproj          # 開発環境を起動（自動アップデート）
 tproj -n       # アップデートなしで起動（オフライン用）
 ```
 
+### GUI (macOS, SwiftUI)
+
+```bash
+cd ~/projects/claude/tproj/apps/tproj
+swift run tproj
+```
+
+`.app` として起動する場合:
+
+```bash
+cd ~/projects/claude/tproj/apps/tproj
+./build-app.sh
+open dist/tproj.app
+```
+
 ### ask-codexコマンド
 
 Claude Code内で `/ask-codex` を実行すると、Codexペインに質問を送信できます。
