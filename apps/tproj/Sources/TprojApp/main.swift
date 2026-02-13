@@ -28,6 +28,7 @@ struct WorkspaceProject: Identifiable {
 }
 
 struct LiveColumn: Identifiable {
+    let id = UUID()
     var column: Int
     var projectPath: String
     var hostLabel: String
@@ -37,8 +38,6 @@ struct LiveColumn: Identifiable {
     var codexPaneID: String?
     var yaziPaneID: String?
     var terminalPaneID: String?
-
-    var id: Int { column }
 
     var projectName: String {
         if projectPath.isEmpty { return "unknown" }
@@ -75,11 +74,6 @@ final class AppViewModel: ObservableObject {
         var paneID: String
         var role: String
         var column: Int?
-    }
-
-    private struct ColumnMeta {
-        var projectPath: String
-        var hostLabel: String
     }
 
     func onAppear() {
@@ -236,7 +230,18 @@ final class AppViewModel: ObservableObject {
             if res.exitCode != 0 { errors.append(trimmedError(res)) }
         }
 
-        _ = runCommand("/usr/bin/env", ["zsh", "-lc", "~/bin/rebalance-workspace-columns tproj-workspace || true"])
+        if let yazi = column.yaziPaneID {
+            let res = runCommand("/usr/bin/env", ["tmux", "kill-pane", "-t", yazi])
+            if res.exitCode != 0 { errors.append(trimmedError(res)) }
+        }
+
+        if let terminal = column.terminalPaneID {
+            let res = runCommand("/usr/bin/env", ["tmux", "kill-pane", "-t", terminal])
+            if res.exitCode != 0 { errors.append(trimmedError(res)) }
+        }
+
+        _ = runCommand("\(NSHomeDirectory())/bin/rebalance-workspace-columns", ["tproj-workspace"])
+        _ = await normalizeColumnsByVisualOrderAsync()
 
         if errors.isEmpty {
             statusText = "Removed column \(column.column)"
@@ -251,10 +256,15 @@ final class AppViewModel: ObservableObject {
         guard sourceColumn != targetColumn else { return }
         guard !isBusy else { return }
 
-        guard let sourceMeta = columnMeta(for: sourceColumn),
-              let targetMeta = columnMeta(for: targetColumn) else {
-            statusText = "Reorder failed: source/target metadata missing"
-            return
+        // Optimistic UI swap: build new array locally to avoid intermediate duplicate IDs
+        // (swapAt + column reassign fires @Published 3 times; the 2nd has duplicate id → SwiftUI hang)
+        if let srcIdx = liveColumns.firstIndex(where: { $0.column == sourceColumn }),
+           let tgtIdx = liveColumns.firstIndex(where: { $0.column == targetColumn }) {
+            var updated = liveColumns
+            updated.swapAt(srcIdx, tgtIdx)
+            updated[srcIdx].column = sourceColumn
+            updated[tgtIdx].column = targetColumn
+            liveColumns = updated  // single atomic @Published fire
         }
 
         isBusy = true
@@ -263,12 +273,14 @@ final class AppViewModel: ObservableObject {
         let agentsActive = await runCommandAsync("/usr/bin/env", ["tmux", "show-environment", "-t", "tproj-workspace", "TPROJ_AGENTS_ACTIVE"])
         if agentsActive.exitCode == 0 {
             statusText = "Reorder disabled while agent panes are active"
+            loadLiveColumns()
             return
         }
 
         let panes = await listWorkspacePanesAsync()
         guard !panes.isEmpty else {
             statusText = "Reorder failed: workspace panes not found"
+            loadLiveColumns()
             return
         }
 
@@ -277,22 +289,46 @@ final class AppViewModel: ObservableObject {
               let codexSource = paneID(forRole: "codex-p\(sourceColumn)", panes: panes),
               let codexTarget = paneID(forRole: "codex-p\(targetColumn)", panes: panes) else {
             statusText = "Reorder failed: required panes not found"
+            loadLiveColumns()
             return
         }
+
+        // Gather pre-swap metadata from claude panes
+        let srcMeta = await runCommandAsync("/usr/bin/env",
+            ["tmux", "display-message", "-t", claudeSource, "-p", "#{@project}|#{@remote_host}|#{@remote_path}|#{pane_left}"])
+        let tgtMeta = await runCommandAsync("/usr/bin/env",
+            ["tmux", "display-message", "-t", claudeTarget, "-p", "#{@project}|#{@remote_host}|#{@remote_path}"])
+
+        let srcParts = srcMeta.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        let tgtParts = tgtMeta.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+
+        let sourceProject = srcParts.count > 0 ? srcParts[0] : ""
+        let sourceRemoteHost = srcParts.count > 1 ? srcParts[1] : ""
+        let sourceRemotePath = srcParts.count > 2 ? srcParts[2] : ""
+        let sourceOriginalLeft = srcParts.count > 3 ? (Int(srcParts[3]) ?? -1) : -1
+
+        let targetProject = tgtParts.count > 0 ? tgtParts[0] : ""
+        let targetRemoteHost = tgtParts.count > 1 ? tgtParts[1] : ""
+        let targetRemotePath = tgtParts.count > 2 ? tgtParts[2] : ""
 
         let yaziSource = paneID(forRole: "yazi-p\(sourceColumn)", panes: panes)
         let yaziTarget = paneID(forRole: "yazi-p\(targetColumn)", panes: panes)
         let terminalSource = paneID(forRole: "terminal-p\(sourceColumn)", panes: panes)
         let terminalTarget = paneID(forRole: "terminal-p\(targetColumn)", panes: panes)
 
+        // Perform swap-pane operations
         let mainSwap1 = await runCommandAsync("/usr/bin/env", ["tmux", "swap-pane", "-s", claudeSource, "-t", claudeTarget])
         guard mainSwap1.exitCode == 0 else {
             statusText = "Reorder failed: \(trimmedError(mainSwap1))"
+            loadLiveColumns()
             return
         }
         let mainSwap2 = await runCommandAsync("/usr/bin/env", ["tmux", "swap-pane", "-s", codexSource, "-t", codexTarget])
         guard mainSwap2.exitCode == 0 else {
             statusText = "Reorder failed: \(trimmedError(mainSwap2))"
+            loadLiveColumns()
             return
         }
 
@@ -318,27 +354,30 @@ final class AppViewModel: ObservableObject {
             _ = await relocatePaneAboveCodexAsync(paneID: tt, codexPaneID: codexTarget)
         }
 
-        let relabel = await swapColumnTagsAndRolesAsync(sourceColumn: sourceColumn, targetColumn: targetColumn)
-        if !relabel {
-            statusText = "Reorder warning: role relabel failed"
+        // Detect if swap-pane moved panes physically (Case A) or just swapped content (Case B)
+        let check = await runCommandAsync("/usr/bin/env",
+            ["tmux", "display-message", "-t", claudeSource, "-p", "#{pane_left}"])
+        let srcLeftAfter = Int(check.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
+        let panesMoved = (srcLeftAfter != sourceOriginalLeft) && srcLeftAfter >= 0 && sourceOriginalLeft >= 0
+
+        if !panesMoved {
+            // Case B: content swapped but pane IDs stayed at original positions.
+            // @project tags are still at their original positions, explicitly swap them.
+            await swapProjectTagsAsync(
+                sourceColumn: sourceColumn, targetColumn: targetColumn,
+                sourceProject: sourceProject, sourceRemoteHost: sourceRemoteHost, sourceRemotePath: sourceRemotePath,
+                targetProject: targetProject, targetRemoteHost: targetRemoteHost, targetRemotePath: targetRemotePath
+            )
         }
 
-        let sync = await applyColumnMetadataSwap(
-            sourceColumn: sourceColumn,
-            targetColumn: targetColumn,
-            sourceMeta: sourceMeta,
-            targetMeta: targetMeta
-        )
-        if !sync {
-            statusText = "Reorder warning: metadata sync failed"
-        }
-
-        _ = await runCommandAsync("/usr/bin/env", ["zsh", "-lc", "~/bin/rebalance-workspace-columns tproj-workspace || true"])
+        // normalizeColumnsByVisualOrderAsync handles @column/@role for both cases
+        _ = await runCommandAsync("\(NSHomeDirectory())/bin/rebalance-workspace-columns", ["tproj-workspace"])
         let normalized = await normalizeColumnsByVisualOrderAsync()
         if !normalized {
             statusText = "Reorder warning: visual normalize failed"
         }
         loadLiveColumns()
+        refreshColumnIdentities()
         statusText = "Swapped #\(sourceColumn) and #\(targetColumn)"
     }
 
@@ -370,6 +409,17 @@ final class AppViewModel: ObservableObject {
             statusText = "Opened workspace.yaml"
         } else {
             statusText = "Failed to open workspace.yaml"
+        }
+    }
+
+    /// Replace all LiveColumns with fresh instances (new UUIDs) to reset macOS drag registrations.
+    private func refreshColumnIdentities() {
+        liveColumns = liveColumns.map {
+            LiveColumn(
+                column: $0.column, projectPath: $0.projectPath, hostLabel: $0.hostLabel,
+                width: $0.width, left: $0.left, claudePaneID: $0.claudePaneID,
+                codexPaneID: $0.codexPaneID, yaziPaneID: $0.yaziPaneID, terminalPaneID: $0.terminalPaneID
+            )
         }
     }
 
@@ -495,7 +545,7 @@ final class AppViewModel: ObservableObject {
             grouped[col] = entry
         }
 
-        liveColumns = grouped
+        let newData = grouped
             .values
             .sorted(by: {
                 if $0.left != $1.left { return $0.left < $1.left }
@@ -514,6 +564,30 @@ final class AppViewModel: ObservableObject {
                     terminalPaneID: $0.terminalPaneID
                 )
             }
+
+        // Merge: match by projectPath to preserve existing UUIDs (stable SwiftUI identity)
+        var used = Set<UUID>()
+        var merged: [LiveColumn] = []
+        for data in newData {
+            if !data.projectPath.isEmpty,
+               var existing = liveColumns.first(where: {
+                   $0.projectPath == data.projectPath && !used.contains($0.id)
+               }) {
+                used.insert(existing.id)
+                existing.column = data.column
+                existing.hostLabel = data.hostLabel
+                existing.width = data.width
+                existing.left = data.left
+                existing.claudePaneID = data.claudePaneID
+                existing.codexPaneID = data.codexPaneID
+                existing.yaziPaneID = data.yaziPaneID
+                existing.terminalPaneID = data.terminalPaneID
+                merged.append(existing)
+            } else {
+                merged.append(data)
+            }
+        }
+        liveColumns = merged
     }
 
     private func normalizeColumnsByVisualOrderAsync() async -> Bool {
@@ -632,102 +706,26 @@ final class AppViewModel: ObservableObject {
         return swap.exitCode == 0
     }
 
-    private func swapColumnTagsAndRolesAsync(sourceColumn: Int, targetColumn: Int) async -> Bool {
+    private func swapProjectTagsAsync(
+        sourceColumn: Int, targetColumn: Int,
+        sourceProject: String, sourceRemoteHost: String, sourceRemotePath: String,
+        targetProject: String, targetRemoteHost: String, targetRemotePath: String
+    ) async {
         let panes = await listWorkspacePanesAsync()
-        guard !panes.isEmpty else { return false }
-        var ok = true
         for pane in panes {
             guard let col = pane.column, col == sourceColumn || col == targetColumn else { continue }
-            let newCol = (col == sourceColumn) ? targetColumn : sourceColumn
-            let c = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@column", "\(newCol)"])
-            if c.exitCode != 0 { ok = false }
-
-            let newRole = swappedRoleColumnSuffix(pane.role, sourceColumn: sourceColumn, targetColumn: targetColumn)
-            if newRole != pane.role {
-                let r = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@role", newRole])
-                if r.exitCode != 0 { ok = false }
-            }
-        }
-        return ok
-    }
-
-    private func swappedRoleColumnSuffix(_ role: String, sourceColumn: Int, targetColumn: Int) -> String {
-        let pattern = "^(.*-p)(\\d+)(.*)$"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return role }
-        let range = NSRange(role.startIndex..<role.endIndex, in: role)
-        guard let match = regex.firstMatch(in: role, options: [], range: range),
-              match.numberOfRanges == 4,
-              let prefixRange = Range(match.range(at: 1), in: role),
-              let numberRange = Range(match.range(at: 2), in: role),
-              let suffixRange = Range(match.range(at: 3), in: role),
-              let n = Int(role[numberRange]) else {
-            return role
-        }
-
-        let swapped: Int
-        if n == sourceColumn {
-            swapped = targetColumn
-        } else if n == targetColumn {
-            swapped = sourceColumn
-        } else {
-            return role
-        }
-        return "\(role[prefixRange])\(swapped)\(role[suffixRange])"
-    }
-
-    private func columnMeta(for column: Int) -> ColumnMeta? {
-        guard let item = liveColumns.first(where: { $0.column == column }) else { return nil }
-        return ColumnMeta(projectPath: item.projectPath, hostLabel: item.hostLabel)
-    }
-
-    private func applyColumnMetadataSwap(
-        sourceColumn: Int,
-        targetColumn: Int,
-        sourceMeta: ColumnMeta,
-        targetMeta: ColumnMeta
-    ) async -> Bool {
-        let panes = await listWorkspacePanesAsync()
-        guard !panes.isEmpty else { return false }
-        var ok = true
-
-        for pane in panes {
-            guard let col = pane.column, col == sourceColumn || col == targetColumn else { continue }
-            let meta = (col == sourceColumn) ? targetMeta : sourceMeta
-            let projectTag = projectTagValue(for: meta)
-
-            let p = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@project", projectTag])
-            if p.exitCode != 0 { ok = false }
-
-            if let host = hostValue(from: meta.hostLabel) {
-                let h = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@remote_host", host])
-                let rp = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@remote_path", meta.projectPath])
-                if h.exitCode != 0 || rp.exitCode != 0 { ok = false }
+            if col == sourceColumn {
+                // Pane at source position -> should now reflect target's project data
+                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@project", targetProject])
+                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@remote_host", targetRemoteHost])
+                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@remote_path", targetRemotePath])
             } else {
-                let h = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@remote_host", ""])
-                let rp = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@remote_path", ""])
-                if h.exitCode != 0 || rp.exitCode != 0 { ok = false }
+                // Pane at target position -> should now reflect source's project data
+                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@project", sourceProject])
+                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@remote_host", sourceRemoteHost])
+                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@remote_path", sourceRemotePath])
             }
         }
-
-        return ok
-    }
-
-    private func projectTagValue(for meta: ColumnMeta) -> String {
-        if let host = hostValue(from: meta.hostLabel) {
-            let path = meta.projectPath.hasPrefix("/") ? meta.projectPath : "/\(meta.projectPath)"
-            return "ssh://\(host)\(path)"
-        }
-        return meta.projectPath
-    }
-
-    private func hostValue(from hostLabel: String) -> String? {
-        guard hostLabel != "local" else { return nil }
-        if hostLabel.hasPrefix("remote@") {
-            let v = String(hostLabel.dropFirst("remote@".count))
-            return v.isEmpty ? nil : v
-        }
-        let v = hostLabel.replacingOccurrences(of: "@", with: "")
-        return v.isEmpty || v == "remote" ? nil : v
     }
 
     private func hostForColumn(_ column: LiveColumn) -> String? {
@@ -1027,11 +1025,6 @@ struct ContentView: View {
                         } else {
                             ForEach(vm.liveColumns) { column in
                                 liveColumnRow(column)
-                                    .opacity(draggingColumnID == column.column ? 0.7 : 1.0)
-                                    .onDrag {
-                                        draggingColumnID = column.column
-                                        return NSItemProvider(object: NSString(string: "\(column.column)"))
-                                    }
                                     .onDrop(
                                         of: [UTType.text],
                                         delegate: ColumnDropDelegate(
@@ -1073,19 +1066,26 @@ struct ContentView: View {
 
     private func liveColumnRow(_ column: LiveColumn) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 4) {
-                    Text("#\(column.column)")
-                        .font(.system(size: 11, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(.white)
-                    pill(liveHostLabel(column), tint: column.hostLabel == "local" ? .green : .orange)
-                    Text(columnPrimaryName(column))
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                }
+            // Drag handle: only this header row is draggable
+            HStack(spacing: 4) {
+                Text("#\(column.column)")
+                    .font(.system(size: 11, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(.white)
+                pill(liveHostLabel(column), tint: column.hostLabel == "local" ? .green : .orange)
+                Text(columnPrimaryName(column))
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .opacity(draggingColumnID == column.column ? 0.7 : 1.0)
+            .onDrag {
+                draggingColumnID = column.column
+                return NSItemProvider(object: NSString(string: "\(column.column)"))
             }
 
+            // Buttons: outside onDrag so clicks always work
             HStack(spacing: 1) {
                 Spacer()
                 ActionButton("Yazi", tone: column.yaziPaneID == nil ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
@@ -1213,7 +1213,6 @@ struct ColumnDropDelegate: DropDelegate {
     let viewModel: AppViewModel
 
     func dropEntered(info: DropInfo) {
-        // Intentionally no-op: we only need performDrop.
     }
 
     func performDrop(info: DropInfo) -> Bool {
