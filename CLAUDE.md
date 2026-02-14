@@ -128,8 +128,21 @@ projects:
 ```
 
 **フィールド:**
-- `alias`: プロジェクト短縮名（省略時 = path の basename）。`tproj --add <alias>` で使用
-- `enabled`: 起動時の有効/無効（省略時 = true）。false だと起動時スキップだが `--add` で追加可能
+
+| フィールド | 型 | デフォルト | 必須 | 説明 |
+|-----------|------|-----------|------|------|
+| `path` | string | - | 必須 | プロジェクトのパス。ローカル: 絶対パス推奨。リモート: リモートホスト上のパス（`~` 可） |
+| `type` | `local` / `remote` | `local` | 任意 | プロジェクトの種類 |
+| `host` | string | - | `remote` 時必須 | SSH ホスト名（`~/.ssh/config` で定義済みのもの） |
+| `alias` | string | basename of path | 任意 | 短縮名。`tproj --add <alias>` で使用 |
+| `enabled` | bool | `true` | 任意 | `false`: 起動時スキップ、`tproj --add <alias>` で後から追加可能 |
+
+**`enabled: false` の使い方:**
+- プロジェクトをカタログとして登録しておき、必要な時だけ `tproj --add <alias>` で列に追加
+- 起動時のログに `[disabled]` と表示される
+- `tproj --check` で全プロジェクトの有効/無効状態を確認可能
+
+**注意:** 簡易形式と詳細形式は混在不可（最初のエントリの型で自動判定）。
 
 **セットアップ:**
 ```bash
@@ -148,7 +161,6 @@ tproj  # マルチプロジェクトモードで起動
 **制限:**
 - リモートモード (`-r`) はマルチモードでは使用不可
 - リモートプロジェクトには claude, codex, yazi が必要
-```
 
 ## codex スキル
 

@@ -5,27 +5,30 @@
 #   cp config/workspace.yaml.example ~/.config/tproj/workspace.yaml
 #
 # 編集後、tproj を実行するとマルチプロジェクトモードで起動します。
+# tproj --check で全プロジェクトの有効/無効状態を確認できます。
 
 # ========== 簡易形式（ローカルプロジェクトのみ） ==========
+#
+# パスの文字列リスト。全て type: local, enabled: true として扱われる。
 #
 # projects:
 #   - /Users/usedhonda/projects/claude/tproj
 #   - /Users/usedhonda/projects/claude/statusline
 #   - /Users/usedhonda/projects/claude/cc-status-bar
+#
+# 注意: 簡易形式と詳細形式は混在不可（最初のエントリの型で自動判定）
 
 # ========== 詳細形式（ローカル + リモートプロジェクト） ==========
 
 projects:
   # ローカルプロジェクト（起動時に有効）
   - path: /Users/usedhonda/projects/claude/tproj
-    type: local
     alias: tproj              # tproj --add tproj で追加可能
 
   # 別のローカルプロジェクト（起動時はスキップ、--add で追加可能）
   - path: /Users/usedhonda/projects/claude/statusline
-    type: local
     alias: sl
-    enabled: false            # 起動時は無効、tproj --add sl で追加
+    enabled: false            # 起動時は [disabled] 表示、tproj --add sl で追加
 
   # リモートプロジェクト（SSH）
   - path: /Users/usedhonda/projects/others/openclaw_general
@@ -35,25 +38,23 @@ projects:
 
 # ========== フィールド説明 ==========
 #
-# path:     プロジェクトのパス
-#           - ローカル: 絶対パス推奨（相対パスも可）
-#           - リモート: リモートホストのパス（~ も使用可）
+# フィールド    型               デフォルト         必須         説明
+# ------------ ---------------- ---------------- ------------ --------------------------
+# path         string           -                必須         プロジェクトのパス
+#                                                             ローカル: 絶対パス推奨
+#                                                             リモート: ホスト上のパス（~ 可）
+# type         local / remote   local            任意         プロジェクトの種類
+# host         string           -                remote時必須  SSH ホスト名
+#                                                             ~/.ssh/config で定義済みのもの
+# alias        string           pathのbasename   任意         短縮名
+#                                                             tproj --add <alias> で使用
+# enabled      bool             true             任意         false: 起動時スキップ
+#                                                             --add で後から追加可能
 #
-# type:     local または remote
-#           - 省略時は local
-#
-# host:     SSH ホスト名（remote の場合のみ必須）
-#           - ~/.ssh/config で定義済みのホスト名を使用
-#           - ユーザー名やポートは ~/.ssh/config で設定すること
-#
-# alias:    プロジェクトの短縮名（tproj --add <alias> で使用）
-#           - 省略時は path の basename
-#           - 例: alias: sl -> tproj --add sl
-#
-# enabled:  起動時の有効/無効（true または false）
-#           - 省略時は true
-#           - false: tproj 起動時はスキップされるが、--add で追加可能
-#           - カタログとして登録しておき、必要な時だけ追加する使い方
+# enabled: false の使い方:
+#   プロジェクトをカタログとして登録しておき、必要な時だけ
+#   tproj --add <alias> で列に追加する。
+#   起動時のログに [disabled] と表示される。
 
 # ========== 制限事項 ==========
 #

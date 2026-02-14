@@ -23,6 +23,8 @@ tproj - tmux project launcher
 
 Usage:
   tproj [OPTIONS]
+  tproj stop           Gracefully stop (Ctrl+C -> /exit -> wait -> kill)
+  tproj kill           Immediately kill all tproj sessions (tmux kill-session)
 
 Options:
   --add [ALIAS]      Add workspace column (no arg: duplicate current, with alias: from workspace.yaml)
@@ -77,6 +79,16 @@ ADD_MODE=false
 ADD_ALIAS=""
 CHECK_MODE=false
 
+# stop/kill サブコマンド
+if [[ "${1:-}" == "stop" ]]; then
+  stop_session
+  exit 0
+fi
+if [[ "${1:-}" == "kill" ]]; then
+  kill_session
+  exit 0
+fi
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) show_help; exit 0 ;;
@@ -125,6 +137,109 @@ build_pane_label() {
   echo "[$host_label] $project_name | $tool_kind"
 }
 
+# @tproj セッション一覧を取得（共通ヘルパー）
+find_tproj_sessions() {
+  tmux list-sessions -F '#{session_name}:#{@tproj}' 2>/dev/null \
+    | grep ':true$' | cut -d: -f1
+}
+
+# セッション即時終了（tmux kill-session のみ）
+kill_session() {
+  local sessions
+  sessions=$(find_tproj_sessions) || true
+
+  if [[ -z "$sessions" ]]; then
+    echo "No active tproj session" >&2
+    return 0
+  fi
+
+  while IFS= read -r session; do
+    [[ -z "$session" ]] && continue
+    pkill -TERM -f "bin/team-watcher" 2>/dev/null || true
+    tmux kill-session -t "$session" 2>/dev/null || true
+  done <<< "$sessions"
+
+  rm -f /tmp/tproj-dead-agents
+  echo "Session killed" >&2
+}
+
+# セッショングレースフル終了（CC/Codex に終了シグナル送信後 kill）
+stop_session() {
+  local sessions panes pane_info pane_id role waited
+
+  sessions=$(find_tproj_sessions) || true
+
+  if [[ -z "$sessions" ]]; then
+    echo "No active tproj session" >&2
+    return 0
+  fi
+
+  while IFS= read -r session; do
+    [[ -z "$session" ]] && continue
+
+    # 全ウィンドウのペイン一覧（dev + git）
+    panes=$(tmux list-panes -s -t "$session" -F '#{pane_id}:#{@role}' 2>/dev/null) || continue
+
+    # Phase 1: グレースフル終了シグナル
+    while IFS= read -r pane_info; do
+      [[ -z "$pane_info" ]] && continue
+      pane_id="${pane_info%%:*}"
+      role="${pane_info#*:}"
+
+      case "$role" in
+        claude|claude-p*)
+          tmux send-keys -t "$pane_id" C-c 2>/dev/null || true
+          ;;
+        codex|codex-p*)
+          tmux send-keys -t "$pane_id" C-c 2>/dev/null || true
+          ;;
+        yazi|yazi-p*)
+          tmux send-keys -t "$pane_id" q 2>/dev/null || true
+          ;;
+        agent-*)
+          tmux send-keys -t "$pane_id" C-c 2>/dev/null || true
+          ;;
+      esac
+    done <<< "$panes"
+
+    # Ctrl+C の効果を待つ
+    sleep 0.3
+
+    # Claude Code / Agent ペインに /exit を送信
+    while IFS= read -r pane_info; do
+      [[ -z "$pane_info" ]] && continue
+      pane_id="${pane_info%%:*}"
+      role="${pane_info#*:}"
+
+      case "$role" in
+        claude|claude-p*|agent-*)
+          tmux send-keys -t "$pane_id" "/exit" C-m 2>/dev/null || true
+          ;;
+      esac
+    done <<< "$panes"
+
+    # Phase 2: グレースフル終了待機（最大3秒）
+    waited=0
+    while [[ $waited -lt 30 ]]; do
+      if ! tmux has-session -t "$session" 2>/dev/null; then
+        break
+      fi
+      sleep 0.1
+      ((waited++)) || true
+    done
+
+    # team-watcher デーモンを停止
+    pkill -TERM -f "bin/team-watcher" 2>/dev/null || true
+
+    # Phase 3: 残存セッションを強制終了
+    tmux kill-session -t "$session" 2>/dev/null || true
+  done <<< "$sessions"
+
+  # 一時ファイルのクリーンアップ
+  rm -f /tmp/tproj-dead-agents
+
+  echo "Session stopped" >&2
+}
 
 # 既存 tproj-workspace に右列を追加
 # 引数なし: 現在のペインのプロジェクトを複製
@@ -210,15 +325,15 @@ add_workspace_column() {
   }
   new_col=$((max_col + 1))
 
-  right_claude="$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' 2>/dev/null \
-    | grep ":claude-p${max_col}$" | cut -d: -f1)"
-  [[ -z "$right_claude" ]] && {
-    echo "Error: rightmost claude pane (claude-p${max_col}) not found" >&2
+  right_codex="$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' 2>/dev/null \
+    | grep ":codex-p${max_col}$" | cut -d: -f1)"
+  [[ -z "$right_codex" ]] && {
+    echo "Error: rightmost codex pane (codex-p${max_col}) not found" >&2
     exit 1
   }
 
-  new_claude="$(tmux split-window -h -t "$right_claude" -c "$src_dir" -P -F '#{pane_id}')"
-  new_codex="$(tmux split-window -v -t "$new_claude" -c "$src_dir" -l 30% -P -F '#{pane_id}')"
+  new_codex="$(tmux split-window -fh -t "$right_codex" -c "$src_dir" -P -F '#{pane_id}')"
+  new_claude="$(tmux split-window -v -t "$new_codex" -c "$src_dir" -l 70% -P -F '#{pane_id}')"
   sleep 0.3
 
   tmux set-option -pt "$new_claude" @role "claude-p${new_col}"
