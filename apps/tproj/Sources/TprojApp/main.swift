@@ -70,6 +70,11 @@ final class AppViewModel: ObservableObject {
         !selectedAlias.isEmpty && !isBusy
     }
 
+    var inactiveProjects: [WorkspaceProject] {
+        let livePaths = Set(liveColumns.map { $0.projectPath })
+        return workspaceProjects.filter { !livePaths.contains($0.path) }
+    }
+
     private struct PaneInfo {
         var paneID: String
         var role: String
@@ -108,13 +113,16 @@ final class AppViewModel: ObservableObject {
             statusText = "No project selected"
             return
         }
+        await addColumnByAlias(selectedAlias)
+    }
 
+    func addColumnByAlias(_ alias: String) async {
         isBusy = true
         defer { isBusy = false }
 
-        let result = runCommand("/usr/bin/env", ["tproj", "--add", selectedAlias])
+        let result = await runCommandAsync("/usr/bin/env", ["tproj", "--add", alias])
         if result.exitCode == 0 {
-            statusText = "Added column: \(selectedAlias)"
+            statusText = "Added column: \(alias)"
             loadLiveColumns()
         } else {
             statusText = "Add failed: \(trimmedError(result))"
@@ -131,7 +139,7 @@ final class AppViewModel: ObservableObject {
         defer { isBusy = false }
 
         let scriptPath = "\(NSHomeDirectory())/bin/tproj-toggle-yazi"
-        let result = runCommand("/usr/bin/env", [scriptPath, "tproj-workspace", pane])
+        let result = await runCommandAsync("/usr/bin/env", [scriptPath, "tproj-workspace", pane])
         if result.exitCode == 0 {
             statusText = "Toggled Yazi for #\(column.column)"
         } else {
@@ -141,68 +149,72 @@ final class AppViewModel: ObservableObject {
     }
 
     func toggleTerminal(for column: LiveColumn) async {
-        guard let codexPane = column.codexPaneID else {
-            statusText = "No Codex pane found for column \(column.column)"
-            return
-        }
-
         isBusy = true
         defer { isBusy = false }
 
         let sessionTarget = "tproj-workspace:dev"
-        let listResult = runCommand("/usr/bin/env", ["tmux", "list-panes", "-t", sessionTarget, "-F", "#{pane_id}:#{@role}"])
+        let listResult = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", sessionTarget, "-F", "#{pane_id}:#{@role}"])
         guard listResult.exitCode == 0 else {
-            statusText = "Terminal toggle failed: \(trimmedError(listResult))"
-            return
-        }
-
-        let roleName = "terminal-p\(column.column)"
-        let existingTerminal = listResult.stdout
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map(String.init)
-            .compactMap { line -> String? in
-                let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-                guard parts.count == 2 else { return nil }
-                return parts[1] == roleName ? parts[0] : nil
-            }
-            .first
-
-        if let terminalPane = existingTerminal {
-            let killResult = runCommand("/usr/bin/env", ["tmux", "kill-pane", "-t", terminalPane])
-            if killResult.exitCode == 0 {
-                statusText = "Terminal off for #\(column.column)"
-            } else {
-                statusText = "Terminal off failed: \(trimmedError(killResult))"
-            }
+            statusText = "Term: \(trimmedError(listResult))"
             loadLiveColumns()
             return
         }
 
-        let createResult = runCommand("/usr/bin/env", ["tmux", "split-window", "-v", "-b", "-t", codexPane, "-c", "/tmp", "-l", "25%", "-P", "-F", "#{pane_id}"])
+        let roleName = "terminal-p\(column.column)"
+        let paneRoles: [(id: String, role: String)] = listResult.stdout
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+            .compactMap { line in
+                let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                guard parts.count == 2 else { return nil }
+                return (id: parts[0], role: parts[1])
+            }
+
+        // Toggle off: kill existing terminal
+        if let existing = paneRoles.first(where: { $0.role == roleName }) {
+            let killResult = await runCommandAsync("/usr/bin/env", ["tmux", "kill-pane", "-t", existing.id])
+            statusText = killResult.exitCode == 0
+                ? "Terminal off for #\(column.column)"
+                : "Term off failed: \(trimmedError(killResult))"
+            loadLiveColumns()
+            return
+        }
+
+        // Toggle on: find target pane from fresh list (codex preferred, claude fallback)
+        guard let targetPane = paneRoles.first(where: { $0.role == "codex-p\(column.column)" })?.id
+                ?? paneRoles.first(where: { $0.role == "claude-p\(column.column)" })?.id else {
+            statusText = "Term: no pane for #\(column.column)"
+            return
+        }
+
+        let createResult = await runCommandAsync("/usr/bin/env", [
+            "tmux", "split-window", "-v", "-b", "-t", targetPane,
+            "-c", "/tmp", "-l", "25%", "-P", "-F", "#{pane_id}"
+        ])
         guard createResult.exitCode == 0 else {
-            statusText = "Terminal on failed: \(trimmedError(createResult))"
+            statusText = "Term[\(createResult.exitCode)]: \(trimmedError(createResult))"
             return
         }
 
         let newPane = createResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        if newPane.isEmpty {
-            statusText = "Terminal on failed: missing pane id"
+        guard !newPane.isEmpty else {
+            statusText = "Term: empty pane id"
             return
         }
 
-        _ = runCommand("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@role", roleName])
-        _ = runCommand("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@column", "\(column.column)"])
-        _ = runCommand("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@project", column.projectPath])
+        // Set @role immediately to prevent reflow-agent-pane hook from misidentifying this pane
+        _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@role", roleName])
+        _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@column", "\(column.column)"])
+        _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@project", column.projectPath])
 
         if let host = hostForColumn(column) {
-            _ = runCommand("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_host", host])
-            _ = runCommand("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_path", column.projectPath])
+            _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_host", host])
+            _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_path", column.projectPath])
             let remoteCmd = "ssh -t \(shellSingleQuote(host)) \"cd \(shellDoubleQuote(column.projectPath)) && exec \\$SHELL -l\""
-            _ = runCommand("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, remoteCmd, "C-m"])
+            _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, remoteCmd, "C-m"])
         } else {
             let localDir = column.projectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? NSHomeDirectory() : column.projectPath
-            let localCmd = "cd \(shellSingleQuote(localDir)) && exec \\$SHELL -l"
-            _ = runCommand("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, localCmd, "C-m"])
+            _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, "cd \(shellSingleQuote(localDir)) && exec $SHELL -l", "C-m"])
         }
 
         statusText = "Terminal on for #\(column.column)"
@@ -221,26 +233,26 @@ final class AppViewModel: ObservableObject {
         var errors: [String] = []
 
         if let codex = column.codexPaneID {
-            let res = runCommand("/usr/bin/env", ["tmux", "kill-pane", "-t", codex])
+            let res = await runCommandAsync("/usr/bin/env", ["tmux", "kill-pane", "-t", codex])
             if res.exitCode != 0 { errors.append(trimmedError(res)) }
         }
 
         if let claude = column.claudePaneID {
-            let res = runCommand("/usr/bin/env", ["tmux", "kill-pane", "-t", claude])
+            let res = await runCommandAsync("/usr/bin/env", ["tmux", "kill-pane", "-t", claude])
             if res.exitCode != 0 { errors.append(trimmedError(res)) }
         }
 
         if let yazi = column.yaziPaneID {
-            let res = runCommand("/usr/bin/env", ["tmux", "kill-pane", "-t", yazi])
+            let res = await runCommandAsync("/usr/bin/env", ["tmux", "kill-pane", "-t", yazi])
             if res.exitCode != 0 { errors.append(trimmedError(res)) }
         }
 
         if let terminal = column.terminalPaneID {
-            let res = runCommand("/usr/bin/env", ["tmux", "kill-pane", "-t", terminal])
+            let res = await runCommandAsync("/usr/bin/env", ["tmux", "kill-pane", "-t", terminal])
             if res.exitCode != 0 { errors.append(trimmedError(res)) }
         }
 
-        _ = runCommand("\(NSHomeDirectory())/bin/rebalance-workspace-columns", ["tproj-workspace"])
+        _ = await runCommandAsync("\(NSHomeDirectory())/bin/rebalance-workspace-columns", ["tproj-workspace"])
         _ = await normalizeColumnsByVisualOrderAsync()
 
         if errors.isEmpty {
@@ -409,6 +421,34 @@ final class AppViewModel: ObservableObject {
             statusText = "Opened workspace.yaml"
         } else {
             statusText = "Failed to open workspace.yaml"
+        }
+    }
+
+    func stopSession() async {
+        isBusy = true
+        defer { isBusy = false }
+
+        let tprojPath = "\(NSHomeDirectory())/bin/tproj"
+        let result = await runCommandAsync(tprojPath, ["stop"])
+        if result.exitCode == 0 {
+            statusText = "Session stopped"
+            liveColumns = []
+        } else {
+            statusText = "Stop failed: \(trimmedError(result))"
+        }
+    }
+
+    func killSession() async {
+        isBusy = true
+        defer { isBusy = false }
+
+        let tprojPath = "\(NSHomeDirectory())/bin/tproj"
+        let result = await runCommandAsync(tprojPath, ["kill"])
+        if result.exitCode == 0 {
+            statusText = "Session killed"
+            liveColumns = []
+        } else {
+            statusText = "Kill failed: \(trimmedError(result))"
         }
     }
 
@@ -758,19 +798,23 @@ final class AppViewModel: ObservableObject {
 
         for project in workspaceProjects {
             lines.append("  - path: \(yamlQuote(project.path))")
-            lines.append("    type: \(project.type == "remote" ? "remote" : "local")")
+
+            // type: only write when remote (local is default)
+            if project.type == "remote" {
+                lines.append("    type: remote")
+                let host = project.host.trimmingCharacters(in: .whitespacesAndNewlines)
+                lines.append("    host: \(yamlQuote(host))")
+            }
 
             let alias = project.alias.trimmingCharacters(in: .whitespacesAndNewlines)
             if !alias.isEmpty {
                 lines.append("    alias: \(yamlQuote(alias))")
             }
 
-            if project.type == "remote" {
-                let host = project.host.trimmingCharacters(in: .whitespacesAndNewlines)
-                lines.append("    host: \(yamlQuote(host))")
+            // enabled: only write when false (true is default)
+            if !project.enabled {
+                lines.append("    enabled: false")
             }
-
-            lines.append("    enabled: \(project.enabled ? "true" : "false")")
         }
 
         return lines.joined(separator: "\n") + "\n"
@@ -996,26 +1040,20 @@ struct ContentView: View {
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                             Spacer()
-                            ActionButton("R", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                            if !vm.liveColumns.isEmpty {
+                                ActionButton("End", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                                    Task { await vm.stopSession() }
+                                }
+                                .fixedSize()
+                                ActionButton("Force", tone: .danger, isEnabled: !vm.isBusy, dense: true) {
+                                    Task { await vm.killSession() }
+                                }
+                                .fixedSize()
+                            }
+                            ActionButton("Sync", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
                                 Task { await vm.refreshAll() }
                             }
-                            .frame(width: 22)
-                        }
-
-                        HStack(spacing: 2) {
-                            Picker("Project", selection: $vm.selectedAlias) {
-                                ForEach(vm.workspaceProjects.map { $0.effectiveAlias }, id: \.self) { alias in
-                                    Text(alias).tag(alias)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .labelsHidden()
-                            .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading)
-
-                            ActionButton("A", tone: .primary, isEnabled: vm.canAddColumn, dense: true) {
-                                Task { await vm.addColumn() }
-                            }
-                            .frame(width: 22)
+                            .fixedSize()
                         }
 
                         if vm.liveColumns.isEmpty {
@@ -1033,6 +1071,9 @@ struct ContentView: View {
                                             viewModel: vm
                                         )
                                     )
+                            }
+                            ForEach(vm.inactiveProjects) { project in
+                                inactiveProjectRow(project)
                             }
                         }
                     }
@@ -1106,6 +1147,27 @@ struct ContentView: View {
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(Color.white.opacity(0.05))
+        )
+    }
+
+    private func inactiveProjectRow(_ project: WorkspaceProject) -> some View {
+        HStack(spacing: 4) {
+            pill(project.type == "remote" ? "@\(project.host)" : "lcl",
+                 tint: project.type == "remote" ? .orange : .green)
+            Text(project.effectiveAlias)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.5))
+                .lineLimit(1)
+            Spacer()
+            ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
+                Task { await vm.addColumnByAlias(project.effectiveAlias) }
+            }
+            .frame(width: 34)
+        }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.white.opacity(0.02))
         )
     }
 
