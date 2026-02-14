@@ -1,0 +1,324 @@
+#!/bin/bash
+set -euo pipefail
+
+# tproj-msg - Inter-pane messaging CLI for tproj
+#
+# Usage:
+#   tproj-msg <target> <message>        Send message (wait for response)
+#   tproj-msg --fire <target> <message> Send without waiting
+#   tproj-msg --list                    List available targets
+#   tproj-msg --read <target> [lines]   Read target's recent output
+#
+# Target formats:
+#   <role>          Same column / single mode (cc, cdx)
+#   <alias>.<role>  Specific column (tproj.cc, sl.cdx)
+#   <alias>         Alias only -> defaults to <alias>.cc
+#   agent-<name>    Agent pane
+
+show_usage() {
+  cat << 'EOF'
+tproj-msg - Inter-pane messaging
+
+Usage:
+  tproj-msg <target> <message>        Send message (wait for response)
+  tproj-msg --fire <target> <message> Send without waiting
+  tproj-msg --list                    List available targets
+  tproj-msg --read <target> [lines]   Read target's recent output
+
+Target formats:
+  cc, cdx           Same column / single mode
+  <alias>.cc        Specific column's Claude Code
+  <alias>.cdx       Specific column's Codex
+  <alias>           Defaults to <alias>.cc
+  agent-<name>      Agent pane
+
+Examples:
+  tproj-msg cdx "What do you think about this approach?"
+  tproj-msg sl.cc "Can you review the config change?"
+  tproj-msg --fire agent-reviewer "Check this file"
+  tproj-msg --list
+  tproj-msg --read cdx 50
+EOF
+}
+
+# === Pre-flight: tmux check ===
+if [[ -z "${TMUX:-}" ]]; then
+  echo "Error: must be run inside tmux" >&2
+  exit 1
+fi
+
+# === Session detection ===
+SESSION=$(tmux display-message -p '#S')
+IS_WORKSPACE=false
+[[ "$SESSION" == "tproj-workspace" ]] && IS_WORKSPACE=true
+
+# === Sender info (for prefix) ===
+MY_PANE="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
+MY_ALIAS=$(tmux display-message -t "$MY_PANE" -p '#{@alias}' 2>/dev/null || true)
+MY_ROLE_RAW=$(tmux display-message -t "$MY_PANE" -p '#{@role}' 2>/dev/null || true)
+MY_COLUMN=$(tmux display-message -t "$MY_PANE" -p '#{@column}' 2>/dev/null || true)
+
+# Role shorthand: claude/claude-pN -> cc, codex/codex-pN -> cdx, agent-* -> as-is
+role_to_short() {
+  local r="$1"
+  case "$r" in
+    claude|claude-p*) echo "cc" ;;
+    codex|codex-p*)   echo "cdx" ;;
+    *)                echo "$r" ;;
+  esac
+}
+
+# Short to role pattern (for matching @role tags)
+short_to_role_pattern() {
+  local short="$1"
+  local col="${2:-}"
+  case "$short" in
+    cc)
+      if [[ -n "$col" ]]; then
+        echo "claude-p${col}"
+      else
+        echo "claude"
+      fi
+      ;;
+    cdx)
+      if [[ -n "$col" ]]; then
+        echo "codex-p${col}"
+      else
+        echo "codex"
+      fi
+      ;;
+    *)
+      echo "$short"
+      ;;
+  esac
+}
+
+MY_ROLE=$(role_to_short "$MY_ROLE_RAW")
+
+# === Parse arguments ===
+FIRE_MODE=false
+LIST_MODE=false
+READ_MODE=false
+TARGET=""
+MESSAGE=""
+READ_LINES=50
+
+if [[ $# -eq 0 ]]; then
+  show_usage
+  exit 0
+fi
+
+case "$1" in
+  -h|--help)
+    show_usage
+    exit 0
+    ;;
+  --fire)
+    FIRE_MODE=true
+    shift
+    [[ $# -lt 2 ]] && { echo "Error: --fire requires <target> <message>" >&2; exit 1; }
+    TARGET="$1"; shift
+    MESSAGE="$*"
+    ;;
+  --list)
+    LIST_MODE=true
+    ;;
+  --read)
+    READ_MODE=true
+    shift
+    [[ $# -lt 1 ]] && { echo "Error: --read requires <target>" >&2; exit 1; }
+    TARGET="$1"; shift
+    [[ $# -gt 0 ]] && READ_LINES="$1"
+    ;;
+  *)
+    [[ $# -lt 2 ]] && { echo "Error: requires <target> <message>" >&2; show_usage; exit 1; }
+    TARGET="$1"; shift
+    MESSAGE="$*"
+    ;;
+esac
+
+# === --list mode ===
+if [[ "$LIST_MODE" == "true" ]]; then
+  echo "Available targets ($SESSION):"
+  echo ""
+
+  if [[ "$IS_WORKSPACE" == "true" ]]; then
+    # Workspace mode: list all panes with @role and @alias
+    tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null | \
+    while IFS=: read -r pane_id role pane_alias col; do
+      [[ -z "$role" || "$role" == "null" ]] && continue
+      short=$(role_to_short "$role")
+      # Skip yazi panes
+      case "$role" in
+        yazi|yazi-p*) continue ;;
+      esac
+      [[ -z "$pane_alias" || "$pane_alias" == "null" ]] && pane_alias="col${col}"
+      printf "  %-20s  %s (col %s)\n" "${pane_alias}.${short}" "$role" "$col"
+    done
+  else
+    # Single mode: list cc, cdx, agents
+    tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}' 2>/dev/null | \
+    while IFS=: read -r pane_id role pane_alias; do
+      [[ -z "$role" || "$role" == "null" ]] && continue
+      short=$(role_to_short "$role")
+      # Skip yazi panes
+      case "$role" in
+        yazi|yazi-p*) continue ;;
+      esac
+      printf "  %-20s  %s\n" "$short" "$role"
+    done
+  fi
+  exit 0
+fi
+
+# === Target resolution ===
+resolve_target() {
+  local target="$1"
+  local target_alias="" target_role="" target_col=""
+
+  # Parse target format
+  if [[ "$target" == agent-* ]]; then
+    # agent-<name> -> match @role directly
+    target_role="$target"
+  elif [[ "$target" == *.* ]]; then
+    # <alias>.<role>
+    target_alias="${target%%.*}"
+    target_role="${target#*.}"
+  elif [[ "$target" == "cc" || "$target" == "cdx" ]]; then
+    # Short role name -> same column / single mode
+    target_role="$target"
+  else
+    # Bare alias -> defaults to <alias>.cc
+    target_alias="$target"
+    target_role="cc"
+  fi
+
+  local pane_list
+  pane_list=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null)
+
+  if [[ "$target" == agent-* ]]; then
+    # Agent: match @role prefix
+    echo "$pane_list" | while IFS=: read -r pid prole palias pcol; do
+      if [[ "$prole" == "$target_role" ]]; then
+        echo "$pid"
+        return 0
+      fi
+    done
+    return 1
+  fi
+
+  if [[ "$IS_WORKSPACE" == "true" ]]; then
+    # Workspace mode
+    if [[ -n "$target_alias" ]]; then
+      # Match by alias + role
+      local role_pattern
+      # First find the column for this alias
+      local found_col=""
+      while IFS=: read -r pid prole palias pcol; do
+        if [[ "$palias" == "$target_alias" ]]; then
+          found_col="$pcol"
+          break
+        fi
+      done <<< "$pane_list"
+
+      if [[ -z "$found_col" ]]; then
+        echo "Error: alias '$target_alias' not found" >&2
+        return 1
+      fi
+
+      role_pattern=$(short_to_role_pattern "$target_role" "$found_col")
+      while IFS=: read -r pid prole palias pcol; do
+        if [[ "$prole" == "$role_pattern" ]]; then
+          echo "$pid"
+          return 0
+        fi
+      done <<< "$pane_list"
+    else
+      # Same column
+      local role_pattern
+      role_pattern=$(short_to_role_pattern "$target_role" "$MY_COLUMN")
+      while IFS=: read -r pid prole palias pcol; do
+        if [[ "$prole" == "$role_pattern" ]]; then
+          echo "$pid"
+          return 0
+        fi
+      done <<< "$pane_list"
+    fi
+  else
+    # Single mode
+    local role_pattern
+    role_pattern=$(short_to_role_pattern "$target_role")
+    while IFS=: read -r pid prole palias pcol; do
+      if [[ "$prole" == "$role_pattern" ]]; then
+        echo "$pid"
+        return 0
+      fi
+    done <<< "$pane_list"
+  fi
+
+  return 1
+}
+
+TARGET_PANE=$(resolve_target "$TARGET")
+if [[ -z "$TARGET_PANE" ]]; then
+  echo "Error: target '$TARGET' not found" >&2
+  echo "" >&2
+  echo "Available targets:" >&2
+  "$0" --list >&2
+  exit 1
+fi
+
+# === --read mode ===
+if [[ "$READ_MODE" == "true" ]]; then
+  tmux capture-pane -t "$TARGET_PANE" -p -S "-${READ_LINES}"
+  exit 0
+fi
+
+# === Send message ===
+# Build prefix
+if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
+  HEADER="[from:${MY_ALIAS}.${MY_ROLE}]"
+else
+  HEADER="[from:${MY_ROLE}]"
+fi
+
+# Send with literal mode
+tmux send-keys -l -t "$TARGET_PANE" "${HEADER} ${MESSAGE}"
+sleep 0.5
+tmux send-keys -t "$TARGET_PANE" Enter
+
+echo "Sent to $TARGET: ${HEADER} ${MESSAGE}" >&2
+
+# === Response wait (unless --fire) ===
+if [[ "$FIRE_MODE" == "true" ]]; then
+  exit 0
+fi
+
+# Wait for response: detect output stall (no change for 10s)
+PREV_OUTPUT=""
+NO_CHANGE_COUNT=0
+NO_CHANGE_THRESHOLD=20  # 0.5s x 20 = 10s stall detection
+MAX_WAIT=600             # 0.5s x 600 = 5 min timeout
+
+echo "Waiting for response..." >&2
+
+for ((i=1; i<=MAX_WAIT; i++)); do
+  sleep 0.5
+  OUTPUT=$(tmux capture-pane -t "$TARGET_PANE" -p | tr -cd '\11\12\15\40-\176')
+
+  if [[ "$OUTPUT" == "$PREV_OUTPUT" ]]; then
+    ((NO_CHANGE_COUNT++)) || true
+    if [[ $NO_CHANGE_COUNT -ge $NO_CHANGE_THRESHOLD ]]; then
+      echo "Response complete (output stable)" >&2
+      tmux capture-pane -t "$TARGET_PANE" -p -S -80
+      exit 0
+    fi
+  else
+    NO_CHANGE_COUNT=0
+  fi
+  PREV_OUTPUT="$OUTPUT"
+done
+
+echo "Timeout (5 min)" >&2
+tmux capture-pane -t "$TARGET_PANE" -p -S -30
+exit 1

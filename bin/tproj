@@ -143,6 +143,62 @@ find_tproj_sessions() {
     | grep ':true$' | cut -d: -f1
 }
 
+# Collect all descendant PIDs of given PIDs (BFS via pgrep -P)
+collect_descendant_pids() {
+  local queue=("$@")
+  local all=()
+  while [[ ${#queue[@]} -gt 0 ]]; do
+    local cur="${queue[0]}"
+    queue=("${queue[@]:1}")
+    local ch
+    ch=$(pgrep -P "$cur" 2>/dev/null) || true
+    while IFS= read -r c; do
+      [[ -n "$c" ]] && all+=("$c") && queue+=("$c")
+    done <<< "$ch"
+  done
+  printf '%s\n' "${all[@]}"
+}
+
+# Collect descendant PIDs from all panes of given tproj sessions
+collect_session_descendants() {
+  local sessions="$1"
+  local pane_pids_arr=()
+  while IFS= read -r sess; do
+    [[ -z "$sess" ]] && continue
+    local pp
+    pp=$(tmux list-panes -s -t "$sess" -F '#{pane_pid}' 2>/dev/null) || continue
+    while IFS= read -r p; do
+      [[ -n "$p" ]] && pane_pids_arr+=("$p")
+    done <<< "$pp"
+  done <<< "$sessions"
+  [[ ${#pane_pids_arr[@]} -eq 0 ]] && return 0
+  collect_descendant_pids "${pane_pids_arr[@]}"
+}
+
+# Kill orphaned MCP server processes (PPID=1 = reparented to launchd)
+cleanup_orphaned_mcp() {
+  local orphans
+  orphans=$(ps -eo pid=,ppid=,command= 2>/dev/null | \
+    awk '$2 == 1' | \
+    grep -E '(context7-mcp|playwright-mcp|chrome-ai-bridge|claude-in-chrome-mcp|@playwright/mcp|@upstash/context7)' | \
+    awk '{print $1}') || true
+  [[ -z "$orphans" ]] && return 0
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
+  done <<< "$orphans"
+}
+
+# Kill surviving descendant processes after session termination
+kill_surviving_descendants() {
+  local desc_pids="$1"
+  [[ -z "$desc_pids" ]] && return 0
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    # Only kill if still running
+    kill -0 "$pid" 2>/dev/null && kill -TERM "$pid" 2>/dev/null || true
+  done <<< "$desc_pids"
+}
+
 # セッション即時終了（tmux kill-session のみ）
 kill_session() {
   local sessions
@@ -153,11 +209,19 @@ kill_session() {
     return 0
   fi
 
+  # Collect descendant PIDs before killing (to clean up MCP servers)
+  local desc_pids
+  desc_pids=$(collect_session_descendants "$sessions") || true
+
   while IFS= read -r session; do
     [[ -z "$session" ]] && continue
     pkill -TERM -f "bin/team-watcher" 2>/dev/null || true
     tmux kill-session -t "$session" 2>/dev/null || true
   done <<< "$sessions"
+
+  # Kill surviving MCP server processes
+  kill_surviving_descendants "$desc_pids"
+  cleanup_orphaned_mcp
 
   rm -f /tmp/tproj-dead-agents
   echo "Session killed" >&2
@@ -173,6 +237,10 @@ stop_session() {
     echo "No active tproj session" >&2
     return 0
   fi
+
+  # Collect descendant PIDs before stopping (to clean up MCP servers)
+  local desc_pids
+  desc_pids=$(collect_session_descendants "$sessions") || true
 
   while IFS= read -r session; do
     [[ -z "$session" ]] && continue
@@ -235,6 +303,10 @@ stop_session() {
     tmux kill-session -t "$session" 2>/dev/null || true
   done <<< "$sessions"
 
+  # Kill surviving MCP server processes
+  kill_surviving_descendants "$desc_pids"
+  cleanup_orphaned_mcp
+
   # 一時ファイルのクリーンアップ
   rm -f /tmp/tproj-dead-agents
 
@@ -243,14 +315,15 @@ stop_session() {
 
 # 既存 tproj-workspace に右列を追加
 # 引数なし: 現在のペインのプロジェクトを複製
-# 引数あり: add_workspace_column <path> <type> <host>
+# 引数あり: add_workspace_column <path> <type> <host> [alias]
 add_workspace_column() {
   local explicit_path="${1:-}"
   local explicit_type="${2:-}"
   local explicit_host="${3:-}"
+  local explicit_alias="${4:-}"
   local session="tproj-workspace"
   local src_pane src_project src_remote_host src_remote_path
-  local src_type src_host src_path src_dir
+  local src_type src_host src_path src_dir src_alias
   local parsed parsed_host parsed_path
   local max_col new_col
   local right_claude new_claude new_codex
@@ -276,6 +349,7 @@ add_workspace_column() {
     src_type="$explicit_type"
     src_host="$explicit_host"
     src_path="$explicit_path"
+    src_alias="${explicit_alias:-$(basename "$src_path")}"
     src_dir="$src_path"
     [[ "$src_type" == "remote" ]] && src_dir="/tmp"
   else
@@ -290,6 +364,7 @@ add_workspace_column() {
     src_project="$(tmux display-message -t "$src_pane" -p '#{@project}' 2>/dev/null || true)"
     src_remote_host="$(tmux display-message -t "$src_pane" -p '#{@remote_host}' 2>/dev/null || true)"
     src_remote_path="$(tmux display-message -t "$src_pane" -p '#{@remote_path}' 2>/dev/null || true)"
+    src_alias="$(tmux display-message -t "$src_pane" -p '#{@alias}' 2>/dev/null || true)"
 
     if [[ "$src_project" == ssh://* ]]; then
       src_type="remote"
@@ -336,10 +411,15 @@ add_workspace_column() {
   new_claude="$(tmux split-window -v -t "$new_codex" -c "$src_dir" -l 70% -P -F '#{pane_id}')"
   sleep 0.3
 
+  # src_alias フォールバック
+  [[ -z "${src_alias:-}" ]] && src_alias="$(basename "$src_path")"
+
   tmux set-option -pt "$new_claude" @role "claude-p${new_col}"
   tmux set-option -pt "$new_codex" @role "codex-p${new_col}"
   tmux set-option -pt "$new_claude" @column "$new_col"
   tmux set-option -pt "$new_codex" @column "$new_col"
+  tmux set-option -pt "$new_claude" @alias "$src_alias"
+  tmux set-option -pt "$new_codex" @alias "$src_alias"
 
   claude_title="$(build_pane_label "$src_type" "$src_host" "$src_path" "CC")"
   codex_title="$(build_pane_label "$src_type" "$src_host" "$src_path" "Codex")"
@@ -412,6 +492,7 @@ declare -a CATALOG_ALIASES
 declare -a PROJECT_PATHS
 declare -a PROJECT_TYPES
 declare -a PROJECT_HOSTS
+declare -a PROJECT_ALIASES
 
 parse_workspace_yaml() {
   echo "📋 Workspace: $WORKSPACE_CONFIG" >&2
@@ -519,6 +600,7 @@ parse_workspace_yaml() {
     PROJECT_PATHS+=("$proj_path")
     PROJECT_TYPES+=("$proj_type")
     PROJECT_HOSTS+=("$proj_host")
+    PROJECT_ALIASES+=("$proj_alias")
 
     if [[ "$proj_type" == "remote" ]]; then
       echo "  ✅ [remote@$proj_host] $proj_path (alias: $proj_alias)" >&2
@@ -645,7 +727,7 @@ if [[ "$ADD_MODE" == "true" ]]; then
   }
   if [[ -n "$ADD_ALIAS" ]]; then
     if resolve_alias_to_project "$ADD_ALIAS"; then
-      add_workspace_column "$RESOLVED_PATH" "$RESOLVED_TYPE" "$RESOLVED_HOST"
+      add_workspace_column "$RESOLVED_PATH" "$RESOLVED_TYPE" "$RESOLVED_HOST" "$ADD_ALIAS"
     else
       echo "Error: Unknown alias '$ADD_ALIAS'" >&2
       echo "" >&2
@@ -664,13 +746,13 @@ fi
 # === ワークスペースモード用関数 ===
 
 # マルチ列レイアウト構築
-# 引数: session paths[@] types[@] hosts[@]
+# 引数: session paths[@] -- types[@] -- hosts[@] -- aliases[@]
 create_workspace_layout() {
   local session="$1"
   shift
 
-  # 配列を分離（paths, types, hosts）
-  local -a paths types hosts
+  # 配列を分離（paths, types, hosts, aliases）
+  local -a paths types hosts aliases
   local num_projects=0
 
   # 最初の配列終了まで paths に格納
@@ -689,8 +771,15 @@ create_workspace_layout() {
   shift  # "--" をスキップ
 
   # hosts を格納
-  while [[ $# -gt 0 ]]; do
+  while [[ $# -gt 0 && "$1" != "--" ]]; do
     hosts+=("$1")
+    shift
+  done
+  shift  # "--" をスキップ
+
+  # aliases を格納
+  while [[ $# -gt 0 ]]; do
+    aliases+=("$1")
     shift
   done
 
@@ -751,6 +840,8 @@ create_workspace_layout() {
     tmux set-option -pt "$claude_pane" @role "claude-p$i"
     tmux set-option -pt "$codex_pane" @column "$i"
     tmux set-option -pt "$claude_pane" @column "$i"
+    tmux set-option -pt "$codex_pane" @alias "${aliases[$((i-1))]}"
+    tmux set-option -pt "$claude_pane" @alias "${aliases[$((i-1))]}"
 
     # ペインタイトル設定
     local codex_title claude_title
@@ -799,14 +890,14 @@ create_workspace_layout() {
 }
 
 # プロジェクト別ツール起動
-# 引数: session no_update paths[@] types[@] hosts[@]
+# 引数: session no_update paths[@] -- types[@] -- hosts[@] -- aliases[@]
 start_workspace_tools() {
   local session="$1"
   local no_update="$2"
   shift 2
 
-  # 配列を分離（paths, types, hosts）
-  local -a paths types hosts
+  # 配列を分離（paths, types, hosts, aliases）
+  local -a paths types hosts aliases
   local num_projects=0
 
   # 最初の配列終了まで paths に格納
@@ -825,8 +916,15 @@ start_workspace_tools() {
   shift  # "--" をスキップ
 
   # hosts を格納
-  while [[ $# -gt 0 ]]; do
+  while [[ $# -gt 0 && "$1" != "--" ]]; do
     hosts+=("$1")
+    shift
+  done
+  shift  # "--" をスキップ
+
+  # aliases を格納
+  while [[ $# -gt 0 ]]; do
+    aliases+=("$1")
     shift
   done
 
@@ -935,14 +1033,20 @@ fi
 
 # === 同名セッションがあれば再作成 ===
 if tmux has-session -t "$session" 2>/dev/null; then
+  # Collect descendant PIDs before killing (MCP servers etc.)
+  local_desc=$(collect_session_descendants "$session") || true
   tmux kill-session -t "$session" 2>/dev/null || true
+  kill_surviving_descendants "$local_desc"
 fi
+
+# Clean up orphaned MCP server processes from previous sessions
+cleanup_orphaned_mcp
 
 # === セッション作成 & ツール起動 ===
 if [[ "$WORKSPACE_MODE" == "true" ]]; then
     # --- マルチプロジェクトモード ---
-    create_workspace_layout "$session" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}"
-    start_workspace_tools "$session" "$NO_UPDATE" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}"
+    create_workspace_layout "$session" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}" -- "${PROJECT_ALIASES[@]}"
+    start_workspace_tools "$session" "$NO_UPDATE" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}" -- "${PROJECT_ALIASES[@]}"
 
     tmux select-window -t "$session:dev"
   else
@@ -965,6 +1069,9 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
     tmux set-option -pt "$session:dev.1" @role "claude"
     tmux set-option -pt "$session:dev.2" @role "codex"
     tmux set-option -pt "$session:dev.3" @role "yazi"
+    tmux set-option -pt "$session:dev.1" @alias "$name"
+    tmux set-option -pt "$session:dev.2" @alias "$name"
+    tmux set-option -pt "$session:dev.3" @alias "$name"
 
     # 3.1) ペインタイトル設定（Claude/Codexのみ）
     title_host="local"

@@ -9,6 +9,7 @@ tproj/
 ├── install.sh                    # インストーラ
 ├── bin/
 │   ├── tproj                    # tmuxセッション起動スクリプト
+│   ├── tproj-msg                # ペイン間メッセージングCLI
 │   ├── agent-monitor            # Agent Teams 個別エージェント状態表示
 │   ├── team-watcher             # Agent Teams フックベースペイン管理デーモン
 │   └── reflow-agent-pane        # tmux after-split-window フックスクリプト
@@ -21,8 +22,10 @@ tproj/
 │   │       ├── open-finder.yazi/
 │   │       ├── open-terminal.yazi/
 │   │       └── copy-path.yazi/
-│   └── claude/skills/           # Claude Codeスキル
-│       └── codex/               # Codex連携スキル
+│   ├── claude/skills/           # Claude Codeスキル
+│   │   └── codex/               # Codex連携スキル
+│   └── codex/skills/            # Codexスキル
+│       └── msg/                 # AI間通信リファレンス
 └── docs/
     └── reference/
         └── agent-teams.md       # Agent Teams 完全リファレンス

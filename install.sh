@@ -227,20 +227,22 @@ fi
 if $DRY_RUN; then
   echo "[DRY-RUN] 📦 tproj -> ~/bin/"
   echo "[DRY-RUN] 📦 tproj-toggle-yazi -> ~/bin/"
+  echo "[DRY-RUN] 📦 tproj-msg -> ~/bin/"
   echo "[DRY-RUN] 📦 agent-monitor -> ~/bin/"
   echo "[DRY-RUN] 📦 team-watcher -> ~/bin/"
   echo "[DRY-RUN] 📦 reflow-agent-pane -> ~/bin/"
 else
-  echo "📦 tproj, tproj-toggle-yazi, agent-monitor, team-watcher, reflow-agent-pane, rebalance-workspace-columns, sign-codex -> ~/bin/"
+  echo "📦 tproj, tproj-toggle-yazi, tproj-msg, agent-monitor, team-watcher, reflow-agent-pane, rebalance-workspace-columns, sign-codex -> ~/bin/"
   mkdir -p ~/bin
   cp "$SCRIPT_DIR/bin/tproj" ~/bin/tproj
   cp "$SCRIPT_DIR/bin/tproj-toggle-yazi" ~/bin/tproj-toggle-yazi
+  cp "$SCRIPT_DIR/bin/tproj-msg" ~/bin/tproj-msg
   cp "$SCRIPT_DIR/bin/agent-monitor" ~/bin/agent-monitor
   cp "$SCRIPT_DIR/bin/team-watcher" ~/bin/team-watcher
   cp "$SCRIPT_DIR/bin/reflow-agent-pane" ~/bin/reflow-agent-pane
   cp "$SCRIPT_DIR/bin/rebalance-workspace-columns" ~/bin/rebalance-workspace-columns
   cp "$SCRIPT_DIR/bin/sign-codex" ~/bin/sign-codex
-  chmod +x ~/bin/tproj ~/bin/tproj-toggle-yazi ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/rebalance-workspace-columns ~/bin/sign-codex
+  chmod +x ~/bin/tproj ~/bin/tproj-toggle-yazi ~/bin/tproj-msg ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/rebalance-workspace-columns ~/bin/sign-codex
 fi
 
 # 4.2 tmux 設定
@@ -299,6 +301,15 @@ else
   cp -r "$SCRIPT_DIR/config/claude/skills/"* ~/.claude/skills/
 fi
 
+# 4.7 Codex スキル
+if $DRY_RUN; then
+  echo "[DRY-RUN] 📦 Codex skills -> ~/.codex/skills/"
+else
+  echo "📦 Codex skills -> ~/.codex/skills/"
+  mkdir -p ~/.codex/skills
+  cp -r "$SCRIPT_DIR/config/codex/skills/"* ~/.codex/skills/
+fi
+
 # ========== 5. PATH自動設定 ==========
 
 if [[ ":$PATH:" != *":$HOME/bin:"* ]]; then
@@ -350,6 +361,7 @@ echo ""
 echo "📍 インストール先:"
 echo "   ~/bin/tproj"
 echo "   ~/bin/tproj-toggle-yazi"
+echo "   ~/bin/tproj-msg"
 echo "   ~/bin/agent-monitor"
 echo "   ~/bin/team-watcher"
 echo "   ~/bin/reflow-agent-pane"
@@ -357,6 +369,7 @@ echo "   ~/.tmux.conf"
 echo "   ~/.config/yazi/"
 echo "   ~/.claude/commands/"
 echo "   ~/.claude/skills/"
+echo "   ~/.codex/skills/"
 echo ""
 echo "💡 使い方:"
 echo "   単一プロジェクト: cd <project> && tproj"

@@ -428,27 +428,190 @@ final class AppViewModel: ObservableObject {
         isBusy = true
         defer { isBusy = false }
 
-        let tprojPath = "\(NSHomeDirectory())/bin/tproj"
-        let result = await runCommandAsync(tprojPath, ["stop"])
-        if result.exitCode == 0 {
-            statusText = "Session stopped"
+        let sessions = await getTprojSessions()
+        guard !sessions.isEmpty else {
+            statusText = "No tproj sessions found"
             liveColumns = []
-        } else {
-            statusText = "Stop failed: \(trimmedError(result))"
+            return
         }
+
+        // Collect descendant PIDs before stopping (to clean up MCP servers)
+        let descendantPids = await collectSessionDescendants(sessions: sessions)
+
+        // Phase 1: Send graceful exit signals to each pane by role
+        for session in sessions {
+            let listResult = await runCommandAsync("/usr/bin/env", [
+                "tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_id}:#{@role}"
+            ])
+            guard listResult.exitCode == 0 else { continue }
+
+            let paneRoles: [(id: String, role: String)] = listResult.stdout
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .map(String.init)
+                .compactMap { line in
+                    let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                    guard parts.count == 2 else { return nil }
+                    return (id: parts[0], role: parts[1])
+                }
+
+            // Send C-c to claude/codex/agent panes, q to yazi panes
+            for pane in paneRoles {
+                if pane.role.hasPrefix("claude") || pane.role.hasPrefix("codex") || pane.role.hasPrefix("agent") {
+                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "C-c", ""])
+                } else if pane.role.hasPrefix("yazi") {
+                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "q", ""])
+                }
+            }
+
+            // Brief pause for C-c to take effect
+            try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
+
+            // Send /exit to claude/agent panes
+            for pane in paneRoles {
+                if pane.role.hasPrefix("claude") || pane.role.hasPrefix("agent") {
+                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "/exit", "Enter"])
+                }
+            }
+        }
+
+        // Phase 2: Poll has-session for up to 3 seconds
+        let deadline = Date().addingTimeInterval(3.0)
+        while Date() < deadline {
+            let allGone = await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
+                for session in sessions {
+                    group.addTask {
+                        let r = await self.runCommandAsync("/usr/bin/env", ["tmux", "has-session", "-t", session])
+                        return r.exitCode != 0 // true = session gone
+                    }
+                }
+                var results: [Bool] = []
+                for await result in group { results.append(result) }
+                return results.allSatisfy { $0 }
+            }
+            if allGone { break }
+            try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
+        }
+
+        // Kill team-watcher
+        _ = await runCommandAsync("/usr/bin/env", ["pkill", "-TERM", "-f", "bin/team-watcher"])
+
+        // Phase 3: Force kill remaining sessions
+        for session in sessions {
+            _ = await runCommandAsync("/usr/bin/env", ["tmux", "kill-session", "-t", session])
+        }
+
+        // Clean up surviving MCP server processes
+        await killSurvivingDescendants(descendantPids)
+        await cleanupOrphanedMcp()
+
+        // Clean up dead-agents file
+        try? FileManager.default.removeItem(atPath: "/tmp/tproj-dead-agents")
+
+        statusText = "Session stopped"
+        liveColumns = []
     }
 
     func killSession() async {
         isBusy = true
         defer { isBusy = false }
 
-        let tprojPath = "\(NSHomeDirectory())/bin/tproj"
-        let result = await runCommandAsync(tprojPath, ["kill"])
-        if result.exitCode == 0 {
-            statusText = "Session killed"
+        let sessions = await getTprojSessions()
+        guard !sessions.isEmpty else {
+            statusText = "No tproj sessions found"
             liveColumns = []
-        } else {
-            statusText = "Kill failed: \(trimmedError(result))"
+            return
+        }
+
+        // Collect descendant PIDs before killing (to clean up MCP servers)
+        let descendantPids = await collectSessionDescendants(sessions: sessions)
+
+        // Kill team-watcher first
+        _ = await runCommandAsync("/usr/bin/env", ["pkill", "-TERM", "-f", "bin/team-watcher"])
+
+        // Kill all tproj sessions
+        for session in sessions {
+            _ = await runCommandAsync("/usr/bin/env", ["tmux", "kill-session", "-t", session])
+        }
+
+        // Clean up surviving MCP server processes
+        await killSurvivingDescendants(descendantPids)
+        await cleanupOrphanedMcp()
+
+        // Clean up dead-agents file
+        try? FileManager.default.removeItem(atPath: "/tmp/tproj-dead-agents")
+
+        statusText = "Session killed"
+        liveColumns = []
+    }
+
+    /// Get all tmux sessions with @tproj=true tag
+    private func getTprojSessions() async -> [String] {
+        let result = await runCommandAsync("/usr/bin/env", [
+            "tmux", "list-sessions", "-F", "#{session_name}:#{@tproj}"
+        ])
+        guard result.exitCode == 0 else { return [] }
+        return result.stdout
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+            .compactMap { line in
+                let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                guard parts.count == 2, parts[1] == "true" else { return nil }
+                return parts[0]
+            }
+    }
+
+    /// Collect all descendant PIDs from panes of given sessions (BFS via pgrep -P)
+    private func collectSessionDescendants(sessions: [String]) async -> Set<Int32> {
+        var panePids: [Int32] = []
+        for session in sessions {
+            let result = await runCommandAsync("/usr/bin/env", [
+                "tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_pid}"
+            ])
+            guard result.exitCode == 0 else { continue }
+            let pids = result.stdout
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .compactMap { Int32($0) }
+            panePids.append(contentsOf: pids)
+        }
+
+        // BFS: collect all descendants
+        var allDescendants = Set<Int32>()
+        var queue = panePids
+        while !queue.isEmpty {
+            let current = queue.removeFirst()
+            let pgrepResult = await runCommandAsync("/usr/bin/env", ["pgrep", "-P", "\(current)"])
+            guard pgrepResult.exitCode == 0 else { continue }
+            let children = pgrepResult.stdout
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .compactMap { Int32($0) }
+            for child in children {
+                if allDescendants.insert(child).inserted {
+                    queue.append(child)
+                }
+            }
+        }
+        return allDescendants
+    }
+
+    /// Kill surviving descendant processes after session termination
+    private func killSurvivingDescendants(_ pids: Set<Int32>) async {
+        for pid in pids {
+            kill(pid, SIGTERM)
+        }
+    }
+
+    /// Kill orphaned MCP server processes (PPID=1, reparented to launchd)
+    private func cleanupOrphanedMcp() async {
+        let result = await runCommandAsync("/usr/bin/env", [
+            "sh", "-c",
+            "ps -eo pid=,ppid=,command= 2>/dev/null | awk '$2 == 1' | grep -E '(context7-mcp|playwright-mcp|chrome-ai-bridge|claude-in-chrome-mcp|@playwright/mcp|@upstash/context7)' | awk '{print $1}'"
+        ])
+        guard result.exitCode == 0 else { return }
+        let orphanPids = result.stdout
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .compactMap { Int32($0) }
+        for pid in orphanPids {
+            kill(pid, SIGTERM)
         }
     }
 
@@ -1072,9 +1235,9 @@ struct ContentView: View {
                                         )
                                     )
                             }
-                            ForEach(vm.inactiveProjects) { project in
-                                inactiveProjectRow(project)
-                            }
+                        }
+                        ForEach(vm.inactiveProjects) { project in
+                            inactiveProjectRow(project)
                         }
                     }
 
