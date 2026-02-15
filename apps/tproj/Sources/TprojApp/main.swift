@@ -4,6 +4,169 @@ import AppKit
 import CoreMIDI
 import UniformTypeIdentifiers
 
+// MARK: - Ghostty Theme
+
+private extension Color {
+    func brighten(_ amount: Double) -> Color {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard let c = NSColor(self).usingColorSpace(.sRGB) else { return self }
+        c.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return Color(red: min(Double(r) + amount, 1.0),
+                     green: min(Double(g) + amount, 1.0),
+                     blue: min(Double(b) + amount, 1.0))
+    }
+}
+
+struct GhosttyTheme {
+    let background: Color
+    let foreground: Color
+    let cursorColor: Color
+    let selectionBg: Color
+    let selectionFg: Color
+    let palette: [Color]
+    let fontFamily: String?
+    let fontSize: CGFloat
+    let backgroundOpacity: Double
+
+    var backgroundLighter: Color { background.brighten(0.10) }
+    var cardBackground: Color { background.brighten(0.04) }
+    var cardBorder: Color { foreground.opacity(0.06) }
+    var textPrimary: Color { foreground }
+    var textSecondary: Color { foreground.opacity(0.7) }
+    var textTertiary: Color { foreground.opacity(0.35) }
+    var accentBlue: Color { palette.indices.contains(4) ? palette[4] : .blue }
+    var accentRed: Color { palette.indices.contains(1) ? palette[1] : .red }
+    var accentGreen: Color { palette.indices.contains(2) ? palette[2] : .green }
+    var accentYellow: Color { palette.indices.contains(3) ? palette[3] : .yellow }
+    var accentCyan: Color { palette.indices.contains(6) ? palette[6] : .cyan }
+
+    func font(size: CGFloat, weight: Font.Weight, monospaced: Bool = false) -> Font {
+        if let family = fontFamily,
+           NSFontManager.shared.availableMembers(ofFontFamily: family) != nil {
+            return Font.custom(family, size: size).weight(weight)
+        }
+        return Font.system(size: size, weight: weight, design: monospaced ? .monospaced : .default)
+    }
+
+    static let current = GhosttyConfigParser.load()
+
+    static let fallback = GhosttyTheme(
+        background: Color(red: 0.05, green: 0.06, blue: 0.08),
+        foreground: .white,
+        cursorColor: .white,
+        selectionBg: Color(red: 0.3, green: 0.3, blue: 0.3),
+        selectionFg: .white,
+        palette: [
+            Color(red: 0.27, green: 0.27, blue: 0.27), .red, .green, .orange,
+            .blue, .purple, .cyan, Color(red: 0.75, green: 0.75, blue: 0.75),
+            Color(red: 0.5, green: 0.5, blue: 0.5), .red, .green, .yellow,
+            .blue, .purple, .cyan, .white
+        ],
+        fontFamily: nil,
+        fontSize: 14,
+        backgroundOpacity: 1.0
+    )
+}
+
+enum GhosttyConfigParser {
+    private struct ParsedConfig {
+        var settings: [String: String] = [:]
+        var palette: [Int: String] = [:]
+    }
+
+    static func load() -> GhosttyTheme {
+        let home = NSHomeDirectory()
+        let configPath = "\(home)/.config/ghostty/config"
+
+        guard let config = parseFile(configPath) else { return .fallback }
+
+        var merged = ParsedConfig()
+        if let themeName = config.settings["theme"],
+           let themeConfig = loadTheme(themeName, home: home) {
+            merged.settings = themeConfig.settings
+            merged.palette = themeConfig.palette
+        }
+
+        for (key, value) in config.settings { merged.settings[key] = value }
+        for (index, hex) in config.palette { merged.palette[index] = hex }
+
+        return buildTheme(from: merged)
+    }
+
+    private static func parseFile(_ filePath: String) -> ParsedConfig? {
+        guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else { return nil }
+        var config = ParsedConfig()
+        for line in content.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            guard let eqIdx = trimmed.firstIndex(of: "=") else { continue }
+            let key = trimmed[..<eqIdx].trimmingCharacters(in: .whitespaces)
+            let rawValue = String(trimmed[trimmed.index(after: eqIdx)...]).trimmingCharacters(in: .whitespaces)
+            if key == "palette" {
+                if let innerEq = rawValue.firstIndex(of: "=") {
+                    let idxStr = rawValue[..<innerEq].trimmingCharacters(in: .whitespaces)
+                    let colorHex = String(rawValue[rawValue.index(after: innerEq)...]).trimmingCharacters(in: .whitespaces)
+                    if let idx = Int(idxStr) { config.palette[idx] = colorHex }
+                }
+            } else {
+                config.settings[key] = rawValue
+            }
+        }
+        return config
+    }
+
+    private static func loadTheme(_ name: String, home: String) -> ParsedConfig? {
+        let candidates = [
+            "\(home)/.config/ghostty/themes/\(name)",
+            "/Applications/Ghostty.app/Contents/Resources/ghostty/themes/\(name)"
+        ]
+        for candidatePath in candidates {
+            if let config = parseFile(candidatePath),
+               !config.settings.isEmpty || !config.palette.isEmpty {
+                return config
+            }
+        }
+        return nil
+    }
+
+    private static func buildTheme(from config: ParsedConfig) -> GhosttyTheme {
+        var palette = GhosttyTheme.fallback.palette
+        for (index, hex) in config.palette {
+            if palette.indices.contains(index), let color = parseHex(hex) {
+                palette[index] = color
+            }
+        }
+
+        let bg = config.settings["background"].flatMap(parseHex) ?? GhosttyTheme.fallback.background
+        let fg = config.settings["foreground"].flatMap(parseHex) ?? GhosttyTheme.fallback.foreground
+
+        return GhosttyTheme(
+            background: bg,
+            foreground: fg,
+            cursorColor: config.settings["cursor-color"].flatMap(parseHex) ?? fg,
+            selectionBg: config.settings["selection-background"].flatMap(parseHex) ?? GhosttyTheme.fallback.selectionBg,
+            selectionFg: config.settings["selection-foreground"].flatMap(parseHex) ?? fg,
+            palette: palette,
+            fontFamily: config.settings["font-family"],
+            fontSize: config.settings["font-size"].flatMap { CGFloat(Double($0) ?? 14) } ?? 14,
+            backgroundOpacity: config.settings["background-opacity"].flatMap(Double.init) ?? 1.0
+        )
+    }
+
+    private static func parseHex(_ hex: String) -> Color? {
+        var h = hex.trimmingCharacters(in: .whitespaces)
+        if h.hasPrefix("#") { h = String(h.dropFirst()) }
+        guard h.count == 6, let val = UInt64(h, radix: 16) else { return nil }
+        return Color(
+            red: Double((val >> 16) & 0xFF) / 255.0,
+            green: Double((val >> 8) & 0xFF) / 255.0,
+            blue: Double(val & 0xFF) / 255.0
+        )
+    }
+}
+
+// MARK: - Data Models
+
 struct WorkspaceProject: Identifiable {
     let id = UUID()
     var path: String
@@ -1346,11 +1509,11 @@ struct Card<Content: View>: View {
         .padding(chrome ? (compact ? 2 : 6) : 0)
         .background {
             if chrome {
-                RoundedRectangle(cornerRadius: compact ? 5 : 8, style: .continuous)
-                    .fill(.black.opacity(0.28))
+                RoundedRectangle(cornerRadius: compact ? 2 : 3, style: .continuous)
+                    .fill(GhosttyTheme.current.cardBackground)
                     .overlay(
-                        RoundedRectangle(cornerRadius: compact ? 5 : 8, style: .continuous)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: compact ? 2 : 3, style: .continuous)
+                            .stroke(GhosttyTheme.current.cardBorder, lineWidth: 1)
                     )
             }
         }
@@ -1361,10 +1524,15 @@ struct SectionHeader: View {
     let title: String
 
     var body: some View {
-        Text(title)
-            .font(.system(size: 16, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white)
-            .padding(.leading, 1)
+        HStack(spacing: 4) {
+            Rectangle()
+                .fill(GhosttyTheme.current.foreground.opacity(0.15))
+                .frame(width: 12, height: 1)
+            Text(title)
+                .font(GhosttyTheme.current.font(size: 16, weight: .semibold))
+                .foregroundStyle(GhosttyTheme.current.textPrimary)
+        }
+        .padding(.leading, 1)
     }
 }
 
@@ -1384,17 +1552,17 @@ struct ActionButtonStyle: ButtonStyle {
         let pressed = configuration.isPressed && isEnabled
 
         return configuration.label
-            .font(.system(size: dense ? 11 : 13, weight: .semibold, design: .rounded))
+            .font(GhosttyTheme.current.font(size: dense ? 11 : 13, weight: .semibold))
             .foregroundStyle(foregroundColor)
             .padding(.horizontal, dense ? 4 : 12)
             .padding(.vertical, dense ? 2 : 8)
             .frame(minHeight: dense ? 18 : 32)
             .background(
-                RoundedRectangle(cornerRadius: dense ? 5 : 9, style: .continuous)
+                RoundedRectangle(cornerRadius: dense ? 3 : 4, style: .continuous)
                     .fill(backgroundColor(pressed: pressed))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: dense ? 5 : 9, style: .continuous)
+                RoundedRectangle(cornerRadius: dense ? 3 : 4, style: .continuous)
                     .stroke(borderColor(pressed: pressed), lineWidth: 1)
             )
             .scaleEffect(pressed ? 0.98 : (isHovered && isEnabled ? 1.02 : 1.0))
@@ -1404,38 +1572,41 @@ struct ActionButtonStyle: ButtonStyle {
     }
 
     private var foregroundColor: Color {
+        let t = GhosttyTheme.current
         switch tone {
         case .neutral:
-            return .white.opacity(0.92)
+            return t.textPrimary.opacity(0.92)
         case .primary:
-            return .white
+            return t.textPrimary
         case .danger:
-            return .red.opacity(0.95)
+            return t.accentRed.opacity(0.95)
         }
     }
 
     private func backgroundColor(pressed: Bool) -> Color {
+        let t = GhosttyTheme.current
         switch tone {
         case .neutral:
-            if pressed { return .white.opacity(0.22) }
-            return isHovered ? .white.opacity(0.16) : .white.opacity(0.08)
+            if pressed { return t.selectionBg.opacity(0.6) }
+            return isHovered ? t.selectionBg.opacity(0.4) : t.foreground.opacity(0.08)
         case .primary:
-            if pressed { return .blue.opacity(0.75) }
-            return isHovered ? .blue.opacity(0.62) : .blue.opacity(0.46)
+            if pressed { return t.accentBlue.opacity(0.75) }
+            return isHovered ? t.accentBlue.opacity(0.62) : t.accentBlue.opacity(0.46)
         case .danger:
-            if pressed { return .red.opacity(0.26) }
-            return isHovered ? .red.opacity(0.20) : .red.opacity(0.12)
+            if pressed { return t.accentRed.opacity(0.26) }
+            return isHovered ? t.accentRed.opacity(0.20) : t.accentRed.opacity(0.12)
         }
     }
 
     private func borderColor(pressed: Bool) -> Color {
+        let t = GhosttyTheme.current
         switch tone {
         case .neutral:
-            return pressed ? .white.opacity(0.55) : .white.opacity(isHovered ? 0.44 : 0.20)
+            return pressed ? t.foreground.opacity(0.55) : t.foreground.opacity(isHovered ? 0.44 : 0.20)
         case .primary:
-            return pressed ? .blue.opacity(0.95) : .blue.opacity(isHovered ? 0.88 : 0.72)
+            return pressed ? t.accentBlue.opacity(0.95) : t.accentBlue.opacity(isHovered ? 0.88 : 0.72)
         case .danger:
-            return pressed ? .red.opacity(0.82) : .red.opacity(isHovered ? 0.74 : 0.52)
+            return pressed ? t.accentRed.opacity(0.82) : t.accentRed.opacity(isHovered ? 0.74 : 0.52)
         }
     }
 }
@@ -1486,15 +1657,9 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.08, green: 0.10, blue: 0.13),
-                    Color(red: 0.05, green: 0.06, blue: 0.08)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
+            GhosttyTheme.current.background
+                .opacity(GhosttyTheme.current.backgroundOpacity)
+                .ignoresSafeArea()
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
@@ -1502,8 +1667,8 @@ struct ContentView: View {
                     Card(compact: true, chrome: false) {
                         HStack(spacing: 4) {
                             Text(compactStatus(vm.statusText))
-                                .font(.system(size: 11, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.74))
+                                .font(GhosttyTheme.current.font(size: 11, weight: .medium))
+                                .foregroundStyle(GhosttyTheme.current.textSecondary)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                             Spacer()
@@ -1529,8 +1694,8 @@ struct ContentView: View {
 
                         if vm.liveColumns.isEmpty {
                             Text("No active columns in tproj-workspace")
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.68))
+                                .font(GhosttyTheme.current.font(size: 12, weight: .medium))
+                                .foregroundStyle(GhosttyTheme.current.textSecondary)
                         } else {
                             ForEach(vm.liveColumns) { column in
                                 liveColumnRow(column)
@@ -1573,6 +1738,10 @@ struct ContentView: View {
         .background(
             WindowAccessor { window in
                 window.level = .floating
+                if GhosttyTheme.current.backgroundOpacity < 1.0 {
+                    window.backgroundColor = .clear
+                    window.isOpaque = false
+                }
             }
         )
     }
@@ -1585,12 +1754,12 @@ struct ContentView: View {
             // Header row
             HStack(spacing: 4) {
                 Text("#\(column.column)")
-                    .font(.system(size: 11, weight: .heavy, design: .monospaced))
-                    .foregroundStyle(.white)
-                pill(liveHostLabel(column), tint: column.hostLabel == "local" ? .green : .orange)
+                    .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
+                    .foregroundStyle(GhosttyTheme.current.textPrimary)
+                pill(liveHostLabel(column), tint: column.hostLabel == "local" ? GhosttyTheme.current.accentGreen : GhosttyTheme.current.accentYellow)
                 Text(columnPrimaryName(column))
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
+                    .foregroundStyle(GhosttyTheme.current.textPrimary)
                     .lineLimit(1)
                 Spacer()
             }
@@ -1612,17 +1781,24 @@ struct ContentView: View {
                 .frame(width: 38)
             }
         }
-        .padding(2)
+        .padding(.vertical, 2)
+        .padding(.leading, 6)
+        .padding(.trailing, 2)
         .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isDragging ? Color.cyan.opacity(0.15)
-                      : isDropTarget ? Color.cyan.opacity(0.10)
-                      : Color.white.opacity(0.05))
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(isDragging ? GhosttyTheme.current.accentCyan.opacity(0.15)
+                      : isDropTarget ? GhosttyTheme.current.accentCyan.opacity(0.10)
+                      : GhosttyTheme.current.foreground.opacity(0.05))
         )
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 1)
+                .fill(GhosttyTheme.current.accentCyan)
+                .frame(width: 2)
+        }
         .overlay(
             isDragging
-                ? RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(Color.cyan.opacity(0.4), lineWidth: 1)
+                ? RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .strokeBorder(GhosttyTheme.current.accentCyan.opacity(0.4), lineWidth: 1)
                 : nil
         )
         .padding(.vertical, 1)
@@ -1639,13 +1815,13 @@ struct ContentView: View {
             // Header row (same layout as liveColumnRow)
             HStack(spacing: 4) {
                 Text("--")
-                    .font(.system(size: 11, weight: .heavy, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.3))
+                    .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
+                    .foregroundStyle(GhosttyTheme.current.textTertiary)
                 pill(project.type == "remote" ? "@\(project.host)" : "lcl",
-                     tint: project.type == "remote" ? .orange : .green)
+                     tint: project.type == "remote" ? GhosttyTheme.current.accentYellow : GhosttyTheme.current.accentGreen)
                 Text(project.effectiveAlias)
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
+                    .foregroundStyle(GhosttyTheme.current.foreground.opacity(0.5))
                     .lineLimit(1)
                 Spacer()
             }
@@ -1665,8 +1841,8 @@ struct ContentView: View {
         }
         .padding(2)
         .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.white.opacity(0.03))
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(GhosttyTheme.current.foreground.opacity(0.03))
         )
     }
 
@@ -1735,7 +1911,7 @@ struct ContentView: View {
 
     private func pill(_ text: String, tint: Color) -> some View {
         Text(text)
-            .font(.system(size: 9, weight: .bold, design: .rounded))
+            .font(GhosttyTheme.current.font(size: 9, weight: .bold))
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
             .background(
