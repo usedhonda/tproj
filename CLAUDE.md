@@ -45,6 +45,7 @@ tproj              # ~/.config/tproj/workspace.yaml があれば自動的にマ�
 tproj --add        # 現在の列を複製して右に追加
 tproj --add sl     # エイリアスで workspace.yaml のプロジェクトを追加
 tproj --check      # workspace.yaml のプロジェクト一覧・エイリアス・有効状態を表示
+tproj -c 3         # workspace.yaml の上位3プロジェクトのみで起動
 ```
 
 ### 動作モード
@@ -104,6 +105,14 @@ yazi トグル後（列2のみ）:
 ### ワークスペース設定
 
 **設定ファイル:** `~/.config/tproj/workspace.yaml`
+
+**GUI アプリ設定（省略可）:**
+```yaml
+gui:
+  keep_alive: true    # true(デフォルト): stop/kill でもアプリ残す
+                      # false: stop/kill 時にアプリも終了
+```
+`gui` セクション省略時: `~/bin/tproj-gui` が存在すれば GUI は自動起動（keep_alive=true）。
 
 **簡易形式（ローカルプロジェクトのみ）:**
 ```yaml

@@ -1,0 +1,206 @@
+#!/bin/bash
+# tproj-mcp-init - MCP initialization coordinator for tproj workspace mode
+#
+# Ensures chrome-ai-bridge Primary is established before Secondaries connect.
+# Prevents killSiblings() race, lock contention, and orphaned processes.
+#
+# Usage:
+#   tproj-mcp-init cleanup           Phase 0: Kill all chrome-ai-bridge, delete lock
+#   tproj-mcp-init wait-primary [s]  Phase 1: Wait for Primary health (default 10s)
+#   tproj-mcp-init check             Status check (process count, health, lock)
+#   tproj-mcp-init log-failure <ph>  Record failure diagnostics to log
+
+set -euo pipefail
+
+MCP_LOCK="$HOME/.cache/chrome-ai-bridge/mcp.lock"
+MCP_PORT=9321
+LOG_FILE="/tmp/tproj-mcp-init.log"
+
+log() {
+  echo "[MCP-INIT] $*" >&2
+}
+
+# --- Phase 0: Aggressive cleanup ---
+cmd_cleanup() {
+  log "Phase 0: Cleaning up chrome-ai-bridge"
+
+  # 1. Delete lock file
+  rm -f "$MCP_LOCK"
+
+  # 2. SIGTERM all chrome-ai-bridge processes
+  local pids
+  pids=$(pgrep -f 'chrome-ai-bridge' 2>/dev/null) || true
+  if [[ -n "$pids" ]]; then
+    log "SIGTERM -> $(echo $pids | tr '\n' ' ')"
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
+    done <<< "$pids"
+
+    # 3. Wait 2s for graceful shutdown
+    sleep 2
+
+    # 4. SIGKILL survivors
+    pids=$(pgrep -f 'chrome-ai-bridge' 2>/dev/null) || true
+    if [[ -n "$pids" ]]; then
+      log "SIGKILL survivors -> $(echo $pids | tr '\n' ' ')"
+      while IFS= read -r pid; do
+        [[ -n "$pid" ]] && kill -KILL "$pid" 2>/dev/null || true
+      done <<< "$pids"
+      sleep 1
+    fi
+  fi
+
+  # 5. Verify port is free
+  local port_holders
+  port_holders=$(lsof -i ":${MCP_PORT}" -t 2>/dev/null) || true
+  if [[ -n "$port_holders" ]]; then
+    log "Port $MCP_PORT still held, killing: $port_holders"
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && kill -KILL "$pid" 2>/dev/null || true
+    done <<< "$port_holders"
+    sleep 1
+  fi
+
+  # Final verification
+  local remaining
+  remaining=$(pgrep -cf 'chrome-ai-bridge' 2>/dev/null) || remaining=0
+  local port_count
+  port_count=$(lsof -i ":${MCP_PORT}" -t 2>/dev/null | wc -l | tr -d ' ') || port_count=0
+
+  if [[ "$remaining" -eq 0 && "$port_count" -eq 0 ]]; then
+    log "Phase 0: Clean (0 processes, port free)"
+  else
+    log "WARNING: Phase 0 incomplete (procs=$remaining, port_holders=$port_count)"
+  fi
+}
+
+# --- Phase 1: Wait for Primary MCP to become healthy ---
+cmd_wait_primary() {
+  local timeout="${1:-10}"
+  local retried=false
+
+  log "Phase 1: Waiting for Primary (timeout=${timeout}s)"
+
+  local elapsed=0
+  while [[ $elapsed -lt $timeout ]]; do
+    local health
+    health=$(curl -s --connect-timeout 1 --max-time 2 \
+      "http://127.0.0.1:${MCP_PORT}/health" 2>/dev/null) || true
+
+    if [[ "$health" == *'"ok"'* || "$health" == *'"status"'* ]]; then
+      # Health OK - verify lock file consistency
+      if [[ -f "$MCP_LOCK" ]]; then
+        local lock_pid
+        lock_pid=$(grep -o '"pid":[0-9]*' "$MCP_LOCK" 2>/dev/null \
+          | grep -o '[0-9]*' | head -1) || true
+
+        if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+          log "Phase 1: Primary healthy (PID=$lock_pid)"
+          return 0
+        else
+          log "WARNING: Lock PID ($lock_pid) mismatch"
+          if [[ "$retried" == "false" ]]; then
+            log "Retry: re-cleanup + wait"
+            retried=true
+            cmd_cleanup
+            elapsed=0
+            continue
+          fi
+        fi
+      else
+        # Health OK but no lock yet - acceptable
+        log "Phase 1: Primary healthy (lock pending)"
+        return 0
+      fi
+    fi
+
+    sleep 1
+    ((elapsed++)) || true
+  done
+
+  log "Phase 1: FAILED after ${timeout}s"
+  return 1
+}
+
+# --- Status check ---
+cmd_check() {
+  local proc_count
+  proc_count=$(pgrep -cf 'chrome-ai-bridge' 2>/dev/null) || proc_count=0
+
+  # Check Primary health
+  local health
+  health=$(curl -s --connect-timeout 1 --max-time 2 \
+    "http://127.0.0.1:${MCP_PORT}/health" 2>/dev/null) || true
+
+  if [[ "$health" != *'"ok"'* && "$health" != *'"status"'* ]]; then
+    log "CHECK: Primary DEAD (procs=$proc_count)"
+    return 1
+  fi
+
+  # Process explosion guard (>14 is suspicious even for 7 columns)
+  if [[ "$proc_count" -gt 14 ]]; then
+    log "CHECK: Process explosion ($proc_count procs), cleaning orphans"
+    local orphans
+    orphans=$(ps -eo pid=,ppid=,command= 2>/dev/null \
+      | awk '$2 == 1' \
+      | grep 'chrome-ai-bridge' \
+      | awk '{print $1}') || true
+    if [[ -n "$orphans" ]]; then
+      while IFS= read -r pid; do
+        [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
+      done <<< "$orphans"
+    fi
+    return 1
+  fi
+
+  log "CHECK: OK (procs=$proc_count, primary=healthy)"
+  return 0
+}
+
+# --- Phase 3: Record failure diagnostics ---
+cmd_log_failure() {
+  local phase="${1:-unknown}"
+  local ts
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%S")
+
+  {
+    echo "[$ts] $phase FAILED"
+
+    # Process count and PIDs
+    local procs
+    procs=$(pgrep -f 'chrome-ai-bridge' 2>/dev/null) || true
+    local cnt
+    cnt=$(echo "$procs" | grep -c . 2>/dev/null) || cnt=0
+    echo "  pgrep count: $cnt"
+    [[ -n "$procs" ]] && echo "  pids: $(echo $procs | tr '\n' ' ')"
+
+    # Lock file content
+    if [[ -f "$MCP_LOCK" ]]; then
+      echo "  lock content: $(cat "$MCP_LOCK" 2>/dev/null)"
+    else
+      echo "  lock content: (not found)"
+    fi
+
+    # Port usage
+    echo "  lsof :${MCP_PORT}: $(lsof -i ":${MCP_PORT}" 2>/dev/null | tail -n +2 || echo "(none)")"
+
+    # Dynamic port LISTEN
+    echo "  lsof dynamic: $(lsof -i -P 2>/dev/null | grep 'chrome-ai-bridge' | grep 'LISTEN' || echo "(none)")"
+
+    echo ""
+  } >> "$LOG_FILE"
+
+  log "Failure recorded -> $LOG_FILE"
+}
+
+# --- Main dispatch ---
+case "${1:-}" in
+  cleanup)       cmd_cleanup ;;
+  wait-primary)  cmd_wait_primary "${2:-10}" ;;
+  check)         cmd_check ;;
+  log-failure)   cmd_log_failure "${2:-unknown}" ;;
+  *)
+    echo "Usage: tproj-mcp-init {cleanup|wait-primary [timeout]|check|log-failure <phase>}" >&2
+    exit 1
+    ;;
+esac
