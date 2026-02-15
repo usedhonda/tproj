@@ -1,6 +1,7 @@
 import SwiftUI
 import Foundation
 import AppKit
+import CoreMIDI
 import UniformTypeIdentifiers
 
 struct WorkspaceProject: Identifiable {
@@ -51,6 +52,223 @@ struct CommandResult {
     var stderr: String
 }
 
+private struct MIDIBinding: Codable, Equatable {
+    var statusNibble: UInt8
+    var data1: UInt8
+    var channel: UInt8
+}
+
+private struct StoredMIDIBinding: Codable {
+    var slot: Int
+    var binding: MIDIBinding
+}
+
+private enum MIDILearnStore {
+    private static let key = "tproj.midi.learn.bindings.v1"
+
+    static func load() -> [Int: MIDIBinding] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let items = try? JSONDecoder().decode([StoredMIDIBinding].self, from: data) else {
+            return [:]
+        }
+        var result: [Int: MIDIBinding] = [:]
+        for item in items where (1...16).contains(item.slot) {
+            result[item.slot] = item.binding
+        }
+        return result
+    }
+
+    static func save(_ bindings: [Int: MIDIBinding]) {
+        let items = bindings.keys.sorted().compactMap { slot -> StoredMIDIBinding? in
+            guard let binding = bindings[slot] else { return nil }
+            return StoredMIDIBinding(slot: slot, binding: binding)
+        }
+        guard let data = try? JSONEncoder().encode(items) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+}
+
+private final class MIDIPaneActivator {
+    var onStatus: ((String) -> Void)?
+    var onLearnStateChanged: ((Bool) -> Void)?
+    var onSlotTriggered: ((Int) -> Void)?
+
+    private var client = MIDIClientRef()
+    private var inputPort = MIDIPortRef()
+    private var connectedSources: [MIDIEndpointRef] = []
+    private var bindings: [Int: MIDIBinding] = MIDILearnStore.load()
+    private var isRunning = false
+    private var learnStep = 1
+    private var learning = false {
+        didSet { onLearnStateChanged?(learning) }
+    }
+    private var lastLearnEventAt: Date = .distantPast
+    private var lastLearnBinding: MIDIBinding?
+
+    var isLearning: Bool { learning }
+
+    func start() {
+        guard !isRunning else { return }
+
+        var createdClient = MIDIClientRef()
+        let clientStatus = MIDIClientCreate("tproj-midi-client" as CFString, nil, nil, &createdClient)
+        guard clientStatus == noErr else {
+            onStatus?("MIDI init failed (client: \(clientStatus))")
+            return
+        }
+        client = createdClient
+
+        var createdPort = MIDIPortRef()
+        let portStatus = MIDIInputPortCreateWithBlock(client, "tproj-midi-input" as CFString, &createdPort) { [weak self] packetList, _ in
+            self?.handle(packetList: packetList)
+        }
+        guard portStatus == noErr else {
+            onStatus?("MIDI init failed (port: \(portStatus))")
+            MIDIClientDispose(client)
+            client = 0
+            return
+        }
+        inputPort = createdPort
+
+        connectSources()
+        isRunning = true
+        if connectedSources.isEmpty {
+            onStatus?("MIDI: no input source found")
+        } else {
+            onStatus?("MIDI connected (\(connectedSources.count) source)")
+        }
+    }
+
+    func stop() {
+        guard isRunning else { return }
+        connectedSources.forEach { MIDIPortDisconnectSource(inputPort, $0) }
+        connectedSources.removeAll()
+        if inputPort != 0 {
+            MIDIPortDispose(inputPort)
+            inputPort = 0
+        }
+        if client != 0 {
+            MIDIClientDispose(client)
+            client = 0
+        }
+        learning = false
+        isRunning = false
+    }
+
+    deinit {
+        stop()
+    }
+
+    func toggleLearn() -> Bool {
+        if learning {
+            learning = false
+            learnStep = 1
+            onStatus?("MIDI Learn canceled")
+            return false
+        }
+        learning = true
+        learnStep = 1
+        lastLearnBinding = nil
+        lastLearnEventAt = .distantPast
+        onStatus?("MIDI Learn 1/16: press button")
+        return true
+    }
+
+    private func connectSources() {
+        connectedSources.removeAll()
+        let sourceCount = MIDIGetNumberOfSources()
+        if sourceCount == 0 { return }
+
+        var sourceNames: [String] = []
+        for i in 0..<sourceCount {
+            let source = MIDIGetSource(i)
+            guard source != 0 else { continue }
+            let name = displayName(for: source) ?? "(unknown)"
+            sourceNames.append(name)
+            let status = MIDIPortConnectSource(inputPort, source, nil)
+            if status == noErr {
+                connectedSources.append(source)
+            }
+        }
+        onStatus?("MIDI sources: \(sourceNames.joined(separator: ", "))")
+    }
+
+    private func handle(packetList: UnsafePointer<MIDIPacketList>) {
+        let count = Int(packetList.pointee.numPackets)
+        guard count > 0 else { return }
+
+        var packet = packetList.pointee.packet
+        for i in 0..<count {
+            packet.withBytes { bytes in
+                guard bytes.count >= 3 else { return }
+                self.handleMessage(status: bytes[0], data1: bytes[1], data2: bytes[2])
+            }
+            if i < count - 1 {
+                packet = MIDIPacketNext(&packet).pointee
+            }
+        }
+    }
+
+    private func handleMessage(status: UInt8, data1: UInt8, data2: UInt8) {
+        let nibble = status & 0xF0
+        // Accept Note On and Control Change. Ignore zero-value (release/off) events.
+        guard (nibble == 0x90 || nibble == 0xB0), data2 > 0 else { return }
+
+        let channel = status & 0x0F
+        let incoming = MIDIBinding(statusNibble: nibble, data1: data1, channel: channel)
+
+        if learning {
+            let now = Date()
+            if incoming == lastLearnBinding, now.timeIntervalSince(lastLearnEventAt) < 0.12 {
+                return
+            }
+            lastLearnBinding = incoming
+            lastLearnEventAt = now
+
+            bindings[learnStep] = incoming
+            let kind = nibble == 0xB0 ? "CC" : "Note"
+            onStatus?("Learned \(kind) data1=\(data1) ch=\(Int(channel) + 1) -> slot \(learnStep)")
+            if learnStep >= 16 {
+                MIDILearnStore.save(bindings)
+                learning = false
+                learnStep = 1
+                onStatus?("MIDI learn saved (16)")
+            } else {
+                learnStep += 1
+                onStatus?("MIDI Learn \(learnStep)/16: press button")
+            }
+            return
+        }
+
+        guard let slot = bindings.first(where: { $0.value == incoming })?.key else { return }
+        onSlotTriggered?(slot)
+    }
+
+    private func displayName(for endpoint: MIDIEndpointRef) -> String? {
+        var name: Unmanaged<CFString>?
+        let status = MIDIObjectGetStringProperty(endpoint, kMIDIPropertyDisplayName, &name)
+        guard status == noErr, let retained = name?.takeRetainedValue() else {
+            return nil
+        }
+        return retained as String
+    }
+}
+
+private extension MIDIPacket {
+    func withBytes(_ body: (UnsafeBufferPointer<UInt8>) -> Void) {
+        let len = Int(length)
+        guard len > 0 else {
+            body(UnsafeBufferPointer(start: nil, count: 0))
+            return
+        }
+        withUnsafePointer(to: data) { ptr in
+            ptr.withMemoryRebound(to: UInt8.self, capacity: len) { bytePtr in
+                body(UnsafeBufferPointer(start: bytePtr, count: len))
+            }
+        }
+    }
+}
+
 @MainActor
 final class AppViewModel: ObservableObject {
     @Published var workspaceProjects: [WorkspaceProject] = []
@@ -58,8 +276,11 @@ final class AppViewModel: ObservableObject {
     @Published var selectedAlias: String = ""
     @Published var statusText: String = "Ready"
     @Published var isBusy: Bool = false
+    @Published var isMIDILearning: Bool = false
 
     private let fileManager = FileManager.default
+    private var midiActivator: MIDIPaneActivator?
+    private var startupRetryTask: Task<Void, Never>?
 
     var workspacePath: String {
         let home = NSHomeDirectory()
@@ -84,7 +305,29 @@ final class AppViewModel: ObservableObject {
     func onAppear() {
         Task {
             await refreshAll()
+            startMIDIIfNeeded()
+            if liveColumns.isEmpty {
+                startStartupRetry()
+            }
         }
+    }
+
+    private func startStartupRetry() {
+        startupRetryTask = Task {
+            for _ in 0..<10 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if Task.isCancelled { return }
+                await refreshAll()
+                if !liveColumns.isEmpty {
+                    return
+                }
+            }
+        }
+    }
+
+    deinit {
+        midiActivator?.stop()
+        startupRetryTask?.cancel()
     }
 
     func refreshAll() async {
@@ -127,6 +370,15 @@ final class AppViewModel: ObservableObject {
         } else {
             statusText = "Add failed: \(trimmedError(result))"
         }
+    }
+
+    func toggleMIDILearn() {
+        startMIDIIfNeeded()
+        guard let midiActivator else {
+            statusText = "MIDI unavailable"
+            return
+        }
+        isMIDILearning = midiActivator.toggleLearn()
     }
 
     func toggleYazi(for column: LiveColumn) async {
@@ -421,6 +673,57 @@ final class AppViewModel: ObservableObject {
             statusText = "Opened workspace.yaml"
         } else {
             statusText = "Failed to open workspace.yaml"
+        }
+    }
+
+    private func startMIDIIfNeeded() {
+        guard midiActivator == nil else { return }
+        let activator = MIDIPaneActivator()
+        activator.onStatus = { [weak self] message in
+            Task { @MainActor in
+                self?.statusText = message
+            }
+        }
+        activator.onLearnStateChanged = { [weak self] isLearning in
+            Task { @MainActor in
+                self?.isMIDILearning = isLearning
+            }
+        }
+        activator.onSlotTriggered = { [weak self] slot in
+            Task { [weak self] in
+                await self?.activatePaneForMIDISlot(slot)
+            }
+        }
+        activator.start()
+        midiActivator = activator
+    }
+
+    private func activatePaneForMIDISlot(_ slot: Int) async {
+        guard (1...16).contains(slot) else { return }
+
+        let sessionTarget = "tproj-workspace:dev"
+        let list = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", sessionTarget, "-F", "#{pane_index}"])
+        guard list.exitCode == 0 else {
+            statusText = "MIDI activate failed: \(trimmedError(list))"
+            return
+        }
+
+        let available = Set(
+            list.stdout
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        )
+        guard available.contains(slot) else {
+            statusText = "MIDI: pane #\(slot) not found"
+            return
+        }
+
+        _ = await runCommandAsync("/usr/bin/env", ["tmux", "select-window", "-t", sessionTarget])
+        let select = await runCommandAsync("/usr/bin/env", ["tmux", "select-pane", "-t", "\(sessionTarget).\(slot)"])
+        if select.exitCode == 0 {
+            statusText = "MIDI: #\(slot) activated"
+        } else {
+            statusText = "MIDI activate failed: \(trimmedError(select))"
         }
     }
 
@@ -1179,6 +1482,7 @@ struct ActionButton: View {
 struct ContentView: View {
     @StateObject private var vm = AppViewModel()
     @State private var draggingColumnID: Int?
+    @State private var dropTargetColumnID: Int?
 
     var body: some View {
         ZStack {
@@ -1217,6 +1521,10 @@ struct ContentView: View {
                                 Task { await vm.refreshAll() }
                             }
                             .fixedSize()
+                            ActionButton("Learn", tone: vm.isMIDILearning ? .primary : .neutral, isEnabled: !vm.isBusy, dense: true) {
+                                vm.toggleMIDILearn()
+                            }
+                            .fixedSize()
                         }
 
                         if vm.liveColumns.isEmpty {
@@ -1231,6 +1539,7 @@ struct ContentView: View {
                                         delegate: ColumnDropDelegate(
                                             targetColumn: column.column,
                                             draggingColumnID: $draggingColumnID,
+                                            dropTargetColumnID: $dropTargetColumnID,
                                             viewModel: vm
                                         )
                                     )
@@ -1269,8 +1578,11 @@ struct ContentView: View {
     }
 
     private func liveColumnRow(_ column: LiveColumn) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            // Drag handle: only this header row is draggable
+        let isDragging = draggingColumnID == column.column
+        let isDropTarget = dropTargetColumnID == column.column
+
+        return VStack(alignment: .leading, spacing: 3) {
+            // Header row
             HStack(spacing: 4) {
                 Text("#\(column.column)")
                     .font(.system(size: 11, weight: .heavy, design: .monospaced))
@@ -1282,14 +1594,8 @@ struct ContentView: View {
                     .lineLimit(1)
                 Spacer()
             }
-            .contentShape(Rectangle())
-            .opacity(draggingColumnID == column.column ? 0.7 : 1.0)
-            .onDrag {
-                draggingColumnID = column.column
-                return NSItemProvider(object: NSString(string: "\(column.column)"))
-            }
 
-            // Buttons: outside onDrag so clicks always work
+            // Buttons row
             HStack(spacing: 1) {
                 Spacer()
                 ActionButton("Yazi", tone: column.yaziPaneID == nil ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
@@ -1309,28 +1615,58 @@ struct ContentView: View {
         .padding(2)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.white.opacity(0.05))
+                .fill(isDragging ? Color.cyan.opacity(0.15)
+                      : isDropTarget ? Color.cyan.opacity(0.10)
+                      : Color.white.opacity(0.05))
         )
+        .overlay(
+            isDragging
+                ? RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(Color.cyan.opacity(0.4), lineWidth: 1)
+                : nil
+        )
+        .padding(.vertical, 1)
+        .contentShape(Rectangle())
+        .opacity(isDragging ? 0.85 : 1.0)
+        .onDrag {
+            draggingColumnID = column.column
+            return NSItemProvider(object: NSString(string: "\(column.column)"))
+        }
     }
 
     private func inactiveProjectRow(_ project: WorkspaceProject) -> some View {
-        HStack(spacing: 4) {
-            pill(project.type == "remote" ? "@\(project.host)" : "lcl",
-                 tint: project.type == "remote" ? .orange : .green)
-            Text(project.effectiveAlias)
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.5))
-                .lineLimit(1)
-            Spacer()
-            ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
-                Task { await vm.addColumnByAlias(project.effectiveAlias) }
+        VStack(alignment: .leading, spacing: 3) {
+            // Header row (same layout as liveColumnRow)
+            HStack(spacing: 4) {
+                Text("--")
+                    .font(.system(size: 11, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.3))
+                pill(project.type == "remote" ? "@\(project.host)" : "lcl",
+                     tint: project.type == "remote" ? .orange : .green)
+                Text(project.effectiveAlias)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+                Spacer()
             }
-            .frame(width: 34)
+
+            // Button row (Yazi/Term disabled, Add enabled)
+            HStack(spacing: 1) {
+                Spacer()
+                ActionButton("Yazi", tone: .neutral, isEnabled: false, dense: true) {}
+                    .frame(width: 38)
+                ActionButton("Term", tone: .neutral, isEnabled: false, dense: true) {}
+                    .frame(width: 38)
+                ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
+                    Task { await vm.addColumnByAlias(project.effectiveAlias) }
+                }
+                .frame(width: 34)
+            }
         }
         .padding(2)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.white.opacity(0.02))
+                .fill(Color.white.opacity(0.03))
         )
     }
 
@@ -1435,13 +1771,24 @@ struct WindowAccessor: NSViewRepresentable {
 struct ColumnDropDelegate: DropDelegate {
     let targetColumn: Int
     @Binding var draggingColumnID: Int?
+    @Binding var dropTargetColumnID: Int?
     let viewModel: AppViewModel
 
     func dropEntered(info: DropInfo) {
+        dropTargetColumnID = targetColumn
+    }
+
+    func dropExited(info: DropInfo) {
+        if dropTargetColumnID == targetColumn {
+            dropTargetColumnID = nil
+        }
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        defer { draggingColumnID = nil }
+        defer {
+            draggingColumnID = nil
+            dropTargetColumnID = nil
+        }
         guard let source = draggingColumnID, source != targetColumn else { return false }
         Task {
             await viewModel.moveColumn(from: source, to: targetColumn)

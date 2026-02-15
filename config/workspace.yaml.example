@@ -18,6 +18,14 @@
 #
 # 注意: 簡易形式と詳細形式は混在不可（最初のエントリの型で自動判定）
 
+# ========== GUI アプリ設定（省略可） ==========
+#
+# gui:
+#   keep_alive: true    # true(デフォルト): tproj stop/kill でもアプリを終了しない
+#                       # false: tproj stop/kill 時にアプリも終了する
+#
+# gui セクション省略時: ~/bin/tproj-gui が存在すれば GUI は起動する（keep_alive=true）
+
 # ========== 詳細形式（ローカル + リモートプロジェクト） ==========
 
 projects:

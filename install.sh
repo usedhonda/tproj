@@ -232,9 +232,10 @@ if $DRY_RUN; then
   echo "[DRY-RUN] 📦 team-watcher -> ~/bin/"
   echo "[DRY-RUN] 📦 reflow-agent-pane -> ~/bin/"
 else
-  echo "📦 tproj, tproj-toggle-yazi, tproj-msg, agent-monitor, team-watcher, reflow-agent-pane, rebalance-workspace-columns, sign-codex -> ~/bin/"
+  echo "📦 tproj, tproj-mcp-init, tproj-toggle-yazi, tproj-msg, agent-monitor, team-watcher, reflow-agent-pane, rebalance-workspace-columns, sign-codex -> ~/bin/"
   mkdir -p ~/bin
   cp "$SCRIPT_DIR/bin/tproj" ~/bin/tproj
+  cp "$SCRIPT_DIR/bin/tproj-mcp-init" ~/bin/tproj-mcp-init
   cp "$SCRIPT_DIR/bin/tproj-toggle-yazi" ~/bin/tproj-toggle-yazi
   cp "$SCRIPT_DIR/bin/tproj-msg" ~/bin/tproj-msg
   cp "$SCRIPT_DIR/bin/agent-monitor" ~/bin/agent-monitor
@@ -242,7 +243,15 @@ else
   cp "$SCRIPT_DIR/bin/reflow-agent-pane" ~/bin/reflow-agent-pane
   cp "$SCRIPT_DIR/bin/rebalance-workspace-columns" ~/bin/rebalance-workspace-columns
   cp "$SCRIPT_DIR/bin/sign-codex" ~/bin/sign-codex
-  chmod +x ~/bin/tproj ~/bin/tproj-toggle-yazi ~/bin/tproj-msg ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/rebalance-workspace-columns ~/bin/sign-codex
+  chmod +x ~/bin/tproj ~/bin/tproj-mcp-init ~/bin/tproj-toggle-yazi ~/bin/tproj-msg ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/rebalance-workspace-columns ~/bin/sign-codex
+
+  # 4.1.1 GUI アプリ（ビルド済みの場合のみ）
+  GUI_BINARY="$SCRIPT_DIR/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
+  if [[ -f "$GUI_BINARY" ]]; then
+    echo "  tproj-gui -> ~/bin/"
+    cp "$GUI_BINARY" ~/bin/tproj-gui
+    chmod +x ~/bin/tproj-gui
+  fi
 fi
 
 # 4.2 tmux 設定
@@ -365,6 +374,7 @@ echo "   ~/bin/tproj-msg"
 echo "   ~/bin/agent-monitor"
 echo "   ~/bin/team-watcher"
 echo "   ~/bin/reflow-agent-pane"
+echo "   ~/bin/tproj-gui (if built)"
 echo "   ~/.tmux.conf"
 echo "   ~/.config/yazi/"
 echo "   ~/.claude/commands/"

@@ -29,6 +29,7 @@ Usage:
 Options:
   --add [ALIAS]      Add workspace column (no arg: duplicate current, with alias: from workspace.yaml)
   --check            Show workspace.yaml projects, aliases, and enabled status
+  -c, --columns N    Start with only the first N projects from workspace.yaml
   -s, --single       Force single-project mode (ignore workspace.yaml)
   -r, --remote HOST  SSH remote connection
   -h, --help         Show this help message
@@ -78,6 +79,7 @@ FORCE_SINGLE_MODE=false
 ADD_MODE=false
 ADD_ALIAS=""
 CHECK_MODE=false
+MAX_COLUMNS=""  # 空 = 制限なし
 
 # stop/kill サブコマンド
 if [[ "${1:-}" == "stop" ]]; then
@@ -99,6 +101,9 @@ while [[ $# -gt 0 ]]; do
         ADD_ALIAS="$1"; shift
       fi
       ;;
+    -c|--columns)
+      [[ -z "${2:-}" ]] && { echo "Error: -c requires a number" >&2; exit 1; }
+      MAX_COLUMNS="$2"; shift 2 ;;
     -n|--no-update) NO_UPDATE=true; shift ;;
     -s|--single) FORCE_SINGLE_MODE=true; shift ;;
     -r|--remote)
@@ -175,6 +180,32 @@ collect_session_descendants() {
   collect_descendant_pids "${pane_pids_arr[@]}"
 }
 
+# TprojApp GUI を起動（未起動の場合のみ）
+launch_tproj_gui() {
+  local gui_bin="$HOME/bin/tproj-gui"
+  [[ ! -x "$gui_bin" ]] && return 0
+
+  # 既に起動中ならスキップ
+  pgrep -f "bin/tproj-gui" >/dev/null 2>&1 && return 0
+
+  "$gui_bin" &
+  disown
+}
+
+# GUI アプリ終了（keep_alive=false の場合のみ）
+stop_tproj_gui_if_needed() {
+  local keep_alive="true"  # デフォルト
+  local ws_config="$HOME/.config/tproj/workspace.yaml"
+
+  if [[ -f "$ws_config" ]]; then
+    keep_alive=$(yq -r '.gui.keep_alive // "true"' "$ws_config" 2>/dev/null || echo "true")
+  fi
+
+  if [[ "$keep_alive" != "true" ]]; then
+    pkill -f "bin/tproj-gui" 2>/dev/null || true
+  fi
+}
+
 # Kill orphaned MCP server processes (PPID=1 = reparented to launchd)
 cleanup_orphaned_mcp() {
   local orphans
@@ -224,6 +255,7 @@ kill_session() {
   cleanup_orphaned_mcp
 
   rm -f /tmp/tproj-dead-agents
+  stop_tproj_gui_if_needed
   echo "Session killed" >&2
 }
 
@@ -310,6 +342,7 @@ stop_session() {
   # 一時ファイルのクリーンアップ
   rm -f /tmp/tproj-dead-agents
 
+  stop_tproj_gui_if_needed
   echo "Session stopped" >&2
 }
 
@@ -633,6 +666,17 @@ if [[ "$FORCE_SINGLE_MODE" == "false" && -f "$WORKSPACE_CONFIG" ]]; then
     parse_workspace_yaml
   fi
 
+  # -c N: 上位 N プロジェクトのみ使用
+  if [[ -n "$MAX_COLUMNS" && "$MAX_COLUMNS" -gt 0 ]]; then
+    if [[ ${#PROJECT_PATHS[@]} -gt $MAX_COLUMNS ]]; then
+      PROJECT_PATHS=("${PROJECT_PATHS[@]:0:$MAX_COLUMNS}")
+      PROJECT_TYPES=("${PROJECT_TYPES[@]:0:$MAX_COLUMNS}")
+      PROJECT_HOSTS=("${PROJECT_HOSTS[@]:0:$MAX_COLUMNS}")
+      PROJECT_ALIASES=("${PROJECT_ALIASES[@]:0:$MAX_COLUMNS}")
+      echo "  columns limited to $MAX_COLUMNS (use --add to add more)" >&2
+    fi
+  fi
+
   if [[ "$ADD_MODE" == "false" && "$CHECK_MODE" == "false" ]]; then
     if [[ ${#PROJECT_PATHS[@]} -eq 0 ]]; then
       echo "" >&2
@@ -889,7 +933,85 @@ create_workspace_layout() {
   tmux new-window -t "$session" -n git -c "$git_dir"
 }
 
-# プロジェクト別ツール起動
+# Codex ペインを起動（1列分）
+# 引数: session no_update col_num path type host
+start_codex_for_column() {
+  local session="$1" no_update="$2" col="$3"
+  local proj_path="$4" proj_type="$5" proj_host="$6"
+
+  local codex_pane
+  codex_pane=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
+    | grep ":codex-p${col}$" | cut -d: -f1)
+
+  if [[ -z "$codex_pane" ]]; then
+    echo "Error: Cannot find codex-p$col pane" >&2
+    return 1
+  fi
+
+  if [[ "$proj_type" == "remote" ]]; then
+    tmux send-keys -t "$codex_pane" \
+      "ssh -t $proj_host 'cd $proj_path && exec \$SHELL -l'" C-m
+    sleep 2
+    if [[ "$no_update" == "true" ]]; then
+      tmux send-keys -t "$codex_pane" \
+        "codex resume --last -s danger-full-access -a never --search" C-m
+    else
+      tmux send-keys -t "$codex_pane" \
+        "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
+    fi
+  else
+    local codex_cmd="cd \"$proj_path\" && codex resume --last -s danger-full-access -a never --search"
+    if [[ "$no_update" == "true" ]]; then
+      tmux send-keys -t "$codex_pane" "$codex_cmd" C-m
+    else
+      tmux send-keys -t "$codex_pane" \
+        "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; $codex_cmd" C-m
+    fi
+  fi
+}
+
+# Claude ペインを起動（1列分）
+# 引数: session no_update col_num path type host
+start_claude_for_column() {
+  local session="$1" no_update="$2" col="$3"
+  local proj_path="$4" proj_type="$5" proj_host="$6"
+
+  local claude_pane
+  claude_pane=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
+    | grep ":claude-p${col}$" | cut -d: -f1)
+
+  if [[ -z "$claude_pane" ]]; then
+    echo "Error: Cannot find claude-p$col pane" >&2
+    return 1
+  fi
+
+  if [[ "$proj_type" == "remote" ]]; then
+    tmux send-keys -t "$claude_pane" \
+      "ssh -t $proj_host 'cd $proj_path && exec \$SHELL -l'" C-m
+    sleep 2
+    if [[ "$no_update" == "true" ]]; then
+      tmux send-keys -t "$claude_pane" "claude --continue || claude" C-m
+    else
+      tmux send-keys -t "$claude_pane" \
+        "npm update -g @anthropic-ai/claude-code; hash -r; claude --continue || claude" C-m
+    fi
+  else
+    local claude_cmd
+    if has_claude_session "$proj_path"; then
+      claude_cmd="cd \"$proj_path\" && claude --continue"
+    else
+      claude_cmd="cd \"$proj_path\" && claude"
+    fi
+    if [[ "$no_update" == "true" ]]; then
+      tmux send-keys -t "$claude_pane" "$claude_cmd" C-m
+    else
+      tmux send-keys -t "$claude_pane" \
+        "npm update -g @anthropic-ai/claude-code; $claude_cmd" C-m
+    fi
+  fi
+}
+
+# プロジェクト別ツール起動（MCP フェーズ制御付き）
 # 引数: session no_update paths[@] -- types[@] -- hosts[@] -- aliases[@]
 start_workspace_tools() {
   local session="$1"
@@ -928,87 +1050,58 @@ start_workspace_tools() {
     shift
   done
 
+  # --- MCP phased startup (chrome-ai-bridge Primary/Proxy coordination) ---
+
+  # Phase 1: Start column 1 Codex only, wait for Primary MCP
+  start_codex_for_column "$session" "$no_update" 1 \
+    "${paths[0]}" "${types[0]}" "${hosts[0]}"
+
+  if [[ $num_projects -gt 1 ]]; then
+    "$HOME/bin/tproj-mcp-init" wait-primary 10 \
+      || "$HOME/bin/tproj-mcp-init" log-failure "phase1"
+  fi
+
+  # Phase 2: Staggered secondary Codex connections
+  # Batch 1: columns 2-3
+  local batch_started=false
+  for col in 2 3; do
+    [[ $col -le $num_projects ]] || continue
+    start_codex_for_column "$session" "$no_update" "$col" \
+      "${paths[$((col-1))]}" "${types[$((col-1))]}" "${hosts[$((col-1))]}"
+    batch_started=true
+  done
+  if [[ "$batch_started" == "true" ]]; then
+    sleep 3
+    "$HOME/bin/tproj-mcp-init" check \
+      || "$HOME/bin/tproj-mcp-init" log-failure "phase2-batch1"
+  fi
+
+  # Batch 2: columns 4-7
+  batch_started=false
+  for col in 4 5 6 7; do
+    [[ $col -le $num_projects ]] || continue
+    start_codex_for_column "$session" "$no_update" "$col" \
+      "${paths[$((col-1))]}" "${types[$((col-1))]}" "${hosts[$((col-1))]}"
+    batch_started=true
+  done
+  if [[ "$batch_started" == "true" ]]; then
+    sleep 3
+    "$HOME/bin/tproj-mcp-init" check \
+      || "$HOME/bin/tproj-mcp-init" log-failure "phase2-batch2"
+  fi
+
+  # Claude panes: all columns simultaneously (no chrome-ai-bridge conflict)
   for i in $(seq 1 $num_projects); do
-    local proj_path="${paths[$((i-1))]}"
-    local proj_type="${types[$((i-1))]}"
-    local proj_host="${hosts[$((i-1))]}"
-
-    # ペイン ID 取得（エラーチェック付き）
-    local claude_pane=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
-      | grep ":claude-p$i$" | cut -d: -f1)
-    local codex_pane=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
-      | grep ":codex-p$i$" | cut -d: -f1)
-
-    if [[ -z "$claude_pane" ]]; then
-      echo "Error: Cannot find claude-p$i pane for proj_path: $proj_path" >&2
-      echo "Available panes:" >&2
-      tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' >&2
-      continue
-    fi
-
-    if [[ -z "$codex_pane" ]]; then
-      echo "Error: Cannot find codex-p$i pane for proj_path: $proj_path" >&2
-      echo "Available panes:" >&2
-      tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' >&2
-      continue
-    fi
-
-    if [[ "$proj_type" == "remote" ]]; then
-      # --- リモートプロジェクト ---
-      # SSH 接続してリモートパスに移動
-      tmux send-keys -t "$claude_pane" \
-        "ssh -t $proj_host 'cd $proj_path && exec \$SHELL -l'" C-m
-      tmux send-keys -t "$codex_pane" \
-        "ssh -t $proj_host 'cd $proj_path && exec \$SHELL -l'" C-m
-
-      # SSH 接続待ち
-      sleep 2
-
-      # リモートシェル内でツールを起動
-      if [[ "$no_update" == "true" ]]; then
-        tmux send-keys -t "$claude_pane" "claude --continue || claude" C-m
-        sleep 0.2
-        tmux send-keys -t "$codex_pane" "codex resume --last -s danger-full-access -a never --search" C-m
-      else
-        tmux send-keys -t "$claude_pane" "npm update -g @anthropic-ai/claude-code; hash -r; claude --continue || claude" C-m
-        sleep 0.2
-        tmux send-keys -t "$codex_pane" "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
-      fi
-    else
-      # --- ローカルプロジェクト ---
-      # Claude Code 起動（セッション継続判定付き）
-      local claude_cmd
-      if has_claude_session "$proj_path"; then
-        claude_cmd="cd \"$proj_path\" && claude --continue"
-      else
-        claude_cmd="cd \"$proj_path\" && claude"
-      fi
-
-      if [[ "$no_update" == "true" ]]; then
-        tmux send-keys -t "$claude_pane" "$claude_cmd" C-m
-      else
-        tmux send-keys -t "$claude_pane" "npm update -g @anthropic-ai/claude-code; $claude_cmd" C-m
-      fi
-
-      sleep 0.2
-
-      # Codex 起動
-      local codex_cmd="cd \"$proj_path\" && codex resume --last -s danger-full-access -a never --search"
-      if [[ "$no_update" == "true" ]]; then
-        tmux send-keys -t "$codex_pane" "$codex_cmd" C-m
-      else
-        tmux send-keys -t "$codex_pane" "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; $codex_cmd" C-m
-      fi
-    fi
+    start_claude_for_column "$session" "$no_update" "$i" \
+      "${paths[$((i-1))]}" "${types[$((i-1))]}" "${hosts[$((i-1))]}"
+    sleep 0.2
   done
 
   # 最初の Claude ペインを選択
-  local first_claude=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
+  local first_claude
+  first_claude=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
     | grep ':claude-p1$' | cut -d: -f1)
-
-  if [[ -n "$first_claude" ]]; then
-    tmux select-pane -t "$first_claude"
-  fi
+  [[ -n "$first_claude" ]] && tmux select-pane -t "$first_claude"
 }
 
 # === 単一プロジェクトモード（従来ロジック） ===
@@ -1041,6 +1134,14 @@ fi
 
 # Clean up orphaned MCP server processes from previous sessions
 cleanup_orphaned_mcp
+
+# Workspace mode: aggressive chrome-ai-bridge cleanup (Phase 0)
+if [[ "$WORKSPACE_MODE" == "true" ]]; then
+  "$HOME/bin/tproj-mcp-init" cleanup
+fi
+
+# GUI アプリ起動
+launch_tproj_gui
 
 # === セッション作成 & ツール起動 ===
 if [[ "$WORKSPACE_MODE" == "true" ]]; then
