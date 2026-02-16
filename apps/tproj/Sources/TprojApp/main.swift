@@ -230,10 +230,38 @@ final class GhosttyWindowTracker: ObservableObject {
         timer.schedule(deadline: .now() + .milliseconds(ms), repeating: .milliseconds(ms))
     }
 
+    private func visibleUnionFrame() -> CGRect? {
+        let frames = NSScreen.screens.map { $0.visibleFrame }
+        guard var union = frames.first else { return nil }
+        for frame in frames.dropFirst() {
+            union = union.union(frame)
+        }
+        return union
+    }
+
+    private func clampedOrigin(_ origin: CGPoint, windowSize: CGSize) -> CGPoint {
+        guard let union = visibleUnionFrame() else { return origin }
+        let maxX = max(union.minX, union.maxX - windowSize.width)
+        let maxY = max(union.minY, union.maxY - windowSize.height)
+        return CGPoint(
+            x: min(max(origin.x, union.minX), maxX),
+            y: min(max(origin.y, union.minY), maxY)
+        )
+    }
+
+    private func nearlyEqual(_ lhs: CGPoint, _ rhs: CGPoint) -> Bool {
+        abs(lhs.x - rhs.x) < 0.5 && abs(lhs.y - rhs.y) < 0.5
+    }
+
     // MARK: Main loop
 
     private func tick() {
         guard let window = appWindow else { return }
+        let currentOrigin = window.frame.origin
+        let guardedOrigin = clampedOrigin(currentOrigin, windowSize: window.frame.size)
+        if !nearlyEqual(currentOrigin, guardedOrigin) {
+            window.setFrameOrigin(guardedOrigin)
+        }
 
         guard let ghosttyFrame = findGhosttyFrame() else {
             let changed = isSnapped || lastGhosttyFrame != nil
@@ -270,6 +298,7 @@ final class GhosttyWindowTracker: ObservableObject {
                     var newOrigin = actual
                     newOrigin.x += dx
                     newOrigin.y += dy
+                    newOrigin = clampedOrigin(newOrigin, windowSize: window.frame.size)
                     window.setFrameOrigin(newOrigin)
                     // Re-derive offset to absorb rounding
                     snapOffset = CGPoint(x: newOrigin.x - ghosttyFrame.origin.x,
@@ -404,6 +433,235 @@ struct CommandResult {
     var exitCode: Int32
     var stdout: String
     var stderr: String
+}
+
+struct MonitorSystem: Codable {
+    var totalMB: Int
+    var usedMB: Int
+    var freeMB: Int
+
+    enum CodingKeys: String, CodingKey {
+        case totalMB = "total_mb"
+        case usedMB = "used_mb"
+        case freeMB = "free_mb"
+    }
+
+    init(totalMB: Int = 0, usedMB: Int = 0, freeMB: Int = 0) {
+        self.totalMB = totalMB
+        self.usedMB = usedMB
+        self.freeMB = freeMB
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        totalMB = try c.decodeIfPresent(Int.self, forKey: .totalMB) ?? 0
+        usedMB = try c.decodeIfPresent(Int.self, forKey: .usedMB) ?? 0
+        freeMB = try c.decodeIfPresent(Int.self, forKey: .freeMB) ?? 0
+    }
+}
+
+struct MonitorCategory: Codable {
+    var mb: Int
+    var count: Int?
+
+    init(mb: Int = 0, count: Int? = nil) {
+        self.mb = mb
+        self.count = count
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        mb = try c.decodeIfPresent(Int.self, forKey: .mb) ?? 0
+        count = try c.decodeIfPresent(Int.self, forKey: .count)
+    }
+}
+
+struct MonitorCCProcess: Codable {
+    var pid: Int
+    var rssMB: Int
+    var cpu: Double
+    var state: String
+    var project: String
+
+    enum CodingKeys: String, CodingKey {
+        case pid
+        case rssMB = "rss_mb"
+        case cpu
+        case state
+        case project
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pid = try c.decodeIfPresent(Int.self, forKey: .pid) ?? 0
+        rssMB = try c.decodeIfPresent(Int.self, forKey: .rssMB) ?? 0
+        cpu = try c.decodeIfPresent(Double.self, forKey: .cpu) ?? 0
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? "unknown"
+        project = try c.decodeIfPresent(String.self, forKey: .project) ?? ""
+    }
+}
+
+struct MonitorPane: Identifiable, Codable {
+    var session: String
+    var window: String
+    var paneID: String
+    var paneIndex: Int
+    var role: String
+    var column: Int?
+    var project: String
+    var rssMB: Int
+    var cpu: Double
+    var bucketCMB: Int
+    var bucketMMB: Int
+    var bucketXMB: Int
+    var bucketOMB: Int
+    var state: String
+    var agentType: String
+
+    var id: String { paneID }
+
+    enum CodingKeys: String, CodingKey {
+        case session
+        case window
+        case paneID = "pane_id"
+        case paneIndex = "pane_index"
+        case role
+        case column
+        case project
+        case rssMB = "rss_mb"
+        case cpu
+        case bucketCMB = "bucket_c_mb"
+        case bucketMMB = "bucket_m_mb"
+        case bucketXMB = "bucket_x_mb"
+        case bucketOMB = "bucket_o_mb"
+        case state
+        case agentType = "agent_type"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        session = try c.decodeIfPresent(String.self, forKey: .session) ?? ""
+        window = try c.decodeIfPresent(String.self, forKey: .window) ?? ""
+        paneID = try c.decodeIfPresent(String.self, forKey: .paneID) ?? ""
+        paneIndex = try c.decodeIfPresent(Int.self, forKey: .paneIndex) ?? -1
+        role = try c.decodeIfPresent(String.self, forKey: .role) ?? ""
+        column = try c.decodeIfPresent(Int.self, forKey: .column)
+        project = try c.decodeIfPresent(String.self, forKey: .project) ?? ""
+        rssMB = try c.decodeIfPresent(Int.self, forKey: .rssMB) ?? 0
+        cpu = try c.decodeIfPresent(Double.self, forKey: .cpu) ?? 0
+        bucketCMB = try c.decodeIfPresent(Int.self, forKey: .bucketCMB) ?? 0
+        bucketMMB = try c.decodeIfPresent(Int.self, forKey: .bucketMMB) ?? 0
+        bucketXMB = try c.decodeIfPresent(Int.self, forKey: .bucketXMB) ?? 0
+        bucketOMB = try c.decodeIfPresent(Int.self, forKey: .bucketOMB) ?? 0
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? "unknown"
+        agentType = try c.decodeIfPresent(String.self, forKey: .agentType) ?? "other"
+    }
+}
+
+struct MonitorColumn: Identifiable, Codable {
+    var column: Int
+    var project: String
+    var ccMB: Int
+    var codexMB: Int
+    var totalMB: Int
+    var ccActive: Int
+    var codexActive: Int
+
+    var id: Int { column }
+
+    enum CodingKeys: String, CodingKey {
+        case column
+        case project
+        case ccMB = "cc_mb"
+        case codexMB = "codex_mb"
+        case totalMB = "total_mb"
+        case ccActive = "cc_active"
+        case codexActive = "codex_active"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        column = try c.decodeIfPresent(Int.self, forKey: .column) ?? 0
+        project = try c.decodeIfPresent(String.self, forKey: .project) ?? ""
+        ccMB = try c.decodeIfPresent(Int.self, forKey: .ccMB) ?? 0
+        codexMB = try c.decodeIfPresent(Int.self, forKey: .codexMB) ?? 0
+        totalMB = try c.decodeIfPresent(Int.self, forKey: .totalMB) ?? 0
+        ccActive = try c.decodeIfPresent(Int.self, forKey: .ccActive) ?? 0
+        codexActive = try c.decodeIfPresent(Int.self, forKey: .codexActive) ?? 0
+    }
+}
+
+struct MonitorCollector: Codable {
+    var version: String
+    var source: String
+    var errors: [String]
+
+    init(version: String = "", source: String = "", errors: [String] = []) {
+        self.version = version
+        self.source = source
+        self.errors = errors
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(String.self, forKey: .version) ?? ""
+        source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
+        errors = try c.decodeIfPresent([String].self, forKey: .errors) ?? []
+    }
+}
+
+struct MonitorStatus: Codable {
+    var timestamp: String
+    var system: MonitorSystem
+    var categories: [String: MonitorCategory]
+    var ccProcesses: [MonitorCCProcess]
+    var guardState: String
+    var panes: [MonitorPane]
+    var columns: [MonitorColumn]
+    var collector: MonitorCollector
+
+    enum CodingKeys: String, CodingKey {
+        case timestamp
+        case system
+        case categories
+        case ccProcesses = "cc_processes"
+        case guardState = "guard"
+        case panes
+        case columns
+        case collector
+    }
+
+    init(
+        timestamp: String = "",
+        system: MonitorSystem = MonitorSystem(),
+        categories: [String: MonitorCategory] = [:],
+        ccProcesses: [MonitorCCProcess] = [],
+        guardState: String = "unknown",
+        panes: [MonitorPane] = [],
+        columns: [MonitorColumn] = [],
+        collector: MonitorCollector = MonitorCollector()
+    ) {
+        self.timestamp = timestamp
+        self.system = system
+        self.categories = categories
+        self.ccProcesses = ccProcesses
+        self.guardState = guardState
+        self.panes = panes
+        self.columns = columns
+        self.collector = collector
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        timestamp = try c.decodeIfPresent(String.self, forKey: .timestamp) ?? ""
+        system = try c.decodeIfPresent(MonitorSystem.self, forKey: .system) ?? MonitorSystem()
+        categories = try c.decodeIfPresent([String: MonitorCategory].self, forKey: .categories) ?? [:]
+        ccProcesses = try c.decodeIfPresent([MonitorCCProcess].self, forKey: .ccProcesses) ?? []
+        guardState = try c.decodeIfPresent(String.self, forKey: .guardState) ?? "unknown"
+        panes = try c.decodeIfPresent([MonitorPane].self, forKey: .panes) ?? []
+        columns = try c.decodeIfPresent([MonitorColumn].self, forKey: .columns) ?? []
+        collector = try c.decodeIfPresent(MonitorCollector.self, forKey: .collector) ?? MonitorCollector()
+    }
 }
 
 private struct MIDIBinding: Codable, Equatable {
@@ -632,8 +890,13 @@ final class AppViewModel: ObservableObject {
     @Published var statusText: String = "Ready"
     @Published var isBusy: Bool = false
     @Published var isMIDILearning: Bool = false
+    @Published var memoryStatus: MonitorStatus?
+    @Published var memoryErrorText: String?
+    @Published var memoryLastUpdatedAt: Date?
 
     private let fileManager = FileManager.default
+    private let monitorStatusPath = "/tmp/tproj-monitor-status.json"
+    private var memoryPollTask: Task<Void, Never>?
     private var midiActivator: MIDIPaneActivator?
     private var startupRetryTask: Task<Void, Never>?
 
@@ -660,6 +923,8 @@ final class AppViewModel: ObservableObject {
     func onAppear() {
         Task {
             await refreshAll()
+            await refreshMemoryStatus()
+            startMemoryPolling()
             startMIDIIfNeeded()
             if liveColumns.isEmpty {
                 startStartupRetry()
@@ -696,6 +961,7 @@ final class AppViewModel: ObservableObject {
     }
 
     deinit {
+        memoryPollTask?.cancel()
         midiActivator?.stop()
         startupRetryTask?.cancel()
     }
@@ -708,6 +974,68 @@ final class AppViewModel: ObservableObject {
         loadLiveColumns()
         normalizeSelection()
         statusText = "Reloaded: \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))"
+    }
+
+    private func startMemoryPolling() {
+        guard memoryPollTask == nil else { return }
+        memoryPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                if Task.isCancelled { return }
+                await self?.refreshMemoryStatus()
+            }
+        }
+    }
+
+    private func refreshMemoryStatus() async {
+        let homeCollector = "\(NSHomeDirectory())/bin/tproj-mem-json"
+        let bundledCollector = Bundle.main.resourceURL?.appendingPathComponent("tproj-mem-json").path ?? ""
+        let repoCollector = "\(fileManager.currentDirectoryPath)/bin/tproj-mem-json"
+        let result: CommandResult
+        if fileManager.isExecutableFile(atPath: homeCollector) {
+            result = await runCommandAsync(homeCollector, ["--json"])
+        } else if !bundledCollector.isEmpty && fileManager.isExecutableFile(atPath: bundledCollector) {
+            result = await runCommandAsync(bundledCollector, ["--json"])
+        } else if fileManager.isExecutableFile(atPath: repoCollector) {
+            result = await runCommandAsync(repoCollector, ["--json"])
+        } else {
+            result = await runCommandAsync("/usr/bin/env", ["tproj-mem-json", "--json"])
+        }
+
+        guard result.exitCode == 0 else {
+            let reason = trimmedError(result)
+            memoryErrorText = reason.isEmpty ? "Monitor command failed" : "Monitor: \(reason)"
+            return
+        }
+
+        guard let data = result.stdout.data(using: .utf8) else {
+            memoryErrorText = "Monitor: invalid output encoding"
+            return
+        }
+
+        do {
+            let snapshot = try JSONDecoder().decode(MonitorStatus.self, from: data)
+            memoryStatus = snapshot
+            memoryLastUpdatedAt = Date()
+            memoryErrorText = snapshot.collector.errors.isEmpty ? nil : snapshot.collector.errors[0]
+            persistMonitorStatus(snapshot)
+        } catch {
+            memoryErrorText = "Monitor decode failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func persistMonitorStatus(_ snapshot: MonitorStatus) {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(snapshot)
+            let url = URL(fileURLWithPath: monitorStatusPath)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            if memoryErrorText == nil {
+                memoryErrorText = "Monitor cache write failed: \(error.localizedDescription)"
+            }
+        }
     }
 
     func addWorkspaceRow() {
@@ -1862,6 +2190,7 @@ struct ContentView: View {
     @StateObject private var ghosttyTracker = GhosttyWindowTracker()
     @State private var draggingColumnID: Int?
     @State private var dropTargetColumnID: Int?
+    @State private var didRecoverWindowFrame = false
 
     var body: some View {
         ZStack {
@@ -1929,6 +2258,16 @@ struct ContentView: View {
                         }
                     }
 
+                    SectionHeader(title: "Memory")
+                    Card(compact: true, chrome: false) {
+                        memorySection()
+                    }
+
+                    SectionHeader(title: "CC & Codex")
+                    Card(compact: true, chrome: false) {
+                        monitorSection()
+                    }
+
                     SectionHeader(title: "Workspace YAML")
                     Card {
                         HStack(spacing: 0) {
@@ -1956,9 +2295,29 @@ struct ContentView: View {
                     window.backgroundColor = .clear
                     window.isOpaque = false
                 }
+                if !didRecoverWindowFrame {
+                    recoverWindowFrameIfNeeded(window)
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    didRecoverWindowFrame = true
+                }
                 ghosttyTracker.attach(to: window)
             }
         )
+    }
+
+    private func recoverWindowFrameIfNeeded(_ window: NSWindow) {
+        let current = window.frame
+        let visibleScreens = NSScreen.screens.map { $0.visibleFrame }
+        let isVisible = visibleScreens.contains { screen in
+            current.intersects(screen.insetBy(dx: -40, dy: -40))
+        }
+        guard !isVisible else { return }
+
+        guard let main = NSScreen.main?.visibleFrame ?? NSScreen.screens.first?.visibleFrame else { return }
+        let x = main.minX + 24
+        let y = max(main.minY + 24, main.maxY - current.height - 24)
+        window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
     private func liveColumnRow(_ column: LiveColumn) -> some View {
@@ -2067,6 +2426,256 @@ struct ContentView: View {
                 .fill(GhosttyTheme.current.foreground.opacity(0.2))
                 .frame(width: 2)
         }
+    }
+
+    @ViewBuilder
+    private func memorySection() -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if let status = vm.memoryStatus {
+                let sys = status.system
+                HStack(spacing: 4) {
+                    Text("Free \(sys.freeMB)M")
+                        .font(GhosttyTheme.current.font(size: 11, weight: .semibold, monospaced: true))
+                        .foregroundStyle(memorySeverityColor(freeMB: sys.freeMB))
+                    Text("Used \(sys.usedMB)M / \(sys.totalMB)M \(memoryBreakdownText(status.categories))")
+                        .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                        .foregroundStyle(GhosttyTheme.current.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                    if let updated = vm.memoryLastUpdatedAt {
+                        Text(updatedTimeText(updated))
+                            .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                            .foregroundStyle(GhosttyTheme.current.textTertiary)
+                    }
+                }
+
+                usageBar(usedMB: sys.usedMB, totalMB: sys.totalMB, color: memorySeverityColor(freeMB: sys.freeMB))
+                ecosystemBar(status.categories)
+
+                HStack(spacing: 4) {
+                    Text("Guard")
+                        .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                        .foregroundStyle(GhosttyTheme.current.textSecondary)
+                    Text(status.guardState)
+                        .font(GhosttyTheme.current.font(size: 10, weight: .semibold, monospaced: true))
+                        .foregroundStyle(guardColor(status.guardState))
+                    Spacer(minLength: 0)
+                }
+
+                let columnMap = status.columns.reduce(into: [Int: MonitorColumn]()) { acc, item in
+                    acc[item.column] = item
+                }
+                ForEach(vm.liveColumns.sorted(by: { $0.column < $1.column })) { column in
+                    let colMem = columnMap[column.column]
+                    HStack(spacing: 4) {
+                        Text("#\(column.column)")
+                            .font(GhosttyTheme.current.font(size: 10, weight: .heavy, monospaced: true))
+                            .foregroundStyle(GhosttyTheme.current.textSecondary)
+                        Text(columnPrimaryName(column))
+                            .font(GhosttyTheme.current.font(size: 10, weight: .semibold))
+                            .foregroundStyle(GhosttyTheme.current.textSecondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Text("\(colMem?.ccMB ?? 0)/\(colMem?.codexMB ?? 0)")
+                            .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                            .foregroundStyle(GhosttyTheme.current.textTertiary)
+                        Text("\(colMem?.totalMB ?? 0)M")
+                            .font(GhosttyTheme.current.font(size: 10, weight: .semibold, monospaced: true))
+                            .foregroundStyle(GhosttyTheme.current.textPrimary)
+                    }
+                }
+            } else {
+                Text("Loading monitor...")
+                    .font(GhosttyTheme.current.font(size: 11, weight: .medium))
+                    .foregroundStyle(GhosttyTheme.current.textSecondary)
+            }
+
+            if let error = vm.memoryErrorText, !error.isEmpty {
+                Text(error)
+                    .font(GhosttyTheme.current.font(size: 10, weight: .medium))
+                    .foregroundStyle(GhosttyTheme.current.accentRed.opacity(0.92))
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func monitorSection() -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            let panes = vm.memoryStatus?.panes ?? []
+            let categories = vm.memoryStatus?.categories ?? [:]
+            let ccPanes = panes.filter { $0.agentType == "cc" }
+            let codexPanes = panes.filter { $0.agentType == "codex" }
+
+            monitorGroup(title: "CC", panes: ccPanes, summary: monitorSummaryText(title: "CC", panes: ccPanes, categories: categories))
+            monitorGroup(title: "Codex", panes: codexPanes, summary: monitorSummaryText(title: "Codex", panes: codexPanes, categories: categories))
+
+            if panes.isEmpty {
+                Text("No pane monitor data")
+                    .font(GhosttyTheme.current.font(size: 11, weight: .medium))
+                    .foregroundStyle(GhosttyTheme.current.textSecondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func monitorGroup(title: String, panes: [MonitorPane], summary: String) -> some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .font(GhosttyTheme.current.font(size: 11, weight: .bold))
+                .foregroundStyle(GhosttyTheme.current.textPrimary)
+            Text("(\(summary))")
+                .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                .foregroundStyle(GhosttyTheme.current.textTertiary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+
+        if panes.isEmpty {
+            Text("none")
+                .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                .foregroundStyle(GhosttyTheme.current.textTertiary)
+        } else {
+            ForEach(panes) { pane in
+                HStack(spacing: 4) {
+                    Text(pane.column.map { "#\($0)" } ?? "--")
+                        .font(GhosttyTheme.current.font(size: 10, weight: .heavy, monospaced: true))
+                        .foregroundStyle(GhosttyTheme.current.textSecondary)
+                    Text(pane.project.isEmpty ? pane.window : pane.project)
+                        .font(GhosttyTheme.current.font(size: 10, weight: .semibold))
+                        .foregroundStyle(GhosttyTheme.current.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                    Text(paneMetricText(pane))
+                        .font(GhosttyTheme.current.font(size: 10, weight: .semibold, monospaced: true))
+                        .foregroundStyle(GhosttyTheme.current.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Circle()
+                        .fill(paneStateColor(pane.state))
+                        .frame(width: 5, height: 5)
+                }
+            }
+        }
+    }
+
+    private func usageBar(usedMB: Int, totalMB: Int, color: Color) -> some View {
+        let safeTotal = max(totalMB, 1)
+        let ratio = min(max(CGFloat(usedMB) / CGFloat(safeTotal), 0), 1)
+
+        return ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(GhosttyTheme.current.foreground.opacity(0.08))
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(color.opacity(0.9))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .mask(
+                    GeometryReader { proxy in
+                        Rectangle()
+                            .frame(width: proxy.size.width * ratio, alignment: .leading)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    }
+                )
+        }
+        .frame(height: 6)
+    }
+
+    private func ecosystemBar(_ categories: [String: MonitorCategory]) -> some View {
+        let parts: [(String, Color)] = [
+            ("cc_sessions", GhosttyTheme.current.accentGreen),
+            ("mcp_servers", GhosttyTheme.current.accentYellow),
+            ("codex", GhosttyTheme.current.accentBlue),
+            ("chrome", GhosttyTheme.current.accentCyan),
+            ("slack", GhosttyTheme.current.accentRed)
+        ]
+        let values = parts.map { max(Double(categories[$0.0]?.mb ?? 0), 0) }
+        let total = max(values.reduce(0, +), 1)
+
+        return GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(GhosttyTheme.current.foreground.opacity(0.08))
+                ForEach(Array(parts.enumerated()), id: \.offset) { idx, pair in
+                    let prefix = values.prefix(idx).reduce(0, +)
+                    let x = geo.size.width * CGFloat(prefix / total)
+                    let width = geo.size.width * CGFloat(values[idx] / total)
+                    Rectangle()
+                        .fill(pair.1.opacity(0.92))
+                        .frame(width: width > 0 ? max(width, 1) : 0, height: 6)
+                        .offset(x: x)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+        }
+        .frame(height: 6)
+    }
+
+    private func memoryBreakdownText(_ categories: [String: MonitorCategory]) -> String {
+        let cc = categories["cc_sessions"]?.mb ?? 0
+        let mcp = categories["mcp_servers"]?.mb ?? 0
+        let cdx = categories["codex"]?.mb ?? 0
+        let chr = categories["chrome"]?.mb ?? 0
+        let slk = categories["slack"]?.mb ?? 0
+        return "(CC \(cc) | MCP \(mcp) | Cdx \(cdx) | Chr \(chr) | Slk \(slk))"
+    }
+
+    private func monitorSummaryText(title: String, panes: [MonitorPane], categories: [String: MonitorCategory]) -> String {
+        let totalMB = panes.reduce(0) { $0 + $1.rssMB }
+        let active = panes.filter { $0.state.lowercased() == "active" }.count
+
+        if title == "CC" {
+            let mcpMB = categories["mcp_servers"]?.mb ?? 0
+            let mcpCount = categories["mcp_servers"]?.count ?? 0
+            return "\(panes.count), \(totalMB)M, A\(active) | MCP \(mcpMB)/\(mcpCount)"
+        }
+
+        let chrMB = categories["chrome"]?.mb ?? 0
+        let slkMB = categories["slack"]?.mb ?? 0
+        return "\(panes.count), \(totalMB)M, A\(active) | Chr \(chrMB) Slk \(slkMB)"
+    }
+
+    private func paneMetricText(_ pane: MonitorPane) -> String {
+        if pane.agentType == "cc" {
+            return "\(pane.rssMB)(C\(pane.bucketCMB)+M\(pane.bucketMMB)+X\(pane.bucketXMB)+O\(pane.bucketOMB))"
+        }
+        return "\(pane.rssMB)M"
+    }
+
+    private func memorySeverityColor(freeMB: Int) -> Color {
+        if freeMB <= 200 { return GhosttyTheme.current.accentRed }
+        if freeMB <= 500 { return GhosttyTheme.current.accentYellow }
+        return GhosttyTheme.current.accentGreen
+    }
+
+    private func guardColor(_ state: String) -> Color {
+        switch state.lowercased() {
+        case "running":
+            return GhosttyTheme.current.accentGreen
+        case "stopped":
+            return GhosttyTheme.current.accentRed
+        default:
+            return GhosttyTheme.current.textTertiary
+        }
+    }
+
+    private func paneStateColor(_ state: String) -> Color {
+        switch state.lowercased() {
+        case "active":
+            return GhosttyTheme.current.accentGreen
+        case "idle":
+            return GhosttyTheme.current.accentYellow
+        default:
+            return GhosttyTheme.current.textTertiary
+        }
+    }
+
+    private func updatedTimeText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: date)
     }
 
     private func compactStatus(_ text: String) -> String {

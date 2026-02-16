@@ -72,9 +72,17 @@ rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
 cp -R "$APP_DIR/dist/$APP_NAME.app" "$APP_BUNDLE"
 
-echo "==> Sign app"
-codesign --force --deep --options runtime --sign "$SIGNING_ID" "$APP_BUNDLE"
-codesign --verify --deep --strict "$APP_BUNDLE"
+echo "==> Sign app binaries"
+if [[ -d "$APP_BUNDLE/Contents/Resources" ]]; then
+  while IFS= read -r -d '' bin; do
+    codesign --force --options runtime --sign "$SIGNING_ID" "$bin"
+  done < <(find "$APP_BUNDLE/Contents/Resources" -type f -perm -111 -print0)
+fi
+codesign --force --options runtime --sign "$SIGNING_ID" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+
+echo "==> Sign app bundle"
+codesign --force --options runtime --sign "$SIGNING_ID" "$APP_BUNDLE"
+codesign --verify --strict --verbose=2 "$APP_BUNDLE"
 
 echo "==> Package CLI payload"
 "$ROOT_DIR/scripts/package-cli-payload.sh" "$PAYLOAD_TAR"
@@ -128,13 +136,13 @@ if $SKIP_NOTARIZE; then
 else
   echo "==> Notarize DMG"
   if [[ -n "${NOTARY_PROFILE:-}" ]]; then
-    xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait --timeout 900
   else
     xcrun notarytool submit "$DMG_PATH" \
       --apple-id "$APPLE_ID" \
       --team-id "$TEAM_ID" \
       --password "$APP_PASSWORD" \
-      --wait
+      --wait --timeout 900
   fi
 
   echo "==> Staple"

@@ -224,6 +224,29 @@ Claude Code内で `/codex` を実行すると、Codexペインと連携。
   2. `apps/tproj/.build/arm64-apple-macosx/debug/tproj &` — 開発版のみ起動
 - **2重起動厳禁**: 必ず全プロセスを kill してから1つだけ起動すること
 
+## Shared Monitor JSON (Mandatory for Diagnostics)
+
+- メモリ関連の調査では、推測で `ps` / `top` を打つ前に **必ず** `/tmp/tproj-monitor-status.json` を確認すること。
+- このJSONは `tproj-gui` が約8秒ごとに更新する。まず `timestamp` を見て鮮度を確認すること。
+- 優先確認キー:
+  - `system`（`total_mb`, `used_mb`, `free_mb`）
+  - `categories`（`cc_sessions`, `mcp_servers`, `codex`, `chrome`, `slack`）
+  - `panes`（`rss_mb`, `state`, `bucket_c_mb`, `bucket_m_mb`, `bucket_x_mb`, `bucket_o_mb`）
+  - `columns`
+  - `collector.errors`（空でなければ最優先で報告）
+- JSONが存在しない場合のみフォールバックとして `cc-mem --json` や `tmux list-panes` を使うこと。
+
+```bash
+# 全体概要（時刻・システム・カテゴリ）
+cat /tmp/tproj-monitor-status.json | jq '{timestamp, system, categories}'
+
+# 各ペインのメモリ状況（C/M/X/O内訳含む）
+cat /tmp/tproj-monitor-status.json | jq '.panes[] | {pane_id, role, project, rss_mb, bucket_c_mb, bucket_m_mb, bucket_x_mb, bucket_o_mb, state}'
+
+# 収集エラー確認（空配列が正常）
+cat /tmp/tproj-monitor-status.json | jq '.collector.errors'
+```
+
 ## 主な設定
 
 ### tmux (`config/tmux/tmux.conf`)

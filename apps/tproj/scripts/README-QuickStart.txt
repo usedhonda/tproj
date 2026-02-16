@@ -17,3 +17,4 @@ Notes:
 - yazi plugin install is best-effort. If it fails:
   cd ~/.config/yazi && ya pack -i
 - If you already have local settings, install.sh creates backups.
+- Memory monitor tools (cc-mem, memory-guard, tproj-mem-json) are installed together.

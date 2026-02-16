@@ -35,3 +35,12 @@ cd apps/tproj
 - `tmux`
 - `tproj` コマンド
 - `yq` (workspace.yaml 読み込み)
+- `tproj-mem-json` (メモリ/ペイン監視の統合JSON)
+
+## 監視データ共有
+
+GUIアプリは定期的に監視情報を取得し、以下へ書き出します:
+
+- `/tmp/tproj-monitor-status.json`
+
+他の tmux ペインの CC / Codex はこの JSON を読むことで、同じ監視状態を参照できます。

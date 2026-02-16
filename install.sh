@@ -231,8 +231,11 @@ if $DRY_RUN; then
   echo "[DRY-RUN] 📦 agent-monitor -> ~/bin/"
   echo "[DRY-RUN] 📦 team-watcher -> ~/bin/"
   echo "[DRY-RUN] 📦 reflow-agent-pane -> ~/bin/"
+  echo "[DRY-RUN] 📦 cc-mem -> ~/bin/"
+  echo "[DRY-RUN] 📦 memory-guard -> ~/bin/"
+  echo "[DRY-RUN] 📦 tproj-mem-json -> ~/bin/"
 else
-  echo "📦 tproj, tproj-mcp-init, tproj-toggle-yazi, tproj-msg, agent-monitor, team-watcher, reflow-agent-pane, rebalance-workspace-columns, sign-codex -> ~/bin/"
+  echo "📦 tproj, tproj-mcp-init, tproj-toggle-yazi, tproj-msg, agent-monitor, team-watcher, reflow-agent-pane, rebalance-workspace-columns, sign-codex, cc-mem, memory-guard, tproj-mem-json -> ~/bin/"
   mkdir -p ~/bin
   cp "$SCRIPT_DIR/bin/tproj" ~/bin/tproj
   cp "$SCRIPT_DIR/bin/tproj-mcp-init" ~/bin/tproj-mcp-init
@@ -243,7 +246,10 @@ else
   cp "$SCRIPT_DIR/bin/reflow-agent-pane" ~/bin/reflow-agent-pane
   cp "$SCRIPT_DIR/bin/rebalance-workspace-columns" ~/bin/rebalance-workspace-columns
   cp "$SCRIPT_DIR/bin/sign-codex" ~/bin/sign-codex
-  chmod +x ~/bin/tproj ~/bin/tproj-mcp-init ~/bin/tproj-toggle-yazi ~/bin/tproj-msg ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/rebalance-workspace-columns ~/bin/sign-codex
+  cp "$SCRIPT_DIR/bin/cc-mem" ~/bin/cc-mem
+  cp "$SCRIPT_DIR/bin/memory-guard" ~/bin/memory-guard
+  cp "$SCRIPT_DIR/bin/tproj-mem-json" ~/bin/tproj-mem-json
+  chmod +x ~/bin/tproj ~/bin/tproj-mcp-init ~/bin/tproj-toggle-yazi ~/bin/tproj-msg ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/rebalance-workspace-columns ~/bin/sign-codex ~/bin/cc-mem ~/bin/memory-guard ~/bin/tproj-mem-json
 
   # 4.1.1 GUI アプリ（ビルド済みの場合のみ）
   GUI_BINARY="$SCRIPT_DIR/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
@@ -251,6 +257,28 @@ else
     echo "  tproj-gui -> ~/bin/"
     cp "$GUI_BINARY" ~/bin/tproj-gui
     chmod +x ~/bin/tproj-gui
+  fi
+fi
+
+# 4.1.2 memory-guard launchd
+MEMORY_GUARD_LABEL="com.tproj.memory-guard"
+MEMORY_GUARD_DOMAIN="gui/$(id -u)"
+MEMORY_GUARD_PLIST="$HOME/Library/LaunchAgents/${MEMORY_GUARD_LABEL}.plist"
+if $DRY_RUN; then
+  echo "[DRY-RUN] 📦 memory-guard launchd -> $MEMORY_GUARD_PLIST"
+  echo "[DRY-RUN] ♻️  launchctl reload $MEMORY_GUARD_LABEL"
+else
+  mkdir -p "$HOME/Library/LaunchAgents"
+  sed "s|__HOME__|$HOME|g" "$SCRIPT_DIR/config/launchd/${MEMORY_GUARD_LABEL}.plist.template" > "$MEMORY_GUARD_PLIST"
+
+  # Cleanup old label if present and reload current label.
+  launchctl bootout "$MEMORY_GUARD_DOMAIN/com.memory-guard" >/dev/null 2>&1 || true
+  launchctl bootout "$MEMORY_GUARD_DOMAIN/$MEMORY_GUARD_LABEL" >/dev/null 2>&1 || true
+  if launchctl bootstrap "$MEMORY_GUARD_DOMAIN" "$MEMORY_GUARD_PLIST" >/dev/null 2>&1; then
+    echo "✅ memory-guard launchd loaded ($MEMORY_GUARD_LABEL)"
+  else
+    echo "⚠️  memory-guard launchd load failed. Retry:"
+    echo "   launchctl bootstrap $MEMORY_GUARD_DOMAIN $MEMORY_GUARD_PLIST"
   fi
 fi
 
@@ -377,12 +405,16 @@ echo "   ~/bin/tproj-msg"
 echo "   ~/bin/agent-monitor"
 echo "   ~/bin/team-watcher"
 echo "   ~/bin/reflow-agent-pane"
+echo "   ~/bin/cc-mem"
+echo "   ~/bin/memory-guard"
+echo "   ~/bin/tproj-mem-json"
 echo "   ~/bin/tproj-gui (if built)"
 echo "   ~/.tmux.conf"
 echo "   ~/.config/yazi/"
 echo "   ~/.claude/commands/"
 echo "   ~/.claude/skills/"
 echo "   ~/.codex/skills/"
+echo "   ~/Library/LaunchAgents/com.tproj.memory-guard.plist"
 echo ""
 echo "💡 使い方:"
 echo "   単一プロジェクト: cd <project> && tproj"

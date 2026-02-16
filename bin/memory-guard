@@ -1,0 +1,274 @@
+#!/bin/bash
+# memory-guard - System-wide + Claude process memory watchdog
+# Runs as persistent daemon via launchd (KeepAlive)
+# - Checks every 5 seconds for runaway processes (any process > PROC_MAX)
+# - Checks every 30 seconds for Claude aggregate memory (WARN/CRIT)
+set -eo pipefail
+
+INTERVAL="${MEMORY_GUARD_INTERVAL:-5}"          # main loop interval (seconds)
+AGGREGATE_EVERY="${MEMORY_GUARD_AGG_EVERY:-6}"   # aggregate check every N loops (6*5=30s)
+PROC_MAX_MB="${MEMORY_GUARD_PROC_MAX:-16384}"    # 16GB per process (any process)
+WARN_MB="${MEMORY_GUARD_WARN:-5120}"             # 5GB Claude aggregate
+CRIT_MB="${MEMORY_GUARD_CRIT:-7168}"             # 7GB Claude aggregate
+LOG="/tmp/memory-guard.log"
+LOG_TAG="memory-guard"
+HISTORY_FILE="/tmp/memory-guard-history.jsonl"
+HISTORY_MAX_LINES=10000
+
+# System processes immune from kill (matched against short command name)
+IMMUNE_PROCS="kernel_task|launchd|WindowServer|loginwindow|opendirectoryd|diskarbitrationd|configd|syslogd|notifyd|distnoted|logd|powerd|coreduetd|mds|mds_stores|Finder|Dock|SystemUIServer|Spotlight"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG"; }
+
+# Graceful shutdown
+trap 'log "Shutting down"; exit 0' SIGTERM SIGINT
+
+log "Started (interval=${INTERVAL}s, proc_max=${PROC_MAX_MB}MB, warn=${WARN_MB}MB, crit=${CRIT_MB}MB)"
+
+# --- Helper functions ---
+
+get_claude_pids_rss() {
+  ps -eo pid,rss,pcpu,command 2>/dev/null \
+    | grep -E '(claude|anthropic)' \
+    | grep -v grep \
+    | grep -v memory-guard \
+    | awk '{print $1, $2, $3}'
+}
+
+calc_total_mb() {
+  local total_kb=0
+  while read -r pid rss cpu; do
+    [[ -z "$pid" ]] && continue
+    total_kb=$(( total_kb + rss ))
+  done <<< "$(get_claude_pids_rss)"
+  echo $(( total_kb / 1024 ))
+}
+
+get_leader_pids() {
+  for session in $(tmux list-sessions -F '#S' 2>/dev/null); do
+    for window in $(tmux list-windows -t "$session" -F '#W' 2>/dev/null); do
+      while IFS=: read -r pane_id role pane_pid; do
+        [[ -z "$role" ]] && continue
+        if [[ "$role" == "claude" || "$role" =~ ^claude-p[0-9]+$ ]]; then
+          local children
+          children=$(pgrep -P "$pane_pid" 2>/dev/null || true)
+          echo "$pane_pid"
+          for c in $children; do echo "$c"; done
+        fi
+      done < <(tmux list-panes -t "$session:$window" \
+        -F '#{pane_id}:#{@role}:#{pane_pid}' 2>/dev/null || true)
+    done
+  done
+}
+
+get_killable_agents() {
+  local leader_pids
+  leader_pids=$(get_leader_pids)
+
+  for session in $(tmux list-sessions -F '#S' 2>/dev/null); do
+    for window in $(tmux list-windows -t "$session" -F '#W' 2>/dev/null); do
+      while IFS=: read -r pane_id role pane_pid; do
+        [[ -z "$role" ]] && continue
+        [[ "$role" == agent-* ]] || continue
+
+        if echo "$leader_pids" | grep -q "^${pane_pid}$"; then
+          continue
+        fi
+
+        local child_pids
+        child_pids=$(pgrep -P "$pane_pid" 2>/dev/null || true)
+        for cpid in $pane_pid $child_pids; do
+          local info
+          info=$(ps -o pid=,rss=,pcpu= -p "$cpid" 2>/dev/null) || continue
+          read -r pid rss cpu <<< "$info"
+          [[ -z "$pid" ]] && continue
+          local cpu_int=${cpu%.*}
+          cpu_int=${cpu_int:-0}
+          if [[ "$cpu_int" -lt 1 ]]; then
+            echo "$rss $pane_pid $pane_id $role"
+            break
+          fi
+        done
+      done < <(tmux list-panes -t "$session:$window" \
+        -F '#{pane_id}:#{@role}:#{pane_pid}' 2>/dev/null || true)
+    done
+  done | sort -rn
+}
+
+# --- Snapshot recording for cc-mem history ---
+record_snapshot() {
+  local event="${1:-}"
+  local ts
+  ts=$(date -u '+%Y-%m-%dT%H:%M:%S')
+
+  # System free memory
+  local page_size
+  page_size=$(sysctl -n hw.pagesize 2>/dev/null || echo 16384)
+  local vm_out
+  vm_out=$(vm_stat 2>/dev/null)
+  local free_pages
+  free_pages=$(echo "$vm_out" | awk '/Pages free:/ {gsub(/\./,"",$3); print $3}')
+  local spec_pages
+  spec_pages=$(echo "$vm_out" | awk '/Pages speculative:/ {gsub(/\./,"",$3); print $3}')
+  local free_mb=$(( (${free_pages:-0} + ${spec_pages:-0}) * page_size / 1024 / 1024 ))
+
+  # System used memory
+  local total_mb=$(( $(sysctl -n hw.memsize 2>/dev/null) / 1024 / 1024 ))
+  local sys_used_mb=$(( total_mb - free_mb ))
+
+  # CC aggregate
+  local cc_mb
+  cc_mb=$(calc_total_mb)
+  local cc_count=0
+  while read -r pid rss cpu; do
+    [[ -z "$pid" ]] && continue
+    cc_count=$(( cc_count + 1 ))
+  done <<< "$(get_claude_pids_rss)"
+
+  # MCP servers
+  local mcp_kb=0
+  while IFS= read -r line; do
+    local rss
+    rss=$(echo "$line" | awk '{print $2}')
+    [[ -z "$rss" ]] && continue
+    mcp_kb=$(( mcp_kb + rss ))
+  done < <(ps -eo pid,rss,comm 2>/dev/null | grep -iE '(mcp|context7|playwright-server|chrome-ai-bridge)' | grep -v grep)
+  local mcp_mb=$(( mcp_kb / 1024 ))
+
+  # Chrome
+  local chrome_kb=0
+  while IFS= read -r line; do
+    local rss
+    rss=$(echo "$line" | awk '{print $2}')
+    [[ -z "$rss" ]] && continue
+    chrome_kb=$(( chrome_kb + rss ))
+  done < <(ps -eo pid,rss,comm 2>/dev/null | grep -iE '(google chrome|chrome helper)' | grep -v grep)
+  local chrome_mb=$(( chrome_kb / 1024 ))
+
+  # Top process (highest RSS Claude process)
+  local top_name="" top_rss_mb=0 top_pid=0
+  while read -r pid rss cpu; do
+    [[ -z "$pid" ]] && continue
+    local rss_mb=$(( rss / 1024 ))
+    if [[ "$rss_mb" -gt "$top_rss_mb" ]]; then
+      top_rss_mb=$rss_mb
+      top_pid=$pid
+      top_name=$(ps -o comm= -p "$pid" 2>/dev/null | sed 's|.*/||' || echo "unknown")
+    fi
+  done <<< "$(get_claude_pids_rss)"
+
+  # Build JSON line
+  local json="{\"ts\":\"$ts\",\"free_mb\":$free_mb,\"sys_used_mb\":$sys_used_mb,\"cc_mb\":$cc_mb,\"cc_count\":$cc_count,\"mcp_mb\":$mcp_mb,\"chrome_mb\":$chrome_mb,\"top_name\":\"$top_name\",\"top_rss_mb\":$top_rss_mb,\"top_pid\":$top_pid"
+  if [[ -n "$event" ]]; then
+    json+=",\"event\":\"$event\""
+  fi
+  json+="}"
+  echo "$json" >> "$HISTORY_FILE"
+
+  # Trim if too large
+  local lines
+  lines=$(wc -l < "$HISTORY_FILE" 2>/dev/null || echo 0)
+  if [[ "$lines" -gt "$HISTORY_MAX_LINES" ]]; then
+    tail -n $(( HISTORY_MAX_LINES / 2 )) "$HISTORY_FILE" > "${HISTORY_FILE}.tmp"
+    mv "${HISTORY_FILE}.tmp" "$HISTORY_FILE"
+  fi
+}
+
+# --- Per-process runaway check (ALL processes) ---
+check_runaway_processes() {
+  # Get all processes with RSS > threshold, excluding immune system processes
+  ps -eo pid,rss,comm 2>/dev/null | while read -r pid rss comm; do
+    [[ -z "$pid" || "$pid" == "PID" ]] && continue
+    local proc_mb=$(( rss / 1024 ))
+    [[ "$proc_mb" -le "$PROC_MAX_MB" ]] && continue
+
+    # Skip immune system processes
+    local short_name
+    short_name=$(basename "$comm" 2>/dev/null || echo "$comm")
+    if echo "$short_name" | grep -qE "^($IMMUNE_PROCS)$"; then
+      continue
+    fi
+
+    # Skip own process
+    [[ "$pid" -eq $$ ]] && continue
+
+    record_snapshot "RUNAWAY: $short_name PID $pid ${proc_mb}MB"
+    log "RUNAWAY: PID $pid ($short_name) using ${proc_mb}MB (limit: ${PROC_MAX_MB}MB) - killing"
+    osascript -e "display notification \"Killing $short_name PID $pid (${proc_mb}MB)\" with title \"Memory Guard\" subtitle \"RUNAWAY PROCESS\"" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+    sleep 2
+    kill -9 "$pid" 2>/dev/null || true
+    logger "$LOG_TAG: killed runaway $short_name PID $pid (${proc_mb}MB)"
+  done
+}
+
+# --- Claude aggregate check ---
+check_claude_aggregate() {
+  local total_mb
+  total_mb=$(calc_total_mb)
+
+  [[ "$total_mb" -le "$WARN_MB" ]] && return 0
+
+  # Recheck after 10s to exclude transient spikes
+  sleep 10
+  local total_mb2
+  total_mb2=$(calc_total_mb)
+
+  [[ "$total_mb2" -le "$WARN_MB" ]] && return 0
+
+  # WARNING level
+  if [[ "$total_mb2" -le "$CRIT_MB" ]]; then
+    log "WARNING: Claude processes using ${total_mb2}MB (threshold: ${WARN_MB}MB)"
+    osascript -e "display notification \"Claude processes: ${total_mb2}MB / ${WARN_MB}MB warning\" with title \"Memory Guard\" subtitle \"Consider closing idle sessions\"" 2>/dev/null || true
+    return 0
+  fi
+
+  # CRITICAL level - kill idle agents
+  log "CRITICAL: Claude processes using ${total_mb2}MB (threshold: ${CRIT_MB}MB)"
+  osascript -e "display notification \"Claude processes: ${total_mb2}MB - killing idle agents\" with title \"Memory Guard\" subtitle \"CRITICAL\"" 2>/dev/null || true
+
+  local killed=0
+  while IFS=' ' read -r rss pane_pid pane_id role; do
+    [[ -z "$rss" ]] && continue
+
+    local children
+    children=$(pgrep -P "$pane_pid" 2>/dev/null || true)
+    for child in $children; do
+      kill "$child" 2>/dev/null || true
+    done
+    tmux kill-pane -t "$pane_id" 2>/dev/null || true
+
+    local rss_mb=$(( rss / 1024 ))
+    log "  Killed $role (pane $pane_id, ~${rss_mb}MB)"
+    killed=$(( killed + 1 ))
+
+    local new_total
+    new_total=$(calc_total_mb)
+    if [[ "$new_total" -le "$WARN_MB" ]]; then
+      log "  Memory now ${new_total}MB, below warning threshold"
+      break
+    fi
+  done <<< "$(get_killable_agents)"
+
+  if [[ "$killed" -eq 0 ]]; then
+    log "  No idle agents found to kill"
+  fi
+
+  logger "$LOG_TAG: ${total_mb2}MB, killed $killed idle agents"
+}
+
+# --- Main loop ---
+loop_count=0
+while true; do
+  # Every loop: check for runaway processes (fast, lightweight)
+  check_runaway_processes
+
+  # Every N loops: check Claude aggregate (heavier, involves tmux queries)
+  loop_count=$(( loop_count + 1 ))
+  if [[ $(( loop_count % AGGREGATE_EVERY )) -eq 0 ]]; then
+    record_snapshot
+    check_claude_aggregate
+  fi
+
+  sleep "$INTERVAL"
+done
