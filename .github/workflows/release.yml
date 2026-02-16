@@ -74,10 +74,14 @@ jobs:
           with open(os.environ["CERT_PATH"], "wb") as f:
               f.write(raw)
           PY
+          echo "CERT_BASE64_LEN=${#CERT_BASE64}"
+          echo "CERT_PASSWORD_LEN=${#CERT_PASSWORD}"
+          wc -c "$CERT_PATH"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          openssl pkcs12 -in "$CERT_PATH" -passin "pass:$CERT_PASSWORD" -nokeys -info >/dev/null
           security import "$CERT_PATH" -P "$CERT_PASSWORD" -A -f pkcs12 -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
