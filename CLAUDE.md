@@ -1,3 +1,13 @@
+<!-- CDX-PERSONA-AGENTS -->
+# MANDATORY: Persona Setup
+
+**At the start of EVERY session, you MUST read the file at THIS project's `.codex/config.toml` (NOT the global ~/.codex/config.toml) and adopt the persona defined in the `instructions` field.**
+
+The file is located at: `.codex/config.toml` relative to this project root (same directory as this AGENTS.md).
+
+This is not optional. The persona defines your communication style, tone, and personality for this project. Apply it to all responses.
+<!-- CDX-PERSONA-AGENTS-END -->
+
 # tproj - tmux開発環境
 
 tmuxベースの開発環境セットアップを管理するプロジェクト。
@@ -199,6 +209,20 @@ Claude Code内で `/codex` を実行すると、Codexペインと連携。
 
 1. このリポジトリ内のファイルを編集
 2. `./install.sh` で再インストール
+
+## 実行確認ルール
+
+- ビルドを実行した場合、最終報告前に起動確認まで実施すること。
+- 可能な場合は実際にアプリを起動し、起動可否を確認して結果を報告すること。
+- ヘッドレス環境などで起動確認ができない場合は、理由を明記すること。
+
+## GUI アプリ (TprojApp) ビルド・起動ルール
+
+- **開発中は常に開発版のみ使用する。配布版 (`tproj-gui`, `~/bin/tproj-gui`) は起動しない**
+- `swift build` 後の再起動手順:
+  1. `pkill -f '\.build/.*/tproj$|tproj\.app/|bin/tproj-gui'` — 全 GUI プロセスを停止
+  2. `apps/tproj/.build/arm64-apple-macosx/debug/tproj &` — 開発版のみ起動
+- **2重起動厳禁**: 必ず全プロセスを kill してから1つだけ起動すること
 
 ## 主な設定
 

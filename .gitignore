@@ -14,3 +14,11 @@ plans/
 # Editor
 *.swp
 *~
+
+# CC persona (auto-generated)
+.persona.md
+
+# Cdx persona (auto-generated)
+.codex/config.toml
+
+AGENTS.md
