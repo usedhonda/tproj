@@ -286,7 +286,10 @@ if command -v ya &> /dev/null; then
     echo "[DRY-RUN] 📦 yazi plugins (ya pack)"
   else
     echo "📦 yazi plugins (ya pack)"
-    (cd ~/.config/yazi && ya pack -i 2>/dev/null || true)
+    if ! (cd ~/.config/yazi && ya pack -i 2>/dev/null); then
+      echo "  ⚠️  yazi plugin install failed (best-effort)."
+      echo "     Retry manually: cd ~/.config/yazi && ya pack -i"
+    fi
   fi
 fi
 

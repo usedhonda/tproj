@@ -165,6 +165,197 @@ enum GhosttyConfigParser {
     }
 }
 
+// MARK: - Ghostty Window Tracker
+
+@MainActor
+final class GhosttyWindowTracker: ObservableObject {
+    @Published var isSnapped = false
+
+    private var pollTimer: DispatchSourceTimer?
+    private weak var appWindow: NSWindow?
+
+    private let snapThreshold: CGFloat = 12
+    // Snap-time offset: tproj.origin - ghostty.origin
+    private var snapOffset: CGPoint = .zero
+    private var lastGhosttyFrame: CGRect?
+    // After detach, suppress re-snap for a short period
+    private var detachCooldownUntil: Date?
+
+    func attach(to window: NSWindow) {
+        guard appWindow !== window else { return }
+        detach()
+        appWindow = window
+        startPolling()
+    }
+
+    func detach() {
+        stopPolling()
+        appWindow = nil
+        isSnapped = false
+        lastGhosttyFrame = nil
+        detachCooldownUntil = nil
+    }
+
+    deinit {
+        pollTimer?.cancel()
+    }
+
+    // MARK: Polling
+
+    private func startPolling() {
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(100))
+        timer.setEventHandler { [weak self] in
+            self?.tick()
+        }
+        timer.resume()
+        pollTimer = timer
+    }
+
+    private func stopPolling() {
+        pollTimer?.cancel()
+        pollTimer = nil
+    }
+
+    private func updatePollingInterval() {
+        guard let timer = pollTimer else { return }
+        let ms: Int
+        if isSnapped {
+            ms = 16      // 60 fps – smooth follow
+        } else if lastGhosttyFrame != nil {
+            ms = 100     // Ghostty visible – snap detection
+        } else {
+            ms = 500     // Ghostty absent – minimal resource
+        }
+        timer.schedule(deadline: .now() + .milliseconds(ms), repeating: .milliseconds(ms))
+    }
+
+    // MARK: Main loop
+
+    private func tick() {
+        guard let window = appWindow else { return }
+
+        guard let ghosttyFrame = findGhosttyFrame() else {
+            let changed = isSnapped || lastGhosttyFrame != nil
+            if isSnapped { isSnapped = false }
+            lastGhosttyFrame = nil
+            if changed { updatePollingInterval() }
+            return
+        }
+
+        let prevSnapped = isSnapped
+
+        if isSnapped {
+            guard let last = lastGhosttyFrame else {
+                lastGhosttyFrame = ghosttyFrame
+                return
+            }
+
+            // Drift check: has the user dragged tproj away?
+            let expectedX = last.origin.x + snapOffset.x
+            let expectedY = last.origin.y + snapOffset.y
+            let actual = window.frame.origin
+            let drift = hypot(actual.x - expectedX, actual.y - expectedY)
+
+            if drift > snapThreshold * 2 {
+                // User moved the window -> detach
+                isSnapped = false
+                detachCooldownUntil = Date().addingTimeInterval(0.4)
+                lastGhosttyFrame = ghosttyFrame
+            } else {
+                // Follow Ghostty movement
+                let dx = ghosttyFrame.origin.x - last.origin.x
+                let dy = ghosttyFrame.origin.y - last.origin.y
+                if dx != 0 || dy != 0 {
+                    var newOrigin = actual
+                    newOrigin.x += dx
+                    newOrigin.y += dy
+                    window.setFrameOrigin(newOrigin)
+                    // Re-derive offset to absorb rounding
+                    snapOffset = CGPoint(x: newOrigin.x - ghosttyFrame.origin.x,
+                                         y: newOrigin.y - ghosttyFrame.origin.y)
+                }
+                lastGhosttyFrame = ghosttyFrame
+            }
+        } else {
+            lastGhosttyFrame = ghosttyFrame
+
+            // Cooldown after detach
+            if let cooldownEnd = detachCooldownUntil {
+                if Date() < cooldownEnd { return }
+                detachCooldownUntil = nil
+            }
+
+            checkAndSnap(appFrame: window.frame, ghosttyFrame: ghosttyFrame)
+        }
+
+        if isSnapped != prevSnapped {
+            updatePollingInterval()
+        }
+    }
+
+    // MARK: Snap logic
+
+    private func checkAndSnap(appFrame: NSRect, ghosttyFrame: NSRect) {
+        // Horizontal edge distances
+        let leftToRight = abs(appFrame.minX - ghosttyFrame.maxX)   // tproj left ~ Ghostty right
+        let rightToLeft = abs(appFrame.maxX - ghosttyFrame.minX)   // tproj right ~ Ghostty left
+        let hDist = min(leftToRight, rightToLeft)
+
+        // Vertical edge distances (Cocoa: minY = bottom, maxY = top)
+        let bottomToTop = abs(appFrame.minY - ghosttyFrame.maxY)   // tproj bottom ~ Ghostty top
+        let topToBottom = abs(appFrame.maxY - ghosttyFrame.minY)   // tproj top ~ Ghostty bottom
+        let vDist = min(bottomToTop, topToBottom)
+
+        // Overlap checks (edges must be parallel-ish)
+        let yOverlap = appFrame.maxY > ghosttyFrame.minY && appFrame.minY < ghosttyFrame.maxY
+        let xOverlap = appFrame.maxX > ghosttyFrame.minX && appFrame.minX < ghosttyFrame.maxX
+
+        let horizontalSnap = hDist <= snapThreshold && yOverlap
+        let verticalSnap = vDist <= snapThreshold && xOverlap
+
+        if horizontalSnap || verticalSnap {
+            snapOffset = CGPoint(
+                x: appFrame.origin.x - ghosttyFrame.origin.x,
+                y: appFrame.origin.y - ghosttyFrame.origin.y
+            )
+            isSnapped = true
+        }
+    }
+
+    // MARK: Ghostty window discovery
+
+    private func findGhosttyFrame() -> NSRect? {
+        let options: CGWindowListOption = [.excludeDesktopElements, .optionOnScreenOnly]
+        guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+        guard let screenHeight = NSScreen.main?.frame.height else { return nil }
+
+        for info in list {
+            guard let name = info[kCGWindowOwnerName as String] as? String,
+                  name == "Ghostty",
+                  let layer = info[kCGWindowLayer as String] as? Int,
+                  layer == 0,   // normal windows only (skip menu bar, popups)
+                  let bounds = info[kCGWindowBounds as String] as? [String: NSNumber],
+                  let x = bounds["X"],
+                  let y = bounds["Y"],
+                  let w = bounds["Width"],
+                  let h = bounds["Height"] else {
+                continue
+            }
+            let cgX = CGFloat(truncating: x)
+            let cgY = CGFloat(truncating: y)
+            let cgW = CGFloat(truncating: w)
+            let cgH = CGFloat(truncating: h)
+            // CG coords (top-left origin) -> Cocoa coords (bottom-left origin)
+            let cocoaY = screenHeight - cgY - cgH
+            return NSRect(x: cgX, y: cocoaY, width: cgW, height: cgH)
+        }
+        return nil
+    }
+}
+
 // MARK: - Data Models
 
 struct WorkspaceProject: Identifiable {
@@ -274,7 +465,10 @@ private final class MIDIPaneActivator {
         guard !isRunning else { return }
 
         var createdClient = MIDIClientRef()
-        let clientStatus = MIDIClientCreate("tproj-midi-client" as CFString, nil, nil, &createdClient)
+        let clientStatus = MIDIClientCreateWithBlock("tproj-midi-client" as CFString, &createdClient) { [weak self] notification in
+            guard notification.pointee.messageID == .msgSetupChanged else { return }
+            self?.reconnectSources()
+        }
         guard clientStatus == noErr else {
             onStatus?("MIDI init failed (client: \(clientStatus))")
             return
@@ -283,7 +477,7 @@ private final class MIDIPaneActivator {
 
         var createdPort = MIDIPortRef()
         let portStatus = MIDIInputPortCreateWithBlock(client, "tproj-midi-input" as CFString, &createdPort) { [weak self] packetList, _ in
-            self?.handle(packetList: packetList)
+            self?.handlePacketList(packetList)
         }
         guard portStatus == noErr else {
             onStatus?("MIDI init failed (port: \(portStatus))")
@@ -356,17 +550,30 @@ private final class MIDIPaneActivator {
         onStatus?("MIDI sources: \(sourceNames.joined(separator: ", "))")
     }
 
-    private func handle(packetList: UnsafePointer<MIDIPacketList>) {
-        let count = Int(packetList.pointee.numPackets)
-        guard count > 0 else { return }
+    private func reconnectSources() {
+        guard isRunning else { return }
+        connectedSources.forEach { MIDIPortDisconnectSource(inputPort, $0) }
+        connectedSources.removeAll()
+        connectSources()
+        if connectedSources.isEmpty {
+            onStatus?("MIDI: device disconnected")
+        } else {
+            onStatus?("MIDI: reconnected (\(connectedSources.count) source)")
+        }
+    }
+
+    private func handlePacketList(_ packetList: UnsafePointer<MIDIPacketList>) {
+        let numPackets = Int(packetList.pointee.numPackets)
+        guard numPackets > 0 else { return }
 
         var packet = packetList.pointee.packet
-        for i in 0..<count {
-            packet.withBytes { bytes in
-                guard bytes.count >= 3 else { return }
-                self.handleMessage(status: bytes[0], data1: bytes[1], data2: bytes[2])
-            }
-            if i < count - 1 {
+        for i in 0..<numPackets {
+            // Direct tuple access (same as dj_presenter)
+            let statusByte = packet.data.0
+            let data1 = packet.data.1
+            let data2 = packet.data.2
+            handleMessage(status: statusByte, data1: data1, data2: data2)
+            if i < numPackets - 1 {
                 packet = MIDIPacketNext(&packet).pointee
             }
         }
@@ -414,21 +621,6 @@ private final class MIDIPaneActivator {
             return nil
         }
         return retained as String
-    }
-}
-
-private extension MIDIPacket {
-    func withBytes(_ body: (UnsafeBufferPointer<UInt8>) -> Void) {
-        let len = Int(length)
-        guard len > 0 else {
-            body(UnsafeBufferPointer(start: nil, count: 0))
-            return
-        }
-        withUnsafePointer(to: data) { ptr in
-            ptr.withMemoryRebound(to: UInt8.self, capacity: len) { bytePtr in
-                body(UnsafeBufferPointer(start: bytePtr, count: len))
-            }
-        }
     }
 }
 
@@ -482,6 +674,21 @@ final class AppViewModel: ObservableObject {
                 if Task.isCancelled { return }
                 await refreshAll()
                 if !liveColumns.isEmpty {
+                    // Wait for column count to stabilize (max 3 additional retries)
+                    var stableCount = 0
+                    var lastCount = liveColumns.count
+                    for _ in 0..<3 {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        if Task.isCancelled { return }
+                        await refreshAll()
+                        if liveColumns.count == lastCount {
+                            stableCount += 1
+                            if stableCount >= 2 { return }
+                        } else {
+                            lastCount = liveColumns.count
+                            stableCount = 0
+                        }
+                    }
                     return
                 }
             }
@@ -1652,6 +1859,7 @@ struct ActionButton: View {
 
 struct ContentView: View {
     @StateObject private var vm = AppViewModel()
+    @StateObject private var ghosttyTracker = GhosttyWindowTracker()
     @State private var draggingColumnID: Int?
     @State private var dropTargetColumnID: Int?
 
@@ -1666,6 +1874,12 @@ struct ContentView: View {
                     SectionHeader(title: "Current Workspace")
                     Card(compact: true, chrome: false) {
                         HStack(spacing: 4) {
+                            if ghosttyTracker.isSnapped {
+                                Circle()
+                                    .fill(GhosttyTheme.current.accentCyan)
+                                    .frame(width: 5, height: 5)
+                                    .shadow(color: GhosttyTheme.current.accentCyan.opacity(0.6), radius: 2)
+                            }
                             Text(compactStatus(vm.statusText))
                                 .font(GhosttyTheme.current.font(size: 11, weight: .medium))
                                 .foregroundStyle(GhosttyTheme.current.textSecondary)
@@ -1742,6 +1956,7 @@ struct ContentView: View {
                     window.backgroundColor = .clear
                     window.isOpaque = false
                 }
+                ghosttyTracker.attach(to: window)
             }
         )
     }
@@ -1782,7 +1997,7 @@ struct ContentView: View {
             }
         }
         .padding(.vertical, 2)
-        .padding(.leading, 6)
+        .padding(.leading, 10)   // accent bar との間隔確保
         .padding(.trailing, 2)
         .background(
             RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -1794,6 +2009,7 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 1)
                 .fill(GhosttyTheme.current.accentCyan)
                 .frame(width: 2)
+                .shadow(color: GhosttyTheme.current.accentCyan.opacity(0.7), radius: 3, x: 0, y: 0)
         }
         .overlay(
             isDragging
@@ -1839,11 +2055,18 @@ struct ContentView: View {
                 .frame(width: 34)
             }
         }
-        .padding(2)
+        .padding(.vertical, 2)
+        .padding(.leading, 10)     // liveColumnRow と揃える
+        .padding(.trailing, 2)
         .background(
             RoundedRectangle(cornerRadius: 3, style: .continuous)
                 .fill(GhosttyTheme.current.foreground.opacity(0.03))
         )
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 1)
+                .fill(GhosttyTheme.current.foreground.opacity(0.2))
+                .frame(width: 2)
+        }
     }
 
     private func compactStatus(_ text: String) -> String {
@@ -1979,6 +2202,10 @@ struct ColumnDropDelegate: DropDelegate {
 
 @main
 struct TprojApp: App {
+    init() {
+        loadAppIcon()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -1987,5 +2214,27 @@ struct TprojApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 275, height: 980)
         .windowResizability(.contentMinSize)
+    }
+
+    private func loadAppIcon() {
+        // 1. .app bundle (dist): icon registered via Info.plist CFBundleIconFile
+        if let iconPath = Bundle.main.path(forResource: "AppIcon", ofType: "icns"),
+           let icon = NSImage(contentsOfFile: iconPath) {
+            NSApp.applicationIconImage = icon
+            return
+        }
+
+        // 2. Development build: resolve from executable path
+        //    .build/arm64-apple-macosx/debug/tproj -> ../../../Resources/AppIcon.icns
+        let execURL = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
+            .resolvingSymlinksInPath()
+        let devIcon = execURL
+            .deletingLastPathComponent()  // debug/
+            .deletingLastPathComponent()  // arm64-apple-macosx/
+            .deletingLastPathComponent()  // .build/
+            .appendingPathComponent("Resources/AppIcon.icns")
+        if let icon = NSImage(contentsOfFile: devIcon.path) {
+            NSApp.applicationIconImage = icon
+        }
     }
 }

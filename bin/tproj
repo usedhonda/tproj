@@ -180,14 +180,30 @@ collect_session_descendants() {
   collect_descendant_pids "${pane_pids_arr[@]}"
 }
 
+# GUI プロセス検出（開発版・配布版・.app 版すべて対応）
+_tproj_gui_running() {
+  pgrep -f '\.build/.*/tproj$|tproj\.app/|bin/tproj-gui' >/dev/null 2>&1
+}
+
+# GUI バイナリ選択（開発版優先）
+# 優先順位: ワークスペース内の開発版 -> 単一モードの root 内 -> 配布版
+_find_gui_binary() {
+  local p dev
+  for p in "${PROJECT_PATHS[@]}"; do
+    dev="$p/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
+    [[ -x "$dev" ]] && { echo "$dev"; return 0; }
+  done
+  dev="$root/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
+  [[ -x "$dev" ]] && { echo "$dev"; return 0; }
+  echo "$HOME/bin/tproj-gui"
+}
+
 # TprojApp GUI を起動（未起動の場合のみ）
 launch_tproj_gui() {
-  local gui_bin="$HOME/bin/tproj-gui"
+  _tproj_gui_running && return 0
+  local gui_bin
+  gui_bin="$(_find_gui_binary)"
   [[ ! -x "$gui_bin" ]] && return 0
-
-  # 既に起動中ならスキップ
-  pgrep -f "bin/tproj-gui" >/dev/null 2>&1 && return 0
-
   "$gui_bin" &
   disown
 }
@@ -202,7 +218,7 @@ stop_tproj_gui_if_needed() {
   fi
 
   if [[ "$keep_alive" != "true" ]]; then
-    pkill -f "bin/tproj-gui" 2>/dev/null || true
+    pkill -f '\.build/.*/tproj$|tproj\.app/|bin/tproj-gui' 2>/dev/null || true
   fi
 }
 
@@ -1140,13 +1156,12 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
   "$HOME/bin/tproj-mcp-init" cleanup
 fi
 
-# GUI アプリ起動
-launch_tproj_gui
-
 # === セッション作成 & ツール起動 ===
 if [[ "$WORKSPACE_MODE" == "true" ]]; then
     # --- マルチプロジェクトモード ---
     create_workspace_layout "$session" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}" -- "${PROJECT_ALIASES[@]}"
+    # GUI アプリ起動（レイアウト完成後、ツール起動前）
+    launch_tproj_gui
     start_workspace_tools "$session" "$NO_UPDATE" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}" -- "${PROJECT_ALIASES[@]}"
 
     tmux select-window -t "$session:dev"
@@ -1188,6 +1203,9 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
 
     # 4) git window（差分やログ用）
     tmux new-window -t "$session" -n git -c "$root"
+
+    # GUI アプリ起動（全ペイン作成後、ツール起動前）
+    launch_tproj_gui
 
     # 5) コマンドを自動起動（リモート/ローカルで分岐）
     if [[ -n "$REMOTE_HOST" ]]; then

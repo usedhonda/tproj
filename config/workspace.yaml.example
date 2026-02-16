@@ -12,9 +12,9 @@
 # パスの文字列リスト。全て type: local, enabled: true として扱われる。
 #
 # projects:
-#   - /Users/usedhonda/projects/claude/tproj
-#   - /Users/usedhonda/projects/claude/statusline
-#   - /Users/usedhonda/projects/claude/cc-status-bar
+#   - /Users/<username>/projects/claude/tproj
+#   - /Users/<username>/projects/claude/statusline
+#   - /Users/<username>/projects/claude/cc-status-bar
 #
 # 注意: 簡易形式と詳細形式は混在不可（最初のエントリの型で自動判定）
 
@@ -30,16 +30,16 @@
 
 projects:
   # ローカルプロジェクト（起動時に有効）
-  - path: /Users/usedhonda/projects/claude/tproj
+  - path: /Users/<username>/projects/claude/tproj
     alias: tproj              # tproj --add tproj で追加可能
 
   # 別のローカルプロジェクト（起動時はスキップ、--add で追加可能）
-  - path: /Users/usedhonda/projects/claude/statusline
+  - path: /Users/<username>/projects/claude/statusline
     alias: sl
     enabled: false            # 起動時は [disabled] 表示、tproj --add sl で追加
 
   # リモートプロジェクト（SSH）
-  - path: /Users/usedhonda/projects/others/openclaw_general
+  - path: /Users/<username>/projects/others/openclaw_general
     type: remote
     host: macmini             # ~/.ssh/config で定義済みのホスト名
     alias: openclaw
