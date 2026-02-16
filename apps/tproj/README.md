@@ -1,15 +1,32 @@
 # tproj (SwiftUI)
 
-`tproj` workspace を GUI で操作する macOS ネイティブアプリです。
+Native macOS app for controlling and monitoring `tproj` workspaces.
 
-## 開発実行
+## Development Run
 
 ```bash
 cd apps/tproj
 swift run tproj
 ```
 
-## .app 生成
+## Development Rule: Always Restart After Code Changes
+
+When you change Swift sources, do not stop at build. Always restart the development app process so the running UI reflects the latest binary.
+
+```bash
+pkill -f 'tproj-gui' || true
+pkill -f '.build/arm64-apple-macosx/debug/tproj' || true
+cd apps/tproj
+swift build
+./.build/arm64-apple-macosx/debug/tproj &
+```
+
+Verification rule:
+
+- Only one `tproj` GUI process should be running.
+- The running process must be `apps/tproj/.build/.../tproj` (development binary), not `dist/tproj.app`.
+
+## Build `.app`
 
 ```bash
 cd apps/tproj
@@ -17,30 +34,34 @@ cd apps/tproj
 open dist/tproj.app
 ```
 
-生成先: `apps/tproj/dist/tproj.app`
+Output:
 
-## 配布用 DMG 生成
+- `apps/tproj/dist/tproj.app`
+
+## Build Distribution DMG
 
 ```bash
 cd apps/tproj
 ./scripts/release.sh
 ```
 
-生成先: `apps/tproj/dist/release/tproj.dmg`
+Output:
 
-事前に `apps/tproj/.local/release.md` を作成し、署名と notarization 情報を設定してください。
+- `apps/tproj/dist/release/tproj.dmg`
 
-## 依存
+Before running release, create `apps/tproj/.local/release.md` with signing and notarization values.
+
+## Runtime Dependencies
 
 - `tmux`
-- `tproj` コマンド
-- `yq` (workspace.yaml 読み込み)
-- `tproj-mem-json` (メモリ/ペイン監視の統合JSON)
+- `tproj` CLI
+- `yq` (workspace config parsing)
+- `tproj-mem-json` (merged monitor JSON input)
 
-## 監視データ共有
+## Shared Monitor Output
 
-GUIアプリは定期的に監視情報を取得し、以下へ書き出します:
+The app periodically writes monitor status to:
 
 - `/tmp/tproj-monitor-status.json`
 
-他の tmux ペインの CC / Codex はこの JSON を読むことで、同じ監視状態を参照できます。
+Other CC/Codex panes can read this JSON to observe the same live monitor state.

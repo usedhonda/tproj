@@ -988,28 +988,21 @@ final class AppViewModel: ObservableObject {
     }
 
     private func refreshMemoryStatus() async {
-        let homeCollector = "\(NSHomeDirectory())/bin/tproj-mem-json"
-        let bundledCollector = Bundle.main.resourceURL?.appendingPathComponent("tproj-mem-json").path ?? ""
-        let repoCollector = "\(fileManager.currentDirectoryPath)/bin/tproj-mem-json"
-        let result: CommandResult
-        if fileManager.isExecutableFile(atPath: homeCollector) {
-            result = await runCommandAsync(homeCollector, ["--json"])
-        } else if !bundledCollector.isEmpty && fileManager.isExecutableFile(atPath: bundledCollector) {
-            result = await runCommandAsync(bundledCollector, ["--json"])
-        } else if fileManager.isExecutableFile(atPath: repoCollector) {
-            result = await runCommandAsync(repoCollector, ["--json"])
-        } else {
-            result = await runCommandAsync("/usr/bin/env", ["tproj-mem-json", "--json"])
-        }
+        let collectorCommand = monitorCollectorCommand()
+        let result = await runCommandAsync(collectorCommand.launchPath, collectorCommand.arguments)
 
         guard result.exitCode == 0 else {
             let reason = trimmedError(result)
-            memoryErrorText = reason.isEmpty ? "Monitor command failed" : "Monitor: \(reason)"
+            let message = reason.isEmpty ? "Monitor command failed" : "Monitor: \(reason)"
+            memoryErrorText = message
+            persistMonitorErrorStatus(message)
             return
         }
 
         guard let data = result.stdout.data(using: .utf8) else {
-            memoryErrorText = "Monitor: invalid output encoding"
+            let message = "Monitor: invalid output encoding"
+            memoryErrorText = message
+            persistMonitorErrorStatus(message)
             return
         }
 
@@ -1020,8 +1013,59 @@ final class AppViewModel: ObservableObject {
             memoryErrorText = snapshot.collector.errors.isEmpty ? nil : snapshot.collector.errors[0]
             persistMonitorStatus(snapshot)
         } catch {
-            memoryErrorText = "Monitor decode failed: \(error.localizedDescription)"
+            let message = "Monitor decode failed: \(error.localizedDescription)"
+            memoryErrorText = message
+            persistMonitorErrorStatus(message)
         }
+    }
+
+    private func monitorCollectorCommand() -> (launchPath: String, arguments: [String]) {
+        let command = "tproj-mem-json"
+        let homeCollector = "\(NSHomeDirectory())/bin/\(command)"
+        if fileManager.isExecutableFile(atPath: homeCollector) {
+            return (homeCollector, ["--json"])
+        }
+
+        let bundledCollector = Bundle.main.resourceURL?.appendingPathComponent(command).path ?? ""
+        if !bundledCollector.isEmpty && fileManager.isExecutableFile(atPath: bundledCollector) {
+            return (bundledCollector, ["--json"])
+        }
+
+        if let repoCollector = locateInAncestorBin(commandName: command) {
+            return (repoCollector, ["--json"])
+        }
+
+        return ("/usr/bin/env", [command, "--json"])
+    }
+
+    private func locateInAncestorBin(commandName: String) -> String? {
+        var startPaths: [URL] = []
+        startPaths.append(URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true))
+
+        if let executablePath = Bundle.main.executablePath, !executablePath.isEmpty {
+            startPaths.append(URL(fileURLWithPath: executablePath).deletingLastPathComponent())
+        }
+
+        startPaths.append(URL(fileURLWithPath: Bundle.main.bundlePath, isDirectory: true))
+
+        var visited = Set<String>()
+        for start in startPaths where !start.path.isEmpty {
+            var cursor = start
+            while true {
+                let candidate = cursor.appendingPathComponent("bin/\(commandName)").path
+                if visited.insert(candidate).inserted && fileManager.isExecutableFile(atPath: candidate) {
+                    return candidate
+                }
+
+                let parent = cursor.deletingLastPathComponent()
+                if parent.path == cursor.path {
+                    break
+                }
+                cursor = parent
+            }
+        }
+
+        return nil
     }
 
     private func persistMonitorStatus(_ snapshot: MonitorStatus) {
@@ -1036,6 +1080,20 @@ final class AppViewModel: ObservableObject {
                 memoryErrorText = "Monitor cache write failed: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func persistMonitorErrorStatus(_ message: String) {
+        let snapshot = MonitorStatus(
+            timestamp: currentISO8601Timestamp(),
+            collector: MonitorCollector(version: "", source: "tproj-app", errors: [message])
+        )
+        persistMonitorStatus(snapshot)
+    }
+
+    private func currentISO8601Timestamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: Date())
     }
 
     func addWorkspaceRow() {
@@ -2505,8 +2563,12 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 3) {
             let panes = vm.memoryStatus?.panes ?? []
             let categories = vm.memoryStatus?.categories ?? [:]
-            let ccPanes = panes.filter { $0.agentType == "cc" }
-            let codexPanes = panes.filter { $0.agentType == "codex" }
+            let ccPanes = panes
+                .filter { $0.agentType == "cc" }
+                .sorted(by: monitorPaneSort)
+            let codexPanes = panes
+                .filter { $0.agentType == "codex" }
+                .sorted(by: monitorPaneSort)
 
             monitorGroup(title: "CC", panes: ccPanes, summary: monitorSummaryText(title: "CC", panes: ccPanes, categories: categories))
             monitorGroup(title: "Codex", panes: codexPanes, summary: monitorSummaryText(title: "Codex", panes: codexPanes, categories: categories))
@@ -2515,6 +2577,12 @@ struct ContentView: View {
                 Text("No pane monitor data")
                     .font(GhosttyTheme.current.font(size: 11, weight: .medium))
                     .foregroundStyle(GhosttyTheme.current.textSecondary)
+            } else {
+                Text("Legend: C=Claude/CC, M=MCP, X=Codex, O=Other")
+                    .font(GhosttyTheme.current.font(size: 9, weight: .medium, monospaced: true))
+                    .foregroundStyle(GhosttyTheme.current.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
         }
     }
@@ -2642,6 +2710,20 @@ struct ContentView: View {
             return "\(pane.rssMB)(C\(pane.bucketCMB)+M\(pane.bucketMMB)+X\(pane.bucketXMB)+O\(pane.bucketOMB))"
         }
         return "\(pane.rssMB)M"
+    }
+
+    private func monitorPaneSort(_ lhs: MonitorPane, _ rhs: MonitorPane) -> Bool {
+        if lhs.rssMB != rhs.rssMB { return lhs.rssMB > rhs.rssMB }
+
+        let lhsColumn = lhs.column ?? Int.max
+        let rhsColumn = rhs.column ?? Int.max
+        if lhsColumn != rhsColumn { return lhsColumn < rhsColumn }
+
+        let lhsName = lhs.project.isEmpty ? lhs.window : lhs.project
+        let rhsName = rhs.project.isEmpty ? rhs.window : rhs.project
+        if lhsName != rhsName { return lhsName.localizedCaseInsensitiveCompare(rhsName) == .orderedAscending }
+
+        return lhs.id < rhs.id
     }
 
     private func memorySeverityColor(freeMB: Int) -> Color {
@@ -2829,7 +2911,7 @@ struct TprojApp: App {
         // 1. .app bundle (dist): icon registered via Info.plist CFBundleIconFile
         if let iconPath = Bundle.main.path(forResource: "AppIcon", ofType: "icns"),
            let icon = NSImage(contentsOfFile: iconPath) {
-            NSApp.applicationIconImage = icon
+            NSApplication.shared.applicationIconImage = icon
             return
         }
 
@@ -2843,7 +2925,7 @@ struct TprojApp: App {
             .deletingLastPathComponent()  // .build/
             .appendingPathComponent("Resources/AppIcon.icns")
         if let icon = NSImage(contentsOfFile: devIcon.path) {
-            NSApp.applicationIconImage = icon
+            NSApplication.shared.applicationIconImage = icon
         }
     }
 }
