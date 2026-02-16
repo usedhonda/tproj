@@ -55,13 +55,30 @@ jobs:
           CERT_PATH="$RUNNER_TEMP/cert.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          export CERT_PATH
 
-          echo -n "$CERT_BASE64" | base64 --decode -o "$CERT_PATH"
+          python3 - <<'PY'
+          import base64
+          import os
+          import sys
+
+          data = os.environ.get("CERT_BASE64", "").strip()
+          if not data:
+              sys.stderr.write("DEVELOPER_ID_CERT is empty\n")
+              sys.exit(1)
+          try:
+              raw = base64.b64decode(data)
+          except Exception as exc:  # pragma: no cover
+              sys.stderr.write(f"Failed to decode DEVELOPER_ID_CERT: {exc}\n")
+              sys.exit(1)
+          with open(os.environ["CERT_PATH"], "wb") as f:
+              f.write(raw)
+          PY
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$CERT_PASSWORD" -A -f pkcs12 -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
