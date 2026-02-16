@@ -22,6 +22,8 @@ tproj
 - **履歴継続**: Codexはプロジェクトごとに履歴を保持、次回起動時に継続
 - **ask-codexコマンド**: Claude CodeからCodexに質問を送信
 - **Ghostty連携**: 🔔通知でタブに完了を表示
+- **メモリ監視**: `cc-mem` + `memory-guard` + `tproj-mem-json` を同梱し、GUIとCLI両方で監視可能
+- **共有ステータス**: `tproj-gui` 実行中は `/tmp/tproj-monitor-status.json` に統合監視JSONを書き出し
 
 ## インストール
 
@@ -136,6 +138,9 @@ Claude Code内で `/ask-codex` を実行すると、Codexペインに質問を�
 | ファイル | 説明 |
 |----------|------|
 | `bin/tproj` | メインスクリプト |
+| `bin/cc-mem` | メモリ監視CLI |
+| `bin/memory-guard` | launchd常駐メモリガード |
+| `bin/tproj-mem-json` | cc-mem + tmux 統合JSONコレクタ |
 | `config/tmux/tmux.conf` | tmux設定 |
 | `config/yazi/yazi.toml` | yazi基本設定 |
 | `config/yazi/keymap.toml` | yaziキーバインド |
