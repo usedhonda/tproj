@@ -1,185 +1,127 @@
 # tproj
 
-tmuxベースのAI開発環境。Claude Code + Codex + yaziの3ペイン構成で、AIペアプログラミングを効率化。
+`tproj` is a tmux-based AI development workspace optimized for Claude Code, Codex, and yazi.
 
-## クイックスタート
+## Highlights
 
-```bash
-# 前提: tmux, yazi, bat, Claude Code, Codex がインストール済み
-git clone https://github.com/usedhonda/tproj.git ~/projects/claude/tproj
-cd ~/projects/claude/tproj
-./install.sh
+- Structured AI terminal layout for daily coding
+- Single-project and multi-project workspace modes
+- Per-pane communication tool (`tproj-msg`)
+- Built-in memory tooling (`cc-mem`, `memory-guard`, `tproj-mem-json`)
+- Native macOS SwiftUI controller app (`apps/tproj`)
 
-# 任意のプロジェクトで起動
-cd ~/my-project
-tproj
-```
+## Requirements
 
-## 特徴
-
-- **3ペインレイアウト**: Claude Code（メイン）+ Codex（サブ）+ yazi（ファイルブラウザ）
-- **自動アップデート**: 起動時にClaude Code / Codex / yaziを自動更新
-- **履歴継続**: Codexはプロジェクトごとに履歴を保持、次回起動時に継続
-- **ask-codexコマンド**: Claude CodeからCodexに質問を送信
-- **Ghostty連携**: 🔔通知でタブに完了を表示
-- **メモリ監視**: `cc-mem` + `memory-guard` + `tproj-mem-json` を同梱し、GUIとCLI両方で監視可能
-- **共有ステータス**: `tproj-gui` 実行中は `/tmp/tproj-monitor-status.json` に統合監視JSONを書き出し
-
-## インストール
-
-### 前提条件
+Install dependencies:
 
 ```bash
-# Homebrew
-brew install tmux yazi bat
-
-# npm
+brew install git tmux yazi bat yq node
 npm install -g @anthropic-ai/claude-code @openai/codex
 ```
 
-| ツール | 説明 |
-|--------|------|
-| [tmux](https://github.com/tmux/tmux) | ターミナルマルチプレクサ |
-| [yazi](https://github.com/sxyazi/yazi) | ファイルマネージャー |
-| [bat](https://github.com/sharkdp/bat) | シンタックスハイライト付きcat |
-| [Claude Code](https://claude.ai/claude-code) | Anthropic公式CLI |
-| [Codex](https://github.com/openai/codex) | OpenAI公式CLI |
-
-### 手順
+## Quick Start
 
 ```bash
-git clone https://github.com/usedhonda/tproj.git ~/projects/claude/tproj
-cd ~/projects/claude/tproj
+git clone https://github.com/usedhonda/tproj.git
+cd tproj
 ./install.sh
+
+cd /path/to/your/project
+tproj
 ```
 
-## 使い方
+The installer places tools in `~/bin` and installs configuration under `~/.config`.
 
-### 基本
+## CLI Usage
+
+### Main commands
 
 ```bash
-cd ~/my-project
-tproj          # 開発環境を起動（自動アップデート）
-tproj -n       # アップデートなしで起動（オフライン用）
+tproj                 # auto-detect mode (workspace or single-project)
+tproj stop            # graceful shutdown for active tproj sessions
+tproj kill            # force kill tproj sessions
+tproj --help          # full command reference
 ```
 
-### GUI (macOS, SwiftUI)
+### Common options
 
 ```bash
-cd ~/projects/claude/tproj/apps/tproj
+tproj --single
+tproj --remote <host>
+tproj --check
+tproj --add [alias]
+tproj --columns <N>
+```
+
+## Modes
+
+### Single-project mode
+
+- Default mode when no workspace config exists
+- Opens Claude Code, Codex, and yazi panes in one project
+
+### Multi-project mode
+
+- Enabled when `~/.config/tproj/workspace.yaml` exists
+- Runs a column-based workspace across multiple projects
+- Start with `config/workspace.yaml.example` as a template
+
+## GUI App (macOS)
+
+### Run in development
+
+```bash
+cd apps/tproj
 swift run tproj
 ```
 
-`.app` として起動する場合:
+### Build `.app`
 
 ```bash
-cd ~/projects/claude/tproj/apps/tproj
+cd apps/tproj
 ./build-app.sh
 open dist/tproj.app
 ```
 
-### ask-codexコマンド
-
-Claude Code内で `/ask-codex` を実行すると、Codexペインに質問を送信できます。
-
-```
-/ask-codex ロードマップを考えて
-/ask-codex              # 引数なし: 直近の作業から自動で質問を構築
-```
-
-## レイアウト
-
-```
-┌─────────────────────────┬───────────────┐
-│                         │  codex (30%)  │
-│      claude (左50%)     ├───────────────┤
-│                         │  yazi  (70%)  │
-└─────────────────────────┴───────────────┘
-            dev window
-
-┌─────────────────────────────────────────┐
-│               git window                │
-└─────────────────────────────────────────┘
-```
-
-- **claude**: Claude Code（メイン作業）
-- **codex**: OpenAI Codex（セカンドオピニオン）
-- **yazi**: ファイルブラウザ（プレビュー付き）
-- **git**: git操作用ウィンドウ
-
-## 操作方法
-
-### tmux
-
-| キー | 動作 |
-|------|------|
-| `C-a \|` | 左右分割 |
-| `C-a -` | 上下分割 |
-| `C-a r` | 設定リロード |
-| `C-a u` | 🔔通知クリア |
-| マウス | ペイン選択・リサイズ・スクロール |
-
-### yazi
-
-| キー | 動作 |
-|------|------|
-| `j/k` | 上/下移動 |
-| `Enter` | ディレクトリ→Finder、ファイル→オープン |
-| `←/→` | 親へ/中へ |
-| `.` | 隠しファイル表示切替 |
-
-## カスタマイズ
-
-1. このリポジトリ内のファイルを編集
-2. `./install.sh` で再インストール
-
-### ファイル一覧
-
-| ファイル | 説明 |
-|----------|------|
-| `bin/tproj` | メインスクリプト |
-| `bin/cc-mem` | メモリ監視CLI |
-| `bin/memory-guard` | launchd常駐メモリガード |
-| `bin/tproj-mem-json` | cc-mem + tmux 統合JSONコレクタ |
-| `config/tmux/tmux.conf` | tmux設定 |
-| `config/yazi/yazi.toml` | yazi基本設定 |
-| `config/yazi/keymap.toml` | yaziキーバインド |
-| `config/yazi/plugins/open-finder.yazi/` | Finderで開くプラグイン |
-| `config/claude/commands/ask-codex.md` | ask-codexコマンド |
-
-## 推奨環境
-
-- **ターミナル**: [Ghostty](https://ghostty.org/) - 高速でモダン、tmux連携が優秀
-- **macOS**: テスト済み
-
-## トラブルシューティング
-
-### tprojコマンドが見つからない
+### Release DMG
 
 ```bash
-# ~/bin がPATHに含まれているか確認
-echo $PATH | grep ~/bin
-
-# 含まれていなければ .zshrc に追加
-echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
+cd apps/tproj
+./scripts/release.sh
 ```
 
-### Codexの履歴が継続しない
+### Publish GitHub release
 
 ```bash
-# Codexのセッションを確認
-ls ~/.codex/sessions/
+cd apps/tproj
+./scripts/release.sh --publish --bump patch
 ```
 
-### tmux設定が反映されない
+Release script options:
+
+- `--skip-notarize`
+- `--publish`
+- `--bump patch|minor|major`
+
+## Repository Layout
+
+- `bin/tproj`: primary launcher
+- `bin/tproj-msg`: inter-pane messaging helper
+- `bin/cc-mem`: memory monitor CLI
+- `bin/memory-guard`: launchd memory guard process
+- `bin/tproj-mem-json`: merged monitor JSON collector
+- `config/workspace.yaml.example`: workspace configuration template
+- `apps/tproj`: SwiftUI desktop app source
+
+## Notes
+
+- `tproj` intentionally does not run npm global updates automatically.
+- Update manually when needed:
 
 ```bash
-# tmuxを完全に終了して再起動
-tmux kill-server
-tproj
+npm update -g @anthropic-ai/claude-code @openai/codex
 ```
 
-## ライセンス
+## License
 
 MIT

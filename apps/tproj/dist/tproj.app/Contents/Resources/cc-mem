@@ -1,0 +1,851 @@
+#!/bin/bash
+# cc-mem v2 - Claude ecosystem memory monitoring CLI
+# Provides real-time monitoring, history/postmortem, and interactive kill
+set -eo pipefail
+
+VERSION="2.0.0"
+HISTORY_FILE="/tmp/memory-guard-history.jsonl"
+DATA_DIR=""
+FORCE_COMPACT=false
+WATCH_INTERVAL=5
+
+# --- Colors & formatting ---
+setup_colors() {
+  if [[ -t 1 ]]; then
+    BOLD=$(tput bold 2>/dev/null || true)
+    DIM=$(tput dim 2>/dev/null || true)
+    RED=$(tput setaf 1 2>/dev/null || true)
+    GREEN=$(tput setaf 2 2>/dev/null || true)
+    YELLOW=$(tput setaf 3 2>/dev/null || true)
+    CYAN=$(tput setaf 6 2>/dev/null || true)
+    RESET=$(tput sgr0 2>/dev/null || true)
+  else
+    BOLD="" DIM="" RED="" GREEN="" YELLOW="" CYAN="" RESET=""
+  fi
+}
+
+# --- Terminal width ---
+get_term_width() {
+  local w
+  w=$(tput cols 2>/dev/null) || w=80
+  echo "$w"
+}
+
+# --- Usage ---
+usage() {
+  cat >&2 <<EOF
+cc-mem v${VERSION} - Claude ecosystem memory monitor
+
+Usage: cc-mem [option]
+
+Options:
+  (none)              One-shot display (adapts to terminal width)
+  -c, --compact       Force compact layout
+  -w, --watch [SEC]   Continuous monitoring (default: ${WATCH_INTERVAL}s refresh)
+  -l, --log [N]       History view (last N minutes, default 60)
+  -j, --json          JSON output (for piping)
+  -t, --tmux          Compact 1-line for tmux status-right
+  -k, --kill          Interactively kill idle CC processes
+  -V, --version       Show version
+  -h, --help          Show this help
+
+Examples:
+  cc-mem                    # auto-layout based on terminal width
+  cc-mem -c                 # force compact (good for narrow panes)
+  cc-mem -w 3               # watch mode, 3s refresh
+  cc-mem -l 30              # history for last 30 minutes
+  cc-mem -j | jq .system    # pipe JSON to jq
+  cc-mem -t                 # for tmux status-right
+EOF
+}
+
+# --- System memory ---
+get_system_mem() {
+  # Returns: total_mb used_mb free_mb
+  local total_bytes
+  total_bytes=$(sysctl -n hw.memsize 2>/dev/null)
+  local total_mb=$(( total_bytes / 1024 / 1024 ))
+
+  local page_size
+  page_size=$(sysctl -n hw.pagesize 2>/dev/null || echo 16384)
+
+  local vm_out
+  vm_out=$(vm_stat 2>/dev/null)
+
+  local free_pages spec_pages
+  free_pages=$(echo "$vm_out" | awk '/Pages free:/ {gsub(/\./,"",$3); print $3}')
+  spec_pages=$(echo "$vm_out" | awk '/Pages speculative:/ {gsub(/\./,"",$3); print $3}')
+  free_pages=${free_pages:-0}
+  spec_pages=${spec_pages:-0}
+
+  local free_mb=$(( (free_pages + spec_pages) * page_size / 1024 / 1024 ))
+  local used_mb=$(( total_mb - free_mb ))
+
+  echo "$total_mb $used_mb $free_mb"
+}
+
+# --- Single-pass data collection ---
+# Calls ps once, classifies all processes via awk, writes results to DATA_DIR
+collect_all_data() {
+  DATA_DIR=$(mktemp -d /tmp/cc-mem-data.XXXXXX)
+
+  # System memory
+  get_system_mem > "$DATA_DIR/sysmem"
+
+  # Single ps call - awk classifies everything in one pass
+  ps -eo pid,ppid,rss,pcpu,args 2>/dev/null | awk \
+    -v cc_file="$DATA_DIR/cc_procs" \
+    -v summary_file="$DATA_DIR/summary" \
+  '
+  NR == 1 { next }
+  {
+    pid = $1 + 0; ppid = $2 + 0; rss = $3 + 0; cpu = $4 + 0
+    args = ""
+    for (i = 5; i <= NF; i++) args = args (i > 5 ? " " : "") $i
+    largs = tolower(args)
+
+    # Self-exclusion
+    if (largs ~ /cc-mem|memory-guard/) next
+
+    # MCP servers (check BEFORE claude to avoid miscategorization)
+    if (largs ~ /chrome-ai-bridge|context7|playwright|mcp-server|mcp_server|modelcontextprotocol/) {
+      mcp_rss += rss; mcp_cnt++
+      next
+    }
+
+    # Codex / OpenAI
+    if (largs ~ /codex|openai/) {
+      codex_rss += rss; codex_cnt++
+      next
+    }
+
+    # Claude / Anthropic
+    if (largs ~ /claude|anthropic/) {
+      cc_rss += rss; cc_cnt++
+      # Detect main CLI sessions (not helpers/native-host/status bar)
+      if (largs ~ /\/claude[[:space:]]|\/claude$|claude --/ && \
+          largs !~ /native-host|ccstatusbar|statusbar/) {
+        print pid, rss, cpu, ppid > cc_file
+      }
+      next
+    }
+
+    # Chrome
+    if (largs ~ /google chrome|chrome helper/) {
+      chrome_rss += rss; chrome_cnt++
+      next
+    }
+
+    # Slack
+    if (largs ~ /slack/) {
+      slack_rss += rss; slack_cnt++
+      next
+    }
+
+    # Spotify
+    if (largs ~ /spotify/) {
+      spotify_rss += rss; spotify_cnt++
+      next
+    }
+
+    # Firefox
+    if (largs ~ /firefox/) {
+      firefox_rss += rss; firefox_cnt++
+      next
+    }
+  }
+  END {
+    printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", \
+      cc_rss+0, cc_cnt+0, mcp_rss+0, mcp_cnt+0, \
+      codex_rss+0, codex_cnt+0, chrome_rss+0, chrome_cnt+0, \
+      slack_rss+0, slack_cnt+0, spotify_rss+0, spotify_cnt+0, \
+      firefox_rss+0, firefox_cnt+0 > summary_file
+  }
+  '
+
+  # Build tmux project mapping
+  if command -v tmux >/dev/null 2>&1; then
+    _build_project_map > "$DATA_DIR/projmap" 2>/dev/null || true
+  fi
+}
+
+cleanup_data() {
+  [[ -n "$DATA_DIR" && -d "$DATA_DIR" ]] && rm -rf "$DATA_DIR"
+  DATA_DIR=""
+}
+
+# --- Tmux project mapping ---
+_build_project_map() {
+  local session window
+  for session in $(tmux list-sessions -F '#S' 2>/dev/null); do
+    for window in $(tmux list-windows -t "$session" -F '#W' 2>/dev/null); do
+      while IFS=$'\t' read -r pane_pid pane_path; do
+        [[ -z "$pane_pid" ]] && continue
+        local proj
+        proj=$(basename "$pane_path" 2>/dev/null || echo "unknown")
+        echo "$pane_pid $proj"
+        # Map direct children too
+        local children
+        children=$(pgrep -P "$pane_pid" 2>/dev/null || true)
+        local c
+        for c in $children; do
+          echo "$c $proj"
+        done
+      done < <(tmux list-panes -t "$session:$window" \
+        -F '#{pane_pid}	#{pane_current_path}' 2>/dev/null || true)
+    done
+  done
+}
+
+_lookup_project() {
+  local target_pid=$1
+  local map_file="$DATA_DIR/projmap"
+  if [[ ! -f "$map_file" ]]; then
+    echo "--"
+    return
+  fi
+  local result
+  result=$(awk -v pid="$target_pid" '$1 == pid {print $2; exit}' "$map_file")
+  echo "${result:---}"
+}
+
+# --- Format helpers ---
+format_mb() {
+  local mb=$1
+  if [[ "$mb" -ge 1024 ]]; then
+    awk "BEGIN { printf \"%.1fG\", $mb / 1024 }"
+  else
+    printf "%dM" "$mb"
+  fi
+}
+
+format_kb() {
+  format_mb $(( $1 / 1024 ))
+}
+
+bar_graph() {
+  local val=$1 max_val=$2 max_width=${3:-30}
+  [[ "$max_val" -le 0 ]] && return
+  local width=$(( val * max_width / max_val ))
+  [[ "$width" -gt "$max_width" ]] && width=$max_width
+  [[ "$width" -lt 0 ]] && width=0
+  printf '%*s' "$width" '' | tr ' ' '='
+}
+
+# --- Read collected data into shell variables ---
+_read_summary() {
+  local f="$DATA_DIR/summary"
+  [[ -f "$f" ]] || { CC_KB=0 CC_CNT=0 MCP_KB=0 MCP_CNT=0 CDX_KB=0 CDX_CNT=0 CHR_KB=0 CHR_CNT=0 SLK_KB=0 SLK_CNT=0 SPT_KB=0 SPT_CNT=0 FFX_KB=0 FFX_CNT=0; return; }
+  read -r CC_KB CC_CNT MCP_KB MCP_CNT CDX_KB CDX_CNT \
+    CHR_KB CHR_CNT SLK_KB SLK_CNT SPT_KB SPT_CNT \
+    FFX_KB FFX_CNT < "$f"
+}
+
+_read_sysmem() {
+  read -r TOTAL_MB USED_MB FREE_MB < "$DATA_DIR/sysmem"
+}
+
+# --- Guard status ---
+get_guard_status() {
+  local guard_pid
+  guard_pid=$(pgrep -f 'memory-guard' 2>/dev/null | head -1 || true)
+  if [[ -n "$guard_pid" ]]; then
+    echo "running"
+  else
+    echo "stopped"
+  fi
+}
+
+# --- CC process table (shared by full/compact layouts) ---
+# Reads cc_procs file, resolves projects, outputs formatted lines
+# Args: $1=max_lines, $2="full"|"compact", $3=cols
+_show_cc_procs() {
+  local max_lines=$1 mode=$2 cols=${3:-80}
+  local cc_file="$DATA_DIR/cc_procs"
+  [[ -f "$cc_file" ]] || return 0
+
+  local count=0
+  while IFS= read -r line; do
+    local pid rss cpu ppid
+    read -r pid rss cpu ppid <<< "$line"
+    [[ -z "$pid" ]] && continue
+
+    local rss_mb=$(( rss / 1024 ))
+    local cpu_int=${cpu%.*}
+    cpu_int=${cpu_int:-0}
+
+    local state_display
+    if [[ "$cpu_int" -ge 2 ]]; then
+      if [[ "$mode" == "full" ]]; then
+        state_display="${GREEN}*active${RESET}"
+      else
+        state_display="${GREEN}*${RESET}"
+      fi
+    else
+      if [[ "$mode" == "full" ]]; then
+        state_display="${DIM} idle  ${RESET}"
+      else
+        state_display=" "
+      fi
+    fi
+
+    # Project lookup (try pid, then ppid)
+    local project
+    project=$(_lookup_project "$pid")
+    [[ "$project" == "--" ]] && project=$(_lookup_project "$ppid")
+
+    if [[ "$mode" == "full" ]]; then
+      if [[ "$cols" -ge 85 ]]; then
+        printf "  %6s %5dM %5s%% %s %-14s\n" \
+          "$pid" "$rss_mb" "$cpu" "$state_display" "$project"
+      else
+        printf "  %6s %5dM %s %-14s\n" \
+          "$pid" "$rss_mb" "$state_display" "$project"
+      fi
+    else
+      printf " %s %4dM %s%s\n" "$pid" "$rss_mb" "$state_display" "$project"
+    fi
+
+    count=$(( count + 1 ))
+    if [[ "$count" -ge "$max_lines" ]]; then break; fi
+  done < <(sort -t' ' -k2 -rn "$cc_file")
+}
+
+# --- Full layout (>= 70 cols) ---
+show_full() {
+  local cols
+  cols=$(get_term_width)
+
+  _read_sysmem
+  _read_summary
+
+  # Free memory status
+  local free_color="$GREEN" free_tag=""
+  if [[ "$FREE_MB" -lt 200 ]]; then
+    free_color="$RED"; free_tag=" [WARNING]"
+  elif [[ "$FREE_MB" -lt 500 ]]; then
+    free_color="$YELLOW"; free_tag=" [low]"
+  fi
+
+  echo "${BOLD}=== CC Memory Status ===${RESET}"
+  printf "System: %s / %s (free: %s%s%s%s)\n" \
+    "$(format_mb $USED_MB)" "$(format_mb $TOTAL_MB)" \
+    "$free_color" "$(format_mb $FREE_MB)" "$RESET" "$free_tag"
+  echo ""
+
+  # Bar width: adapt to terminal
+  local bar_max=$(( cols - 34 ))
+  [[ "$bar_max" -lt 5 ]] && bar_max=5
+  [[ "$bar_max" -gt 50 ]] && bar_max=50
+
+  # Claude total
+  local claude_total_kb=$(( CC_KB + MCP_KB + CDX_KB ))
+
+  # Find max for bar scaling
+  local max_kb=$claude_total_kb
+  [[ "$CHR_KB" -gt "$max_kb" ]] && max_kb=$CHR_KB
+  [[ "$SLK_KB" -gt "$max_kb" ]] && max_kb=$SLK_KB
+  local max_mb=$(( max_kb / 1024 ))
+  [[ "$max_mb" -lt 1 ]] && max_mb=1
+
+  # Category display
+  printf "  ${CYAN}%-18s${RESET} %-7s %s\n" \
+    "Claude (CC+MCP):" "$(format_kb $claude_total_kb)" \
+    "$(bar_graph $((claude_total_kb / 1024)) $max_mb $bar_max)"
+
+  if [[ "$CHR_KB" -gt 0 ]]; then
+    printf "  %-18s %-7s %s\n" \
+      "Chrome:" "$(format_kb $CHR_KB)" \
+      "$(bar_graph $((CHR_KB / 1024)) $max_mb $bar_max)"
+  fi
+
+  if [[ "$SLK_KB" -gt 0 ]]; then
+    printf "  %-18s %-7s %s\n" \
+      "Slack:" "$(format_kb $SLK_KB)" \
+      "$(bar_graph $((SLK_KB / 1024)) $max_mb $bar_max)"
+  fi
+
+  if [[ "$SPT_KB" -gt 0 ]]; then
+    printf "  %-18s %-7s %s\n" \
+      "Spotify:" "$(format_kb $SPT_KB)" \
+      "$(bar_graph $((SPT_KB / 1024)) $max_mb $bar_max)"
+  fi
+
+  if [[ "$FFX_KB" -gt 0 ]]; then
+    printf "  %-18s %-7s %s\n" \
+      "Firefox:" "$(format_kb $FFX_KB)" \
+      "$(bar_graph $((FFX_KB / 1024)) $max_mb $bar_max)"
+  fi
+
+  # OS/system (remaining)
+  local claude_total_mb=$(( claude_total_kb / 1024 ))
+  local os_mb=$(( USED_MB - claude_total_mb - CHR_KB/1024 - SLK_KB/1024 - SPT_KB/1024 - FFX_KB/1024 ))
+  if [[ "$os_mb" -lt 0 ]]; then
+    printf "  ${DIM}%-18s %-7s${RESET}\n" "OS/system:" "N/A"
+  else
+    printf "  ${DIM}%-18s %-7s${RESET}\n" "OS/system:" "$(format_mb $os_mb)"
+  fi
+  echo ""
+
+  # Claude breakdown
+  echo "${BOLD}Claude breakdown:${RESET}"
+  printf "  CC sessions (%d):  %s\n" "${CC_CNT:-0}" "$(format_kb ${CC_KB:-0})"
+  printf "  MCP servers (%d):  %s\n" "${MCP_CNT:-0}" "$(format_kb ${MCP_KB:-0})"
+  if [[ "${CDX_CNT:-0}" -gt 0 ]]; then
+    printf "  Codex       (%d):  %s\n" "$CDX_CNT" "$(format_kb $CDX_KB)"
+  fi
+  echo ""
+
+  # Top CC processes
+  local cc_file="$DATA_DIR/cc_procs"
+  if [[ -f "$cc_file" && -s "$cc_file" ]]; then
+    echo "${BOLD}Top CC processes:${RESET}"
+    _show_cc_procs 8 full "$cols"
+    echo ""
+  fi
+
+  # Guard status
+  local guard
+  guard=$(get_guard_status)
+  if [[ "$guard" == "running" ]]; then
+    printf "Guard: ${GREEN}running${RESET}\n"
+  else
+    printf "Guard: ${RED}stopped${RESET}\n"
+  fi
+}
+
+# --- Compact layout (< 70 cols) ---
+show_compact() {
+  _read_sysmem
+  _read_summary
+
+  local free_tag=""
+  if [[ "$FREE_MB" -lt 200 ]]; then
+    free_tag=" ${RED}[!]${RESET}"
+  elif [[ "$FREE_MB" -lt 500 ]]; then
+    free_tag=" ${YELLOW}[!]${RESET}"
+  fi
+
+  # Header line
+  printf "${BOLD}CC Memory${RESET}  %s  free:%s%s\n" \
+    "$(date '+%H:%M:%S')" \
+    "$(format_mb $FREE_MB)" \
+    "$free_tag"
+
+  # Top apps on one line
+  local claude_total_kb=$(( CC_KB + MCP_KB + CDX_KB ))
+  local parts="Claude $(format_kb $claude_total_kb)"
+  [[ "$CHR_KB" -gt 0 ]] && parts="$parts  Chrome $(format_kb $CHR_KB)"
+  [[ "$SLK_KB" -gt 0 ]] && parts="$parts  Slack $(format_kb $SLK_KB)"
+  echo "$parts"
+
+  # Claude breakdown on one line
+  local breakdown="CC(${CC_CNT:-0}):$(format_kb ${CC_KB:-0})"
+  breakdown="$breakdown MCP(${MCP_CNT:-0}):$(format_kb ${MCP_KB:-0})"
+  [[ "${CDX_CNT:-0}" -gt 0 ]] && breakdown="$breakdown Cdx($CDX_CNT):$(format_kb $CDX_KB)"
+  echo "$breakdown"
+
+  # Top CC processes (compact, up to 5)
+  local cc_file="$DATA_DIR/cc_procs"
+  if [[ -f "$cc_file" && -s "$cc_file" ]]; then
+    _show_cc_procs 5 compact
+  fi
+
+  # Guard
+  local guard
+  guard=$(get_guard_status)
+  if [[ "$guard" == "running" ]]; then
+    printf "Guard: ${GREEN}ok${RESET}\n"
+  else
+    printf "Guard: ${RED}off${RESET}\n"
+  fi
+}
+
+# --- Default display (auto-select layout) ---
+show_default() {
+  collect_all_data
+  trap cleanup_data EXIT
+
+  if [[ "$FORCE_COMPACT" == "true" ]]; then
+    show_compact
+  else
+    local cols
+    cols=$(get_term_width)
+    if [[ "$cols" -ge 70 ]]; then
+      show_full
+    else
+      show_compact
+    fi
+  fi
+}
+
+# --- Format diff for watch mode ---
+_fmt_diff() {
+  local v=$1
+  if [[ "$v" -gt 0 ]]; then
+    printf "${RED}+%dM${RESET}" "$v"
+  elif [[ "$v" -lt 0 ]]; then
+    printf "${GREEN}%dM${RESET}" "$v"
+  fi
+}
+
+# --- Watch mode ---
+show_watch() {
+  local prev_file=""
+
+  trap 'tput cnorm 2>/dev/null; [[ -n "$prev_file" ]] && rm -f "$prev_file"; cleanup_data; exit 0' INT TERM
+  tput civis 2>/dev/null || true
+
+  while true; do
+    tput clear 2>/dev/null || clear
+
+    collect_all_data
+    _read_sysmem
+    _read_summary
+
+    # Calculate diffs from previous snapshot
+    local diff_text=""
+    if [[ -f "${prev_file:-/dev/null}" ]]; then
+      local p_cc p_mcp p_cdx p_free
+      read -r p_cc p_mcp p_cdx p_free < "$prev_file" 2>/dev/null || true
+      if [[ -n "$p_cc" ]]; then
+        local d_cc=$(( CC_KB / 1024 - p_cc ))
+        local d_mcp=$(( MCP_KB / 1024 - p_mcp ))
+        local d_free=$(( FREE_MB - p_free ))
+        local d1 d2 d3
+        d1=$(_fmt_diff $d_cc)
+        d2=$(_fmt_diff $d_mcp)
+        d3=$(_fmt_diff $d_free)
+        if [[ -n "$d1$d2$d3" ]]; then
+          diff_text="  ${DIM}delta:${RESET} CC:${d1:-=} MCP:${d2:-=} free:${d3:-=}"
+        fi
+      fi
+    fi
+
+    # Display
+    if [[ "$FORCE_COMPACT" == "true" ]] || [[ "$(get_term_width)" -lt 70 ]]; then
+      show_compact
+    else
+      show_full
+    fi
+
+    [[ -n "$diff_text" ]] && echo "$diff_text"
+    echo ""
+    printf "${DIM}%s | refresh: %ds | Ctrl+C to exit${RESET}\n" \
+      "$(date '+%H:%M:%S')" "$WATCH_INTERVAL"
+
+    # Save current values for next diff
+    prev_file="${prev_file:-$(mktemp /tmp/cc-mem-prev.XXXXXX)}"
+    echo "$(( CC_KB / 1024 )) $(( MCP_KB / 1024 )) $(( CDX_KB / 1024 )) $FREE_MB" > "$prev_file"
+
+    cleanup_data
+    sleep "$WATCH_INTERVAL"
+  done
+}
+
+# --- JSON output ---
+show_json() {
+  collect_all_data
+  trap cleanup_data EXIT
+
+  _read_sysmem
+  _read_summary
+
+  # Build processes array
+  local procs_json="["
+  local first=true
+  local cc_file="$DATA_DIR/cc_procs"
+  if [[ -f "$cc_file" ]]; then
+    while IFS= read -r line; do
+      local pid rss cpu ppid
+      read -r pid rss cpu ppid <<< "$line"
+      [[ -z "$pid" ]] && continue
+
+      local rss_mb=$(( rss / 1024 ))
+      local cpu_int=${cpu%.*}
+      cpu_int=${cpu_int:-0}
+      local state="idle"
+      [[ "$cpu_int" -ge 2 ]] && state="active"
+
+      local project
+      project=$(_lookup_project "$pid")
+      [[ "$project" == "--" ]] && project=$(_lookup_project "$ppid")
+
+      [[ "$first" == "true" ]] && first=false || procs_json+=","
+      procs_json+="{\"pid\":$pid,\"rss_mb\":$rss_mb,\"cpu\":$cpu,\"state\":\"$state\",\"project\":\"$project\"}"
+    done < <(sort -t' ' -k2 -rn "$cc_file")
+  fi
+  procs_json+="]"
+
+  local guard
+  guard=$(get_guard_status)
+
+  cat <<EOF
+{
+  "timestamp": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
+  "system": {
+    "total_mb": $TOTAL_MB,
+    "used_mb": $USED_MB,
+    "free_mb": $FREE_MB
+  },
+  "categories": {
+    "cc_sessions": {"mb": $(( ${CC_KB:-0} / 1024 )), "count": ${CC_CNT:-0}},
+    "mcp_servers": {"mb": $(( ${MCP_KB:-0} / 1024 )), "count": ${MCP_CNT:-0}},
+    "codex": {"mb": $(( ${CDX_KB:-0} / 1024 )), "count": ${CDX_CNT:-0}},
+    "chrome": {"mb": $(( ${CHR_KB:-0} / 1024 ))},
+    "slack": {"mb": $(( ${SLK_KB:-0} / 1024 ))}
+  },
+  "cc_processes": $procs_json,
+  "guard": "$guard"
+}
+EOF
+}
+
+# --- tmux output ---
+show_tmux() {
+  collect_all_data
+  trap cleanup_data EXIT
+
+  _read_sysmem
+  _read_summary
+
+  local cc_mb=$(( ${CC_KB:-0} / 1024 ))
+  local mcp_mb=$(( ${MCP_KB:-0} / 1024 ))
+  local chrome_mb=$(( ${CHR_KB:-0} / 1024 ))
+
+  printf "CC:%s/%ds MCP:%s Chr:%s free:%s" \
+    "$(format_mb $cc_mb)" "${CC_CNT:-0}" \
+    "$(format_mb $mcp_mb)" \
+    "$(format_mb $chrome_mb)" \
+    "$(format_mb $FREE_MB)"
+}
+
+# --- Log/history display ---
+show_log() {
+  local minutes=${1:-60}
+
+  if [[ ! -f "$HISTORY_FILE" ]]; then
+    echo "No history file found at $HISTORY_FILE" >&2
+    echo "Ensure memory-guard is running." >&2
+    return 1
+  fi
+
+  local now_epoch
+  now_epoch=$(date +%s)
+  local cutoff_epoch=$(( now_epoch - minutes * 60 ))
+
+  local cols
+  cols=$(get_term_width)
+  local wide=false
+  [[ "$cols" -ge 80 ]] && wide=true
+
+  echo "${BOLD}=== Memory History (last ${minutes} min) ===${RESET}"
+
+  if [[ "$wide" == "true" ]]; then
+    printf "%-10s  %7s  %7s  %7s  %7s  %7s  %s\n" \
+      "Time" "System" "Free" "CC" "MCP" "Chrome" "Event"
+  else
+    printf "%-8s %6s %6s %6s %s\n" \
+      "Time" "Free" "CC" "MCP" "Event"
+  fi
+  printf '%*s\n' "$(( cols < 80 ? cols : 80 ))" '' | tr ' ' '-'
+
+  local prev_cc_mb=0 first=true
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+
+    # Parse JSON fields with sed (lightweight, no jq dependency)
+    local ts free_mb cc_mb mcp_mb chrome_mb sys_used_mb event
+
+    ts=$(echo "$line" | sed -n 's/.*"ts":"\([^"]*\)".*/\1/p')
+    [[ -z "$ts" ]] && continue
+
+    # Filter by time
+    local entry_epoch
+    entry_epoch=$(date -j -f '%Y-%m-%dT%H:%M:%S' "$ts" '+%s' 2>/dev/null || echo 0)
+    [[ "$entry_epoch" -lt "$cutoff_epoch" ]] && continue
+
+    free_mb=$(echo "$line" | sed -n 's/.*"free_mb":\([0-9]*\).*/\1/p')
+    cc_mb=$(echo "$line" | sed -n 's/.*"cc_mb":\([0-9]*\).*/\1/p')
+    mcp_mb=$(echo "$line" | sed -n 's/.*"mcp_mb":\([0-9]*\).*/\1/p')
+    chrome_mb=$(echo "$line" | sed -n 's/.*"chrome_mb":\([0-9]*\).*/\1/p')
+    sys_used_mb=$(echo "$line" | sed -n 's/.*"sys_used_mb":\([0-9]*\).*/\1/p')
+    event=$(echo "$line" | sed -n 's/.*"event":"\([^"]*\)".*/\1/p')
+
+    local time_display
+    time_display=$(echo "$ts" | sed 's/.*T//' | cut -c1-8)
+
+    # Spike detection
+    local marker=""
+    if [[ "$first" != "true" && "$prev_cc_mb" -gt 0 && "${cc_mb:-0}" -gt 0 ]]; then
+      if [[ $(( cc_mb * 100 / prev_cc_mb )) -ge 200 ]]; then
+        marker="${RED}${BOLD}SPIKE${RESET}"
+      fi
+    fi
+
+    # Event annotation (takes precedence over spike for display)
+    if [[ -n "$event" ]]; then
+      marker="${YELLOW}${BOLD}${event}${RESET}"
+    fi
+
+    # System used: prefer recorded value, fallback to N/A
+    local sys_display
+    if [[ -n "$sys_used_mb" && "$sys_used_mb" -gt 0 ]]; then
+      sys_display=$(format_mb "$sys_used_mb")
+    else
+      sys_display="--"
+    fi
+
+    if [[ "$wide" == "true" ]]; then
+      printf "%-10s  %7s  %7s  %7s  %7s  %7s  %s\n" \
+        "$time_display" \
+        "$sys_display" \
+        "$(format_mb ${free_mb:-0})" \
+        "$(format_mb ${cc_mb:-0})" \
+        "$(format_mb ${mcp_mb:-0})" \
+        "$(format_mb ${chrome_mb:-0})" \
+        "$marker"
+    else
+      printf "%-8s %6s %6s %6s %s\n" \
+        "$time_display" \
+        "$(format_mb ${free_mb:-0})" \
+        "$(format_mb ${cc_mb:-0})" \
+        "$(format_mb ${mcp_mb:-0})" \
+        "$marker"
+    fi
+
+    prev_cc_mb=${cc_mb:-0}
+    first=false
+  done < "$HISTORY_FILE"
+}
+
+# --- Interactive kill ---
+interactive_kill() {
+  collect_all_data
+  trap cleanup_data EXIT
+
+  _read_summary
+  local before_kb=$(( CC_KB + MCP_KB + CDX_KB ))
+
+  echo "${BOLD}Idle CC processes:${RESET}"
+
+  local cc_file="$DATA_DIR/cc_procs"
+  local procs=()
+  local idx=0
+
+  if [[ -f "$cc_file" ]]; then
+    while IFS= read -r line; do
+      local pid rss cpu ppid
+      read -r pid rss cpu ppid <<< "$line"
+      [[ -z "$pid" ]] && continue
+
+      local cpu_int=${cpu%.*}
+      cpu_int=${cpu_int:-0}
+      [[ "$cpu_int" -ge 2 ]] && continue  # skip active
+
+      local rss_mb=$(( rss / 1024 ))
+      local project
+      project=$(_lookup_project "$pid")
+      [[ "$project" == "--" ]] && project=$(_lookup_project "$ppid")
+
+      idx=$(( idx + 1 ))
+      procs+=("$pid")
+      printf "  %d) PID %-6s %5dM  [%-14s]\n" \
+        "$idx" "$pid" "$rss_mb" "$project"
+    done < <(sort -t' ' -k2 -rn "$cc_file")
+  fi
+
+  if [[ ${#procs[@]} -eq 0 ]]; then
+    echo "  No idle CC processes found."
+    return 0
+  fi
+
+  echo ""
+  printf "Kill? [1-%d/all/none]: " "${#procs[@]}"
+  read -r answer
+
+  _show_kill_result() {
+    sleep 1
+    local after_kb
+    after_kb=$(ps -eo rss,args 2>/dev/null | awk '
+      tolower($0) ~ /(claude|anthropic|mcp|context7|codex|openai)/ && !/cc-mem|memory-guard/ { sum += $1 }
+      END { print sum+0 }
+    ')
+    local freed=$(( before_kb - after_kb ))
+    [[ "$freed" -lt 0 ]] && freed=0
+    printf "  Before: %s -> After: %s (freed ~%s)\n" \
+      "$(format_kb $before_kb)" "$(format_kb $after_kb)" \
+      "$(format_kb $freed)"
+  }
+
+  case "$answer" in
+    none|"")
+      echo "No processes killed."
+      ;;
+    all)
+      for pid in "${procs[@]}"; do
+        echo "  Killing PID $pid..."
+        kill "$pid" 2>/dev/null || true
+      done
+      _show_kill_result
+      ;;
+    *)
+      local nums
+      nums=$(echo "$answer" | tr ',' ' ')
+      local num
+      for num in $nums; do
+        if [[ "$num" =~ ^[0-9]+$ ]] && [[ "$num" -ge 1 ]] && [[ "$num" -le "${#procs[@]}" ]]; then
+          local target_pid="${procs[$(( num - 1 ))]}"
+          echo "  Killing PID $target_pid..."
+          kill "$target_pid" 2>/dev/null || true
+        else
+          echo "  Invalid selection: $num" >&2
+        fi
+      done
+      _show_kill_result
+      ;;
+  esac
+}
+
+# --- Main ---
+setup_colors
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    ;;
+  -V|--version)
+    echo "cc-mem v${VERSION}"
+    ;;
+  -c|--compact)
+    FORCE_COMPACT=true
+    show_default
+    ;;
+  -w|--watch)
+    if [[ -n "${2:-}" ]] && [[ "$2" =~ ^[0-9]+$ ]]; then
+      WATCH_INTERVAL=$2
+    fi
+    show_watch
+    ;;
+  -l|--log)
+    show_log "${2:-60}"
+    ;;
+  -j|--json)
+    show_json
+    ;;
+  -t|--tmux)
+    show_tmux
+    ;;
+  -k|--kill)
+    interactive_kill
+    ;;
+  "")
+    show_default
+    ;;
+  *)
+    echo "Unknown option: $1" >&2
+    usage
+    exit 1
+    ;;
+esac

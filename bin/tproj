@@ -69,7 +69,7 @@ Examples:
   tproj -s                # Force single mode
   tproj -r macmini        # SSH remote connection (single mode only)
 
-For more information, see: docs/reference/agent-teams.md
+For more information, see: README.md
 EOF
 }
 

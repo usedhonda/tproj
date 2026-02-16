@@ -1,71 +1,79 @@
-# tproj マルチプロジェクトワークスペース設定
+# tproj multi-project workspace configuration
 #
-# このファイルを ~/.config/tproj/workspace.yaml にコピーして使用してください:
+# Copy this file to:
+#   ~/.config/tproj/workspace.yaml
+#
+# Example:
 #   mkdir -p ~/.config/tproj
 #   cp config/workspace.yaml.example ~/.config/tproj/workspace.yaml
 #
-# 編集後、tproj を実行するとマルチプロジェクトモードで起動します。
-# tproj --check で全プロジェクトの有効/無効状態を確認できます。
-
-# ========== 簡易形式（ローカルプロジェクトのみ） ==========
+# After editing this file, run:
+#   tproj
 #
-# パスの文字列リスト。全て type: local, enabled: true として扱われる。
+# Check configured projects with:
+#   tproj --check
+
+# ===== Simple format (local projects only) =====
+#
+# A plain list of project paths.
+# Every entry is treated as:
+#   type: local
+#   enabled: true
 #
 # projects:
 #   - /Users/<username>/projects/claude/tproj
 #   - /Users/<username>/projects/claude/statusline
 #   - /Users/<username>/projects/claude/cc-status-bar
 #
-# 注意: 簡易形式と詳細形式は混在不可（最初のエントリの型で自動判定）
+# Do not mix simple and detailed formats.
 
-# ========== GUI アプリ設定（省略可） ==========
+# ===== Optional GUI settings =====
 #
 # gui:
-#   keep_alive: true    # true(デフォルト): tproj stop/kill でもアプリを終了しない
-#                       # false: tproj stop/kill 時にアプリも終了する
+#   keep_alive: true    # default true:
+#                       # tproj stop/kill does not close GUI
+#                       # false closes GUI on stop/kill
 #
-# gui セクション省略時: ~/bin/tproj-gui が存在すれば GUI は起動する（keep_alive=true）
+# If gui section is omitted:
+# GUI launches when ~/bin/tproj-gui exists (keep_alive=true behavior).
 
-# ========== 詳細形式（ローカル + リモートプロジェクト） ==========
+# ===== Detailed format (local + remote) =====
 
 projects:
-  # ローカルプロジェクト（起動時に有効）
+  # Local project (enabled at startup)
   - path: /Users/<username>/projects/claude/tproj
-    alias: tproj              # tproj --add tproj で追加可能
+    alias: tproj
 
-  # 別のローカルプロジェクト（起動時はスキップ、--add で追加可能）
+  # Local project (disabled at startup, can be added later)
   - path: /Users/<username>/projects/claude/statusline
     alias: sl
-    enabled: false            # 起動時は [disabled] 表示、tproj --add sl で追加
+    enabled: false
 
-  # リモートプロジェクト（SSH）
+  # Remote project over SSH
   - path: /Users/<username>/projects/others/openclaw_general
     type: remote
-    host: macmini             # ~/.ssh/config で定義済みのホスト名
+    host: remote-host
     alias: openclaw
 
-# ========== フィールド説明 ==========
+# ===== Field reference =====
 #
-# フィールド    型               デフォルト         必須         説明
-# ------------ ---------------- ---------------- ------------ --------------------------
-# path         string           -                必須         プロジェクトのパス
-#                                                             ローカル: 絶対パス推奨
-#                                                             リモート: ホスト上のパス（~ 可）
-# type         local / remote   local            任意         プロジェクトの種類
-# host         string           -                remote時必須  SSH ホスト名
-#                                                             ~/.ssh/config で定義済みのもの
-# alias        string           pathのbasename   任意         短縮名
-#                                                             tproj --add <alias> で使用
-# enabled      bool             true             任意         false: 起動時スキップ
-#                                                             --add で後から追加可能
+# path    : string (required)
+#           Project path. Use absolute paths for local projects.
+#           Remote projects use paths on the remote host (supports ~).
 #
-# enabled: false の使い方:
-#   プロジェクトをカタログとして登録しておき、必要な時だけ
-#   tproj --add <alias> で列に追加する。
-#   起動時のログに [disabled] と表示される。
+# type    : local | remote (optional, default: local)
+#
+# host    : string (required when type=remote)
+#           SSH host name from ~/.ssh/config.
+#
+# alias   : string (optional, default: basename(path))
+#           Used by: tproj --add <alias>
+#
+# enabled : bool (optional, default: true)
+#           false means excluded at startup but available via --add.
 
-# ========== 制限事項 ==========
+# ===== Recommended limits =====
 #
-# - プロジェクト数は5個以下推奨（画面が狭くなるため）
-# - リモートモード (-r) はマルチプロジェクトモードでは使用不可
-# - 各リモートプロジェクトには claude, codex, yazi が必要
+# - Keep projects around 5 or fewer to avoid narrow columns.
+# - Remote mode (-r) is not available together with multi-project mode.
+# - Remote projects must have claude, codex, and yazi installed.

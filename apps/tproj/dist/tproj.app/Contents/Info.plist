@@ -10,6 +10,8 @@
   <string>com.usedhonda.tproj.desktop</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon.icns</string>
   <key>CFBundleName</key>
   <string>tproj</string>
   <key>CFBundlePackageType</key>
@@ -22,7 +24,5 @@
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
-  <key>CFBundleIconFile</key>
-  <string>AppIcon</string>
 </dict>
 </plist>

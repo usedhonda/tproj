@@ -3,9 +3,44 @@
 <plist version="1.0">
 <dict>
 	<key>files</key>
-	<dict/>
+	<dict>
+		<key>Resources/AppIcon.icns</key>
+		<data>
+		dwxriz1Sk6RFUQHIuXVZl6yOaFE=
+		</data>
+		<key>Resources/cc-mem</key>
+		<data>
+		XR8egb4UR3GmdmcNxYukooxEF0E=
+		</data>
+		<key>Resources/tproj-mem-json</key>
+		<data>
+		CGNmjVYFlUUrYZ+Nd27pQ8BkS5E=
+		</data>
+	</dict>
 	<key>files2</key>
-	<dict/>
+	<dict>
+		<key>Resources/AppIcon.icns</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			CtPxNEoXY4sfHgFIQPFD0SKjdw3b7JXXjDmOaZ/o7Uk=
+			</data>
+		</dict>
+		<key>Resources/cc-mem</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			2Q8vtop2fl1K/Gfv6KqZ6BUlMLgvohM3FOn2e12jvLw=
+			</data>
+		</dict>
+		<key>Resources/tproj-mem-json</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			kXocVlJm9/OQtJJ30BiueMJWVXXSYrADNefF3GF6BiA=
+			</data>
+		</dict>
+	</dict>
 	<key>rules</key>
 	<dict>
 		<key>^Resources/</key>
