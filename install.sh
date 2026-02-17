@@ -251,12 +251,10 @@ else
   cp "$SCRIPT_DIR/bin/tproj-mem-json" ~/bin/tproj-mem-json
   chmod +x ~/bin/tproj ~/bin/tproj-mcp-init ~/bin/tproj-toggle-yazi ~/bin/tproj-msg ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/rebalance-workspace-columns ~/bin/sign-codex ~/bin/cc-mem ~/bin/memory-guard ~/bin/tproj-mem-json
 
-  # 4.1.1 GUI アプリ（ビルド済みの場合のみ）
-  GUI_BINARY="$SCRIPT_DIR/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
-  if [[ -f "$GUI_BINARY" ]]; then
-    echo "  tproj-gui -> ~/bin/"
-    cp "$GUI_BINARY" ~/bin/tproj-gui
-    chmod +x ~/bin/tproj-gui
+  # 4.1.1 Legacy cleanup: remove old GUI binary copy to avoid stale launches
+  if [[ -f "$HOME/bin/tproj-gui" ]]; then
+    rm -f "$HOME/bin/tproj-gui"
+    echo "  removed legacy ~/bin/tproj-gui"
   fi
 fi
 
@@ -408,7 +406,6 @@ echo "   ~/bin/reflow-agent-pane"
 echo "   ~/bin/cc-mem"
 echo "   ~/bin/memory-guard"
 echo "   ~/bin/tproj-mem-json"
-echo "   ~/bin/tproj-gui (if built)"
 echo "   ~/.tmux.conf"
 echo "   ~/.config/yazi/"
 echo "   ~/.claude/commands/"

@@ -68,6 +68,18 @@ tproj --columns <N>
 
 ## GUI App (macOS)
 
+Single-source runtime rule:
+
+- Launch only `apps/tproj/dist/tproj.app` (no `~/bin/tproj-gui`, no direct `.build/.../debug/tproj` launch).
+- Rebuild the `.app` before launching after Swift source changes.
+
+Recommended development command:
+
+```bash
+cd apps/tproj
+./dev-app.sh
+```
+
 ### Run in development
 
 ```bash

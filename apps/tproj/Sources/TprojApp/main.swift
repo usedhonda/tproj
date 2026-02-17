@@ -897,8 +897,47 @@ final class AppViewModel: ObservableObject {
     private let fileManager = FileManager.default
     private let monitorStatusPath = "/tmp/tproj-monitor-status.json"
     private var memoryPollTask: Task<Void, Never>?
+
+    // MARK: - PATH & Dependency Resolution
+
+    nonisolated private static let builtinExtraPaths: [String] = {
+        let home = NSHomeDirectory()
+        return [
+            "\(home)/bin",
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+        ]
+    }()
+
+    nonisolated(unsafe) private static var resolvedPATH: String = buildPATH(extraPaths: [])
+
+    nonisolated private static func buildPATH(extraPaths: [String]) -> String {
+        let all = builtinExtraPaths + extraPaths
+        let existing = ProcessInfo.processInfo.environment["PATH"]
+            ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        let existingSet = Set(existing.split(separator: ":").map(String.init))
+        let extras = all.filter { !existingSet.contains($0) }
+        return (extras + [existing]).joined(separator: ":")
+    }
     private var midiActivator: MIDIPaneActivator?
     private var startupRetryTask: Task<Void, Never>?
+
+    struct StartupDiag {
+        struct Dep {
+            let name: String
+            let hint: String
+            let found: Bool
+            let required: Bool
+        }
+        let deps: [Dep]
+        let sessionExists: Bool
+        let yamlExists: Bool
+        var hasCriticalMissing: Bool { deps.contains { $0.required && !$0.found } }
+    }
+
+    @Published var startupDiag: StartupDiag?
 
     var workspacePath: String {
         let home = NSHomeDirectory()
@@ -920,13 +959,92 @@ final class AppViewModel: ObservableObject {
         var column: Int?
     }
 
+    // MARK: - GUI Config & Dependency Check
+
+    private func loadGUIConfig() {
+        // Try reading gui.extra_paths from workspace.yaml using yq on builtin PATH
+        let result = runCommand("/usr/bin/env", ["yq", "-r",
+            ".gui.extra_paths[]? // empty", workspacePath])
+        if result.exitCode == 0 {
+            let paths = result.stdout
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .map(String.init)
+                .filter { !$0.isEmpty }
+            if !paths.isEmpty {
+                Self.resolvedPATH = Self.buildPATH(extraPaths: paths)
+            }
+        }
+    }
+
+    private func checkDependencies() -> StartupDiag {
+        // Load custom dependencies from workspace.yaml, or use builtin defaults
+        var depDefs: [(name: String, required: Bool, hint: String)] = []
+
+        let depResult = runCommand("/usr/bin/env", ["yq", "-r",
+            ".gui.dependencies[]? | [.name, (.required // true | tostring), (.hint // \"\")] | @tsv",
+            workspacePath])
+        if depResult.exitCode == 0 && !depResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            for line in depResult.stdout.split(separator: "\n", omittingEmptySubsequences: true) {
+                let parts = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                if parts.count >= 3 {
+                    depDefs.append((name: parts[0], required: parts[1].lowercased() == "true", hint: parts[2]))
+                }
+            }
+        }
+
+        // Builtin defaults if YAML had nothing
+        if depDefs.isEmpty {
+            depDefs = [
+                (name: "tmux", required: true, hint: "brew install tmux"),
+                (name: "yq", required: false, hint: "brew install yq"),
+            ]
+        }
+
+        // Search PATH directories for each dependency
+        let pathDirs = Self.resolvedPATH.split(separator: ":").map(String.init)
+        var deps: [StartupDiag.Dep] = []
+        for def in depDefs {
+            let found = pathDirs.contains { dir in
+                fileManager.isExecutableFile(atPath: "\(dir)/\(def.name)")
+            }
+            deps.append(StartupDiag.Dep(name: def.name, hint: def.hint, found: found, required: def.required))
+        }
+
+        // Check tmux session existence
+        var sessionExists = false
+        if deps.contains(where: { $0.name == "tmux" && $0.found }) {
+            let sesResult = runCommand("/usr/bin/env", ["tmux", "has-session", "-t", "tproj-workspace"])
+            sessionExists = sesResult.exitCode == 0
+        }
+
+        let yamlExists = fileManager.fileExists(atPath: workspacePath)
+
+        return StartupDiag(deps: deps, sessionExists: sessionExists, yamlExists: yamlExists)
+    }
+
     func onAppear() {
         Task {
+            loadGUIConfig()
+            let diag = checkDependencies()
+            startupDiag = diag
+
+            if diag.hasCriticalMissing {
+                let missing = diag.deps.filter { $0.required && !$0.found }
+                    .map { "\($0.name) (\($0.hint))" }
+                    .joined(separator: ", ")
+                statusText = "Missing: \(missing)"
+                return
+            }
+
             await refreshAll()
             await refreshMemoryStatus()
             startMemoryPolling()
             startMIDIIfNeeded()
+
             if liveColumns.isEmpty {
+                if !diag.sessionExists {
+                    statusText = "Waiting for tproj session..."
+                }
                 startStartupRetry()
             }
         }
@@ -934,9 +1052,24 @@ final class AppViewModel: ObservableObject {
 
     private func startStartupRetry() {
         startupRetryTask = Task {
-            for _ in 0..<10 {
+            for attempt in 0..<10 {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if Task.isCancelled { return }
+
+                // Re-check dependencies every 3rd attempt (user may install mid-retry)
+                if attempt % 3 == 2 {
+                    loadGUIConfig()
+                    let diag = checkDependencies()
+                    startupDiag = diag
+                    if diag.hasCriticalMissing {
+                        let missing = diag.deps.filter { $0.required && !$0.found }
+                            .map { "\($0.name) (\($0.hint))" }
+                            .joined(separator: ", ")
+                        statusText = "Missing: \(missing)"
+                        continue
+                    }
+                }
+
                 await refreshAll()
                 if !liveColumns.isEmpty {
                     // Wait for column count to stabilize (max 3 additional retries)
@@ -1707,7 +1840,12 @@ final class AppViewModel: ObservableObject {
         let result = runCommand("/usr/bin/env", ["yq", "-r", query, url.path])
 
         guard result.exitCode == 0 else {
-            statusText = "workspace.yaml read failed (yq): \(trimmedError(result))"
+            let errText = trimmedError(result)
+            if errText.contains("No such file or directory") && errText.contains("yq") {
+                statusText = "yq not installed (brew install yq)"
+            } else {
+                statusText = "workspace.yaml parse error: \(errText)"
+            }
             workspaceProjects = []
             return
         }
@@ -2065,6 +2203,11 @@ final class AppViewModel: ObservableObject {
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
 
+        // GUI apps don't inherit the user's shell PATH; use resolved PATH
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = Self.resolvedPATH
+        process.environment = env
+
         let outPipe = Pipe()
         let errPipe = Pipe()
         process.standardOutput = outPipe
@@ -2294,7 +2437,7 @@ struct ContentView: View {
                         }
 
                         if vm.liveColumns.isEmpty {
-                            Text("No active columns in tproj-workspace")
+                            startupDiagView()
                                 .font(GhosttyTheme.current.font(size: 12, weight: .medium))
                                 .foregroundStyle(GhosttyTheme.current.textSecondary)
                         } else {
@@ -2483,6 +2626,33 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 1)
                 .fill(GhosttyTheme.current.foreground.opacity(0.2))
                 .frame(width: 2)
+        }
+    }
+
+    @ViewBuilder
+    private func startupDiagView() -> some View {
+        if let diag = vm.startupDiag {
+            let missingRequired = diag.deps.filter { $0.required && !$0.found }
+            let missingOptional = diag.deps.filter { !$0.required && !$0.found }
+
+            if !missingRequired.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(missingRequired, id: \.name) { dep in
+                        Text("Missing: \(dep.name)  \u{2192}  \(dep.hint)")
+                    }
+                    if !missingOptional.isEmpty {
+                        ForEach(missingOptional, id: \.name) { dep in
+                            Text("Optional: \(dep.name)  \u{2192}  \(dep.hint)")
+                        }
+                    }
+                }
+            } else if !diag.sessionExists {
+                Text("No tproj session  \u{2192}  Run: tproj")
+            } else {
+                Text("No active columns in tproj-workspace")
+            }
+        } else {
+            Text("Checking dependencies...")
         }
     }
 
@@ -2706,10 +2876,21 @@ struct ContentView: View {
     }
 
     private func paneMetricText(_ pane: MonitorPane) -> String {
+        let c = pane.bucketCMB
+        let m = pane.bucketMMB
+        let x = pane.bucketXMB
+        let o = pane.bucketOMB
+
+        // Save horizontal space:
+        // - CC rows omit X and fold it into O
+        // - Codex rows omit C and fold it into O
         if pane.agentType == "cc" {
-            return "\(pane.rssMB)(C\(pane.bucketCMB)+M\(pane.bucketMMB)+X\(pane.bucketXMB)+O\(pane.bucketOMB))"
+            return "\(pane.rssMB)M(C\(c)+M\(m)+O\(o + x))"
         }
-        return "\(pane.rssMB)M"
+        if pane.agentType == "codex" {
+            return "\(pane.rssMB)M(X\(x)+M\(m)+O\(o + c))"
+        }
+        return "\(pane.rssMB)M(M\(m)+O\(o + c + x))"
     }
 
     private func monitorPaneSort(_ lhs: MonitorPane, _ rhs: MonitorPane) -> Bool {

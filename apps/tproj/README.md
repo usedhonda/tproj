@@ -9,22 +9,41 @@ cd apps/tproj
 swift run tproj
 ```
 
-## Development Rule: Always Restart After Code Changes
+## Runtime Rule: Single GUI Artifact
 
-When you change Swift sources, do not stop at build. Always restart the development app process so the running UI reflects the latest binary.
+To avoid stale UI and duplicate binaries, runtime must use only `apps/tproj/dist/tproj.app`.
+
+Forbidden for normal launch:
+
+- `apps/tproj/.build/.../debug/tproj`
+- `~/bin/tproj-gui`
+
+After code changes, always rebuild `.app` and relaunch:
 
 ```bash
-pkill -f 'tproj-gui' || true
-pkill -f '.build/arm64-apple-macosx/debug/tproj' || true
 cd apps/tproj
-swift build
-./.build/arm64-apple-macosx/debug/tproj &
+./dev-app.sh
 ```
 
 Verification rule:
 
 - Only one `tproj` GUI process should be running.
-- The running process must be `apps/tproj/.build/.../tproj` (development binary), not `dist/tproj.app`.
+- The running process must be `apps/tproj/dist/tproj.app/Contents/MacOS/tproj`.
+
+## Recommended Development Command
+
+Use this as the normal development flow:
+
+```bash
+cd apps/tproj
+./dev-app.sh
+```
+
+This command runs:
+
+1. `build-app.sh`
+2. stop previous GUI process
+3. `open -ga dist/tproj.app`
 
 ## Build `.app`
 

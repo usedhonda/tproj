@@ -180,32 +180,43 @@ collect_session_descendants() {
   collect_descendant_pids "${pane_pids_arr[@]}"
 }
 
-# GUI プロセス検出（開発版・配布版・.app 版すべて対応）
+# GUI プロセス検出（.app と開発版直起動の両方を検出）
 _tproj_gui_running() {
-  pgrep -f '\.build/.*/tproj$|tproj\.app/|bin/tproj-gui' >/dev/null 2>&1
+  pgrep -f '\.build/.*/tproj$|tproj\.app/' >/dev/null 2>&1
 }
 
-# GUI バイナリ選択（開発版優先）
-# 優先順位: ワークスペース内の開発版 -> 単一モードの root 内 -> 配布版
-_find_gui_binary() {
-  local p dev
+# GUI 起動ターゲット選択（.app のみ）
+# 優先順位:
+#   1) tproj.app (ワークスペース内)
+#   2) tproj.app (現在プロジェクト root)
+#
+# 返り値フォーマット:
+#   app|/path/to/tproj.app
+_find_gui_target() {
+  local p app
+
   for p in "${PROJECT_PATHS[@]}"; do
-    dev="$p/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
-    [[ -x "$dev" ]] && { echo "$dev"; return 0; }
+    app="$p/apps/tproj/dist/tproj.app"
+    [[ -d "$app" ]] && { echo "app|$app"; return 0; }
   done
-  dev="$root/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
-  [[ -x "$dev" ]] && { echo "$dev"; return 0; }
-  echo "$HOME/bin/tproj-gui"
+
+  app="$root/apps/tproj/dist/tproj.app"
+  [[ -d "$app" ]] && { echo "app|$app"; return 0; }
+  return 1
 }
 
 # TprojApp GUI を起動（未起動の場合のみ）
 launch_tproj_gui() {
   _tproj_gui_running && return 0
-  local gui_bin
-  gui_bin="$(_find_gui_binary)"
-  [[ ! -x "$gui_bin" ]] && return 0
-  "$gui_bin" &
-  disown
+  local target kind path
+  target="$(_find_gui_target 2>/dev/null)" || return 0
+  kind="${target%%|*}"
+  path="${target#*|}"
+  [[ -z "$path" ]] && return 0
+
+  [[ "$kind" == "app" ]] || return 0
+  # LaunchServices 経由で起動（Terminal に "Last login ...; exit" を出さない）
+  open -g "$path" >/dev/null 2>&1 || true
 }
 
 # GUI アプリ終了（keep_alive=false の場合のみ）
@@ -218,7 +229,7 @@ stop_tproj_gui_if_needed() {
   fi
 
   if [[ "$keep_alive" != "true" ]]; then
-    pkill -f '\.build/.*/tproj$|tproj\.app/|bin/tproj-gui' 2>/dev/null || true
+    pkill -f '\.build/.*/tproj$|tproj\.app/' 2>/dev/null || true
   fi
 }
 
