@@ -118,28 +118,40 @@ done
 has_claude_session() {
   local abs_path="$1"
   local encoded="${abs_path//\//-}"
-  [[ -f "$HOME/.claude/projects/$encoded/sessions-index.json" ]]
+  local proj_dir="$HOME/.claude/projects/$encoded"
+  [[ -f "$proj_dir/sessions-index.json" ]] || ls "$proj_dir"/*.jsonl &>/dev/null
 }
 
 # ペインラベル生成
-# 形式: [host] project | CC/Codex
-# 引数: project_type project_host project_path tool_kind
+# 形式: {name}.{cc|cdx} {persona} / {name}.{cc|cdx}@{host} {persona}
+# 引数: project_type project_host project_path tool_kind [alias]
 build_pane_label() {
   local project_type="$1"
   local project_host="$2"
   local project_path="$3"
   local tool_kind="$4"
+  local project_alias="${5:-}"
 
-  local host_label="local"
-  if [[ "$project_type" == "remote" ]]; then
-    host_label="${project_host:-remote}"
-  fi
+  local suffix="cc"
+  [[ "$tool_kind" == "Codex" ]] && suffix="cdx"
 
   local project_name
-  project_name="$(basename "$project_path" 2>/dev/null || true)"
-  [[ -z "$project_name" || "$project_name" == "." || "$project_name" == "/" ]] && project_name="unknown"
+  if [[ -n "$project_alias" ]]; then
+    project_name="$project_alias"
+  else
+    project_name="$(basename "$project_path" 2>/dev/null || true)"
+    [[ -z "$project_name" || "$project_name" == "." || "$project_name" == "/" ]] && project_name="unknown"
+  fi
 
-  echo "[$host_label] $project_name | $tool_kind"
+  local host_suffix=""
+  if [[ "$project_type" == "remote" && -n "$project_host" ]]; then
+    host_suffix="@${project_host}"
+  fi
+
+  local persona
+  persona="$(cc-persona --label "$project_path" "$suffix" 2>/dev/null || true)"
+
+  echo "${project_name}.${suffix}${host_suffix} ${persona}"
 }
 
 # @tproj セッション一覧を取得（共通ヘルパー）
@@ -185,15 +197,60 @@ _tproj_gui_running() {
   pgrep -f '\.build/.*/tproj$|tproj\.app/' >/dev/null 2>&1
 }
 
+# GUI App パス正規化（.app か Contents/MacOS/tproj のどちらでも受け取る）
+_normalize_gui_app_path() {
+  local raw="$1"
+  local path
+  [[ -z "$raw" ]] && return 1
+
+  path="$raw"
+  if [[ "$path" == "~/"* ]]; then
+    path="$HOME/${path#~/}"
+  fi
+  [[ -z "$path" || "$path" == "null" ]] && return 1
+
+  if [[ "$path" == *.app/Contents/MacOS/* ]]; then
+    path="${path%%.app/Contents/MacOS/*}.app"
+  fi
+  [[ "$path" == *.app ]] || return 1
+  [[ -d "$path" ]] || return 1
+
+  echo "$path"
+}
+
+_read_workspace_gui_app_path() {
+  local ws_config="$HOME/.config/tproj/workspace.yaml"
+  [[ -f "$ws_config" ]] || return 1
+  command -v yq >/dev/null 2>&1 || return 1
+
+  local raw
+  raw=$(yq -r '.gui.app_path // ""' "$ws_config" 2>/dev/null || true)
+  [[ -z "$raw" || "$raw" == "null" ]] && return 1
+
+  _normalize_gui_app_path "$raw"
+}
+
 # GUI 起動ターゲット選択（.app のみ）
 # 優先順位:
-#   1) tproj.app (ワークスペース内)
-#   2) tproj.app (現在プロジェクト root)
+#   1) TPROJ_GUI_APP_PATH 環境変数
+#   2) ~/.config/tproj/workspace.yaml の gui.app_path
+#   3) tproj workspace 内の apps/tproj/dist/tproj.app
+#   4) 現在プロジェクト root の apps/tproj/dist/tproj.app
+#   5) 配布版の標準配置（~/Applications, /Applications）
 #
 # 返り値フォーマット:
 #   app|/path/to/tproj.app
 _find_gui_target() {
-  local p app
+  local p app configured
+
+  configured="${TPROJ_GUI_APP_PATH:-}"
+  if [[ -n "$configured" ]]; then
+    app="$(_normalize_gui_app_path "$configured" 2>/dev/null)" \
+      && { echo "app|$app"; return 0; }
+  fi
+
+  app="$(_read_workspace_gui_app_path 2>/dev/null)" \
+    && { echo "app|$app"; return 0; }
 
   for p in "${PROJECT_PATHS[@]}"; do
     app="$p/apps/tproj/dist/tproj.app"
@@ -202,12 +259,16 @@ _find_gui_target() {
 
   app="$root/apps/tproj/dist/tproj.app"
   [[ -d "$app" ]] && { echo "app|$app"; return 0; }
+
+  for app in "$HOME/Applications/tproj.app" "/Applications/tproj.app"; do
+    [[ -d "$app" ]] && { echo "app|$app"; return 0; }
+  done
+
   return 1
 }
 
-# TprojApp GUI を起動（未起動の場合のみ）
+# TprojApp GUI を起動/再表示
 launch_tproj_gui() {
-  _tproj_gui_running && return 0
   local target kind path
   target="$(_find_gui_target 2>/dev/null)" || return 0
   kind="${target%%|*}"
@@ -215,7 +276,15 @@ launch_tproj_gui() {
   [[ -z "$path" ]] && return 0
 
   [[ "$kind" == "app" ]] || return 0
-  # LaunchServices 経由で起動（Terminal に "Last login ...; exit" を出さない）
+  if _tproj_gui_running; then
+    # 既存プロセスがいる場合も再表示する
+    open -a "$path" >/dev/null 2>&1 \
+      || osascript -e 'tell application id "com.usedhonda.tproj.desktop" to activate' >/dev/null 2>&1 \
+      || true
+    return 0
+  fi
+
+  # 初回は背景起動（Terminal に "Last login ...; exit" を出さない）
   open -g "$path" >/dev/null 2>&1 || true
 }
 
@@ -481,8 +550,8 @@ add_workspace_column() {
   tmux set-option -pt "$new_claude" @alias "$src_alias"
   tmux set-option -pt "$new_codex" @alias "$src_alias"
 
-  claude_title="$(build_pane_label "$src_type" "$src_host" "$src_path" "CC")"
-  codex_title="$(build_pane_label "$src_type" "$src_host" "$src_path" "Codex")"
+  claude_title="$(build_pane_label "$src_type" "$src_host" "$src_path" "CC" "$src_alias")"
+  codex_title="$(build_pane_label "$src_type" "$src_host" "$src_path" "Codex" "$src_alias")"
   tmux set-option -pt "$new_claude" allow-set-title off 2>/dev/null || true
   tmux select-pane -t "$new_claude" -T "$claude_title" 2>/dev/null || true
   tmux select-pane -t "$new_codex" -T "$codex_title" 2>/dev/null || true
@@ -553,6 +622,8 @@ declare -a PROJECT_PATHS
 declare -a PROJECT_TYPES
 declare -a PROJECT_HOSTS
 declare -a PROJECT_ALIASES
+declare -a PROJECT_CC_LAUNCH
+declare -a PROJECT_CDX_LAUNCH
 
 parse_workspace_yaml() {
   echo "📋 Workspace: $WORKSPACE_CONFIG" >&2
@@ -603,7 +674,7 @@ parse_workspace_yaml() {
   first_item_type=$(yq eval ".projects[0] | type" "$WORKSPACE_CONFIG" 2>/dev/null)
 
   # NOTE: zsh では path/PATH が連動する特殊変数のため proj_path を使用
-  local i proj_path proj_type proj_host proj_alias proj_enabled
+  local i proj_path proj_type proj_host proj_alias proj_enabled proj_cc proj_cdx
   for ((i=0; i<num_projects; i++)); do
     if [[ "$first_item_type" == "!!str" ]]; then
       # 簡易形式: 文字列リスト
@@ -612,6 +683,8 @@ parse_workspace_yaml() {
       proj_host=""
       proj_alias="$(basename "$proj_path")"
       proj_enabled="true"
+      proj_cc="true"
+      proj_cdx="true"
     else
       # 詳細形式: オブジェクトリスト
       proj_path=$(yq eval ".projects[$i].path" "$WORKSPACE_CONFIG")
@@ -619,12 +692,16 @@ parse_workspace_yaml() {
       proj_host=$(yq eval ".projects[$i].host" "$WORKSPACE_CONFIG")
       proj_alias=$(yq eval ".projects[$i].alias" "$WORKSPACE_CONFIG")
       proj_enabled=$(yq eval ".projects[$i].enabled" "$WORKSPACE_CONFIG")
+      proj_cc=$(yq eval ".projects[$i].cc" "$WORKSPACE_CONFIG")
+      proj_cdx=$(yq eval ".projects[$i].cdx" "$WORKSPACE_CONFIG")
 
       # デフォルト値
       [[ "$proj_type" == "null" ]] && proj_type="local"
       [[ "$proj_host" == "null" ]] && proj_host=""
       [[ "$proj_alias" == "null" ]] && proj_alias="$(basename "$proj_path")"
       [[ "$proj_enabled" == "null" ]] && proj_enabled="true"
+      [[ "$proj_cc" == "null" ]] && proj_cc="true"
+      [[ "$proj_cdx" == "null" ]] && proj_cdx="true"
     fi
 
     # パスを展開（~ や環境変数）
@@ -661,6 +738,8 @@ parse_workspace_yaml() {
     PROJECT_TYPES+=("$proj_type")
     PROJECT_HOSTS+=("$proj_host")
     PROJECT_ALIASES+=("$proj_alias")
+    PROJECT_CC_LAUNCH+=("$proj_cc")
+    PROJECT_CDX_LAUNCH+=("$proj_cdx")
 
     if [[ "$proj_type" == "remote" ]]; then
       echo "  ✅ [remote@$proj_host] $proj_path (alias: $proj_alias)" >&2
@@ -916,8 +995,8 @@ create_workspace_layout() {
 
     # ペインタイトル設定
     local codex_title claude_title
-    codex_title="$(build_pane_label "$proj_type" "$proj_host" "$proj_path" "Codex")"
-    claude_title="$(build_pane_label "$proj_type" "$proj_host" "$proj_path" "CC")"
+    codex_title="$(build_pane_label "$proj_type" "$proj_host" "$proj_path" "Codex" "${aliases[$((i-1))]}")"
+    claude_title="$(build_pane_label "$proj_type" "$proj_host" "$proj_path" "CC" "${aliases[$((i-1))]}")"
     # Claude が OSC タイトルで pane_title を上書きするため固定化
     tmux set-option -pt "$claude_pane" allow-set-title off 2>/dev/null || true
     tmux select-pane -t "$codex_pane" -T "$codex_title" 2>/dev/null || true
@@ -961,10 +1040,10 @@ create_workspace_layout() {
 }
 
 # Codex ペインを起動（1列分）
-# 引数: session no_update col_num path type host
+# 引数: session no_update col_num path type host [cdx_launch]
 start_codex_for_column() {
   local session="$1" no_update="$2" col="$3"
-  local proj_path="$4" proj_type="$5" proj_host="$6"
+  local proj_path="$4" proj_type="$5" proj_host="$6" cdx_launch="${7:-true}"
 
   local codex_pane
   codex_pane=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
@@ -987,6 +1066,11 @@ start_codex_for_column() {
         "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
     fi
   else
+    # cdx: false のときはシェルで cd だけ
+    if [[ "$cdx_launch" != "true" ]]; then
+      tmux send-keys -t "$codex_pane" "cd \"$proj_path\"" C-m
+      return
+    fi
     local codex_cmd="cd \"$proj_path\" && codex resume --last -s danger-full-access -a never --search"
     if [[ "$no_update" == "true" ]]; then
       tmux send-keys -t "$codex_pane" "$codex_cmd" C-m
@@ -998,10 +1082,10 @@ start_codex_for_column() {
 }
 
 # Claude ペインを起動（1列分）
-# 引数: session no_update col_num path type host
+# 引数: session no_update col_num path type host [cc_launch]
 start_claude_for_column() {
   local session="$1" no_update="$2" col="$3"
-  local proj_path="$4" proj_type="$5" proj_host="$6"
+  local proj_path="$4" proj_type="$5" proj_host="$6" cc_launch="${7:-true}"
 
   local claude_pane
   claude_pane=$(tmux list-panes -t "$session:dev" -F '#{pane_id}:#{@role}' \
@@ -1023,6 +1107,11 @@ start_claude_for_column() {
         "npm update -g @anthropic-ai/claude-code; hash -r; claude --continue || claude" C-m
     fi
   else
+    # cc: false のときはシェルで cd だけ
+    if [[ "$cc_launch" != "true" ]]; then
+      tmux send-keys -t "$claude_pane" "cd \"$proj_path\"" C-m
+      return
+    fi
     local claude_cmd
     if has_claude_session "$proj_path"; then
       claude_cmd="cd \"$proj_path\" && claude --continue"
@@ -1039,14 +1128,14 @@ start_claude_for_column() {
 }
 
 # プロジェクト別ツール起動（MCP フェーズ制御付き）
-# 引数: session no_update paths[@] -- types[@] -- hosts[@] -- aliases[@]
+# 引数: session no_update paths[@] -- types[@] -- hosts[@] -- aliases[@] -- cc_launches[@] -- cdx_launches[@]
 start_workspace_tools() {
   local session="$1"
   local no_update="$2"
   shift 2
 
-  # 配列を分離（paths, types, hosts, aliases）
-  local -a paths types hosts aliases
+  # 配列を分離（paths, types, hosts, aliases, cc_launches, cdx_launches）
+  local -a paths types hosts aliases cc_launches cdx_launches
   local num_projects=0
 
   # 最初の配列終了まで paths に格納
@@ -1072,16 +1161,34 @@ start_workspace_tools() {
   shift  # "--" をスキップ
 
   # aliases を格納
-  while [[ $# -gt 0 ]]; do
+  while [[ $# -gt 0 && "$1" != "--" ]]; do
     aliases+=("$1")
     shift
   done
+
+  # cc_launches を格納（存在する場合）
+  if [[ $# -gt 0 ]]; then
+    shift  # "--" をスキップ
+    while [[ $# -gt 0 && "$1" != "--" ]]; do
+      cc_launches+=("$1")
+      shift
+    done
+  fi
+
+  # cdx_launches を格納（存在する場合）
+  if [[ $# -gt 0 ]]; then
+    shift  # "--" をスキップ
+    while [[ $# -gt 0 ]]; do
+      cdx_launches+=("$1")
+      shift
+    done
+  fi
 
   # --- MCP phased startup (chrome-ai-bridge Primary/Proxy coordination) ---
 
   # Phase 1: Start column 1 Codex only, wait for Primary MCP
   start_codex_for_column "$session" "$no_update" 1 \
-    "${paths[0]}" "${types[0]}" "${hosts[0]}"
+    "${paths[0]}" "${types[0]}" "${hosts[0]}" "${cdx_launches[0]:-true}"
 
   if [[ $num_projects -gt 1 ]]; then
     "$HOME/bin/tproj-mcp-init" wait-primary 10 \
@@ -1094,7 +1201,7 @@ start_workspace_tools() {
   for col in 2 3; do
     [[ $col -le $num_projects ]] || continue
     start_codex_for_column "$session" "$no_update" "$col" \
-      "${paths[$((col-1))]}" "${types[$((col-1))]}" "${hosts[$((col-1))]}"
+      "${paths[$((col-1))]}" "${types[$((col-1))]}" "${hosts[$((col-1))]}" "${cdx_launches[$((col-1))]:-true}"
     batch_started=true
   done
   if [[ "$batch_started" == "true" ]]; then
@@ -1108,7 +1215,7 @@ start_workspace_tools() {
   for col in 4 5 6 7; do
     [[ $col -le $num_projects ]] || continue
     start_codex_for_column "$session" "$no_update" "$col" \
-      "${paths[$((col-1))]}" "${types[$((col-1))]}" "${hosts[$((col-1))]}"
+      "${paths[$((col-1))]}" "${types[$((col-1))]}" "${hosts[$((col-1))]}" "${cdx_launches[$((col-1))]:-true}"
     batch_started=true
   done
   if [[ "$batch_started" == "true" ]]; then
@@ -1120,7 +1227,7 @@ start_workspace_tools() {
   # Claude panes: all columns simultaneously (no chrome-ai-bridge conflict)
   for i in $(seq 1 $num_projects); do
     start_claude_for_column "$session" "$no_update" "$i" \
-      "${paths[$((i-1))]}" "${types[$((i-1))]}" "${hosts[$((i-1))]}"
+      "${paths[$((i-1))]}" "${types[$((i-1))]}" "${hosts[$((i-1))]}" "${cc_launches[$((i-1))]:-true}"
     sleep 0.2
   done
 
@@ -1173,7 +1280,7 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
     create_workspace_layout "$session" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}" -- "${PROJECT_ALIASES[@]}"
     # GUI アプリ起動（レイアウト完成後、ツール起動前）
     launch_tproj_gui
-    start_workspace_tools "$session" "$NO_UPDATE" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}" -- "${PROJECT_ALIASES[@]}"
+    start_workspace_tools "$session" "$NO_UPDATE" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}" -- "${PROJECT_ALIASES[@]}" -- "${PROJECT_CC_LAUNCH[@]}" -- "${PROJECT_CDX_LAUNCH[@]}"
 
     tmux select-window -t "$session:dev"
   else
@@ -1205,8 +1312,8 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
     [[ -n "$REMOTE_HOST" ]] && title_host="$REMOTE_HOST"
     claude_title=""
     codex_title=""
-    claude_title="$(build_pane_label "${REMOTE_HOST:+remote}" "$title_host" "$root" "CC")"
-    codex_title="$(build_pane_label "${REMOTE_HOST:+remote}" "$title_host" "$root" "Codex")"
+    claude_title="$(build_pane_label "${REMOTE_HOST:+remote}" "$title_host" "$root" "CC" "$name")"
+    codex_title="$(build_pane_label "${REMOTE_HOST:+remote}" "$title_host" "$root" "Codex" "$name")"
     # 単一モードの Claude でもタイトル上書きを抑止
     tmux set-option -pt "$session:dev.1" allow-set-title off 2>/dev/null || true
     tmux select-pane -t "$session:dev.1" -T "$claude_title" 2>/dev/null || true
