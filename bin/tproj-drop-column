@@ -1,0 +1,367 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SESSION=""
+COLUMN=""
+GRACE_MS=3000
+MAX_MS=9000
+
+LOCK_NAME="tproj-layout"
+LOG_FILE="/tmp/tproj-layout-actions.log"
+LOCK_HELD=false
+HOOK_SAVED=""
+HOOK_DISABLED=false
+
+WINDOW=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  tproj-drop-column [--grace-ms N] [--max-ms N] <session> <column>
+
+Examples:
+  tproj-drop-column tproj-workspace 3
+  tproj-drop-column --grace-ms 3000 --max-ms 9000 tproj-workspace 3
+EOF
+}
+
+now_ms() {
+  echo $(( $(date +%s) * 1000 ))
+}
+
+collect_descendant_pids() {
+  local queue=("$@")
+  local all=()
+  local cur children child
+  while [[ ${#queue[@]} -gt 0 ]]; do
+    cur="${queue[0]}"
+    queue=("${queue[@]:1}")
+    children=$(pgrep -P "$cur" 2>/dev/null || true)
+    while IFS= read -r child; do
+      [[ -z "$child" ]] && continue
+      all+=("$child")
+      queue+=("$child")
+    done <<< "$children"
+  done
+  if [[ ${#all[@]} -eq 0 ]]; then
+    return 0
+  fi
+  printf '%s\n' "${all[@]}"
+}
+
+log_line() {
+  local message="$1"
+  local ts
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  printf '%s action=drop-column session=%s column=%s %s\n' "$ts" "$SESSION" "$COLUMN" "$message" >> "$LOG_FILE"
+}
+
+pane_count() {
+  local panes
+  panes=$(tmux list-panes -t "$WINDOW" -F '#{pane_id}' 2>/dev/null || true)
+  if [[ -z "$panes" ]]; then
+    echo "0"
+    return
+  fi
+  printf '%s\n' "$panes" | sed '/^$/d' | wc -l | tr -d ' '
+}
+
+pane_exists() {
+  local pane_id="$1"
+  tmux display-message -p -t "$pane_id" '#{pane_id}' >/dev/null 2>&1
+}
+
+restore_hook() {
+  if [[ "$HOOK_DISABLED" == "true" ]]; then
+    tmux set-hook -u -t "$SESSION" after-kill-pane 2>/dev/null || true
+    if [[ -n "$HOOK_SAVED" ]]; then
+      tmux set-hook -t "$SESSION" after-kill-pane "$HOOK_SAVED" 2>/dev/null || true
+    fi
+    HOOK_DISABLED=false
+  fi
+}
+
+cleanup() {
+  restore_hook
+  if [[ "$LOCK_HELD" == "true" ]]; then
+    tmux wait-for -U "$LOCK_NAME" 2>/dev/null || true
+    LOCK_HELD=false
+  fi
+}
+
+send_graceful_signal() {
+  local pane_id="$1"
+  local role="$2"
+  case "$role" in
+    claude-p*|claude|codex-p*|codex|agent-p*|agent-*)
+      tmux send-keys -t "$pane_id" C-c >/dev/null 2>&1 || true
+      ;;
+    yazi-p*|yazi)
+      tmux send-keys -t "$pane_id" q >/dev/null 2>&1 || true
+      ;;
+    terminal-p*)
+      tmux send-keys -t "$pane_id" C-c >/dev/null 2>&1 || true
+      ;;
+  esac
+}
+
+send_exit_signal() {
+  local pane_id="$1"
+  local role="$2"
+  case "$role" in
+    claude-p*|claude|terminal-p*)
+      tmux send-keys -t "$pane_id" "exit" C-m >/dev/null 2>&1 || true
+      ;;
+    codex-p*|codex|agent-p*|agent-*)
+      tmux send-keys -t "$pane_id" "/exit" C-m >/dev/null 2>&1 || true
+      ;;
+  esac
+}
+
+pane_pid_for_id() {
+  local pane_id="$1"
+  local pid
+  pid=$(tmux display-message -p -t "$pane_id" '#{pane_pid}' 2>/dev/null || true)
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    echo "$pid"
+  fi
+}
+
+recompute_remaining_ids() {
+  local pane_id
+  remaining_ids=()
+  for pane_id in "${target_ids[@]}"; do
+    [[ -z "$pane_id" ]] && continue
+    if pane_exists "$pane_id"; then
+      remaining_ids+=("$pane_id")
+    fi
+  done
+}
+
+validate_positive_int() {
+  local name="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[0-9]+$ ]] || [[ "$value" -lt 1 ]]; then
+    echo "Error: $name must be a positive integer" >&2
+    exit 1
+  fi
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --grace-ms)
+        [[ -n "${2:-}" ]] || { echo "Error: --grace-ms requires a value" >&2; exit 1; }
+        GRACE_MS="$2"
+        shift 2
+        ;;
+      --max-ms)
+        [[ -n "${2:-}" ]] || { echo "Error: --max-ms requires a value" >&2; exit 1; }
+        MAX_MS="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      -*)
+        echo "Error: unknown option: $1" >&2
+        usage >&2
+        exit 1
+        ;;
+      *)
+        if [[ -z "$SESSION" ]]; then
+          SESSION="$1"
+        elif [[ -z "$COLUMN" ]]; then
+          COLUMN="$1"
+        else
+          echo "Error: unexpected argument: $1" >&2
+          usage >&2
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+}
+
+trap cleanup EXIT INT TERM
+
+parse_args "$@"
+
+if [[ -z "$SESSION" || -z "$COLUMN" ]]; then
+  usage >&2
+  exit 1
+fi
+
+validate_positive_int "column" "$COLUMN"
+validate_positive_int "grace-ms" "$GRACE_MS"
+validate_positive_int "max-ms" "$MAX_MS"
+if [[ "$MAX_MS" -lt "$GRACE_MS" ]]; then
+  MAX_MS="$GRACE_MS"
+fi
+
+WINDOW="${SESSION}:dev"
+
+tmux has-session -t "$SESSION" >/dev/null 2>&1 || {
+  echo "Error: session not found: $SESSION" >&2
+  exit 1
+}
+
+tmux list-panes -t "$WINDOW" >/dev/null 2>&1 || {
+  echo "Error: window not found: $WINDOW" >&2
+  exit 1
+}
+
+start_ms="$(now_ms)"
+before_count=$(pane_count)
+
+tmux wait-for -L "$LOCK_NAME"
+LOCK_HELD=true
+
+hook_line=$(tmux show-hooks -t "$SESSION" after-kill-pane 2>/dev/null | head -n 1 || true)
+if [[ "$hook_line" =~ ^after-kill-pane\[[0-9]+\]\ (.*)$ ]]; then
+  HOOK_SAVED="${BASH_REMATCH[1]}"
+fi
+tmux set-hook -u -t "$SESSION" after-kill-pane 2>/dev/null || true
+HOOK_DISABLED=true
+
+target_ids=()
+target_roles=()
+target_pane_pids=()
+while IFS=':' read -r pane_id role; do
+  [[ -z "$pane_id" || -z "$role" ]] && continue
+  target_ids+=("$pane_id")
+  target_roles+=("$role")
+  pane_pid="$(pane_pid_for_id "$pane_id")"
+  [[ -n "$pane_pid" ]] && target_pane_pids+=("$pane_pid")
+done < <(
+  tmux list-panes -t "$WINDOW" -F '#{pane_id}:#{@role}' 2>/dev/null \
+    | awk -F: -v col="$COLUMN" '
+      $2 == ("claude-p" col) ||
+      $2 == ("codex-p" col) ||
+      $2 == ("yazi-p" col) ||
+      $2 == ("terminal-p" col) ||
+      $2 ~ ("^agent-p" col "(-|$)") {
+        print $1 ":" $2
+      }
+    '
+)
+
+if [[ "${#target_ids[@]}" -eq 0 ]]; then
+  after_count=$(pane_count)
+  elapsed_ms=$(( $(now_ms) - start_ms ))
+  log_line "status=not-found before=$before_count after=$after_count target=0 elapsed_ms=$elapsed_ms"
+  echo "status=not-found before=$before_count after=$after_count target=0 elapsed_ms=$elapsed_ms"
+  exit 1
+fi
+
+descendant_pids=()
+if [[ "${#target_pane_pids[@]}" -gt 0 ]]; then
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && descendant_pids+=("$pid")
+  done < <(collect_descendant_pids "${target_pane_pids[@]}")
+fi
+
+# Phase 1: graceful signals
+for i in "${!target_ids[@]}"; do
+  send_graceful_signal "${target_ids[$i]}" "${target_roles[$i]}"
+done
+sleep 0.25
+for i in "${!target_ids[@]}"; do
+  send_exit_signal "${target_ids[$i]}" "${target_roles[$i]}"
+done
+
+# Phase 2: wait up to grace timeout
+remaining_ids=()
+elapsed_wait=0
+while [[ "$elapsed_wait" -lt "$GRACE_MS" ]]; do
+  recompute_remaining_ids
+  [[ "${#remaining_ids[@]}" -eq 0 ]] && break
+  sleep 0.2
+  elapsed_wait=$((elapsed_wait + 200))
+done
+
+# Phase 2b: one more gentle nudge up to max timeout
+if [[ "${#remaining_ids[@]}" -gt 0 && "$MAX_MS" -gt "$GRACE_MS" ]]; then
+  for i in "${!target_ids[@]}"; do
+    pane_id="${target_ids[$i]}"
+    if pane_exists "$pane_id"; then
+      send_graceful_signal "$pane_id" "${target_roles[$i]}"
+      send_exit_signal "$pane_id" "${target_roles[$i]}"
+    fi
+  done
+  while [[ "$elapsed_wait" -lt "$MAX_MS" ]]; do
+    recompute_remaining_ids
+    [[ "${#remaining_ids[@]}" -eq 0 ]] && break
+    sleep 0.2
+    elapsed_wait=$((elapsed_wait + 200))
+  done
+fi
+
+residual_before_force="${#remaining_ids[@]}"
+graceful_exited=$(( ${#target_ids[@]} - residual_before_force ))
+forced_killed=0
+errors=0
+
+# Phase 3: force kill residual panes only
+if [[ "$residual_before_force" -gt 0 ]]; then
+  for pane_id in "${remaining_ids[@]}"; do
+    [[ -z "$pane_id" ]] && continue
+    if pane_exists "$pane_id"; then
+      if tmux kill-pane -t "$pane_id" >/dev/null 2>&1; then
+        forced_killed=$((forced_killed + 1))
+      else
+        # Race-safe: if pane vanished between existence check and kill, do not count as failure.
+        if pane_exists "$pane_id"; then
+          errors=$((errors + 1))
+        fi
+      fi
+    fi
+  done
+fi
+
+orphan_term=0
+orphan_kill=0
+if [[ "${#descendant_pids[@]}" -gt 0 ]]; then
+  for pid in "${descendant_pids[@]}"; do
+    [[ -z "$pid" ]] && continue
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+      orphan_term=$((orphan_term + 1))
+    fi
+  done
+
+  sleep 0.8
+
+  for pid in "${descendant_pids[@]}"; do
+    [[ -z "$pid" ]] && continue
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || true
+      orphan_kill=$((orphan_kill + 1))
+    fi
+  done
+fi
+
+rebalance_count=0
+if [[ -x "$HOME/bin/rebalance-workspace-columns" ]]; then
+  if "$HOME/bin/rebalance-workspace-columns" "$SESSION" >/dev/null 2>&1; then
+    rebalance_count=1
+  fi
+fi
+
+restore_hook
+
+after_count=$(pane_count)
+elapsed_ms=$(( $(now_ms) - start_ms ))
+status="ok"
+if [[ "$errors" -gt 0 ]]; then
+  status="partial"
+fi
+
+log_line "status=$status before=$before_count after=$after_count target=${#target_ids[@]} graceful=$graceful_exited residual_before_force=$residual_before_force forced=$forced_killed orphan_term=$orphan_term orphan_kill=$orphan_kill errors=$errors rebalance=$rebalance_count grace_ms=$GRACE_MS max_ms=$MAX_MS elapsed_ms=$elapsed_ms"
+echo "status=$status before=$before_count after=$after_count target=${#target_ids[@]} graceful=$graceful_exited residual_before_force=$residual_before_force forced=$forced_killed orphan_term=$orphan_term orphan_kill=$orphan_kill errors=$errors rebalance=$rebalance_count grace_ms=$GRACE_MS max_ms=$MAX_MS elapsed_ms=$elapsed_ms"
+
+if [[ "$errors" -gt 0 ]]; then
+  exit 1
+fi

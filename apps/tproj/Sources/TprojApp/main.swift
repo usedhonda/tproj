@@ -893,9 +893,11 @@ final class AppViewModel: ObservableObject {
     @Published var memoryStatus: MonitorStatus?
     @Published var memoryErrorText: String?
     @Published var memoryLastUpdatedAt: Date?
+    @Published var pendingDropColumns: Set<Int> = []
 
     private let fileManager = FileManager.default
     private let monitorStatusPath = "/tmp/tproj-monitor-status.json"
+    private let layoutLogPath = "/tmp/tproj-layout-actions.log"
     private var memoryPollTask: Task<Void, Never>?
 
     // MARK: - PATH & Dependency Resolution
@@ -923,6 +925,8 @@ final class AppViewModel: ObservableObject {
     }
     private var midiActivator: MIDIPaneActivator?
     private var startupRetryTask: Task<Void, Never>?
+    private var layoutMutationInProgress = false
+    private var dropTasks: [Int: Task<Void, Never>] = [:]
 
     struct StartupDiag {
         struct Dep {
@@ -946,6 +950,10 @@ final class AppViewModel: ObservableObject {
 
     var canAddColumn: Bool {
         !selectedAlias.isEmpty && !isBusy
+    }
+
+    func isDropPending(_ column: Int) -> Bool {
+        pendingDropColumns.contains(column)
     }
 
     var inactiveProjects: [WorkspaceProject] {
@@ -1229,6 +1237,89 @@ final class AppViewModel: ObservableObject {
         return formatter.string(from: Date())
     }
 
+    private func beginLayoutMutation(action: String) -> Bool {
+        if layoutMutationInProgress {
+            statusText = "Busy: layout operation in progress"
+            logLayoutAction(action: action, before: -1, after: -1, elapsedMS: 0, result: "busy", note: "rejected")
+            return false
+        }
+        layoutMutationInProgress = true
+        isBusy = true
+        return true
+    }
+
+    private func endLayoutMutation() {
+        layoutMutationInProgress = false
+        isBusy = false
+    }
+
+    private func workspacePaneCountSync() -> Int {
+        let result = runCommand("/usr/bin/env", [
+            "tmux", "list-panes", "-t", "tproj-workspace:dev", "-F", "#{pane_id}"
+        ])
+        guard result.exitCode == 0 else { return -1 }
+        return result.stdout
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .count
+    }
+
+    private func appendLayoutLogLine(_ line: String) {
+        guard let data = (line + "\n").data(using: .utf8) else { return }
+        let url = URL(fileURLWithPath: layoutLogPath)
+
+        if !fileManager.fileExists(atPath: layoutLogPath) {
+            try? data.write(to: url, options: .atomic)
+            return
+        }
+
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? handle.close() }
+        do {
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        } catch {
+            // best-effort logging only
+        }
+    }
+
+    private func logLayoutAction(
+        action: String,
+        before: Int,
+        after: Int,
+        elapsedMS: Int64,
+        result: String,
+        note: String = ""
+    ) {
+        let compactNote = note
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var fields = [
+            "\(currentISO8601Timestamp())",
+            "action=\(action)",
+            "before=\(before)",
+            "after=\(after)",
+            "elapsed_ms=\(elapsedMS)",
+            "result=\(result)",
+        ]
+        if !compactNote.isEmpty {
+            fields.append("note=\(compactNote)")
+        }
+        appendLayoutLogLine(fields.joined(separator: " "))
+    }
+
+    private func dropColumnCommand() -> (launchPath: String, arguments: [String]) {
+        if let repoScript = locateInAncestorBin(commandName: "tproj-drop-column") {
+            return (repoScript, [])
+        }
+        let homeScript = "\(NSHomeDirectory())/bin/tproj-drop-column"
+        if fileManager.isExecutableFile(atPath: homeScript) {
+            return (homeScript, [])
+        }
+        return ("/usr/bin/env", ["tproj-drop-column"])
+    }
+
     func addWorkspaceRow() {
         workspaceProjects.append(
             WorkspaceProject(path: "", type: "local", host: "", alias: "", enabled: true)
@@ -1249,14 +1340,32 @@ final class AppViewModel: ObservableObject {
     }
 
     func addColumnByAlias(_ alias: String) async {
-        isBusy = true
-        defer { isBusy = false }
+        guard beginLayoutMutation(action: "add-column") else { return }
+        let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
+        let beforeCount = workspacePaneCountSync()
+        var resultTag = "ok"
+        var note = "alias=\(alias)"
+        defer {
+            let afterCount = workspacePaneCountSync()
+            let elapsed = Int64(Date().timeIntervalSince1970 * 1000) - startedMS
+            logLayoutAction(
+                action: "add-column",
+                before: beforeCount,
+                after: afterCount,
+                elapsedMS: elapsed,
+                result: resultTag,
+                note: note
+            )
+            endLayoutMutation()
+        }
 
         let result = await runCommandAsync("/usr/bin/env", ["tproj", "--add", alias])
         if result.exitCode == 0 {
             statusText = "Added column: \(alias)"
             loadLiveColumns()
         } else {
+            resultTag = "error"
+            note = "alias=\(alias) error=\(trimmedError(result))"
             statusText = "Add failed: \(trimmedError(result))"
         }
     }
@@ -1290,12 +1399,44 @@ final class AppViewModel: ObservableObject {
     }
 
     func toggleTerminal(for column: LiveColumn) async {
-        isBusy = true
-        defer { isBusy = false }
+        guard beginLayoutMutation(action: "toggle-terminal") else { return }
+        let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
+        let beforeCount = workspacePaneCountSync()
+        var resultTag = "ok"
+        var note = "column=\(column.column)"
+        var lockHeld = false
+        defer {
+            if lockHeld {
+                _ = runCommand("/usr/bin/env", ["tmux", "wait-for", "-U", "tproj-layout"])
+            }
+            let afterCount = workspacePaneCountSync()
+            let elapsed = Int64(Date().timeIntervalSince1970 * 1000) - startedMS
+            logLayoutAction(
+                action: "toggle-terminal",
+                before: beforeCount,
+                after: afterCount,
+                elapsedMS: elapsed,
+                result: resultTag,
+                note: note
+            )
+            endLayoutMutation()
+        }
+
+        let lockResult = await runCommandAsync("/usr/bin/env", ["tmux", "wait-for", "-L", "tproj-layout"])
+        guard lockResult.exitCode == 0 else {
+            resultTag = "lock-error"
+            note += " lock=acquire_failed"
+            statusText = "Term: failed to acquire layout lock"
+            loadLiveColumns()
+            return
+        }
+        lockHeld = true
 
         let sessionTarget = "tproj-workspace:dev"
         let listResult = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", sessionTarget, "-F", "#{pane_id}:#{@role}"])
         guard listResult.exitCode == 0 else {
+            resultTag = "error"
+            note += " error=\(trimmedError(listResult))"
             statusText = "Term: \(trimmedError(listResult))"
             loadLiveColumns()
             return
@@ -1314,6 +1455,12 @@ final class AppViewModel: ObservableObject {
         // Toggle off: kill existing terminal
         if let existing = paneRoles.first(where: { $0.role == roleName }) {
             let killResult = await runCommandAsync("/usr/bin/env", ["tmux", "kill-pane", "-t", existing.id])
+            if killResult.exitCode != 0 {
+                resultTag = "error"
+                note += " off_error=\(trimmedError(killResult))"
+            } else {
+                note += " state=off"
+            }
             statusText = killResult.exitCode == 0
                 ? "Terminal off for #\(column.column)"
                 : "Term off failed: \(trimmedError(killResult))"
@@ -1324,6 +1471,8 @@ final class AppViewModel: ObservableObject {
         // Toggle on: find target pane from fresh list (codex preferred, claude fallback)
         guard let targetPane = paneRoles.first(where: { $0.role == "codex-p\(column.column)" })?.id
                 ?? paneRoles.first(where: { $0.role == "claude-p\(column.column)" })?.id else {
+            resultTag = "error"
+            note += " error=no_target_pane"
             statusText = "Term: no pane for #\(column.column)"
             return
         }
@@ -1333,12 +1482,16 @@ final class AppViewModel: ObservableObject {
             "-c", "/tmp", "-l", "25%", "-P", "-F", "#{pane_id}"
         ])
         guard createResult.exitCode == 0 else {
+            resultTag = "error"
+            note += " create_error=\(trimmedError(createResult))"
             statusText = "Term[\(createResult.exitCode)]: \(trimmedError(createResult))"
             return
         }
 
         let newPane = createResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !newPane.isEmpty else {
+            resultTag = "error"
+            note += " error=empty_pane_id"
             statusText = "Term: empty pane id"
             return
         }
@@ -1358,6 +1511,7 @@ final class AppViewModel: ObservableObject {
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, "cd \(shellSingleQuote(localDir)) && exec $SHELL -l", "C-m"])
         }
 
+        note += " state=on"
         statusText = "Terminal on for #\(column.column)"
         loadLiveColumns()
     }
@@ -1368,85 +1522,206 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        isBusy = true
-        defer { isBusy = false }
-
-        var errors: [String] = []
-
-        if let codex = column.codexPaneID {
-            let res = await runCommandAsync("/usr/bin/env", ["tmux", "kill-pane", "-t", codex])
-            if res.exitCode != 0 { errors.append(trimmedError(res)) }
+        let columnNumber = column.column
+        if pendingDropColumns.contains(columnNumber) {
+            statusText = "Drop already in progress for #\(columnNumber)"
+            return
         }
 
-        if let claude = column.claudePaneID {
-            let res = await runCommandAsync("/usr/bin/env", ["tmux", "kill-pane", "-t", claude])
-            if res.exitCode != 0 { errors.append(trimmedError(res)) }
+        let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
+        let beforeCount = workspacePaneCountSync()
+        let dropCommand = dropColumnCommand()
+
+        pendingDropColumns.insert(columnNumber)
+        liveColumns.removeAll { $0.column == columnNumber }
+        statusText = "Dropping #\(columnNumber) in background..."
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.pendingDropColumns.remove(columnNumber)
+                self.dropTasks[columnNumber] = nil
+            }
+
+            var resultTag = "ok"
+            var note = "mode=async column=\(columnNumber) grace_ms=200 max_ms=1200"
+
+            let dropResult = await self.runCommandAsync(
+                dropCommand.launchPath,
+                dropCommand.arguments + ["--grace-ms", "200", "--max-ms", "1200", "tproj-workspace", "\(columnNumber)"]
+            )
+
+            if dropResult.exitCode != 0 {
+                resultTag = "error"
+                note += " error=\(self.trimmedError(dropResult))"
+                self.statusText = "Drop #\(columnNumber) failed: \(self.trimmedError(dropResult))"
+            } else {
+                let dropInfo = dropResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !dropInfo.isEmpty {
+                    note += " \(dropInfo)"
+                }
+                let normalized = await self.normalizeColumnsByVisualOrderAsync()
+                if !normalized {
+                    resultTag = "warning"
+                    note += " normalized=0"
+                    self.statusText = "Drop #\(columnNumber): normalize warning"
+                } else {
+                    note += " normalized=1"
+                    self.statusText = "Removed column \(columnNumber)"
+                }
+            }
+
+            self.loadLiveColumns()
+            let afterCount = workspacePaneCountSync()
+            let elapsed = Int64(Date().timeIntervalSince1970 * 1000) - startedMS
+            self.logLayoutAction(
+                action: "drop-column",
+                before: beforeCount,
+                after: afterCount,
+                elapsedMS: elapsed,
+                result: resultTag,
+                note: note
+            )
         }
-
-        if let yazi = column.yaziPaneID {
-            let res = await runCommandAsync("/usr/bin/env", ["tmux", "kill-pane", "-t", yazi])
-            if res.exitCode != 0 { errors.append(trimmedError(res)) }
-        }
-
-        if let terminal = column.terminalPaneID {
-            let res = await runCommandAsync("/usr/bin/env", ["tmux", "kill-pane", "-t", terminal])
-            if res.exitCode != 0 { errors.append(trimmedError(res)) }
-        }
-
-        _ = await runCommandAsync("\(NSHomeDirectory())/bin/rebalance-workspace-columns", ["tproj-workspace"])
-        _ = await normalizeColumnsByVisualOrderAsync()
-
-        if errors.isEmpty {
-            statusText = "Removed column \(column.column)"
-        } else {
-            statusText = "Drop failed: \(errors.joined(separator: " | "))"
-        }
-
-        loadLiveColumns()
+        dropTasks[columnNumber] = task
     }
 
-    func moveColumn(from sourceColumn: Int, to targetColumn: Int) async {
-        guard sourceColumn != targetColumn else { return }
-        guard !isBusy else { return }
+    func moveColumn(from sourceColumn: Int, toInsertionIndex insertionIndex: Int) async {
+        guard beginLayoutMutation(action: "reorder-column") else { return }
 
-        // Optimistic UI swap: build new array locally to avoid intermediate duplicate IDs
-        // (swapAt + column reassign fires @Published 3 times; the 2nd has duplicate id → SwiftUI hang)
-        if let srcIdx = liveColumns.firstIndex(where: { $0.column == sourceColumn }),
-           let tgtIdx = liveColumns.firstIndex(where: { $0.column == targetColumn }) {
-            var updated = liveColumns
-            updated.swapAt(srcIdx, tgtIdx)
-            updated[srcIdx].column = sourceColumn
-            updated[tgtIdx].column = targetColumn
-            liveColumns = updated  // single atomic @Published fire
+        let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
+        let beforeCount = workspacePaneCountSync()
+        var resultTag = "ok"
+        var note = "mode=insert from=\(sourceColumn) insertion=\(insertionIndex)"
+        var lockHeld = false
+        defer {
+            if lockHeld {
+                _ = runCommand("/usr/bin/env", ["tmux", "wait-for", "-U", "tproj-layout"])
+            }
+            let afterCount = workspacePaneCountSync()
+            let elapsed = Int64(Date().timeIntervalSince1970 * 1000) - startedMS
+            logLayoutAction(
+                action: "reorder-column",
+                before: beforeCount,
+                after: afterCount,
+                elapsedMS: elapsed,
+                result: resultTag,
+                note: note
+            )
+            endLayoutMutation()
         }
 
-        isBusy = true
-        defer { isBusy = false }
+        let lockResult = await runCommandAsync("/usr/bin/env", ["tmux", "wait-for", "-L", "tproj-layout"])
+        guard lockResult.exitCode == 0 else {
+            resultTag = "lock-error"
+            note += " lock=acquire_failed"
+            statusText = "Reorder failed: lock"
+            loadLiveColumns()
+            return
+        }
+        lockHeld = true
 
         let agentsActive = await runCommandAsync("/usr/bin/env", ["tmux", "show-environment", "-t", "tproj-workspace", "TPROJ_AGENTS_ACTIVE"])
         if agentsActive.exitCode == 0 {
+            resultTag = "blocked"
+            note += " reason=agents_active"
             statusText = "Reorder disabled while agent panes are active"
             loadLiveColumns()
             return
         }
 
-        let panes = await listWorkspacePanesAsync()
-        guard !panes.isEmpty else {
-            statusText = "Reorder failed: workspace panes not found"
+        guard let sourceIndex = liveColumns.firstIndex(where: { $0.column == sourceColumn }) else {
+            resultTag = "error"
+            note += " error=source_column_missing"
+            statusText = "Reorder failed: source column missing"
             loadLiveColumns()
             return
+        }
+
+        let boundedInsertion = min(max(insertionIndex, 0), liveColumns.count)
+        var targetIndex = boundedInsertion
+        if targetIndex > sourceIndex {
+            targetIndex -= 1
+        }
+        note += " resolved_insertion=\(boundedInsertion) source_idx=\(sourceIndex) dest_idx=\(targetIndex)"
+
+        guard targetIndex != sourceIndex else {
+            note += " noop=1 reason=same_index_resolved"
+            statusText = "Reorder unchanged"
+            loadLiveColumns()
+            return
+        }
+
+        var orderedColumns = liveColumns.map(\.column)
+        guard sourceIndex < orderedColumns.count else {
+            resultTag = "error"
+            note += " error=source_index_out_of_range"
+            statusText = "Reorder failed: source index out of range"
+            loadLiveColumns()
+            return
+        }
+
+        var swapCount = 0
+        if sourceIndex < targetIndex {
+            for idx in sourceIndex..<targetIndex {
+                let leftColumn = orderedColumns[idx]
+                let rightColumn = orderedColumns[idx + 1]
+                if let error = await swapColumnsWithoutNormalize(sourceColumn: leftColumn, targetColumn: rightColumn) {
+                    resultTag = "error"
+                    note += " pair=\(leftColumn)<->\(rightColumn) error=\(error)"
+                    statusText = "Reorder failed: \(error)"
+                    loadLiveColumns()
+                    return
+                }
+                orderedColumns.swapAt(idx, idx + 1)
+                swapCount += 1
+            }
+        } else {
+            for idx in stride(from: sourceIndex, to: targetIndex, by: -1) {
+                let leftColumn = orderedColumns[idx - 1]
+                let rightColumn = orderedColumns[idx]
+                if let error = await swapColumnsWithoutNormalize(sourceColumn: leftColumn, targetColumn: rightColumn) {
+                    resultTag = "error"
+                    note += " pair=\(leftColumn)<->\(rightColumn) error=\(error)"
+                    statusText = "Reorder failed: \(error)"
+                    loadLiveColumns()
+                    return
+                }
+                orderedColumns.swapAt(idx - 1, idx)
+                swapCount += 1
+            }
+        }
+        note += " swaps=\(swapCount)"
+
+        _ = await runCommandAsync("\(NSHomeDirectory())/bin/rebalance-workspace-columns", ["tproj-workspace"])
+        let normalized = await normalizeColumnsByVisualOrderAsync()
+        if !normalized {
+            resultTag = "warning"
+            note += " normalized=0"
+            statusText = "Reorder warning: visual normalize failed"
+        } else {
+            note += " normalized=1"
+            statusText = "Moved #\(sourceColumn) to position \(targetIndex + 1)"
+        }
+        loadLiveColumns()
+        refreshColumnIdentities()
+    }
+
+    private func swapColumnsWithoutNormalize(sourceColumn: Int, targetColumn: Int) async -> String? {
+        guard sourceColumn != targetColumn else { return nil }
+
+        let panes = await listWorkspacePanesAsync()
+        guard !panes.isEmpty else {
+            return "workspace panes not found"
         }
 
         guard let claudeSource = paneID(forRole: "claude-p\(sourceColumn)", panes: panes),
               let claudeTarget = paneID(forRole: "claude-p\(targetColumn)", panes: panes),
               let codexSource = paneID(forRole: "codex-p\(sourceColumn)", panes: panes),
               let codexTarget = paneID(forRole: "codex-p\(targetColumn)", panes: panes) else {
-            statusText = "Reorder failed: required panes not found"
-            loadLiveColumns()
-            return
+            return "required panes not found"
         }
 
-        // Gather pre-swap metadata from claude panes
         let srcMeta = await runCommandAsync("/usr/bin/env",
             ["tmux", "display-message", "-t", claudeSource, "-p", "#{@project}|#{@remote_host}|#{@remote_path}|#{pane_left}"])
         let tgtMeta = await runCommandAsync("/usr/bin/env",
@@ -1471,18 +1746,13 @@ final class AppViewModel: ObservableObject {
         let terminalSource = paneID(forRole: "terminal-p\(sourceColumn)", panes: panes)
         let terminalTarget = paneID(forRole: "terminal-p\(targetColumn)", panes: panes)
 
-        // Perform swap-pane operations
         let mainSwap1 = await runCommandAsync("/usr/bin/env", ["tmux", "swap-pane", "-s", claudeSource, "-t", claudeTarget])
         guard mainSwap1.exitCode == 0 else {
-            statusText = "Reorder failed: \(trimmedError(mainSwap1))"
-            loadLiveColumns()
-            return
+            return trimmedError(mainSwap1)
         }
         let mainSwap2 = await runCommandAsync("/usr/bin/env", ["tmux", "swap-pane", "-s", codexSource, "-t", codexTarget])
         guard mainSwap2.exitCode == 0 else {
-            statusText = "Reorder failed: \(trimmedError(mainSwap2))"
-            loadLiveColumns()
-            return
+            return trimmedError(mainSwap2)
         }
 
         if let ys = yaziSource, let yt = yaziTarget {
@@ -1507,31 +1777,19 @@ final class AppViewModel: ObservableObject {
             _ = await relocatePaneAboveCodexAsync(paneID: tt, codexPaneID: codexTarget)
         }
 
-        // Detect if swap-pane moved panes physically (Case A) or just swapped content (Case B)
         let check = await runCommandAsync("/usr/bin/env",
             ["tmux", "display-message", "-t", claudeSource, "-p", "#{pane_left}"])
         let srcLeftAfter = Int(check.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
         let panesMoved = (srcLeftAfter != sourceOriginalLeft) && srcLeftAfter >= 0 && sourceOriginalLeft >= 0
 
         if !panesMoved {
-            // Case B: content swapped but pane IDs stayed at original positions.
-            // @project tags are still at their original positions, explicitly swap them.
             await swapProjectTagsAsync(
                 sourceColumn: sourceColumn, targetColumn: targetColumn,
                 sourceProject: sourceProject, sourceRemoteHost: sourceRemoteHost, sourceRemotePath: sourceRemotePath,
                 targetProject: targetProject, targetRemoteHost: targetRemoteHost, targetRemotePath: targetRemotePath
             )
         }
-
-        // normalizeColumnsByVisualOrderAsync handles @column/@role for both cases
-        _ = await runCommandAsync("\(NSHomeDirectory())/bin/rebalance-workspace-columns", ["tproj-workspace"])
-        let normalized = await normalizeColumnsByVisualOrderAsync()
-        if !normalized {
-            statusText = "Reorder warning: visual normalize failed"
-        }
-        loadLiveColumns()
-        refreshColumnIdentities()
-        statusText = "Swapped #\(sourceColumn) and #\(targetColumn)"
+        return nil
     }
 
     func saveWorkspace() async {
@@ -1646,9 +1904,9 @@ final class AppViewModel: ObservableObject {
                     return (id: parts[0], role: parts[1])
                 }
 
-            // Send C-c to claude/codex/agent panes, q to yazi panes
+            // Send C-c to claude/codex/agent/terminal panes, q to yazi panes
             for pane in paneRoles {
-                if pane.role.hasPrefix("claude") || pane.role.hasPrefix("codex") || pane.role.hasPrefix("agent") {
+                if pane.role.hasPrefix("claude") || pane.role.hasPrefix("codex") || pane.role.hasPrefix("agent") || pane.role.hasPrefix("terminal") {
                     _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "C-c", ""])
                 } else if pane.role.hasPrefix("yazi") {
                     _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "q", ""])
@@ -1658,9 +1916,11 @@ final class AppViewModel: ObservableObject {
             // Brief pause for C-c to take effect
             try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
 
-            // Send /exit to claude/agent panes
+            // Send role-specific exit commands.
             for pane in paneRoles {
-                if pane.role.hasPrefix("claude") || pane.role.hasPrefix("agent") {
+                if pane.role.hasPrefix("claude") || pane.role.hasPrefix("terminal") {
+                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "exit", "Enter"])
+                } else if pane.role.hasPrefix("codex") || pane.role.hasPrefix("agent") {
                     _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "/exit", "Enter"])
                 }
             }
@@ -1716,6 +1976,39 @@ final class AppViewModel: ObservableObject {
 
         // Collect descendant PIDs before killing (to clean up MCP servers)
         let descendantPids = await collectSessionDescendants(sessions: sessions)
+
+        // Force mode still sends one-shot graceful hints before kill.
+        for session in sessions {
+            let listResult = await runCommandAsync("/usr/bin/env", [
+                "tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_id}:#{@role}"
+            ])
+            guard listResult.exitCode == 0 else { continue }
+
+            let paneRoles: [(id: String, role: String)] = listResult.stdout
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .map(String.init)
+                .compactMap { line in
+                    let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                    guard parts.count == 2 else { return nil }
+                    return (id: parts[0], role: parts[1])
+                }
+
+            for pane in paneRoles {
+                if pane.role.hasPrefix("claude") || pane.role.hasPrefix("codex") || pane.role.hasPrefix("agent") || pane.role.hasPrefix("terminal") {
+                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "C-c", ""])
+                } else if pane.role.hasPrefix("yazi") {
+                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "q", ""])
+                }
+            }
+
+            for pane in paneRoles {
+                if pane.role.hasPrefix("claude") || pane.role.hasPrefix("terminal") {
+                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "exit", "Enter"])
+                } else if pane.role.hasPrefix("codex") || pane.role.hasPrefix("agent") {
+                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "/exit", "Enter"])
+                }
+            }
+        }
 
         // Kill team-watcher first
         _ = await runCommandAsync("/usr/bin/env", ["pkill", "-TERM", "-f", "bin/team-watcher"])
@@ -1787,8 +2080,18 @@ final class AppViewModel: ObservableObject {
 
     /// Kill surviving descendant processes after session termination
     private func killSurvivingDescendants(_ pids: Set<Int32>) async {
+        guard !pids.isEmpty else { return }
+
         for pid in pids {
             kill(pid, SIGTERM)
+        }
+
+        try? await Task.sleep(nanoseconds: 800_000_000)
+
+        for pid in pids {
+            if kill(pid, 0) == 0 {
+                kill(pid, SIGKILL)
+            }
         }
     }
 
@@ -2390,7 +2693,8 @@ struct ContentView: View {
     @StateObject private var vm = AppViewModel()
     @StateObject private var ghosttyTracker = GhosttyWindowTracker()
     @State private var draggingColumnID: Int?
-    @State private var dropTargetColumnID: Int?
+    @State private var dropInsertionIndex: Int?
+    @State private var isDragActive = false
     @State private var didRecoverWindowFrame = false
 
     var body: some View {
@@ -2436,26 +2740,47 @@ struct ContentView: View {
                             .fixedSize()
                         }
 
-                        if vm.liveColumns.isEmpty {
-                            startupDiagView()
-                                .font(GhosttyTheme.current.font(size: 12, weight: .medium))
-                                .foregroundStyle(GhosttyTheme.current.textSecondary)
-                        } else {
-                            ForEach(vm.liveColumns) { column in
-                                liveColumnRow(column)
-                                    .onDrop(
-                                        of: [UTType.text],
-                                        delegate: ColumnDropDelegate(
-                                            targetColumn: column.column,
-                                            draggingColumnID: $draggingColumnID,
-                                            dropTargetColumnID: $dropTargetColumnID,
-                                            viewModel: vm
+                        VStack(alignment: .leading, spacing: 0) {
+                            if vm.liveColumns.isEmpty {
+                                startupDiagView()
+                                    .font(GhosttyTheme.current.font(size: 12, weight: .medium))
+                                    .foregroundStyle(GhosttyTheme.current.textSecondary)
+                            } else {
+                                let indexedColumns = Array(vm.liveColumns.enumerated())
+                                ForEach(0...vm.liveColumns.count, id: \.self) { insertionIndex in
+                                    dropInsertionGap(index: insertionIndex)
+                                        .onDrop(
+                                            of: [UTType.text],
+                                            delegate: GapDropDelegate(
+                                                insertionIndex: insertionIndex,
+                                                totalCount: vm.liveColumns.count,
+                                                draggingColumnID: $draggingColumnID,
+                                                dropInsertionIndex: $dropInsertionIndex,
+                                                isDragActive: $isDragActive,
+                                                viewModel: vm
+                                            )
                                         )
-                                    )
+
+                                    if insertionIndex < indexedColumns.count {
+                                        let column = indexedColumns[insertionIndex].element
+                                        liveColumnRow(column)
+                                            .onDrop(
+                                                of: [UTType.text],
+                                                delegate: RowDropFallbackDelegate(
+                                                    rowIndex: insertionIndex,
+                                                    totalCount: vm.liveColumns.count,
+                                                    draggingColumnID: $draggingColumnID,
+                                                    dropInsertionIndex: $dropInsertionIndex,
+                                                    isDragActive: $isDragActive,
+                                                    viewModel: vm
+                                                )
+                                            )
+                                    }
+                                }
                             }
-                        }
-                        ForEach(vm.inactiveProjects) { project in
-                            inactiveProjectRow(project)
+                            ForEach(vm.inactiveProjects) { project in
+                                inactiveProjectRow(project)
+                            }
                         }
                     }
 
@@ -2488,6 +2813,12 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .task {
             vm.onAppear()
+        }
+        .onChange(of: vm.isBusy) { busy in
+            if !busy, draggingColumnID == nil {
+                dropInsertionIndex = nil
+                isDragActive = false
+            }
         }
         .background(
             WindowAccessor { window in
@@ -2523,7 +2854,6 @@ struct ContentView: View {
 
     private func liveColumnRow(_ column: LiveColumn) -> some View {
         let isDragging = draggingColumnID == column.column
-        let isDropTarget = dropTargetColumnID == column.column
 
         return VStack(alignment: .leading, spacing: 3) {
             // Header row
@@ -2550,7 +2880,7 @@ struct ContentView: View {
                     Task { await vm.toggleTerminal(for: column) }
                 }
                 .frame(width: 38)
-                ActionButton("Drop", tone: .danger, isEnabled: !vm.isBusy, dense: true) {
+                ActionButton("Drop", tone: .danger, isEnabled: !vm.isBusy && !vm.isDropPending(column.column), dense: true) {
                     Task { await vm.removeColumn(column) }
                 }
                 .frame(width: 38)
@@ -2562,7 +2892,6 @@ struct ContentView: View {
         .background(
             RoundedRectangle(cornerRadius: 3, style: .continuous)
                 .fill(isDragging ? GhosttyTheme.current.accentCyan.opacity(0.15)
-                      : isDropTarget ? GhosttyTheme.current.accentCyan.opacity(0.10)
                       : GhosttyTheme.current.foreground.opacity(0.05))
         )
         .overlay(alignment: .leading) {
@@ -2581,9 +2910,27 @@ struct ContentView: View {
         .contentShape(Rectangle())
         .opacity(isDragging ? 0.85 : 1.0)
         .onDrag {
+            isDragActive = true
             draggingColumnID = column.column
+            dropInsertionIndex = nil
             return NSItemProvider(object: NSString(string: "\(column.column)"))
         }
+    }
+
+    private func dropInsertionGap(index: Int) -> some View {
+        let isActive = isDragActive && draggingColumnID != nil && dropInsertionIndex == index
+        return RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(Color.clear)
+            .overlay {
+                Capsule(style: .continuous)
+                    .fill(GhosttyTheme.current.accentCyan.opacity(isActive ? 0.92 : 0.0))
+                    .frame(height: 1)
+                    .shadow(color: GhosttyTheme.current.accentCyan.opacity(isActive ? 0.55 : 0.0), radius: isActive ? 1.5 : 0, x: 0, y: 0)
+            }
+            .frame(height: 1)
+            .padding(.leading, 10)
+            .padding(.trailing, 2)
+            .padding(.vertical, 0)
     }
 
     private func inactiveProjectRow(_ project: WorkspaceProject) -> some View {
@@ -2612,7 +2959,7 @@ struct ContentView: View {
                 ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
                     Task { await vm.addColumnByAlias(project.effectiveAlias) }
                 }
-                .frame(width: 34)
+                .frame(width: 38)
             }
         }
         .padding(.vertical, 2)
@@ -3039,36 +3386,111 @@ struct WindowAccessor: NSViewRepresentable {
     }
 }
 
-struct ColumnDropDelegate: DropDelegate {
-    let targetColumn: Int
+struct GapDropDelegate: DropDelegate {
+    let insertionIndex: Int
+    let totalCount: Int
     @Binding var draggingColumnID: Int?
-    @Binding var dropTargetColumnID: Int?
+    @Binding var dropInsertionIndex: Int?
+    @Binding var isDragActive: Bool
     let viewModel: AppViewModel
 
     func dropEntered(info: DropInfo) {
-        dropTargetColumnID = targetColumn
+        guard isDragActive, draggingColumnID != nil else {
+            dropInsertionIndex = nil
+            return
+        }
+        dropInsertionIndex = clampedInsertionIndex
     }
 
     func dropExited(info: DropInfo) {
-        if dropTargetColumnID == targetColumn {
-            dropTargetColumnID = nil
+        if dropInsertionIndex == clampedInsertionIndex {
+            dropInsertionIndex = nil
         }
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        defer {
-            draggingColumnID = nil
-            dropTargetColumnID = nil
+        guard let source = draggingColumnID else {
+            dropInsertionIndex = nil
+            isDragActive = false
+            return false
         }
-        guard let source = draggingColumnID, source != targetColumn else { return false }
+        let destination = clampedInsertionIndex
+        dropInsertionIndex = nil
+        draggingColumnID = nil
+        isDragActive = false
         Task {
-            await viewModel.moveColumn(from: source, to: targetColumn)
+            await viewModel.moveColumn(from: source, toInsertionIndex: destination)
         }
         return true
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
+        guard isDragActive, draggingColumnID != nil else {
+            dropInsertionIndex = nil
+            return DropProposal(operation: .cancel)
+        }
+        dropInsertionIndex = clampedInsertionIndex
+        return DropProposal(operation: .move)
+    }
+
+    private var clampedInsertionIndex: Int {
+        min(max(insertionIndex, 0), totalCount)
+    }
+}
+
+struct RowDropFallbackDelegate: DropDelegate {
+    let rowIndex: Int
+    let totalCount: Int
+    @Binding var draggingColumnID: Int?
+    @Binding var dropInsertionIndex: Int?
+    @Binding var isDragActive: Bool
+    let viewModel: AppViewModel
+
+    func dropEntered(info: DropInfo) {
+        guard isDragActive, draggingColumnID != nil else {
+            dropInsertionIndex = nil
+            return
+        }
+        dropInsertionIndex = resolvedInsertionIndex(info: info)
+    }
+
+    func dropExited(info: DropInfo) {
+        let upper = rowIndex
+        let lower = min(rowIndex + 1, totalCount)
+        if dropInsertionIndex == upper || dropInsertionIndex == lower {
+            dropInsertionIndex = nil
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let source = draggingColumnID else {
+            dropInsertionIndex = nil
+            isDragActive = false
+            return false
+        }
+        let destination = resolvedInsertionIndex(info: info)
+        dropInsertionIndex = nil
+        draggingColumnID = nil
+        isDragActive = false
+        Task {
+            await viewModel.moveColumn(from: source, toInsertionIndex: destination)
+        }
+        return true
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard isDragActive, draggingColumnID != nil else {
+            dropInsertionIndex = nil
+            return DropProposal(operation: .cancel)
+        }
+        dropInsertionIndex = resolvedInsertionIndex(info: info)
+        return DropProposal(operation: .move)
+    }
+
+    private func resolvedInsertionIndex(info: DropInfo) -> Int {
+        let rowMidpoint: CGFloat = 20
+        let candidate = info.location.y < rowMidpoint ? rowIndex : rowIndex + 1
+        return min(max(candidate, 0), totalCount)
     }
 }
 
