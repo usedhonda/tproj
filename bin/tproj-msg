@@ -26,6 +26,7 @@ set -euo pipefail
 #   normal    Idle check. If idle: send. If busy: queue. Immediate return.
 #   --read    Read pane output.
 #   --flush   Deliver queued messages to idle targets.
+#   control   Duplicate [Control:*]/[ACK:*] is blocked for 10m per target.
 
 show_usage() {
   cat << 'EOF'
@@ -39,6 +40,7 @@ Usage:
   tproj-msg --read <target> [lines]    Read target's recent output
   tproj-msg --status [target]          Show idle/busy state + queue info
   tproj-msg --flush                    Deliver all queued messages to idle targets
+  Note: duplicate control tags ([Control:*], [ACK:*]) are blocked for 10m per target
 
 Target formats:
   cc, cdx           Same column / single mode
@@ -180,10 +182,95 @@ QUEUE_DIR="/tmp/tproj-msg-queue"
 STALE_SECONDS=600  # 10 minutes
 AUTO_FLUSH_MAX=3   # Max messages to auto-flush per send
 FLUSH_POLL_INTERVAL=3  # seconds between flush attempts
+CONTROL_DEDUP_DIR="/tmp/tproj-msg-control-dedup"
+CONTROL_DEDUP_FILE="${CONTROL_DEDUP_DIR}/seen.tsv"
+CONTROL_DEDUP_TTL="$STALE_SECONDS"
 
 # Ensure queue dir exists
 ensure_queue_dir() {
   [[ -d "$QUEUE_DIR" ]] || mkdir -p "$QUEUE_DIR"
+}
+
+# === Control message duplicate guard ===
+
+ensure_control_dedup_store() {
+  [[ -d "$CONTROL_DEDUP_DIR" ]] || mkdir -p "$CONTROL_DEDUP_DIR"
+  [[ -f "$CONTROL_DEDUP_FILE" ]] || : > "$CONTROL_DEDUP_FILE"
+}
+
+normalize_message_for_hash() {
+  local msg="$1"
+  printf '%s' "$msg" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
+sha1_hash() {
+  local raw="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$raw" | shasum -a 1 | awk '{print $1}'
+  else
+    printf '%s' "$raw" | sha1sum | awk '{print $1}'
+  fi
+}
+
+is_control_message() {
+  local msg="$1"
+  [[ "$msg" =~ \[(Control|ACK):[^\]]+\] ]]
+}
+
+extract_control_token() {
+  local msg="$1"
+  if [[ "$msg" =~ \[(Control|ACK):([^\]]+)\] ]]; then
+    echo "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+    return 0
+  fi
+  return 1
+}
+
+cleanup_control_dedup_store() {
+  ensure_control_dedup_store
+  local now tmp epoch key age
+  now=$(date +%s)
+  tmp=$(mktemp "${CONTROL_DEDUP_DIR}/seen.XXXXXX")
+
+  while IFS=$'\t' read -r epoch key; do
+    [[ -z "${epoch:-}" || -z "${key:-}" ]] && continue
+    [[ "$epoch" =~ ^[0-9]+$ ]] || continue
+    age=$(( now - epoch ))
+    if [[ $age -le $CONTROL_DEDUP_TTL ]]; then
+      printf '%s\t%s\n' "$epoch" "$key" >> "$tmp"
+    fi
+  done < "$CONTROL_DEDUP_FILE"
+
+  mv "$tmp" "$CONTROL_DEDUP_FILE"
+}
+
+control_dedup_key() {
+  local target_name="$1" token="$2" msg="$3" normalized hash
+  normalized=$(normalize_message_for_hash "$msg")
+  hash=$(sha1_hash "$normalized")
+  printf '%s|%s|%s|%s' "$SESSION" "$target_name" "$token" "$hash"
+}
+
+control_dedup_check_and_mark() {
+  local target_name="$1" msg="$2"
+
+  is_control_message "$msg" || return 0
+  ensure_control_dedup_store
+  cleanup_control_dedup_store
+
+  local token key now
+  token=$(extract_control_token "$msg") || return 0
+  key=$(control_dedup_key "$target_name" "$token" "$msg")
+
+  if awk -F '\t' -v key="$key" '$2 == key { found=1; exit } END { exit(found ? 0 : 1) }' "$CONTROL_DEDUP_FILE"; then
+    echo "Blocked duplicate control message (token=${token}, target=${target_name})" >&2
+    echo "If intentional, change token or wait ${CONTROL_DEDUP_TTL}s." >&2
+    return 12
+  fi
+
+  now=$(date +%s)
+  printf '%s\t%s\n' "$now" "$key" >> "$CONTROL_DEDUP_FILE"
+  return 0
 }
 
 # === Idle detection (rewritten) ===
@@ -439,6 +526,19 @@ flush_queue() {
     if [[ $max_count -gt 0 && $delivered -ge $max_count ]]; then
       # Keep remaining messages in queue
       kept_lines+="${epoch}"$'\t'"${header}"$'\t'"${msg}"$'\n'
+      continue
+    fi
+
+    # Control message dedup (drop duplicate control/ack entries)
+    if control_dedup_check_and_mark "$target_name" "$msg"; then
+      :
+    else
+      local rc=$?
+      if [[ $rc -eq 12 ]]; then
+        echo "  Dropped duplicate control message for $target_name: ${header} ${msg}" >&2
+        continue
+      fi
+      echo "  Failed control dedup check for $target_name (rc=$rc), dropping entry" >&2
       continue
     fi
 
@@ -779,6 +879,15 @@ if is_gate_target "$TARGET"; then
     HEADER="[tproj-msg:sender=${MY_ROLE}]"
   fi
 
+  if control_dedup_check_and_mark "$TARGET" "$MESSAGE"; then
+    :
+  else
+    rc=$?
+    [[ $rc -eq 12 ]] && exit 12
+    echo "Error: control dedup check failed (rc=$rc)" >&2
+    exit "$rc"
+  fi
+
   gate_adpt=$(gate_adapter "$TARGET")
   send_via_gate "$gate_adpt" "${HEADER} ${MESSAGE}"
   exit $?
@@ -807,6 +916,15 @@ if ! is_target_online "$TARGET_PANE"; then
   echo "Error: target '$TARGET' is offline (role=${target_role}, cmd=${target_cmd})" >&2
   echo "Hint: start the target AI first, then retry." >&2
   exit 1
+fi
+
+if control_dedup_check_and_mark "$TARGET" "$MESSAGE"; then
+  :
+else
+  rc=$?
+  [[ $rc -eq 12 ]] && exit 12
+  echo "Error: control dedup check failed (rc=$rc)" >&2
+  exit "$rc"
 fi
 
 # === Build message header ===
