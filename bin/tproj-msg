@@ -4,26 +4,41 @@ set -euo pipefail
 # tproj-msg - Inter-pane messaging CLI for tproj
 #
 # Usage:
-#   tproj-msg <target> <message>        Send message (wait for response)
-#   tproj-msg --fire <target> <message> Send without waiting
-#   tproj-msg --list                    List available targets
-#   tproj-msg --read <target> [lines]   Read target's recent output
+#   tproj-msg <target> <message>         Send message (busy-aware, immediate return)
+#   tproj-msg --fire <target> <message>  Send immediately (no idle check, auto-flush)
+#   tproj-msg --force <target> <message> Send immediately (no idle check, no auto-flush)
+#   tproj-msg --list                     List available targets
+#   tproj-msg --read <target> [lines]    Read target's recent output
+#   tproj-msg --status [target]          Show target idle/busy state + queue info
+#   tproj-msg --flush                    Deliver all queued messages to idle targets
 #
 # Target formats:
 #   <role>          Same column / single mode (cc, cdx)
 #   <alias>.<role>  Specific column (tproj.cc, sl.cdx)
 #   <alias>         Alias only -> defaults to <alias>.cc
 #   agent-<name>    Agent pane
+#   gate            ClawGate bridge (default adapter from workspace.yaml)
+#   gate:<adapter>  ClawGate bridge with specific adapter (e.g. gate:line)
+#
+# Modes (after fix):
+#   --fire    No idle check. Auto-flush queue (max 3), then send. Immediate return.
+#   --force   No idle check. No auto-flush. Pure immediate send. Immediate return.
+#   normal    Idle check. If idle: send. If busy: queue. Immediate return.
+#   --read    Read pane output.
+#   --flush   Deliver queued messages to idle targets.
 
 show_usage() {
   cat << 'EOF'
-tproj-msg - Inter-pane messaging
+tproj-msg - Inter-pane messaging (busy-aware)
 
 Usage:
-  tproj-msg <target> <message>        Send message (wait for response)
-  tproj-msg --fire <target> <message> Send without waiting
-  tproj-msg --list                    List available targets
-  tproj-msg --read <target> [lines]   Read target's recent output
+  tproj-msg <target> <message>         Send message (busy-aware, immediate return)
+  tproj-msg --fire <target> <message>  Send immediately (no idle check, auto-flush)
+  tproj-msg --force <target> <message> Send immediately (no idle check, no auto-flush)
+  tproj-msg --list                     List available targets
+  tproj-msg --read <target> [lines]    Read target's recent output
+  tproj-msg --status [target]          Show idle/busy state + queue info
+  tproj-msg --flush                    Deliver all queued messages to idle targets
 
 Target formats:
   cc, cdx           Same column / single mode
@@ -36,6 +51,11 @@ Examples:
   tproj-msg cdx "What do you think about this approach?"
   tproj-msg sl.cc "Can you review the config change?"
   tproj-msg --fire agent-reviewer "Check this file"
+  tproj-msg --force cdx "urgent message"
+  tproj-msg gate "Send via default bridge adapter"
+  tproj-msg gate:line "Send via LINE adapter"
+  tproj-msg --status cdx
+  tproj-msg --flush
   tproj-msg --list
   tproj-msg --read cdx 50
 EOF
@@ -97,8 +117,11 @@ MY_ROLE=$(role_to_short "$MY_ROLE_RAW")
 
 # === Parse arguments ===
 FIRE_MODE=false
+FORCE_MODE=false
 LIST_MODE=false
 READ_MODE=false
+FLUSH_MODE=false
+STATUS_MODE=false
 TARGET=""
 MESSAGE=""
 READ_LINES=50
@@ -120,6 +143,13 @@ case "$1" in
     TARGET="$1"; shift
     MESSAGE="$*"
     ;;
+  --force)
+    FORCE_MODE=true
+    shift
+    [[ $# -lt 2 ]] && { echo "Error: --force requires <target> <message>" >&2; exit 1; }
+    TARGET="$1"; shift
+    MESSAGE="$*"
+    ;;
   --list)
     LIST_MODE=true
     ;;
@@ -130,6 +160,14 @@ case "$1" in
     TARGET="$1"; shift
     [[ $# -gt 0 ]] && READ_LINES="$1"
     ;;
+  --flush)
+    FLUSH_MODE=true
+    ;;
+  --status)
+    STATUS_MODE=true
+    shift
+    TARGET="${1:-}"
+    ;;
   *)
     [[ $# -lt 2 ]] && { echo "Error: requires <target> <message>" >&2; show_usage; exit 1; }
     TARGET="$1"; shift
@@ -137,39 +175,425 @@ case "$1" in
     ;;
 esac
 
-# === --list mode ===
-if [[ "$LIST_MODE" == "true" ]]; then
-  echo "Available targets ($SESSION):"
-  echo ""
+# === Queue directory ===
+QUEUE_DIR="/tmp/tproj-msg-queue"
+STALE_SECONDS=600  # 10 minutes
+AUTO_FLUSH_MAX=3   # Max messages to auto-flush per send
+FLUSH_POLL_INTERVAL=3  # seconds between flush attempts
 
-  if [[ "$IS_WORKSPACE" == "true" ]]; then
-    # Workspace mode: list all panes with @role and @alias
-    tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null | \
-    while IFS=: read -r pane_id role pane_alias col; do
-      [[ -z "$role" || "$role" == "null" ]] && continue
-      short=$(role_to_short "$role")
-      # Skip yazi panes
-      case "$role" in
-        yazi|yazi-p*) continue ;;
-      esac
-      [[ -z "$pane_alias" || "$pane_alias" == "null" ]] && pane_alias="col${col}"
-      printf "  %-20s  %s (col %s)\n" "${pane_alias}.${short}" "$role" "$col"
-    done
-  else
-    # Single mode: list cc, cdx, agents
-    tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}' 2>/dev/null | \
-    while IFS=: read -r pane_id role pane_alias; do
-      [[ -z "$role" || "$role" == "null" ]] && continue
-      short=$(role_to_short "$role")
-      # Skip yazi panes
-      case "$role" in
-        yazi|yazi-p*) continue ;;
-      esac
-      printf "  %-20s  %s\n" "$short" "$role"
-    done
+# Ensure queue dir exists
+ensure_queue_dir() {
+  [[ -d "$QUEUE_DIR" ]] || mkdir -p "$QUEUE_DIR"
+}
+
+# === Idle detection (rewritten) ===
+
+# Strip ANSI escape sequences from input
+strip_ansi() {
+  sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b\][^\x07]*\x07//g'
+}
+
+# Check if pane shows a CC prompt marker (U+276F)
+# Simple: search last 15 lines for ❯ — no separator logic needed
+has_cc_prompt() {
+  local pane="$1"
+  local captured
+  captured=$(tmux capture-pane -t "$pane" -p -S -15 2>/dev/null || true)
+  [[ -z "$captured" ]] && return 1
+
+  local cleaned
+  cleaned=$(echo "$captured" | strip_ansi)
+
+  # CC prompt marker: ❯ (U+276F) anywhere in last 15 lines
+  echo "$cleaned" | grep -q $'\xe2\x9d\xaf' && return 0
+
+  return 1
+}
+
+# Check if pane shows a Codex prompt marker (U+203A)
+has_codex_prompt() {
+  local pane="$1"
+  local captured
+  captured=$(tmux capture-pane -t "$pane" -p -S -10 2>/dev/null || true)
+  [[ -z "$captured" ]] && return 1
+
+  local cleaned
+  cleaned=$(echo "$captured" | strip_ansi)
+
+  # Codex prompt: line starting with > (U+203A)
+  echo "$cleaned" | grep -q $'^\xe2\x80\xba' && return 0
+
+  return 1
+}
+
+# Determine target role type from pane
+get_target_type() {
+  local pane="$1"
+  local role
+  role=$(tmux display-message -t "$pane" -p '#{@role}' 2>/dev/null || true)
+  case "$role" in
+    claude|claude-p*) echo "cc" ;;
+    codex|codex-p*)   echo "cdx" ;;
+    agent-*)          echo "agent" ;;
+    *)                echo "unknown" ;;
+  esac
+}
+
+# Check if pane_current_command is a plain shell (agent likely not started)
+is_shell_command() {
+  local cmd="$1"
+  case "$cmd" in
+    zsh|bash|sh|fish)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# Returns 0 if target pane appears to be running an AI process, 1 otherwise.
+# Offline heuristic:
+#   - no prompt marker for target type, and
+#   - pane_current_command is a plain shell (zsh/bash/sh/fish)
+is_target_online() {
+  local pane="$1"
+  local target_type pane_cmd
+  target_type=$(get_target_type "$pane")
+  pane_cmd=$(tmux display-message -t "$pane" -p '#{pane_current_command}' 2>/dev/null || true)
+
+  case "$target_type" in
+    cc|agent)
+      has_cc_prompt "$pane" && return 0
+      ;;
+    cdx)
+      has_codex_prompt "$pane" && return 0
+      ;;
+    *)
+      has_cc_prompt "$pane" && return 0
+      has_codex_prompt "$pane" && return 0
+      ;;
+  esac
+
+  if is_shell_command "$pane_cmd"; then
+    return 1
   fi
-  exit 0
-fi
+
+  return 0
+}
+
+get_liveness_status() {
+  local pane="$1"
+  if is_target_online "$pane"; then
+    echo "online"
+  else
+    echo "offline"
+  fi
+}
+
+# Returns 0 if target pane is idle (safe to send text), 1 if busy
+# Flow:
+#   1. WebSocket (1s timeout): running -> BUSY, waiting_input -> IDLE, unreachable -> Step 2
+#   2. tmux prompt marker: CC ❯ or Codex › -> IDLE, otherwise -> BUSY
+is_target_idle() {
+  local pane="$1"
+
+  # Step 1: WebSocket check (fast, 1s timeout)
+  if command -v websocat >/dev/null 2>&1; then
+    local target_tty
+    target_tty=$(tmux display-message -t "$pane" -p '#{pane_tty}' 2>/dev/null || true)
+
+    if [[ -n "$target_tty" ]]; then
+      local sessions_json status
+      sessions_json=$(timeout 1 websocat -n1 ws://localhost:8080/ws/sessions 2>/dev/null \
+        | head -5 \
+        | jq -r 'select(.type == "sessions.list")' 2>/dev/null \
+        | head -1) || true
+
+      if [[ -n "${sessions_json:-}" ]]; then
+        status=$(echo "$sessions_json" | jq -r \
+          --arg tty "$target_tty" \
+          '[.sessions[] | select(.tty == $tty)] | first | .status // empty' 2>/dev/null) || true
+
+        case "${status:-}" in
+          running)
+            return 1  # Definitely BUSY
+            ;;
+          waiting_input)
+            return 0  # Definitely IDLE (at prompt or AskUserQuestion)
+            ;;
+          # stopped/other -> fall through to tmux marker check
+        esac
+      fi
+    fi
+  fi
+
+  # Step 2: tmux prompt marker check (instant, no sleep)
+  local target_type
+  target_type=$(get_target_type "$pane")
+
+  case "$target_type" in
+    cc|agent)
+      has_cc_prompt "$pane" && return 0
+      ;;
+    cdx)
+      has_codex_prompt "$pane" && return 0
+      ;;
+    *)
+      # Unknown type: try both
+      has_cc_prompt "$pane" && return 0
+      has_codex_prompt "$pane" && return 0
+      ;;
+  esac
+
+  return 1  # BUSY (no prompt marker found)
+}
+
+# Get idle status as string for display
+get_idle_status() {
+  local pane="$1"
+  if is_target_idle "$pane"; then
+    echo "idle"
+  else
+    echo "busy"
+  fi
+}
+
+# === Queue functions ===
+
+# Enqueue a message for later delivery
+enqueue() {
+  local target_name="$1" header="$2" msg="$3"
+  ensure_queue_dir
+  local epoch
+  epoch=$(date +%s)
+  printf '%s\t%s\t%s\n' "$epoch" "$header" "$msg" >> "${QUEUE_DIR}/${target_name}.queue"
+  start_flush_worker
+}
+
+# Start background flush worker (idempotent, one per queue dir)
+start_flush_worker() {
+  local pidfile="$QUEUE_DIR/.flush-worker.pid"
+
+  # Already running?
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
+    return 0
+  fi
+
+  local script_path
+  script_path=$(command -v tproj-msg)
+
+  bash -c '
+    pidfile="$1"; poll="$2"; stale="$3"; script="$4"; qdir="$5"
+    echo $$ > "$pidfile"
+    trap "rm -f \"$pidfile\"" EXIT INT TERM
+    deadline=$(( $(date +%s) + stale ))
+    while [[ $(date +%s) -lt $deadline ]]; do
+      sleep "$poll"
+      has_q=false
+      for qf in "$qdir"/*.queue; do
+        [[ -f "$qf" ]] && { has_q=true; break; }
+      done
+      $has_q || break
+      "$script" --flush 2>/dev/null || true
+    done
+  ' _ "$pidfile" "$FLUSH_POLL_INTERVAL" "$STALE_SECONDS" "$script_path" "$QUEUE_DIR" &>/dev/null &
+  disown 2>/dev/null || true
+}
+
+# Count queued messages for a target
+queue_count() {
+  local target_name="$1"
+  local qfile="${QUEUE_DIR}/${target_name}.queue"
+  if [[ -f "$qfile" ]]; then
+    wc -l < "$qfile" | tr -d ' '
+  else
+    echo "0"
+  fi
+}
+
+# Flush queue for a specific target (deliver messages, discard stale)
+# Usage: flush_queue <target_name> <pane_id> [max_count]
+# max_count: 0 = unlimited (default for --flush), N = deliver at most N
+# Returns: number of messages delivered
+flush_queue() {
+  local target_name="$1" pane="$2" max_count="${3:-0}"
+  local qfile="${QUEUE_DIR}/${target_name}.queue"
+  [[ -f "$qfile" ]] || return 0
+
+  local now delivered=0 kept_lines=""
+  now=$(date +%s)
+
+  while IFS=$'\t' read -r epoch header msg; do
+    # Validate epoch (skip corrupt entries)
+    if [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
+      echo "  Skipped corrupt entry" >&2
+      continue
+    fi
+
+    local age=$(( now - epoch ))
+    if [[ $age -gt $STALE_SECONDS ]]; then
+      echo "  Discarded stale message (${age}s old) for $target_name" >&2
+      continue
+    fi
+
+    # Check max_count limit
+    if [[ $max_count -gt 0 && $delivered -ge $max_count ]]; then
+      # Keep remaining messages in queue
+      kept_lines+="${epoch}"$'\t'"${header}"$'\t'"${msg}"$'\n'
+      continue
+    fi
+
+    # Deliver
+    tmux send-keys -l -t "$pane" "${header} ${msg}"
+    sleep 0.5
+    tmux send-keys -t "$pane" Enter
+    sleep 0.3
+    ((delivered++)) || true
+    echo "  Delivered queued message to $target_name: ${header} ${msg}" >&2
+  done < "$qfile"
+
+  if [[ -n "$kept_lines" ]]; then
+    printf '%s' "$kept_lines" > "$qfile"
+  else
+    rm -f "$qfile"
+  fi
+
+  return 0
+}
+
+# Flush all queues (for --flush command)
+flush_all_queues() {
+  ensure_queue_dir
+  local any_flushed=false
+
+  for qfile in "${QUEUE_DIR}"/*.queue; do
+    [[ -f "$qfile" ]] || continue
+    local target_name
+    target_name=$(basename "$qfile" .queue)
+    local pane
+    pane=$(resolve_target "$target_name" 2>/dev/null) || {
+      echo "Warning: target '$target_name' not found, keeping queue" >&2
+      continue
+    }
+    if is_target_idle "$pane"; then
+      local count
+      count=$(queue_count "$target_name")
+      echo "Flushing $count message(s) to $target_name..." >&2
+      flush_queue "$target_name" "$pane" 0
+      any_flushed=true
+    else
+      local count
+      count=$(queue_count "$target_name")
+      echo "$target_name: busy ($count message(s) queued)" >&2
+    fi
+  done
+
+  if [[ "$any_flushed" == "false" ]]; then
+    echo "No messages to flush (or all targets busy)" >&2
+  fi
+}
+
+# === ClawGate bridge support ===
+WORKSPACE_CONFIG="$HOME/.config/tproj/workspace.yaml"
+
+# Read bridge config from workspace.yaml (mikefarah/yq v4+)
+gate_bridge_url() {
+  local url=""
+  if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
+    url=$(yq '.gui.bridge.url' "$WORKSPACE_CONFIG" 2>/dev/null || true)
+    [[ "$url" == "null" ]] && url=""
+  fi
+  echo "${url:-http://localhost:8765}"
+}
+
+gate_default_adapter() {
+  local adapter=""
+  if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
+    adapter=$(yq '.gui.bridge.default_adapter' "$WORKSPACE_CONFIG" 2>/dev/null || true)
+    [[ "$adapter" == "null" ]] && adapter=""
+  fi
+  echo "${adapter:-direct}"
+}
+
+# Check if target is a gate target (gate or gate:adapter)
+is_gate_target() {
+  [[ "$1" == "gate" || "$1" == gate:* ]]
+}
+
+# Extract adapter from gate target (gate -> default, gate:line -> line)
+gate_adapter() {
+  local target="$1"
+  if [[ "$target" == gate:* ]]; then
+    echo "${target#gate:}"
+  else
+    gate_default_adapter
+  fi
+}
+
+# Send message via ClawGate bridge
+# Routes:
+#   gate (default) -> /v1/debug/inject (direct EventBus injection, picked up by poll)
+#   gate:line      -> /v1/send with LINE adapter
+#   gate:tmux      -> /v1/send with tmux adapter
+# Usage: send_via_gate <adapter> <message>
+send_via_gate() {
+  local adapter="$1" msg="$2"
+  local bridge_url
+  bridge_url=$(gate_bridge_url)
+  local escaped_msg
+  escaped_msg=$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | tr '\n' ' ')
+  local trace_id="tproj-msg-$(date +%s)"
+
+  local endpoint payload
+  if [[ "$adapter" == "direct" ]]; then
+    # Direct EventBus injection -> handleInboundMessage (default path)
+    # Chi identifies sender via [tproj-msg:...] header in text
+    # Chi replies via LINE (existing path, no tmux routing needed)
+    endpoint="/v1/debug/inject"
+    local conv="${MY_ALIAS:-tproj-msg}"
+    payload=$(printf '{"type":"inbound_message","adapter":"tproj","text":"%s","conversation":"%s"}' \
+      "$escaped_msg" "$conv")
+  else
+    # Adapter-routed send (line, tmux, etc.)
+    endpoint="/v1/send"
+    payload=$(printf '{"adapter":"%s","action":"send_message","payload":{"conversation_hint":"tproj","text":"%s","enter_to_send":true,"trace_id":"%s"}}' \
+      "$adapter" "$escaped_msg" "$trace_id")
+  fi
+
+  local result http_code
+  result=$(curl -s -w "\n%{http_code}" -X POST "${bridge_url}${endpoint}" \
+    -H "Content-Type: application/json" \
+    -H "X-Trace-ID: $trace_id" \
+    --connect-timeout 3 \
+    --max-time 10 \
+    -d "$payload" 2>&1) || {
+    echo "Error: ClawGate unreachable at $bridge_url" >&2
+    return 1
+  }
+
+  http_code=$(echo "$result" | tail -1)
+  local body
+  body=$(echo "$result" | sed '$d')
+
+  if [[ "$http_code" =~ ^2 ]]; then
+    echo "Sent via gate:${adapter} -> ${bridge_url}${endpoint}" >&2
+  else
+    echo "Error: gate:${adapter} returned HTTP $http_code" >&2
+    [[ -n "$body" ]] && echo "  $body" >&2
+    return 1
+  fi
+}
+
+# Check ClawGate health
+gate_health() {
+  local bridge_url
+  bridge_url=$(gate_bridge_url)
+  local result
+  result=$(curl -s --connect-timeout 2 --max-time 3 "${bridge_url}/v1/health" 2>/dev/null) || {
+    echo "offline"
+    return
+  }
+  echo "online"
+}
 
 # === Target resolution ===
 resolve_target() {
@@ -178,17 +602,13 @@ resolve_target() {
 
   # Parse target format
   if [[ "$target" == agent-* ]]; then
-    # agent-<name> -> match @role directly
     target_role="$target"
   elif [[ "$target" == *.* ]]; then
-    # <alias>.<role>
     target_alias="${target%%.*}"
     target_role="${target#*.}"
   elif [[ "$target" == "cc" || "$target" == "cdx" ]]; then
-    # Short role name -> same column / single mode
     target_role="$target"
   else
-    # Bare alias -> defaults to <alias>.cc
     target_alias="$target"
     target_role="cc"
   fi
@@ -197,7 +617,6 @@ resolve_target() {
   pane_list=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null)
 
   if [[ "$target" == agent-* ]]; then
-    # Agent: match @role prefix
     echo "$pane_list" | while IFS=: read -r pid prole palias pcol; do
       if [[ "$prole" == "$target_role" ]]; then
         echo "$pid"
@@ -208,11 +627,8 @@ resolve_target() {
   fi
 
   if [[ "$IS_WORKSPACE" == "true" ]]; then
-    # Workspace mode
     if [[ -n "$target_alias" ]]; then
-      # Match by alias + role
       local role_pattern
-      # First find the column for this alias
       local found_col=""
       while IFS=: read -r pid prole palias pcol; do
         if [[ "$palias" == "$target_alias" ]]; then
@@ -234,7 +650,6 @@ resolve_target() {
         fi
       done <<< "$pane_list"
     else
-      # Same column
       local role_pattern
       role_pattern=$(short_to_role_pattern "$target_role" "$MY_COLUMN")
       while IFS=: read -r pid prole palias pcol; do
@@ -245,7 +660,6 @@ resolve_target() {
       done <<< "$pane_list"
     fi
   else
-    # Single mode
     local role_pattern
     role_pattern=$(short_to_role_pattern "$target_role")
     while IFS=: read -r pid prole palias pcol; do
@@ -259,6 +673,118 @@ resolve_target() {
   return 1
 }
 
+# === --list mode ===
+if [[ "$LIST_MODE" == "true" ]]; then
+  echo "Available targets ($SESSION):"
+  echo ""
+
+  if [[ "$IS_WORKSPACE" == "true" ]]; then
+    tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null | \
+    while IFS=: read -r pane_id role pane_alias col; do
+      [[ -z "$role" || "$role" == "null" ]] && continue
+      short=$(role_to_short "$role")
+      case "$role" in yazi|yazi-p*) continue ;; esac
+      [[ -z "$pane_alias" || "$pane_alias" == "null" ]] && pane_alias="col${col}"
+      printf "  %-20s  %s (col %s)\n" "${pane_alias}.${short}" "$role" "$col"
+    done
+  else
+    tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}' 2>/dev/null | \
+    while IFS=: read -r pane_id role pane_alias; do
+      [[ -z "$role" || "$role" == "null" ]] && continue
+      short=$(role_to_short "$role")
+      case "$role" in yazi|yazi-p*) continue ;; esac
+      printf "  %-20s  %s\n" "$short" "$role"
+    done
+  fi
+
+  # Show gate targets
+  gstatus=$(gate_health)
+  default_adapter=$(gate_default_adapter)
+  gurl=$(gate_bridge_url)
+  echo ""
+  printf "  %-20s  bridge (%s, %s)\n" "gate" "$default_adapter" "$gstatus"
+  printf "  %-20s  %s\n" "" "$gurl"
+
+  exit 0
+fi
+
+# === --flush mode (no target needed) ===
+if [[ "$FLUSH_MODE" == "true" ]]; then
+  flush_all_queues
+  exit 0
+fi
+
+# === --status mode (target optional) ===
+if [[ "$STATUS_MODE" == "true" ]]; then
+  if [[ -n "$TARGET" ]]; then
+    # Gate target: show bridge health instead of pane status
+    if is_gate_target "$TARGET"; then
+      gstatus=$(gate_health)
+      printf "%-20s  %s\n" "$TARGET" "$gstatus"
+      exit 0
+    fi
+    TARGET_PANE=$(resolve_target "$TARGET")
+    if [[ -z "$TARGET_PANE" ]]; then
+      echo "Error: target '$TARGET' not found" >&2
+      exit 1
+    fi
+    local_live=$(get_liveness_status "$TARGET_PANE")
+    local_status=$(get_idle_status "$TARGET_PANE")
+    local_qcount=$(queue_count "$TARGET")
+    printf "%-20s  %s/%s  (queued: %s)\n" "$TARGET" "$local_live" "$local_status" "$local_qcount"
+  else
+    if [[ "$IS_WORKSPACE" == "true" ]]; then
+      tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null | \
+      while IFS=: read -r pane_id role pane_alias col; do
+        [[ -z "$role" || "$role" == "null" ]] && continue
+        short=$(role_to_short "$role")
+        case "$role" in yazi|yazi-p*) continue ;; esac
+        [[ -z "$pane_alias" || "$pane_alias" == "null" ]] && pane_alias="col${col}"
+        tname="${pane_alias}.${short}"
+        local_live=$(get_liveness_status "$pane_id")
+        local_status=$(get_idle_status "$pane_id")
+        local_qcount=$(queue_count "$tname")
+        printf "%-20s  %s/%s  (queued: %s)\n" "$tname" "$local_live" "$local_status" "$local_qcount"
+      done
+    else
+      tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}' 2>/dev/null | \
+      while IFS=: read -r pane_id role pane_alias; do
+        [[ -z "$role" || "$role" == "null" ]] && continue
+        short=$(role_to_short "$role")
+        case "$role" in yazi|yazi-p*) continue ;; esac
+        local_live=$(get_liveness_status "$pane_id")
+        local_status=$(get_idle_status "$pane_id")
+        local_qcount=$(queue_count "$short")
+        printf "%-20s  %s/%s  (queued: %s)\n" "$short" "$local_live" "$local_status" "$local_qcount"
+      done
+    fi
+    # Append gate status
+    gstatus=$(gate_health)
+    printf "%-20s  %s\n" "gate" "$gstatus"
+  fi
+  exit 0
+fi
+
+# === Gate target early-exit (bypasses tmux pane resolution) ===
+if is_gate_target "$TARGET"; then
+  if [[ "$READ_MODE" == "true" ]]; then
+    echo "Error: --read is not supported for gate targets" >&2
+    exit 1
+  fi
+
+  # Build header for gate (structured key=value for Chi parsing)
+  if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
+    HEADER="[tproj-msg:sender=${MY_ALIAS}.${MY_ROLE},project=${MY_ALIAS}]"
+  else
+    HEADER="[tproj-msg:sender=${MY_ROLE}]"
+  fi
+
+  gate_adpt=$(gate_adapter "$TARGET")
+  send_via_gate "$gate_adpt" "${HEADER} ${MESSAGE}"
+  exit $?
+fi
+
+# === Resolve target (required for send and read modes) ===
 TARGET_PANE=$(resolve_target "$TARGET")
 if [[ -z "$TARGET_PANE" ]]; then
   echo "Error: target '$TARGET' not found" >&2
@@ -274,51 +800,62 @@ if [[ "$READ_MODE" == "true" ]]; then
   exit 0
 fi
 
-# === Send message ===
-# Build prefix
+# For send modes, refuse to send if pane exists but AI is not running.
+if ! is_target_online "$TARGET_PANE"; then
+  target_role=$(tmux display-message -t "$TARGET_PANE" -p '#{@role}' 2>/dev/null || true)
+  target_cmd=$(tmux display-message -t "$TARGET_PANE" -p '#{pane_current_command}' 2>/dev/null || true)
+  echo "Error: target '$TARGET' is offline (role=${target_role}, cmd=${target_cmd})" >&2
+  echo "Hint: start the target AI first, then retry." >&2
+  exit 1
+fi
+
+# === Build message header ===
 if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
   HEADER="[from:${MY_ALIAS}.${MY_ROLE}]"
 else
   HEADER="[from:${MY_ROLE}]"
 fi
 
-# Send with literal mode
-tmux send-keys -l -t "$TARGET_PANE" "${HEADER} ${MESSAGE}"
-sleep 0.5
-tmux send-keys -t "$TARGET_PANE" Enter
+# === Send helpers ===
 
-echo "Sent to $TARGET: ${HEADER} ${MESSAGE}" >&2
+# Raw send: push text into target pane via tmux send-keys
+raw_send() {
+  tmux send-keys -l -t "$TARGET_PANE" "${HEADER} ${MESSAGE}"
+  sleep 0.5
+  tmux send-keys -t "$TARGET_PANE" Enter
+  echo "Sent to $TARGET: ${HEADER} ${MESSAGE}" >&2
+}
 
-# === Response wait (unless --fire) ===
-if [[ "$FIRE_MODE" == "true" ]]; then
+# === --force: no idle check, no auto-flush, pure immediate send ===
+if [[ "$FORCE_MODE" == "true" ]]; then
+  raw_send
   exit 0
 fi
 
-# Wait for response: detect output stall (no change for 10s)
-PREV_OUTPUT=""
-NO_CHANGE_COUNT=0
-NO_CHANGE_THRESHOLD=20  # 0.5s x 20 = 10s stall detection
-MAX_WAIT=600             # 0.5s x 600 = 5 min timeout
-
-echo "Waiting for response..." >&2
-
-for ((i=1; i<=MAX_WAIT; i++)); do
-  sleep 0.5
-  OUTPUT=$(tmux capture-pane -t "$TARGET_PANE" -p | tr -cd '\11\12\15\40-\176')
-
-  if [[ "$OUTPUT" == "$PREV_OUTPUT" ]]; then
-    ((NO_CHANGE_COUNT++)) || true
-    if [[ $NO_CHANGE_COUNT -ge $NO_CHANGE_THRESHOLD ]]; then
-      echo "Response complete (output stable)" >&2
-      tmux capture-pane -t "$TARGET_PANE" -p -S -80
-      exit 0
-    fi
-  else
-    NO_CHANGE_COUNT=0
+# === --fire: no idle check, auto-flush (max 3), then send ===
+if [[ "$FIRE_MODE" == "true" ]]; then
+  ensure_queue_dir
+  # Auto-flush queued messages first (max AUTO_FLUSH_MAX)
+  if [[ -f "${QUEUE_DIR}/${TARGET}.queue" ]]; then
+    echo "Delivering queued messages first (max $AUTO_FLUSH_MAX)..." >&2
+    flush_queue "$TARGET" "$TARGET_PANE" "$AUTO_FLUSH_MAX"
   fi
-  PREV_OUTPUT="$OUTPUT"
-done
+  raw_send
+  exit 0
+fi
 
-echo "Timeout (5 min)" >&2
-tmux capture-pane -t "$TARGET_PANE" -p -S -30
-exit 1
+# === Normal mode: idle check -> send or queue -> immediate return ===
+if is_target_idle "$TARGET_PANE"; then
+  # Auto-flush queued messages first (max AUTO_FLUSH_MAX)
+  ensure_queue_dir
+  if [[ -f "${QUEUE_DIR}/${TARGET}.queue" ]]; then
+    echo "Delivering queued messages first (max $AUTO_FLUSH_MAX)..." >&2
+    flush_queue "$TARGET" "$TARGET_PANE" "$AUTO_FLUSH_MAX"
+  fi
+  raw_send
+else
+  enqueue "$TARGET" "$HEADER" "$MESSAGE"
+  echo "Queued for $TARGET (target busy)" >&2
+fi
+
+exit 0
