@@ -25,6 +25,19 @@ cd apps/tproj
 ./dev-app.sh
 ```
 
+To make `tproj` always launch this development app from any project:
+
+```bash
+cd apps/tproj
+./dev-setup.sh
+```
+
+`dev-setup.sh` does three things:
+
+1. build + launch `dist/tproj.app`
+2. sync latest `bin/tproj` into `~/bin/tproj`
+3. set `~/.config/tproj/workspace.yaml` -> `gui.app_path`
+
 Verification rule:
 
 - Only one `tproj` GUI process should be running.
@@ -84,3 +97,15 @@ The app periodically writes monitor status to:
 - `/tmp/tproj-monitor-status.json`
 
 Other CC/Codex panes can read this JSON to observe the same live monitor state.
+
+## Layout Action Log
+
+Topology mutations (`Add` / `Drop` / reorder / terminal toggle) append action logs to:
+
+- `/tmp/tproj-layout-actions.log`
+
+Quick check:
+
+```bash
+tail -f /tmp/tproj-layout-actions.log
+```

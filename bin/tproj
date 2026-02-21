@@ -160,6 +160,24 @@ find_tproj_sessions() {
     | grep ':true$' | cut -d: -f1
 }
 
+# tmux レイアウト変更を直列化する共有ロック
+TPROJ_LAYOUT_LOCK_NAME="tproj-layout"
+TPROJ_LAYOUT_LOCK_HELD=false
+
+acquire_layout_lock() {
+  tmux wait-for -L "$TPROJ_LAYOUT_LOCK_NAME" 2>/dev/null || return 1
+  TPROJ_LAYOUT_LOCK_HELD=true
+}
+
+release_layout_lock() {
+  if [[ "$TPROJ_LAYOUT_LOCK_HELD" == "true" ]]; then
+    tmux wait-for -U "$TPROJ_LAYOUT_LOCK_NAME" 2>/dev/null || true
+    TPROJ_LAYOUT_LOCK_HELD=false
+  fi
+}
+
+trap 'release_layout_lock' EXIT INT TERM
+
 # Collect all descendant PIDs of given PIDs (BFS via pgrep -P)
 collect_descendant_pids() {
   local queue=("$@")
@@ -401,14 +419,17 @@ stop_session() {
     # Ctrl+C の効果を待つ
     sleep 0.3
 
-    # Claude Code / Agent ペインに /exit を送信
+    # ロール別終了コマンドを送信（CC=exit, Cdx/Agent=/exit）
     while IFS= read -r pane_info; do
       [[ -z "$pane_info" ]] && continue
       pane_id="${pane_info%%:*}"
       role="${pane_info#*:}"
 
       case "$role" in
-        claude|claude-p*|agent-*)
+        claude|claude-p*|terminal-p*)
+          tmux send-keys -t "$pane_id" "exit" C-m 2>/dev/null || true
+          ;;
+        codex|codex-p*|agent-*)
           tmux send-keys -t "$pane_id" "/exit" C-m 2>/dev/null || true
           ;;
       esac
@@ -457,6 +478,11 @@ add_workspace_column() {
   local max_col new_col
   local right_claude new_claude new_codex
   local claude_title codex_title claude_cmd
+
+  acquire_layout_lock || {
+    echo "Error: failed to acquire layout lock" >&2
+    exit 1
+  }
 
   if [[ -z "${TMUX:-}" ]]; then
     echo "Error: --add must be run inside tmux" >&2
@@ -568,6 +594,10 @@ add_workspace_column() {
     tmux set-option -pt "$new_codex" @project "$src_path"
   fi
 
+  # 先にレイアウトを確定してから重いプロセスを起動し、Add直後の横揺れを抑える
+  "$HOME/bin/rebalance-workspace-columns" "$session" 2>/dev/null || true
+  sleep 0.15
+
   if [[ "$src_type" == "remote" ]]; then
     tmux send-keys -t "$new_claude" "ssh -t $src_host 'cd $src_path && exec \$SHELL -l'" C-m
     tmux send-keys -t "$new_codex" "ssh -t $src_host 'cd $src_path && exec \$SHELL -l'" C-m
@@ -600,11 +630,9 @@ add_workspace_column() {
     fi
   fi
 
-  # 列追加後は必ず横幅を均等化
-  "$HOME/bin/rebalance-workspace-columns" "$session" 2>/dev/null || true
-
   tmux select-pane -t "$new_claude"
   tmux select-window -t "$session:dev"
+  release_layout_lock
   echo "✅ Added workspace column $new_col: $src_path" >&2
 }
 # === YAML パース & ワークスペースモード判定 ===

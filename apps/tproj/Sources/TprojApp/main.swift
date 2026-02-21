@@ -167,6 +167,36 @@ enum GhosttyConfigParser {
 
 // MARK: - Ghostty Window Tracker
 
+private func currentGhosttyFrame() -> NSRect? {
+    let options: CGWindowListOption = [.excludeDesktopElements, .optionOnScreenOnly]
+    guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+        return nil
+    }
+    guard let screenHeight = NSScreen.main?.frame.height else { return nil }
+
+    for info in list {
+        guard let name = info[kCGWindowOwnerName as String] as? String,
+              name == "Ghostty",
+              let layer = info[kCGWindowLayer as String] as? Int,
+              layer == 0,   // normal windows only (skip menu bar, popups)
+              let bounds = info[kCGWindowBounds as String] as? [String: NSNumber],
+              let x = bounds["X"],
+              let y = bounds["Y"],
+              let w = bounds["Width"],
+              let h = bounds["Height"] else {
+            continue
+        }
+        let cgX = CGFloat(truncating: x)
+        let cgY = CGFloat(truncating: y)
+        let cgW = CGFloat(truncating: w)
+        let cgH = CGFloat(truncating: h)
+        // CG coords (top-left origin) -> Cocoa coords (bottom-left origin)
+        let cocoaY = screenHeight - cgY - cgH
+        return NSRect(x: cgX, y: cocoaY, width: cgW, height: cgH)
+    }
+    return nil
+}
+
 @MainActor
 final class GhosttyWindowTracker: ObservableObject {
     @Published var isSnapped = false
@@ -355,33 +385,52 @@ final class GhosttyWindowTracker: ObservableObject {
     // MARK: Ghostty window discovery
 
     private func findGhosttyFrame() -> NSRect? {
-        let options: CGWindowListOption = [.excludeDesktopElements, .optionOnScreenOnly]
-        guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
-            return nil
-        }
-        guard let screenHeight = NSScreen.main?.frame.height else { return nil }
+        currentGhosttyFrame()
+    }
+}
 
-        for info in list {
-            guard let name = info[kCGWindowOwnerName as String] as? String,
-                  name == "Ghostty",
-                  let layer = info[kCGWindowLayer as String] as? Int,
-                  layer == 0,   // normal windows only (skip menu bar, popups)
-                  let bounds = info[kCGWindowBounds as String] as? [String: NSNumber],
-                  let x = bounds["X"],
-                  let y = bounds["Y"],
-                  let w = bounds["Width"],
-                  let h = bounds["Height"] else {
-                continue
+@MainActor
+final class WindowLevelController: ObservableObject {
+    private weak var appWindow: NSWindow?
+    private var activationObserver: NSObjectProtocol?
+    private var lastAppliedLevel: NSWindow.Level?
+
+    private let ghosttyBundleID = "com.mitchellh.ghostty"
+
+    init() {
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            let bundleID = app?.bundleIdentifier
+            Task { @MainActor [weak self] in
+                self?.applyWindowLevel(frontmostBundleID: bundleID)
             }
-            let cgX = CGFloat(truncating: x)
-            let cgY = CGFloat(truncating: y)
-            let cgW = CGFloat(truncating: w)
-            let cgH = CGFloat(truncating: h)
-            // CG coords (top-left origin) -> Cocoa coords (bottom-left origin)
-            let cocoaY = screenHeight - cgY - cgH
-            return NSRect(x: cgX, y: cocoaY, width: cgW, height: cgH)
         }
-        return nil
+    }
+
+    deinit {
+        if let activationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
+        }
+    }
+
+    func attach(to window: NSWindow) {
+        if appWindow !== window {
+            appWindow = window
+            lastAppliedLevel = nil
+        }
+        applyWindowLevel(frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+    }
+
+    private func applyWindowLevel(frontmostBundleID: String?) {
+        guard let window = appWindow else { return }
+        let desiredLevel: NSWindow.Level = (frontmostBundleID == ghosttyBundleID) ? .floating : .normal
+        guard desiredLevel != lastAppliedLevel else { return }
+        window.level = desiredLevel
+        lastAppliedLevel = desiredLevel
     }
 }
 
@@ -418,14 +467,48 @@ struct LiveColumn: Identifiable {
     var hostLabel: String
     var width: Int
     var left: Int
-    var claudePaneID: String?
-    var codexPaneID: String?
+    var claudePaneIDs: [String]
+    var codexPaneIDs: [String]
+    var agentPaneIDs: [String]
+    var agentNames: [String]
     var yaziPaneID: String?
     var terminalPaneID: String?
+
+    var primaryClaudePaneID: String? {
+        claudePaneIDs.first
+    }
+
+    var primaryCodexPaneID: String? {
+        codexPaneIDs.first
+    }
+
+    var hasCorePanes: Bool {
+        !claudePaneIDs.isEmpty || !codexPaneIDs.isEmpty
+    }
 
     var projectName: String {
         if projectPath.isEmpty { return "unknown" }
         return URL(fileURLWithPath: projectPath).lastPathComponent
+    }
+}
+
+enum SessionStopTarget: String, CaseIterable, Identifiable {
+    case all = "all"
+    case core = "core"
+
+    var id: String { rawValue }
+
+    var shortLabel: String {
+        switch self {
+        case .all:
+            return "All"
+        case .core:
+            return "Core"
+        }
+    }
+
+    var includeAgents: Bool {
+        self == .all
     }
 }
 
@@ -894,6 +977,7 @@ final class AppViewModel: ObservableObject {
     @Published var memoryErrorText: String?
     @Published var memoryLastUpdatedAt: Date?
     @Published var pendingDropColumns: Set<Int> = []
+    @Published var sessionStopTarget: SessionStopTarget = .all
 
     private let fileManager = FileManager.default
     private let monitorStatusPath = "/tmp/tproj-monitor-status.json"
@@ -1309,6 +1393,41 @@ final class AppViewModel: ObservableObject {
         appendLayoutLogLine(fields.joined(separator: " "))
     }
 
+    private func logSessionSend(
+        action: String,
+        session: String,
+        target: SessionStopTarget,
+        paneID: String,
+        role: String,
+        command: String
+    ) {
+        var fields = [
+            "\(currentISO8601Timestamp())",
+            "action=\(action)",
+            "session=\(session)",
+            "target=\(target.rawValue)",
+            "pane=\(paneID)",
+            "role=\(role)",
+            "command=\(command)",
+        ]
+        if let col = extractColumn(fromRole: role) {
+            fields.append("column=\(col)")
+        }
+        appendLayoutLogLine(fields.joined(separator: " "))
+    }
+
+    private func extractColumn(fromRole role: String) -> Int? {
+        let pattern = "-p([0-9]+)"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(role.startIndex..<role.endIndex, in: role)
+        guard let match = regex.firstMatch(in: role, options: [], range: range),
+              match.numberOfRanges >= 2,
+              let numberRange = Range(match.range(at: 1), in: role) else {
+            return nil
+        }
+        return Int(role[numberRange])
+    }
+
     private func dropColumnCommand() -> (launchPath: String, arguments: [String]) {
         if let repoScript = locateInAncestorBin(commandName: "tproj-drop-column") {
             return (repoScript, [])
@@ -1380,7 +1499,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func toggleYazi(for column: LiveColumn) async {
-        guard let pane = column.codexPaneID ?? column.claudePaneID else {
+        guard let pane = column.primaryCodexPaneID ?? column.primaryClaudePaneID else {
             statusText = "No pane found for column \(column.column)"
             return
         }
@@ -1517,7 +1636,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func removeColumn(_ column: LiveColumn) async {
-        guard column.claudePaneID != nil || column.codexPaneID != nil else {
+        guard column.hasCorePanes else {
             statusText = "Missing pane info for column \(column.column)"
             return
         }
@@ -1874,7 +1993,30 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func stopSession() async {
+    private func shouldSendInterrupt(to role: String, target: SessionStopTarget) -> Bool {
+        if role.hasPrefix("claude") || role.hasPrefix("codex") || role.hasPrefix("terminal") {
+            return true
+        }
+        if role.hasPrefix("agent") {
+            return target.includeAgents
+        }
+        return false
+    }
+
+    private func exitCommand(for role: String, target: SessionStopTarget) -> String? {
+        if role.hasPrefix("claude") || role.hasPrefix("terminal") {
+            return "exit"
+        }
+        if role.hasPrefix("codex") {
+            return "/exit"
+        }
+        if role.hasPrefix("agent"), target.includeAgents {
+            return "/exit"
+        }
+        return nil
+    }
+
+    func stopSession(target: SessionStopTarget = .all) async {
         isBusy = true
         defer { isBusy = false }
 
@@ -1904,12 +2046,14 @@ final class AppViewModel: ObservableObject {
                     return (id: parts[0], role: parts[1])
                 }
 
-            // Send C-c to claude/codex/agent/terminal panes, q to yazi panes
+            // Send C-c to selected interactive panes, q to yazi panes.
             for pane in paneRoles {
-                if pane.role.hasPrefix("claude") || pane.role.hasPrefix("codex") || pane.role.hasPrefix("agent") || pane.role.hasPrefix("terminal") {
+                if shouldSendInterrupt(to: pane.role, target: target) {
                     _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "C-c", ""])
+                    logSessionSend(action: "stop-send", session: session, target: target, paneID: pane.id, role: pane.role, command: "C-c")
                 } else if pane.role.hasPrefix("yazi") {
                     _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "q", ""])
+                    logSessionSend(action: "stop-send", session: session, target: target, paneID: pane.id, role: pane.role, command: "q")
                 }
             }
 
@@ -1918,10 +2062,9 @@ final class AppViewModel: ObservableObject {
 
             // Send role-specific exit commands.
             for pane in paneRoles {
-                if pane.role.hasPrefix("claude") || pane.role.hasPrefix("terminal") {
-                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "exit", "Enter"])
-                } else if pane.role.hasPrefix("codex") || pane.role.hasPrefix("agent") {
-                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "/exit", "Enter"])
+                if let command = exitCommand(for: pane.role, target: target) {
+                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, command, "Enter"])
+                    logSessionSend(action: "stop-send", session: session, target: target, paneID: pane.id, role: pane.role, command: command)
                 }
             }
         }
@@ -1959,11 +2102,11 @@ final class AppViewModel: ObservableObject {
         // Clean up dead-agents file
         try? FileManager.default.removeItem(atPath: "/tmp/tproj-dead-agents")
 
-        statusText = "Session stopped"
+        statusText = target == .all ? "Session stopped" : "Session stopped (core target)"
         liveColumns = []
     }
 
-    func killSession() async {
+    func killSession(target: SessionStopTarget = .all) async {
         isBusy = true
         defer { isBusy = false }
 
@@ -1994,18 +2137,19 @@ final class AppViewModel: ObservableObject {
                 }
 
             for pane in paneRoles {
-                if pane.role.hasPrefix("claude") || pane.role.hasPrefix("codex") || pane.role.hasPrefix("agent") || pane.role.hasPrefix("terminal") {
+                if shouldSendInterrupt(to: pane.role, target: target) {
                     _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "C-c", ""])
+                    logSessionSend(action: "kill-send", session: session, target: target, paneID: pane.id, role: pane.role, command: "C-c")
                 } else if pane.role.hasPrefix("yazi") {
                     _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "q", ""])
+                    logSessionSend(action: "kill-send", session: session, target: target, paneID: pane.id, role: pane.role, command: "q")
                 }
             }
 
             for pane in paneRoles {
-                if pane.role.hasPrefix("claude") || pane.role.hasPrefix("terminal") {
-                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "exit", "Enter"])
-                } else if pane.role.hasPrefix("codex") || pane.role.hasPrefix("agent") {
-                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "/exit", "Enter"])
+                if let command = exitCommand(for: pane.role, target: target) {
+                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, command, "Enter"])
+                    logSessionSend(action: "kill-send", session: session, target: target, paneID: pane.id, role: pane.role, command: command)
                 }
             }
         }
@@ -2025,7 +2169,7 @@ final class AppViewModel: ObservableObject {
         // Clean up dead-agents file
         try? FileManager.default.removeItem(atPath: "/tmp/tproj-dead-agents")
 
-        statusText = "Session killed"
+        statusText = target == .all ? "Session killed" : "Session killed (core target)"
         liveColumns = []
     }
 
@@ -2115,8 +2259,9 @@ final class AppViewModel: ObservableObject {
         liveColumns = liveColumns.map {
             LiveColumn(
                 column: $0.column, projectPath: $0.projectPath, hostLabel: $0.hostLabel,
-                width: $0.width, left: $0.left, claudePaneID: $0.claudePaneID,
-                codexPaneID: $0.codexPaneID, yaziPaneID: $0.yaziPaneID, terminalPaneID: $0.terminalPaneID
+                width: $0.width, left: $0.left, claudePaneIDs: $0.claudePaneIDs,
+                codexPaneIDs: $0.codexPaneIDs, agentPaneIDs: $0.agentPaneIDs, agentNames: $0.agentNames,
+                yaziPaneID: $0.yaziPaneID, terminalPaneID: $0.terminalPaneID
             )
         }
     }
@@ -2194,8 +2339,10 @@ final class AppViewModel: ObservableObject {
             var hostLabel: String = "local"
             var width: Int = 0
             var left: Int = Int.max
-            var claudePaneID: String?
-            var codexPaneID: String?
+            var claudePaneIDs: [String] = []
+            var codexPaneIDs: [String] = []
+            var agentPaneIDs: [String] = []
+            var agentNames: [String] = []
             var yaziPaneID: String?
             var terminalPaneID: String?
         }
@@ -2240,8 +2387,22 @@ final class AppViewModel: ObservableObject {
                 }
             }
 
-            if role.hasPrefix("claude-p") { entry.claudePaneID = paneID }
-            if role.hasPrefix("codex-p") { entry.codexPaneID = paneID }
+            if role.hasPrefix("claude-p"), !entry.claudePaneIDs.contains(paneID) {
+                entry.claudePaneIDs.append(paneID)
+            }
+            if role.hasPrefix("codex-p"), !entry.codexPaneIDs.contains(paneID) {
+                entry.codexPaneIDs.append(paneID)
+            }
+            if role.hasPrefix("agent-p"), !entry.agentPaneIDs.contains(paneID) {
+                entry.agentPaneIDs.append(paneID)
+                let agentPrefix = "agent-p\(col)-"
+                if role.hasPrefix(agentPrefix) {
+                    let agentName = String(role.dropFirst(agentPrefix.count))
+                    if !agentName.isEmpty, !entry.agentNames.contains(agentName) {
+                        entry.agentNames.append(agentName)
+                    }
+                }
+            }
             if role.hasPrefix("yazi-p") { entry.yaziPaneID = paneID }
             if role.hasPrefix("terminal-p") { entry.terminalPaneID = paneID }
 
@@ -2261,8 +2422,10 @@ final class AppViewModel: ObservableObject {
                     hostLabel: $0.hostLabel,
                     width: $0.width,
                     left: $0.left == Int.max ? 0 : $0.left,
-                    claudePaneID: $0.claudePaneID,
-                    codexPaneID: $0.codexPaneID,
+                    claudePaneIDs: $0.claudePaneIDs,
+                    codexPaneIDs: $0.codexPaneIDs,
+                    agentPaneIDs: $0.agentPaneIDs,
+                    agentNames: $0.agentNames,
                     yaziPaneID: $0.yaziPaneID,
                     terminalPaneID: $0.terminalPaneID
                 )
@@ -2281,8 +2444,10 @@ final class AppViewModel: ObservableObject {
                 existing.hostLabel = data.hostLabel
                 existing.width = data.width
                 existing.left = data.left
-                existing.claudePaneID = data.claudePaneID
-                existing.codexPaneID = data.codexPaneID
+                existing.claudePaneIDs = data.claudePaneIDs
+                existing.codexPaneIDs = data.codexPaneIDs
+                existing.agentPaneIDs = data.agentPaneIDs
+                existing.agentNames = data.agentNames
                 existing.yaziPaneID = data.yaziPaneID
                 existing.terminalPaneID = data.terminalPaneID
                 merged.append(existing)
@@ -2692,6 +2857,7 @@ struct ActionButton: View {
 struct ContentView: View {
     @StateObject private var vm = AppViewModel()
     @StateObject private var ghosttyTracker = GhosttyWindowTracker()
+    @StateObject private var windowLevelController = WindowLevelController()
     @State private var draggingColumnID: Int?
     @State private var dropInsertionIndex: Int?
     @State private var isDragActive = false
@@ -2721,12 +2887,16 @@ struct ContentView: View {
                                 .truncationMode(.tail)
                             Spacer()
                             if !vm.liveColumns.isEmpty {
+                                ActionButton(vm.sessionStopTarget.shortLabel, tone: vm.sessionStopTarget == .all ? .primary : .neutral, isEnabled: !vm.isBusy, dense: true) {
+                                    vm.sessionStopTarget = vm.sessionStopTarget == .all ? .core : .all
+                                }
+                                .fixedSize()
                                 ActionButton("End", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                                    Task { await vm.stopSession() }
+                                    Task { await vm.stopSession(target: vm.sessionStopTarget) }
                                 }
                                 .fixedSize()
                                 ActionButton("Force", tone: .danger, isEnabled: !vm.isBusy, dense: true) {
-                                    Task { await vm.killSession() }
+                                    Task { await vm.killSession(target: vm.sessionStopTarget) }
                                 }
                                 .fixedSize()
                             }
@@ -2822,7 +2992,7 @@ struct ContentView: View {
         }
         .background(
             WindowAccessor { window in
-                window.level = .floating
+                windowLevelController.attach(to: window)
                 if GhosttyTheme.current.backgroundOpacity < 1.0 {
                     window.backgroundColor = .clear
                     window.isOpaque = false
@@ -2839,6 +3009,15 @@ struct ContentView: View {
     }
 
     private func recoverWindowFrameIfNeeded(_ window: NSWindow) {
+        if let ghosttyFrame = currentGhosttyFrame() {
+            let size = window.frame.size
+            let x = ghosttyFrame.minX - size.width
+            let y = ghosttyFrame.maxY - size.height
+            let targetOrigin = clampedWindowOrigin(NSPoint(x: x, y: y), size: size)
+            window.setFrameOrigin(targetOrigin)
+            return
+        }
+
         let current = window.frame
         let visibleScreens = NSScreen.screens.map { $0.visibleFrame }
         let isVisible = visibleScreens.contains { screen in
@@ -2850,6 +3029,20 @@ struct ContentView: View {
         let x = main.minX + 24
         let y = max(main.minY + 24, main.maxY - current.height - 24)
         window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    private func clampedWindowOrigin(_ origin: NSPoint, size: CGSize) -> NSPoint {
+        let frames = NSScreen.screens.map { $0.visibleFrame }
+        guard var union = frames.first else { return origin }
+        for frame in frames.dropFirst() {
+            union = union.union(frame)
+        }
+        let maxX = max(union.minX, union.maxX - size.width)
+        let maxY = max(union.minY, union.maxY - size.height)
+        return NSPoint(
+            x: min(max(origin.x, union.minX), maxX),
+            y: min(max(origin.y, union.minY), maxY)
+        )
     }
 
     private func liveColumnRow(_ column: LiveColumn) -> some View {
@@ -2866,7 +3059,19 @@ struct ContentView: View {
                     .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
                     .lineLimit(1)
+                Text(columnPaneCountsText(column))
+                    .font(GhosttyTheme.current.font(size: 9, weight: .semibold, monospaced: true))
+                    .foregroundStyle(GhosttyTheme.current.textTertiary)
+                    .lineLimit(1)
                 Spacer()
+            }
+
+            if let agents = columnAgentNamesText(column) {
+                Text(agents)
+                    .font(GhosttyTheme.current.font(size: 9, weight: .medium))
+                    .foregroundStyle(GhosttyTheme.current.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
 
             // Buttons row
@@ -3349,6 +3554,16 @@ struct ContentView: View {
             return host
         }
         return "lcl"
+    }
+
+    private func columnPaneCountsText(_ column: LiveColumn) -> String {
+        "CC\(column.claudePaneIDs.count) Cdx\(column.codexPaneIDs.count) Ag\(column.agentPaneIDs.count)"
+    }
+
+    private func columnAgentNamesText(_ column: LiveColumn) -> String? {
+        let names = column.agentNames.sorted()
+        guard !names.isEmpty else { return nil }
+        return "Agents: " + names.joined(separator: ", ")
     }
 
     private func pill(_ text: String, tint: Color) -> some View {

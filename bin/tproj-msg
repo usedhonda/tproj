@@ -5,8 +5,11 @@ set -euo pipefail
 #
 # Usage:
 #   tproj-msg <target> <message>         Send message (busy-aware, immediate return)
+#   tproj-msg --version                  Show version + actual script path
 #   tproj-msg --fire <target> <message>  Send immediately (no idle check, auto-flush)
 #   tproj-msg --force <target> <message> Send immediately (no idle check, no auto-flush)
+#   tproj-msg --allow-relay <reason> ... One-time override for relay-like send
+#   tproj-msg --allow-fanout <reason> .. One-time override for multi-target fan-out
 #   tproj-msg --list                     List available targets
 #   tproj-msg --read <target> [lines]    Read target's recent output
 #   tproj-msg --status [target]          Show target idle/busy state + queue info
@@ -17,13 +20,22 @@ set -euo pipefail
 #   <alias>.<role>  Specific column (tproj.cc, sl.cdx)
 #   <alias>         Alias only -> defaults to <alias>.cc
 #   agent-<name>    Agent pane
-#   gate            ClawGate bridge (default adapter from workspace.yaml)
-#   gate:<adapter>  ClawGate bridge with specific adapter (e.g. gate:line)
+#   gate            ClawGate bridge (session-first tmux lane)
+#   gate:session    ClawGate bridge (explicit session tmux lane; same as gate)
+#   gate:line       ClawGate bridge (explicit LINE lane)
+#   gate:direct     ClawGate bridge (legacy direct EventBus lane)
+#   gate:default    ClawGate bridge (workspace default adapter)
+#   gate:<adapter>  ClawGate bridge with specific adapter (e.g. gate:tmux)
 #
 # Modes (after fix):
 #   --fire    No idle check. Auto-flush queue (max 3), then send. Immediate return.
 #   --force   No idle check. No auto-flush. Pure immediate send. Immediate return.
-#   normal    Idle check. If idle: send. If busy: queue. Immediate return.
+#   --allow-relay <reason>
+#             Allow one relay-like send ([from:], [Control:], [ACK:], [Persona Sync/Check]).
+#             Does not enable broadcast targets (all/*/broadcast/everyone).
+#   --allow-fanout <reason>
+#             Allow one multi-target fan-out send of the same message for cc/cdx family.
+#   normal    Idle check. If idle: send. If busy/typing: queue. Immediate return.
 #   --read    Read pane output.
 #   --flush   Deliver queued messages to idle targets.
 #   control   Duplicate [Control:*]/[ACK:*] is blocked for 10m per target.
@@ -34,13 +46,22 @@ tproj-msg - Inter-pane messaging (busy-aware)
 
 Usage:
   tproj-msg <target> <message>         Send message (busy-aware, immediate return)
+  tproj-msg --version                  Show version + actual script path
   tproj-msg --fire <target> <message>  Send immediately (no idle check, auto-flush)
   tproj-msg --force <target> <message> Send immediately (no idle check, no auto-flush)
+  tproj-msg --allow-relay <reason> ... One-time override for relay-like send
+  tproj-msg --allow-fanout <reason> .. One-time override for multi-target fan-out
   tproj-msg --list                     List available targets
   tproj-msg --read <target> [lines]    Read target's recent output
   tproj-msg --status [target]          Show idle/busy state + queue info
   tproj-msg --flush                    Deliver all queued messages to idle targets
   Note: duplicate control tags ([Control:*], [ACK:*]) are blocked for 10m per target
+  Note: relay-like message body is blocked by default ([from:], [Control:], [ACK:], [Persona Sync/Check])
+  Note: accidental fan-out is blocked by default for cc/cdx family (same message to many targets)
+  Note: active typing is protected by queueing (session_typing_busy); use --force to bypass
+  Note: pane @prompt_state (idle/suggestion/typing/unknown) is used first when available
+  Note: broadcast-like targets are forbidden (all, *, broadcast, everyone)
+  Note: gate uses session-first tmux lane by default; prefix message with [line-private] for LINE-only lane
 
 Target formats:
   cc, cdx           Same column / single mode
@@ -54,8 +75,13 @@ Examples:
   tproj-msg sl.cc "Can you review the config change?"
   tproj-msg --fire agent-reviewer "Check this file"
   tproj-msg --force cdx "urgent message"
-  tproj-msg gate "Send via default bridge adapter"
+  tproj-msg --allow-relay incident-123 --force tproj.cc "[Control:PSYNC-STOP] ACK"
+  tproj-msg --allow-fanout sync-1 tproj.cc "Please review this design"
+  tproj-msg gate "Send via session-first tmux lane"
+  tproj-msg gate:session "Send via session tmux lane (explicit)"
   tproj-msg gate:line "Send via LINE adapter"
+  tproj-msg gate:direct "Send via direct EventBus lane (legacy)"
+  tproj-msg gate "[line-private] this is private to LINE only"
   tproj-msg --status cdx
   tproj-msg --flush
   tproj-msg --list
@@ -63,22 +89,55 @@ Examples:
 EOF
 }
 
-# === Pre-flight: tmux check ===
-if [[ -z "${TMUX:-}" ]]; then
-  echo "Error: must be run inside tmux" >&2
-  exit 1
+SCRIPT_VERSION="2026.02.21"
+
+canonicalize_path() {
+  local target="$1"
+  local dir base
+  dir=$(cd "$(dirname "$target")" 2>/dev/null && pwd -P) || return 1
+  base=$(basename "$target")
+  printf '%s/%s\n' "$dir" "$base"
+}
+
+find_repo_tproj_msg_from_cwd() {
+  local dir candidate
+  dir=$(pwd -P)
+  while true; do
+    candidate="$dir/bin/tproj-msg"
+    if [[ -x "$candidate" ]]; then
+      canonicalize_path "$candidate"
+      return 0
+    fi
+    [[ "$dir" == "/" ]] && break
+    dir=$(dirname "$dir")
+  done
+  return 1
+}
+
+SELF_PATH=$(canonicalize_path "$0" 2>/dev/null || printf '%s' "$0")
+HOME_BIN_PATH="$HOME/bin/tproj-msg"
+HOME_BIN_PATH=$(canonicalize_path "$HOME_BIN_PATH" 2>/dev/null || printf '%s' "$HOME_BIN_PATH")
+REPO_BIN_CANDIDATE=$(find_repo_tproj_msg_from_cwd 2>/dev/null || true)
+
+if [[ -z "${TPROJ_MSG_REEXECED:-}" ]] && [[ "$SELF_PATH" == "$HOME_BIN_PATH" ]] && [[ -n "${REPO_BIN_CANDIDATE:-}" ]] && [[ "$REPO_BIN_CANDIDATE" != "$SELF_PATH" ]]; then
+  echo "Info: stale tproj-msg detected at ~/bin; re-exec -> $REPO_BIN_CANDIDATE" >&2
+  export TPROJ_MSG_REEXECED=1
+  exec "$REPO_BIN_CANDIDATE" "$@"
 fi
 
-# === Session detection ===
-SESSION=$(tmux display-message -p '#S')
-IS_WORKSPACE=false
-[[ "$SESSION" == "tproj-workspace" ]] && IS_WORKSPACE=true
-
-# === Sender info (for prefix) ===
-MY_PANE="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
-MY_ALIAS=$(tmux display-message -t "$MY_PANE" -p '#{@alias}' 2>/dev/null || true)
-MY_ROLE_RAW=$(tmux display-message -t "$MY_PANE" -p '#{@role}' 2>/dev/null || true)
-MY_COLUMN=$(tmux display-message -t "$MY_PANE" -p '#{@column}' 2>/dev/null || true)
+show_version() {
+  local reexeced
+  if [[ -n "${TPROJ_MSG_REEXECED:-}" ]]; then
+    reexeced="true"
+  else
+    reexeced="false"
+  fi
+  cat <<EOF
+tproj-msg version: $SCRIPT_VERSION
+script_path: $SELF_PATH
+reexeced: $reexeced
+EOF
+}
 
 # Role shorthand: claude/claude-pN -> cc, codex/codex-pN -> cdx, agent-* -> as-is
 role_to_short() {
@@ -115,8 +174,6 @@ short_to_role_pattern() {
   esac
 }
 
-MY_ROLE=$(role_to_short "$MY_ROLE_RAW")
-
 # === Parse arguments ===
 FIRE_MODE=false
 FORCE_MODE=false
@@ -124,58 +181,162 @@ LIST_MODE=false
 READ_MODE=false
 FLUSH_MODE=false
 STATUS_MODE=false
+VERSION_MODE=false
+ALLOW_RELAY=false
+ALLOW_RELAY_REASON=""
+ALLOW_FANOUT=false
+ALLOW_FANOUT_REASON=""
 TARGET=""
 MESSAGE=""
 READ_LINES=50
+POSITIONAL_ARGS=()
 
 if [[ $# -eq 0 ]]; then
   show_usage
   exit 0
 fi
 
-case "$1" in
-  -h|--help)
-    show_usage
-    exit 0
-    ;;
-  --fire)
-    FIRE_MODE=true
-    shift
-    [[ $# -lt 2 ]] && { echo "Error: --fire requires <target> <message>" >&2; exit 1; }
-    TARGET="$1"; shift
-    MESSAGE="$*"
-    ;;
-  --force)
-    FORCE_MODE=true
-    shift
-    [[ $# -lt 2 ]] && { echo "Error: --force requires <target> <message>" >&2; exit 1; }
-    TARGET="$1"; shift
-    MESSAGE="$*"
-    ;;
-  --list)
-    LIST_MODE=true
-    ;;
-  --read)
-    READ_MODE=true
-    shift
-    [[ $# -lt 1 ]] && { echo "Error: --read requires <target>" >&2; exit 1; }
-    TARGET="$1"; shift
-    [[ $# -gt 0 ]] && READ_LINES="$1"
-    ;;
-  --flush)
-    FLUSH_MODE=true
-    ;;
-  --status)
-    STATUS_MODE=true
-    shift
-    TARGET="${1:-}"
-    ;;
-  *)
-    [[ $# -lt 2 ]] && { echo "Error: requires <target> <message>" >&2; show_usage; exit 1; }
-    TARGET="$1"; shift
-    MESSAGE="$*"
-    ;;
-esac
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      show_usage
+      exit 0
+      ;;
+    -V|--version)
+      VERSION_MODE=true
+      shift
+      ;;
+    --allow-relay)
+      shift
+      [[ $# -lt 1 ]] && { echo "Error: --allow-relay requires <reason>" >&2; exit 1; }
+      ALLOW_RELAY=true
+      ALLOW_RELAY_REASON="$1"
+      shift
+      ;;
+    --allow-fanout)
+      shift
+      [[ $# -lt 1 ]] && { echo "Error: --allow-fanout requires <reason>" >&2; exit 1; }
+      ALLOW_FANOUT=true
+      ALLOW_FANOUT_REASON="$1"
+      shift
+      ;;
+    --fire)
+      [[ "$FORCE_MODE" == "true" ]] && { echo "Error: --fire and --force cannot be combined" >&2; exit 1; }
+      FIRE_MODE=true
+      shift
+      ;;
+    --force)
+      [[ "$FIRE_MODE" == "true" ]] && { echo "Error: --fire and --force cannot be combined" >&2; exit 1; }
+      FORCE_MODE=true
+      shift
+      ;;
+    --list)
+      LIST_MODE=true
+      shift
+      ;;
+    --read)
+      READ_MODE=true
+      shift
+      ;;
+    --flush)
+      FLUSH_MODE=true
+      shift
+      ;;
+    --status)
+      STATUS_MODE=true
+      shift
+      ;;
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do
+        POSITIONAL_ARGS+=("$1")
+        shift
+      done
+      ;;
+    -*)
+      echo "Error: unknown option '$1'" >&2
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+MODE_COUNT=0
+[[ "$FIRE_MODE" == "true" ]] && ((MODE_COUNT++)) || true
+[[ "$FORCE_MODE" == "true" ]] && ((MODE_COUNT++)) || true
+[[ "$LIST_MODE" == "true" ]] && ((MODE_COUNT++)) || true
+[[ "$READ_MODE" == "true" ]] && ((MODE_COUNT++)) || true
+[[ "$FLUSH_MODE" == "true" ]] && ((MODE_COUNT++)) || true
+[[ "$STATUS_MODE" == "true" ]] && ((MODE_COUNT++)) || true
+[[ "$VERSION_MODE" == "true" ]] && ((MODE_COUNT++)) || true
+
+if [[ $MODE_COUNT -gt 1 ]]; then
+  echo "Error: mode options cannot be combined (--fire/--force/--list/--read/--flush/--status/--version)" >&2
+  exit 1
+fi
+
+if [[ "$VERSION_MODE" == "true" ]]; then
+  [[ ${#POSITIONAL_ARGS[@]} -eq 0 ]] || { echo "Error: --version takes no positional arguments" >&2; exit 1; }
+  show_version
+  exit 0
+fi
+
+if [[ "$LIST_MODE" == "true" ]]; then
+  [[ ${#POSITIONAL_ARGS[@]} -eq 0 ]] || { echo "Error: --list takes no positional arguments" >&2; exit 1; }
+fi
+
+if [[ "$FLUSH_MODE" == "true" ]]; then
+  [[ ${#POSITIONAL_ARGS[@]} -eq 0 ]] || { echo "Error: --flush takes no positional arguments" >&2; exit 1; }
+fi
+
+if [[ "$STATUS_MODE" == "true" ]]; then
+  [[ ${#POSITIONAL_ARGS[@]} -le 1 ]] || { echo "Error: --status accepts at most one target" >&2; exit 1; }
+  TARGET="${POSITIONAL_ARGS[0]:-}"
+fi
+
+if [[ "$READ_MODE" == "true" ]]; then
+  [[ ${#POSITIONAL_ARGS[@]} -ge 1 ]] || { echo "Error: --read requires <target>" >&2; exit 1; }
+  [[ ${#POSITIONAL_ARGS[@]} -le 2 ]] || { echo "Error: --read accepts <target> [lines]" >&2; exit 1; }
+  TARGET="${POSITIONAL_ARGS[0]}"
+  READ_LINES="${POSITIONAL_ARGS[1]:-50}"
+fi
+
+if [[ "$LIST_MODE" != "true" && "$READ_MODE" != "true" && "$FLUSH_MODE" != "true" && "$STATUS_MODE" != "true" ]]; then
+  [[ ${#POSITIONAL_ARGS[@]} -ge 2 ]] || { echo "Error: requires <target> <message>" >&2; show_usage; exit 1; }
+  TARGET="${POSITIONAL_ARGS[0]}"
+  MESSAGE="${POSITIONAL_ARGS[@]:1}"
+fi
+
+if [[ "$ALLOW_RELAY" == "true" && ( "$LIST_MODE" == "true" || "$READ_MODE" == "true" || "$FLUSH_MODE" == "true" || "$STATUS_MODE" == "true" || "$VERSION_MODE" == "true" ) ]]; then
+  echo "Error: --allow-relay is only valid for send modes" >&2
+  exit 1
+fi
+
+if [[ "$ALLOW_FANOUT" == "true" && ( "$LIST_MODE" == "true" || "$READ_MODE" == "true" || "$FLUSH_MODE" == "true" || "$STATUS_MODE" == "true" || "$VERSION_MODE" == "true" ) ]]; then
+  echo "Error: --allow-fanout is only valid for send modes" >&2
+  exit 1
+fi
+
+# === Pre-flight: tmux check ===
+if [[ -z "${TMUX:-}" ]]; then
+  echo "Error: must be run inside tmux" >&2
+  exit 1
+fi
+
+# === Session detection ===
+SESSION=$(tmux display-message -p '#S')
+IS_WORKSPACE=false
+[[ "$SESSION" == "tproj-workspace" ]] && IS_WORKSPACE=true
+
+# === Sender info (for prefix) ===
+MY_PANE="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
+MY_ALIAS=$(tmux display-message -t "$MY_PANE" -p '#{@alias}' 2>/dev/null || true)
+MY_ROLE_RAW=$(tmux display-message -t "$MY_PANE" -p '#{@role}' 2>/dev/null || true)
+MY_COLUMN=$(tmux display-message -t "$MY_PANE" -p '#{@column}' 2>/dev/null || true)
+MY_ROLE=$(role_to_short "$MY_ROLE_RAW")
 
 # === Queue directory ===
 QUEUE_DIR="/tmp/tproj-msg-queue"
@@ -185,6 +346,18 @@ FLUSH_POLL_INTERVAL=3  # seconds between flush attempts
 CONTROL_DEDUP_DIR="/tmp/tproj-msg-control-dedup"
 CONTROL_DEDUP_FILE="${CONTROL_DEDUP_DIR}/seen.tsv"
 CONTROL_DEDUP_TTL="$STALE_SECONDS"
+FANOUT_DEDUP_DIR="/tmp/tproj-msg-fanout-dedup"
+FANOUT_DEDUP_FILE="${FANOUT_DEDUP_DIR}/seen.tsv"
+FANOUT_DEDUP_TTL="$STALE_SECONDS"
+TMUX_TYPING_GUARD_READ_LINES=120
+TMUX_TYPING_GUARD_SCAN_TAIL_LINES=48
+TMUX_TYPING_GUARD_MAX_PROMPT_DISTANCE_LINES=8
+TMUX_TYPING_GUARD_MAX_CONTINUATION_LINES=2
+TMUX_TYPING_GUARD_RECHECK_DELAY_SEC=0.12
+RELAY_BLOCK_EXIT=13
+BROADCAST_BLOCK_EXIT=14
+FANOUT_BLOCK_EXIT=15
+TYPING_BUSY_EXIT=16
 
 # Ensure queue dir exists
 ensure_queue_dir() {
@@ -273,11 +446,546 @@ control_dedup_check_and_mark() {
   return 0
 }
 
+# === Send policy guard ===
+
+is_broadcast_like_target() {
+  local target="$1"
+  local lower
+  lower=$(printf '%s' "$target" | tr '[:upper:]' '[:lower:]')
+  case "$lower" in
+    all|'*'|broadcast|everyone)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+is_relay_like_message() {
+  local msg="$1"
+
+  [[ "$msg" =~ ^[[:space:]]*\[from:[^\]]+\] ]] && return 0
+  [[ "$msg" =~ \[(Control|ACK):[^\]]+\] ]] && return 0
+  printf '%s\n' "$msg" | grep -Eiq '\[Persona[[:space:]]+(Sync|Check)\]' && return 0
+
+  return 1
+}
+
+enforce_send_policy() {
+  local target_name="$1" msg="$2"
+
+  if is_broadcast_like_target "$target_name"; then
+    echo "Error: broadcast-like target '$target_name' is forbidden by policy" >&2
+    return "$BROADCAST_BLOCK_EXIT"
+  fi
+
+  if is_relay_like_message "$msg"; then
+    if [[ "$ALLOW_RELAY" == "true" ]]; then
+      echo "Policy override: allow relay-like send to '$target_name' (reason: ${ALLOW_RELAY_REASON})" >&2
+      return 0
+    fi
+    echo "Error: relay-like message is blocked by policy" >&2
+    echo "Hint: add --allow-relay <reason> for one-time explicit override." >&2
+    return "$RELAY_BLOCK_EXIT"
+  fi
+
+  return 0
+}
+
+ensure_fanout_dedup_store() {
+  [[ -d "$FANOUT_DEDUP_DIR" ]] || mkdir -p "$FANOUT_DEDUP_DIR"
+  [[ -f "$FANOUT_DEDUP_FILE" ]] || : > "$FANOUT_DEDUP_FILE"
+}
+
+cleanup_fanout_dedup_store() {
+  ensure_fanout_dedup_store
+  local now tmp epoch key target age
+  now=$(date +%s)
+  tmp=$(mktemp "${FANOUT_DEDUP_DIR}/seen.XXXXXX")
+
+  while IFS=$'\t' read -r epoch key target; do
+    [[ -z "${epoch:-}" || -z "${key:-}" || -z "${target:-}" ]] && continue
+    [[ "$epoch" =~ ^[0-9]+$ ]] || continue
+    age=$(( now - epoch ))
+    if [[ $age -le $FANOUT_DEDUP_TTL ]]; then
+      printf '%s\t%s\t%s\n' "$epoch" "$key" "$target" >> "$tmp"
+    fi
+  done < "$FANOUT_DEDUP_FILE"
+
+  mv "$tmp" "$FANOUT_DEDUP_FILE"
+}
+
+target_family_from_target() {
+  local target="$1"
+  local target_role
+
+  if is_gate_target "$target"; then
+    echo "gate"
+    return 0
+  fi
+
+  if [[ "$target" == agent-* ]]; then
+    echo "agent"
+    return 0
+  fi
+
+  if [[ "$target" == *.* ]]; then
+    target_role="${target#*.}"
+  elif [[ "$target" == "cc" || "$target" == "cdx" ]]; then
+    target_role="$target"
+  else
+    # alias only -> defaults to cc
+    target_role="cc"
+  fi
+
+  case "$target_role" in
+    cc|claude|claude-p*) echo "cc" ;;
+    cdx|codex|codex-p*)  echo "cdx" ;;
+    agent-*)             echo "agent" ;;
+    *)                   echo "$target_role" ;;
+  esac
+}
+
+fanout_guard_check_and_mark() {
+  local target_name="$1" msg="$2"
+  local family normalized hash key seen_target now sender_alias sender_role
+
+  family=$(target_family_from_target "$target_name")
+  case "$family" in
+    cc|cdx)
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  ensure_fanout_dedup_store
+  cleanup_fanout_dedup_store
+
+  normalized=$(normalize_message_for_hash "$msg")
+  hash=$(sha1_hash "$normalized")
+  sender_alias="${MY_ALIAS:-unknown}"
+  sender_role="${MY_ROLE:-unknown}"
+  key="${SESSION}|${sender_alias}|${sender_role}|${family}|${hash}"
+
+  seen_target=$(awk -F '\t' -v key="$key" -v target="$target_name" '$2 == key && $3 != target { print $3; exit }' "$FANOUT_DEDUP_FILE" || true)
+  if [[ -n "$seen_target" && "$ALLOW_FANOUT" != "true" ]]; then
+    echo "Error: potential fan-out blocked for '$family' (already sent same message to '$seen_target')" >&2
+    echo "Hint: default is same-project counterpart. Use --allow-fanout <reason> only if intentional." >&2
+    return "$FANOUT_BLOCK_EXIT"
+  fi
+
+  if [[ -n "$seen_target" && "$ALLOW_FANOUT" == "true" ]]; then
+    echo "Policy override: allow fan-out send to '$target_name' (reason: ${ALLOW_FANOUT_REASON})" >&2
+  fi
+
+  now=$(date +%s)
+  printf '%s\t%s\t%s\n' "$now" "$key" "$target_name" >> "$FANOUT_DEDUP_FILE"
+  return 0
+}
+
 # === Idle detection (rewritten) ===
 
 # Strip ANSI escape sequences from input
 strip_ansi() {
   sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b\][^\x07]*\x07//g'
+}
+
+trim_spaces() {
+  printf '%s' "$1" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
+}
+
+is_tmux_footer_line() {
+  local line="$1"
+  local s lower
+  s=$(trim_spaces "$line")
+  [[ -z "$s" ]] && return 1
+  lower=$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')
+
+  [[ "$lower" == "? for shortcuts" ]] && return 0
+  [[ "$lower" =~ ^[0-9]+%[[:space:]]+context[[:space:]]+left$ ]] && return 0
+  [[ "$lower" =~ ^[0-9]+%[[:space:]]+context[[:space:]]+window$ ]] && return 0
+  [[ "$lower" =~ ^autonomous:[[:space:]]+ ]] && return 0
+  return 1
+}
+
+is_tmux_divider_line() {
+  local line="$1" s
+  s=$(trim_spaces "$line")
+  [[ -z "$s" ]] && return 1
+  printf '%s\n' "$s" | grep -Eq '^[-─━]{3,}$'
+}
+
+is_prompt_line() {
+  local line="$1"
+  printf '%s\n' "$line" | grep -Eq '^[[:space:]]*[›❯>][[:space:]]*'
+}
+
+has_cursor_glyph() {
+  local line="$1"
+  printf '%s\n' "$line" | grep -Eq '[▌█▋▍▎▏]'
+}
+
+looks_like_shortcuts_line() {
+  local line="$1" s lower
+  s=$(trim_spaces "$line")
+  [[ -z "$s" ]] && return 1
+  lower=$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')
+  [[ "$lower" == \?*shortcuts* ]]
+}
+
+contains_prompt_ui_marker() {
+  local line="$1" s lower
+  s=$(trim_spaces "$line")
+  [[ -z "$s" ]] && return 1
+  lower=$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')
+
+  [[ "$lower" == *"? for shortcuts"* ]] && return 0
+  [[ "$lower" =~ [0-9]+%[[:space:]]+context[[:space:]]+(left|window) ]] && return 0
+  [[ "$lower" == *"plan mode"* && "$lower" == *"context left"* ]] && return 0
+  return 1
+}
+
+strip_prompt_ui_tail() {
+  local text cleaned
+  if [[ $# -gt 0 ]]; then
+    text="$1"
+  else
+    text=$(cat)
+  fi
+  cleaned=$(printf '%s' "$text" \
+    | sed -E 's/[[:space:]]+\?[[:space:]]*for[[:space:]]+shortcuts.*$//')
+  cleaned=$(printf '%s' "$cleaned" \
+    | sed -E 's/[[:space:]]+[0-9]+%[[:space:]]+context[[:space:]]+(left|window)$//')
+  printf '%s' "$cleaned" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
+}
+
+looks_like_suggestion_text() {
+  local text="$1" lower
+  lower=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')
+
+  contains_prompt_ui_marker "$text" && return 0
+
+  # Codex placeholder examples.
+  [[ "$text" == *"{feature}"* ]] && return 0
+  [[ "$lower" =~ ^run[[:space:]]+/ ]] && return 0
+  [[ "$lower" =~ ^implement[[:space:]]+\{feature\} ]] && return 0
+  [[ "$lower" =~ ^try[[:space:]]+\".*\"$ ]] && return 0
+
+  # Claude placeholder-like prompt text often appears as a spaced parenthesized sentence.
+  [[ "$text" =~ ^[（(].*[[:space:]].*[)）]$ ]] && return 0
+  return 1
+}
+
+# Signal output slots populated by read_prompt_state_signal:
+#   PROMPT_SIGNAL_STATE  -> idle | typing | suggestion | unknown
+#   PROMPT_SIGNAL_REASON -> parser reason (missing | invalid | signal)
+#   PROMPT_SIGNAL_SOURCE -> source tag (tmux option)
+#   PROMPT_SIGNAL_TS     -> unix epoch (optional)
+PROMPT_SIGNAL_STATE=""
+PROMPT_SIGNAL_REASON="uninitialized"
+PROMPT_SIGNAL_SOURCE=""
+PROMPT_SIGNAL_TS=""
+
+read_prompt_state_signal() {
+  local pane="$1"
+  local raw state
+
+  PROMPT_SIGNAL_STATE=""
+  PROMPT_SIGNAL_REASON="missing"
+  PROMPT_SIGNAL_SOURCE=""
+  PROMPT_SIGNAL_TS=""
+
+  raw=$(tmux show-options -p -t "$pane" -v @prompt_state 2>/dev/null || true)
+  state=$(trim_spaces "$raw" | tr '[:upper:]' '[:lower:]')
+  if [[ -z "$state" ]]; then
+    return 1
+  fi
+
+  case "$state" in
+    idle|typing|suggestion|unknown)
+      PROMPT_SIGNAL_STATE="$state"
+      PROMPT_SIGNAL_REASON="signal"
+      PROMPT_SIGNAL_SOURCE=$(tmux show-options -p -t "$pane" -v @prompt_state_src 2>/dev/null || true)
+      PROMPT_SIGNAL_SOURCE=$(trim_spaces "${PROMPT_SIGNAL_SOURCE:-}")
+      [[ -z "$PROMPT_SIGNAL_SOURCE" ]] && PROMPT_SIGNAL_SOURCE="tmux_option"
+      PROMPT_SIGNAL_TS=$(tmux show-options -p -t "$pane" -v @prompt_state_ts 2>/dev/null || true)
+      PROMPT_SIGNAL_TS=$(trim_spaces "${PROMPT_SIGNAL_TS:-}")
+      return 0
+      ;;
+    *)
+      PROMPT_SIGNAL_REASON="invalid"
+      return 1
+      ;;
+  esac
+}
+
+# Unified output slots set by resolve_prompt_state:
+#   PROMPT_RESOLVED_STATE   -> idle | typing | suggestion | unknown
+#   PROMPT_RESOLVED_REASON  -> detailed reason
+#   PROMPT_RESOLVED_SOURCE  -> tmux option source | heuristic
+#   PROMPT_RESOLVED_SNIPPET -> short draft snippet when typing
+PROMPT_RESOLVED_STATE="unknown"
+PROMPT_RESOLVED_REASON="uninitialized"
+PROMPT_RESOLVED_SOURCE="unknown"
+PROMPT_RESOLVED_SNIPPET=""
+
+resolve_prompt_state() {
+  local pane="$1"
+  local signal_reason
+
+  if read_prompt_state_signal "$pane"; then
+    PROMPT_RESOLVED_STATE="$PROMPT_SIGNAL_STATE"
+    PROMPT_RESOLVED_REASON="signal:${PROMPT_SIGNAL_STATE}"
+    PROMPT_RESOLVED_SOURCE="$PROMPT_SIGNAL_SOURCE"
+    PROMPT_RESOLVED_SNIPPET=""
+    return 0
+  fi
+
+  signal_reason="$PROMPT_SIGNAL_REASON"
+  detect_prompt_draft_state "$pane"
+  PROMPT_RESOLVED_STATE="$PROMPT_DRAFT_STATE"
+  PROMPT_RESOLVED_REASON="heuristic:${PROMPT_DRAFT_REASON},signal=${signal_reason}"
+  PROMPT_RESOLVED_SOURCE="heuristic"
+  PROMPT_RESOLVED_SNIPPET="$PROMPT_DRAFT_SNIPPET"
+  return 0
+}
+
+# Parser output slots populated by parse_prompt_snapshot:
+#   PROMPT_PARSE_OK            -> true | false
+#   PROMPT_PARSE_REASON        -> parser reason
+#   PROMPT_PARSE_TEXT          -> normalized prompt draft text
+#   PROMPT_PARSE_HAS_CURSOR    -> true | false
+#   PROMPT_PARSE_SHORTCUT_HINT -> true | false
+PROMPT_PARSE_OK="false"
+PROMPT_PARSE_REASON="uninitialized"
+PROMPT_PARSE_TEXT=""
+PROMPT_PARSE_HAS_CURSOR="false"
+PROMPT_PARSE_SHORTCUT_HINT="false"
+
+parse_prompt_snapshot() {
+  local captured="$1"
+  local cleaned line
+
+  PROMPT_PARSE_OK="false"
+  PROMPT_PARSE_REASON="capture_failed"
+  PROMPT_PARSE_TEXT=""
+  PROMPT_PARSE_HAS_CURSOR="false"
+  PROMPT_PARSE_SHORTCUT_HINT="false"
+
+  if [[ -z "$captured" ]]; then
+    PROMPT_PARSE_REASON="empty_capture"
+    return 0
+  fi
+
+  cleaned=$(printf '%s\n' "$captured" | strip_ansi)
+  local _draft_source=()
+  while IFS= read -r line; do
+    _draft_source+=("$line")
+  done <<< "$cleaned"
+  if [[ ${#_draft_source[@]} -eq 0 ]]; then
+    PROMPT_PARSE_REASON="empty_capture"
+    return 0
+  fi
+
+  local source_len start
+  source_len=${#_draft_source[@]}
+  if (( source_len > TMUX_TYPING_GUARD_SCAN_TAIL_LINES )); then
+    start=$(( source_len - TMUX_TYPING_GUARD_SCAN_TAIL_LINES ))
+  else
+    start=0
+  fi
+  local _draft_tail=( "${_draft_source[@]:$start}" )
+  local tail_len=${#_draft_tail[@]}
+  if (( tail_len == 0 )); then
+    PROMPT_PARSE_REASON="empty_capture"
+    return 0
+  fi
+
+  local end=$(( tail_len - 1 ))
+  local trimmed
+  while (( end >= 0 )); do
+    trimmed=$(trim_spaces "${_draft_tail[$end]}")
+    [[ -n "$trimmed" ]] && break
+    ((end--))
+  done
+  if (( end < 0 )); then
+    PROMPT_PARSE_REASON="blank_capture"
+    return 0
+  fi
+
+  while (( end >= 0 )); do
+    if is_tmux_footer_line "${_draft_tail[$end]}" || is_tmux_divider_line "${_draft_tail[$end]}"; then
+      ((end--))
+      continue
+    fi
+    break
+  done
+  if (( end < 0 )); then
+    PROMPT_PARSE_REASON="footer_only_capture"
+    return 0
+  fi
+
+  local search_start=$(( end - 16 ))
+  (( search_start < 0 )) && search_start=0
+  local prompt_index=-1 i
+  for (( i=end; i>=search_start; i-- )); do
+    if is_prompt_line "${_draft_tail[$i]}"; then
+      prompt_index=$i
+      break
+    fi
+  done
+
+  if (( prompt_index < 0 )); then
+    PROMPT_PARSE_REASON="prompt_not_found"
+    return 0
+  fi
+
+  if (( end - prompt_index > TMUX_TYPING_GUARD_MAX_PROMPT_DISTANCE_LINES )); then
+    PROMPT_PARSE_REASON="prompt_too_far_from_bottom"
+    return 0
+  fi
+
+  local draft_parts=()
+  local prompt_body first_draft
+  prompt_body=$(printf '%s' "${_draft_tail[$prompt_index]}" \
+    | sed -E 's/^[[:space:]]*[›❯>][[:space:]]*//')
+  if contains_prompt_ui_marker "$prompt_body"; then
+    PROMPT_PARSE_SHORTCUT_HINT="true"
+  fi
+  if has_cursor_glyph "$prompt_body"; then
+    PROMPT_PARSE_HAS_CURSOR="true"
+  fi
+
+  first_draft=$(printf '%s' "$prompt_body" \
+    | sed -E 's/[▌█▋▍▎▏]+$//' \
+    | strip_prompt_ui_tail)
+  [[ -n "$first_draft" ]] && draft_parts+=("$first_draft")
+
+  local continuation_end=$(( prompt_index + TMUX_TYPING_GUARD_MAX_CONTINUATION_LINES ))
+  (( continuation_end > end )) && continuation_end=$end
+  local raw normalized
+  for (( i=prompt_index+1; i<=continuation_end; i++ )); do
+    raw="${_draft_tail[$i]}"
+    trimmed=$(trim_spaces "$raw")
+    [[ -z "$trimmed" ]] && continue
+    if is_tmux_footer_line "$raw" || is_tmux_divider_line "$raw" || is_prompt_line "$raw"; then
+      break
+    fi
+    if looks_like_shortcuts_line "$raw"; then
+      PROMPT_PARSE_SHORTCUT_HINT="true"
+    fi
+    if contains_prompt_ui_marker "$raw"; then
+      PROMPT_PARSE_SHORTCUT_HINT="true"
+    fi
+    if has_cursor_glyph "$raw"; then
+      PROMPT_PARSE_HAS_CURSOR="true"
+    fi
+    normalized=$(printf '%s' "$raw" \
+      | sed -E 's/[▌█▋▍▎▏]+$//' \
+      | strip_prompt_ui_tail)
+    [[ -n "$normalized" ]] && draft_parts+=("$normalized")
+  done
+
+  local draft_text=""
+  if (( ${#draft_parts[@]} > 0 )); then
+    draft_text=$(printf '%s ' "${draft_parts[@]}" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
+  fi
+
+  PROMPT_PARSE_OK="true"
+  PROMPT_PARSE_REASON="ok"
+  PROMPT_PARSE_TEXT="$draft_text"
+  return 0
+}
+
+# Global output slots set by detect_prompt_draft_state:
+#   PROMPT_DRAFT_STATE  -> idle | typing | suggestion | unknown
+#   PROMPT_DRAFT_REASON -> parser reason
+#   PROMPT_DRAFT_SNIPPET-> short draft snippet when typing
+PROMPT_DRAFT_STATE="unknown"
+PROMPT_DRAFT_REASON="uninitialized"
+PROMPT_DRAFT_SNIPPET=""
+
+detect_prompt_draft_state() {
+  local pane="$1"
+  local captured first_text first_cursor first_shortcuts
+  local second_text second_cursor
+
+  PROMPT_DRAFT_STATE="unknown"
+  PROMPT_DRAFT_REASON="capture_failed"
+  PROMPT_DRAFT_SNIPPET=""
+
+  captured=$(tmux capture-pane -t "$pane" -p -S "-${TMUX_TYPING_GUARD_READ_LINES}" 2>/dev/null || true)
+  parse_prompt_snapshot "$captured"
+  if [[ "$PROMPT_PARSE_OK" != "true" ]]; then
+    PROMPT_DRAFT_REASON="$PROMPT_PARSE_REASON"
+    return 0
+  fi
+
+  first_text="$PROMPT_PARSE_TEXT"
+  first_cursor="$PROMPT_PARSE_HAS_CURSOR"
+  first_shortcuts="$PROMPT_PARSE_SHORTCUT_HINT"
+
+  if [[ -z "$first_text" ]]; then
+    PROMPT_DRAFT_STATE="idle"
+    PROMPT_DRAFT_REASON="prompt_idle"
+    PROMPT_DRAFT_SNIPPET=""
+    return 0
+  fi
+
+  if [[ "$first_cursor" == "true" ]]; then
+    PROMPT_DRAFT_STATE="typing"
+    PROMPT_DRAFT_REASON="cursor_detected"
+    PROMPT_DRAFT_SNIPPET=$(printf '%s' "$first_text" | cut -c1-120)
+    return 0
+  fi
+
+  if [[ "$first_shortcuts" == "true" ]] || looks_like_suggestion_text "$first_text"; then
+    PROMPT_DRAFT_STATE="suggestion"
+    PROMPT_DRAFT_REASON="suggestion_hint_detected"
+    PROMPT_DRAFT_SNIPPET=$(printf '%s' "$first_text" | cut -c1-120)
+    return 0
+  fi
+
+  # Re-check quickly to avoid classifying a transient repaint as user typing.
+  sleep "$TMUX_TYPING_GUARD_RECHECK_DELAY_SEC"
+  captured=$(tmux capture-pane -t "$pane" -p -S "-${TMUX_TYPING_GUARD_READ_LINES}" 2>/dev/null || true)
+  parse_prompt_snapshot "$captured"
+  if [[ "$PROMPT_PARSE_OK" != "true" ]]; then
+    PROMPT_DRAFT_STATE="unknown"
+    PROMPT_DRAFT_REASON="recheck_${PROMPT_PARSE_REASON}"
+    PROMPT_DRAFT_SNIPPET=""
+    return 0
+  fi
+
+  second_text="$PROMPT_PARSE_TEXT"
+  second_cursor="$PROMPT_PARSE_HAS_CURSOR"
+
+  if [[ -z "$second_text" ]]; then
+    PROMPT_DRAFT_STATE="idle"
+    PROMPT_DRAFT_REASON="prompt_idle_after_recheck"
+    PROMPT_DRAFT_SNIPPET=""
+    return 0
+  fi
+
+  if [[ "$second_cursor" == "true" ]]; then
+    PROMPT_DRAFT_STATE="typing"
+    PROMPT_DRAFT_REASON="cursor_detected_after_recheck"
+    PROMPT_DRAFT_SNIPPET=$(printf '%s' "$second_text" | cut -c1-120)
+    return 0
+  fi
+
+  if [[ "$second_text" != "$first_text" ]]; then
+    PROMPT_DRAFT_STATE="typing"
+    PROMPT_DRAFT_REASON="dynamic_prompt_input"
+    PROMPT_DRAFT_SNIPPET=$(printf '%s' "$second_text" | cut -c1-120)
+    return 0
+  fi
+
+  # Stable non-empty text without explicit suggestion hints is treated as typing.
+  PROMPT_DRAFT_STATE="typing"
+  PROMPT_DRAFT_REASON="stable_non_empty_prompt"
+  PROMPT_DRAFT_SNIPPET=$(printf '%s' "$second_text" | cut -c1-120)
+  return 0
 }
 
 # Check if pane shows a CC prompt marker (U+276F)
@@ -437,6 +1145,22 @@ is_target_idle() {
 # Get idle status as string for display
 get_idle_status() {
   local pane="$1"
+  resolve_prompt_state "$pane"
+  case "$PROMPT_RESOLVED_STATE" in
+    typing)
+      echo "typing"
+      return 0
+      ;;
+    suggestion)
+      echo "suggestion"
+      return 0
+      ;;
+    unknown)
+      echo "busy"
+      return 0
+      ;;
+  esac
+
   if is_target_idle "$pane"; then
     echo "idle"
   else
@@ -506,6 +1230,18 @@ flush_queue() {
   local qfile="${QUEUE_DIR}/${target_name}.queue"
   [[ -f "$qfile" ]] || return 0
 
+  resolve_prompt_state "$pane"
+  case "$PROMPT_RESOLVED_STATE" in
+    typing)
+      echo "  Skipped flush for $target_name (session_typing_busy: ${PROMPT_RESOLVED_REASON})" >&2
+      return 0
+      ;;
+    unknown)
+      echo "  Skipped flush for $target_name (session_typing_busy fail-safe: ${PROMPT_RESOLVED_REASON})" >&2
+      return 0
+      ;;
+  esac
+
   local now delivered=0 kept_lines=""
   now=$(date +%s)
 
@@ -526,6 +1262,19 @@ flush_queue() {
     if [[ $max_count -gt 0 && $delivered -ge $max_count ]]; then
       # Keep remaining messages in queue
       kept_lines+="${epoch}"$'\t'"${header}"$'\t'"${msg}"$'\n'
+      continue
+    fi
+
+    # Policy guard (drop queued relay-like messages unless explicitly allowed on this invocation)
+    if enforce_send_policy "$target_name" "$msg"; then
+      :
+    else
+      local rc=$?
+      if [[ $rc -eq $RELAY_BLOCK_EXIT || $rc -eq $BROADCAST_BLOCK_EXIT ]]; then
+        echo "  Dropped policy-blocked queued message for $target_name" >&2
+      else
+        echo "  Failed send policy check for $target_name (rc=$rc), dropping entry" >&2
+      fi
       continue
     fi
 
@@ -574,7 +1323,9 @@ flush_all_queues() {
       echo "Warning: target '$target_name' not found, keeping queue" >&2
       continue
     }
-    if is_target_idle "$pane"; then
+    local idle_status
+    idle_status=$(get_idle_status "$pane")
+    if [[ "$idle_status" == "idle" ]]; then
       local count
       count=$(queue_count "$target_name")
       echo "Flushing $count message(s) to $target_name..." >&2
@@ -583,7 +1334,7 @@ flush_all_queues() {
     else
       local count
       count=$(queue_count "$target_name")
-      echo "$target_name: busy ($count message(s) queued)" >&2
+      echo "$target_name: $idle_status ($count message(s) queued)" >&2
     fi
   done
 
@@ -619,24 +1370,120 @@ is_gate_target() {
   [[ "$1" == "gate" || "$1" == gate:* ]]
 }
 
-# Extract adapter from gate target (gate -> default, gate:line -> line)
+# Normalize adapter aliases:
+#   session -> tmux
+#   default        -> workspace default adapter
+normalize_gate_adapter() {
+  local adapter="$1" lower resolved
+  lower=$(printf '%s' "$adapter" | tr '[:upper:]' '[:lower:]')
+  case "$lower" in
+    ""|session)
+      echo "tmux"
+      ;;
+    default)
+      resolved=$(printf '%s' "$(gate_default_adapter)" | tr '[:upper:]' '[:lower:]')
+      case "$resolved" in
+        ""|session|default) echo "tmux" ;;
+        direct) echo "direct" ;;
+        *) echo "$resolved" ;;
+      esac
+      ;;
+    *)
+      echo "$lower"
+      ;;
+  esac
+}
+
+# Extract adapter from gate target.
+# Defaults to session-first lane:
+#   gate          -> tmux (session)
+#   gate:session  -> tmux (session)
+#   gate:default  -> workspace default
+#   gate:line     -> line
 gate_adapter() {
-  local target="$1"
+  local target="$1" raw
   if [[ "$target" == gate:* ]]; then
-    echo "${target#gate:}"
+    raw="${target#gate:}"
   else
-    gate_default_adapter
+    raw="session"
   fi
+  normalize_gate_adapter "$raw"
+}
+
+# Resolve session lane target for tmux adapter.
+# Priority:
+#   1) $TPROJ_GATE_SESSION_TARGET env
+#   2) workspace.yaml gui.bridge.session_target
+#   3) /v1/config tmux.sessionModes with value=autonomous (first key's alias)
+#   4) fallback: clawgate
+gate_session_target() {
+  local target=""
+  local bridge_url cfg
+
+  target=$(trim_spaces "${TPROJ_GATE_SESSION_TARGET:-}")
+  if [[ -n "$target" ]]; then
+    echo "$target"
+    return
+  fi
+
+  if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
+    target=$(yq '.gui.bridge.session_target' "$WORKSPACE_CONFIG" 2>/dev/null || true)
+    [[ "$target" == "null" ]] && target=""
+    target=$(trim_spaces "$target")
+    if [[ -n "$target" ]]; then
+      echo "$target"
+      return
+    fi
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    bridge_url=$(gate_bridge_url)
+    cfg=$(curl -s --connect-timeout 2 --max-time 3 "${bridge_url}/v1/config" 2>/dev/null || true)
+    if [[ -n "$cfg" ]]; then
+      target=$(printf '%s' "$cfg" | jq -r '.result.tmux.sessionModes // {} | to_entries[] | select(.value=="autonomous") | .key' 2>/dev/null | head -n 1 || true)
+      target=$(printf '%s' "$target" | awk -F ':' '{print $2}')
+      target=$(trim_spaces "$target")
+      if [[ -n "$target" ]]; then
+        echo "$target"
+        return
+      fi
+    fi
+  fi
+
+  echo "clawgate"
+}
+
+is_line_private_message() {
+  local msg="$1"
+  printf '%s\n' "$msg" | grep -Eiq '^[[:space:]]*\[line-private\]'
+}
+
+strip_line_private_tag() {
+  local msg="$1"
+  printf '%s' "$msg" | sed -E 's/^[[:space:]]*\[[Ll][Ii][Nn][Ee]-[Pp][Rr][Ii][Vv][Aa][Tt][Ee]\][[:space:]]*//'
+}
+
+gate_sender_label() {
+  if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
+    echo "${MY_ALIAS}.${MY_ROLE}"
+  else
+    echo "${MY_ROLE}"
+  fi
+}
+
+format_line_private_notice() {
+  local sender="$1" body="$2"
+  printf '%sから私信（セッション非共有）: %s' "$sender" "$body"
 }
 
 # Send message via ClawGate bridge
 # Routes:
-#   gate (default) -> /v1/debug/inject (direct EventBus injection, picked up by poll)
+#   gate/session   -> /v1/send adapter=tmux (session lane)
 #   gate:line      -> /v1/send with LINE adapter
-#   gate:tmux      -> /v1/send with tmux adapter
+#   gate:direct    -> /v1/debug/inject (legacy direct EventBus lane)
 # Usage: send_via_gate <adapter> <message>
 send_via_gate() {
-  local adapter="$1" msg="$2"
+  local adapter="$1" msg="$2" conversation_hint="${3:-tproj}"
   local bridge_url
   bridge_url=$(gate_bridge_url)
   local escaped_msg
@@ -647,7 +1494,7 @@ send_via_gate() {
   if [[ "$adapter" == "direct" ]]; then
     # Direct EventBus injection -> handleInboundMessage (default path)
     # Chi identifies sender via [tproj-msg:...] header in text
-    # Chi replies via LINE (existing path, no tmux routing needed)
+    # reply lane hint is embedded by caller
     endpoint="/v1/debug/inject"
     local conv="${MY_ALIAS:-tproj-msg}"
     payload=$(printf '{"type":"inbound_message","adapter":"tproj","text":"%s","conversation":"%s"}' \
@@ -655,8 +1502,8 @@ send_via_gate() {
   else
     # Adapter-routed send (line, tmux, etc.)
     endpoint="/v1/send"
-    payload=$(printf '{"adapter":"%s","action":"send_message","payload":{"conversation_hint":"tproj","text":"%s","enter_to_send":true,"trace_id":"%s"}}' \
-      "$adapter" "$escaped_msg" "$trace_id")
+    payload=$(printf '{"adapter":"%s","action":"send_message","payload":{"conversation_hint":"%s","text":"%s","enter_to_send":true,"trace_id":"%s"}}' \
+      "$adapter" "$conversation_hint" "$escaped_msg" "$trace_id")
   fi
 
   local result http_code
@@ -802,7 +1649,11 @@ if [[ "$LIST_MODE" == "true" ]]; then
   default_adapter=$(gate_default_adapter)
   gurl=$(gate_bridge_url)
   echo ""
-  printf "  %-20s  bridge (%s, %s)\n" "gate" "$default_adapter" "$gstatus"
+  printf "  %-20s  bridge (session-first/tmux, %s)\n" "gate" "$gstatus"
+  printf "  %-20s  bridge (legacy direct lane)\n" "gate:direct"
+  printf "  %-20s  bridge (LINE explicit lane)\n" "gate:line"
+  printf "  %-20s  bridge default adapter: %s\n" "gate:default" "$default_adapter"
+  printf "  %-20s  bridge session target: %s\n" "gate:session" "$(gate_session_target)"
   printf "  %-20s  %s\n" "" "$gurl"
 
   exit 0
@@ -865,6 +1716,16 @@ if [[ "$STATUS_MODE" == "true" ]]; then
   exit 0
 fi
 
+# === Send policy precheck (send modes only) ===
+if [[ "$READ_MODE" != "true" ]]; then
+  if enforce_send_policy "$TARGET" "$MESSAGE"; then
+    :
+  else
+    policy_rc=$?
+    exit "$policy_rc"
+  fi
+fi
+
 # === Gate target early-exit (bypasses tmux pane resolution) ===
 if is_gate_target "$TARGET"; then
   if [[ "$READ_MODE" == "true" ]]; then
@@ -872,11 +1733,16 @@ if is_gate_target "$TARGET"; then
     exit 1
   fi
 
-  # Build header for gate (structured key=value for Chi parsing)
+  sender_label=""
+  gate_msg=""
+  gate_adpt=""
+  gate_hint=""
+  sender_label=$(gate_sender_label)
+  # Structured header includes reply lane hint.
   if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
-    HEADER="[tproj-msg:sender=${MY_ALIAS}.${MY_ROLE},project=${MY_ALIAS}]"
+    HEADER="[tproj-msg:sender=${sender_label},project=${MY_ALIAS},reply=session]"
   else
-    HEADER="[tproj-msg:sender=${MY_ROLE}]"
+    HEADER="[tproj-msg:sender=${sender_label},reply=session]"
   fi
 
   if control_dedup_check_and_mark "$TARGET" "$MESSAGE"; then
@@ -889,7 +1755,28 @@ if is_gate_target "$TARGET"; then
   fi
 
   gate_adpt=$(gate_adapter "$TARGET")
-  send_via_gate "$gate_adpt" "${HEADER} ${MESSAGE}"
+  gate_hint="${MY_ALIAS:-tproj}"
+  if [[ "$gate_adpt" == "tmux" ]]; then
+    gate_hint=$(gate_session_target)
+  fi
+  gate_msg="${HEADER} ${MESSAGE}"
+
+  # Explicit private lane:
+  #   [line-private] ...  -> LINE only, no session share wording in payload.
+  if is_line_private_message "$MESSAGE"; then
+    private_body=""
+    private_body=$(strip_line_private_tag "$MESSAGE")
+    private_body=$(trim_spaces "$private_body")
+    if [[ -z "$private_body" ]]; then
+      echo "Error: [line-private] requires non-empty message body" >&2
+      exit 1
+    fi
+    gate_adpt="line"
+    gate_hint="${MY_ALIAS:-tproj}"
+    gate_msg=$(format_line_private_notice "$sender_label" "$private_body")
+  fi
+
+  send_via_gate "$gate_adpt" "$gate_msg" "$gate_hint"
   exit $?
 fi
 
@@ -916,6 +1803,35 @@ if ! is_target_online "$TARGET_PANE"; then
   echo "Error: target '$TARGET' is offline (role=${target_role}, cmd=${target_cmd})" >&2
   echo "Hint: start the target AI first, then retry." >&2
   exit 1
+fi
+
+resolve_prompt_state "$TARGET_PANE"
+TARGET_TYPING_BLOCKED="false"
+case "$PROMPT_RESOLVED_STATE" in
+  typing)
+    if [[ "$FORCE_MODE" == "true" ]]; then
+      echo "Warning: target '$TARGET' has unsent input (session_typing_busy); proceeding due to --force" >&2
+      echo "Detail: source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}" >&2
+      [[ -n "$PROMPT_RESOLVED_SNIPPET" ]] && echo "Detail: draft='${PROMPT_RESOLVED_SNIPPET}'" >&2
+    else
+      TARGET_TYPING_BLOCKED="true"
+      echo "Info: target '$TARGET' has unsent input (session_typing_busy); queueing instead of immediate send." >&2
+      echo "Detail: source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}" >&2
+      [[ -n "$PROMPT_RESOLVED_SNIPPET" ]] && echo "Detail: draft='${PROMPT_RESOLVED_SNIPPET}'" >&2
+    fi
+    ;;
+  unknown)
+    if [[ "$FORCE_MODE" == "true" || "$FIRE_MODE" == "true" ]]; then
+      echo "Warning: target '$TARGET' prompt state is unknown; proceeding due to --force/--fire (source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON})" >&2
+    fi
+    ;;
+esac
+
+if fanout_guard_check_and_mark "$TARGET" "$MESSAGE"; then
+  :
+else
+  fanout_rc=$?
+  exit "$fanout_rc"
 fi
 
 if control_dedup_check_and_mark "$TARGET" "$MESSAGE"; then
@@ -952,6 +1868,16 @@ fi
 
 # === --fire: no idle check, auto-flush (max 3), then send ===
 if [[ "$FIRE_MODE" == "true" ]]; then
+  if [[ "$TARGET_TYPING_BLOCKED" == "true" ]]; then
+    if [[ "$ALLOW_RELAY" == "true" ]] && is_relay_like_message "$MESSAGE"; then
+      echo "Error: relay override cannot enqueue when target is typing" >&2
+      echo "Hint: retry with --force if immediate delivery is intended." >&2
+      exit "$RELAY_BLOCK_EXIT"
+    fi
+    enqueue "$TARGET" "$HEADER" "$MESSAGE"
+    echo "Queued for $TARGET (target typing)" >&2
+    exit 0
+  fi
   ensure_queue_dir
   # Auto-flush queued messages first (max AUTO_FLUSH_MAX)
   if [[ -f "${QUEUE_DIR}/${TARGET}.queue" ]]; then
@@ -972,6 +1898,24 @@ if is_target_idle "$TARGET_PANE"; then
   fi
   raw_send
 else
+  resolve_prompt_state "$TARGET_PANE"
+  case "$PROMPT_RESOLVED_STATE" in
+    typing)
+      echo "Info: target '$TARGET' has unsent input (session_typing_busy); queueing instead of immediate send." >&2
+      echo "Detail: source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}" >&2
+      [[ -n "$PROMPT_RESOLVED_SNIPPET" ]] && echo "Detail: draft='${PROMPT_RESOLVED_SNIPPET}'" >&2
+      ;;
+    unknown)
+      echo "Info: target '$TARGET' prompt state is unknown (source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}); queueing instead of immediate send." >&2
+      ;;
+  esac
+
+  # Keep override one-shot semantics strict: relay-like override cannot fall back to queue.
+  if [[ "$ALLOW_RELAY" == "true" ]] && is_relay_like_message "$MESSAGE"; then
+    echo "Error: relay override cannot enqueue when target is busy" >&2
+    echo "Hint: retry with --fire or --force if immediate delivery is intended." >&2
+    exit "$RELAY_BLOCK_EXIT"
+  fi
   enqueue "$TARGET" "$HEADER" "$MESSAGE"
   echo "Queued for $TARGET (target busy)" >&2
 fi

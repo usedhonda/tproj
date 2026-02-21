@@ -226,6 +226,7 @@ fi
 # 4.1 tproj スクリプト
 if $DRY_RUN; then
   echo "[DRY-RUN] 📦 tproj -> ~/bin/"
+  echo "[DRY-RUN] 📦 tproj-drop-column -> ~/bin/"
   echo "[DRY-RUN] 📦 tproj-toggle-yazi -> ~/bin/"
   echo "[DRY-RUN] 📦 tproj-msg -> ~/bin/"
   echo "[DRY-RUN] 📦 agent-monitor -> ~/bin/"
@@ -235,9 +236,10 @@ if $DRY_RUN; then
   echo "[DRY-RUN] 📦 memory-guard -> ~/bin/"
   echo "[DRY-RUN] 📦 tproj-mem-json -> ~/bin/"
 else
-  echo "📦 tproj, tproj-mcp-init, tproj-toggle-yazi, tproj-msg, agent-monitor, team-watcher, reflow-agent-pane, rebalance-workspace-columns, sign-codex, cc-mem, memory-guard, tproj-mem-json -> ~/bin/"
+  echo "📦 tproj, tproj-drop-column, tproj-mcp-init, tproj-toggle-yazi, tproj-msg, agent-monitor, team-watcher, reflow-agent-pane, rebalance-workspace-columns, sign-codex, cc-mem, memory-guard, tproj-mem-json -> ~/bin/"
   mkdir -p ~/bin
   cp "$SCRIPT_DIR/bin/tproj" ~/bin/tproj
+  cp "$SCRIPT_DIR/bin/tproj-drop-column" ~/bin/tproj-drop-column
   cp "$SCRIPT_DIR/bin/tproj-mcp-init" ~/bin/tproj-mcp-init
   cp "$SCRIPT_DIR/bin/tproj-toggle-yazi" ~/bin/tproj-toggle-yazi
   cp "$SCRIPT_DIR/bin/tproj-msg" ~/bin/tproj-msg
@@ -249,7 +251,7 @@ else
   cp "$SCRIPT_DIR/bin/cc-mem" ~/bin/cc-mem
   cp "$SCRIPT_DIR/bin/memory-guard" ~/bin/memory-guard
   cp "$SCRIPT_DIR/bin/tproj-mem-json" ~/bin/tproj-mem-json
-  chmod +x ~/bin/tproj ~/bin/tproj-mcp-init ~/bin/tproj-toggle-yazi ~/bin/tproj-msg ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/rebalance-workspace-columns ~/bin/sign-codex ~/bin/cc-mem ~/bin/memory-guard ~/bin/tproj-mem-json
+  chmod +x ~/bin/tproj ~/bin/tproj-drop-column ~/bin/tproj-mcp-init ~/bin/tproj-toggle-yazi ~/bin/tproj-msg ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/rebalance-workspace-columns ~/bin/sign-codex ~/bin/cc-mem ~/bin/memory-guard ~/bin/tproj-mem-json
 
   # 4.1.1 Legacy cleanup: remove old GUI binary copy to avoid stale launches
   if [[ -f "$HOME/bin/tproj-gui" ]]; then
@@ -334,18 +336,33 @@ fi
 if $DRY_RUN; then
   echo "[DRY-RUN] 📦 Claude Code skills -> ~/.claude/skills/"
 else
-  echo "📦 Claude Code skills -> ~/.claude/skills/"
   mkdir -p ~/.claude/skills
-  cp -r "$SCRIPT_DIR/config/claude/skills/"* ~/.claude/skills/
+  if ls "$SCRIPT_DIR/config/claude/skills/"* &>/dev/null; then
+    echo "📦 Claude Code skills -> ~/.claude/skills/"
+    cp -r "$SCRIPT_DIR/config/claude/skills/"* ~/.claude/skills/
+  fi
 fi
 
 # 4.7 Codex スキル
 if $DRY_RUN; then
   echo "[DRY-RUN] 📦 Codex skills -> ~/.codex/skills/"
 else
-  echo "📦 Codex skills -> ~/.codex/skills/"
   mkdir -p ~/.codex/skills
-  cp -r "$SCRIPT_DIR/config/codex/skills/"* ~/.codex/skills/
+  if ls "$SCRIPT_DIR/config/codex/skills/"* &>/dev/null; then
+    echo "📦 Codex skills -> ~/.codex/skills/"
+    cp -r "$SCRIPT_DIR/config/codex/skills/"* ~/.codex/skills/
+  fi
+fi
+
+# 4.8 Shared skills (CC + Cdx)
+if [[ -d "$SCRIPT_DIR/config/shared/skills" ]]; then
+  if $DRY_RUN; then
+    echo "[DRY-RUN] 📦 Shared skills -> ~/.claude/skills/ + ~/.codex/skills/"
+  else
+    echo "📦 Shared skills -> ~/.claude/skills/ + ~/.codex/skills/"
+    cp -r "$SCRIPT_DIR/config/shared/skills/"* ~/.claude/skills/
+    cp -r "$SCRIPT_DIR/config/shared/skills/"* ~/.codex/skills/
+  fi
 fi
 
 # ========== 5. PATH自動設定 ==========
@@ -398,6 +415,7 @@ fi
 echo ""
 echo "📍 インストール先:"
 echo "   ~/bin/tproj"
+echo "   ~/bin/tproj-drop-column"
 echo "   ~/bin/tproj-toggle-yazi"
 echo "   ~/bin/tproj-msg"
 echo "   ~/bin/agent-monitor"
@@ -416,3 +434,7 @@ echo ""
 echo "💡 使い方:"
 echo "   単一プロジェクト: cd <project> && tproj"
 echo "   マルチプロジェクト: ~/.config/tproj/workspace.yaml を作成してから tproj"
+echo ""
+echo "🩺 tproj-msg 実行元確認:"
+echo "   tproj-msg --version"
+echo "   (script_path が ~/bin/tproj-msg で古い場合) cp \"$SCRIPT_DIR/bin/tproj-msg\" ~/bin/tproj-msg"

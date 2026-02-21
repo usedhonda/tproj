@@ -34,8 +34,38 @@
 #                       # tproj stop/kill does not close GUI
 #                       # false closes GUI on stop/kill
 #
-# If gui section is omitted:
-# GUI launches when ~/bin/tproj-gui exists (keep_alive=true behavior).
+#   # Optional fixed GUI app path (recommended for development)
+#   # Accepts either:
+#   #   /path/to/tproj.app
+#   #   /path/to/tproj.app/Contents/MacOS/tproj
+#   app_path: /Users/<username>/projects/claude/tproj/apps/tproj/dist/tproj.app
+#
+#   # Extra directories to add to the GUI app's PATH
+#   # Builtin defaults (~/bin, /opt/homebrew/bin, /usr/local/bin) are always included
+#   extra_paths:
+#     - /opt/custom/bin
+#     # - /another/path
+#
+#   # Commands checked at startup; missing ones show hints in the UI
+#   # Builtin defaults: tmux (required), yq (optional)
+#   dependencies:
+#     - name: tmux
+#       required: true
+#       hint: brew install tmux
+#     - name: yq
+#       required: false
+#       hint: brew install yq
+#
+#   # ClawGate bridge connection for tproj-msg gate targets
+#   bridge:
+#     url: http://localhost:8765    # Bridge server URL
+#     default_adapter: direct       # Default adapter (see below)
+#   #
+#   # Adapter types:
+#   #   direct  - /v1/debug/inject -> EventBus injection -> Chi polls via /v1/poll
+#   #             Chi receives [tproj-msg:sender=ALIAS.ROLE,project=ALIAS] header
+#   #   line    - /v1/send adapter=line -> LINE message to user
+#   #   tmux    - /v1/send adapter=tmux -> send-keys to CC pane (requires autonomous mode)
 
 # ===== Detailed format (local + remote) =====
 

@@ -53,6 +53,27 @@ tproj --add [alias]
 tproj --columns <N>
 ```
 
+## Troubleshooting `tproj-msg`
+
+If `--force` still returns `session_typing_busy`, first verify which binary is running:
+
+```bash
+command -v tproj-msg
+tproj-msg --version
+```
+
+Expected behavior in this repo:
+
+- When launched from inside this repository, a stale `~/bin/tproj-msg` auto re-execs to `./bin/tproj-msg`.
+- `tproj-msg --version` prints `script_path` so you can confirm the actual executable.
+
+If needed, resync manually:
+
+```bash
+cp ./bin/tproj-msg ~/bin/tproj-msg
+hash -r
+```
+
 ## Modes
 
 ### Single-project mode
@@ -73,7 +94,22 @@ Single-source runtime rule:
 - Launch only `apps/tproj/dist/tproj.app` (no `~/bin/tproj-gui`, no direct `.build/.../debug/tproj` launch).
 - Rebuild the `.app` before launching after Swift source changes.
 
-Recommended development command:
+GUI target resolution order in `tproj`:
+
+1. `TPROJ_GUI_APP_PATH` environment variable
+2. `~/.config/tproj/workspace.yaml` -> `gui.app_path`
+3. Workspace project paths (`<project>/apps/tproj/dist/tproj.app`)
+4. Current project root (`apps/tproj/dist/tproj.app`)
+5. Release install path (`~/Applications/tproj.app`, `/Applications/tproj.app`)
+
+Recommended development setup:
+
+```bash
+cd apps/tproj
+./dev-setup.sh
+```
+
+Recommended development run:
 
 ```bash
 cd apps/tproj
@@ -118,6 +154,7 @@ Release script options:
 ## Repository Layout
 
 - `bin/tproj`: primary launcher
+- `bin/tproj-drop-column`: batch drop helper (single rebalance pass)
 - `bin/tproj-msg`: inter-pane messaging helper
 - `bin/cc-mem`: memory monitor CLI
 - `bin/memory-guard`: launchd memory guard process
@@ -128,6 +165,7 @@ Release script options:
 ## Notes
 
 - `tproj` intentionally does not run npm global updates automatically.
+- For heavy multi-pane usage in Ghostty, consider lowering `scrollback-limit` (for example `3000`) to reduce terminal memory pressure.
 - Update manually when needed:
 
 ```bash
