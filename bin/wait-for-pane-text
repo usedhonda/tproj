@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# wait-for-pane-text - Poll a tmux pane until a pattern appears
+set -uo pipefail
+
+TARGET="" PATTERN="" TIMEOUT=30 INTERVAL=0.5 LINES=100 FIXED=false STRIP_ANSI=false
+
+usage() {
+  cat << 'EOF'
+Usage: wait-for-pane-text -t TARGET -p PATTERN [options]
+
+Options:
+  -t, --target TARGET     tmux target (session:window.pane)  [required]
+  -p, --pattern PATTERN   search pattern (grep ERE)          [required]
+  -F, --fixed             fixed string match (grep -F)
+  -T, --timeout SECONDS   timeout in seconds (default: 30, 0=single check)
+  -i, --interval SECONDS  polling interval (default: 0.5)
+  -l, --lines N           lines of history to capture (default: 100)
+  -A, --strip-ansi        strip ANSI escapes before matching
+  -h, --help              show this help
+
+Exit codes:
+  0 = pattern found
+  1 = timeout (or no match on -T 0)
+  2 = argument error / tmux error
+EOF
+}
+
+# --- arg parse ---
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -t|--target)     TARGET="$2";   shift 2 ;;
+    -p|--pattern)    PATTERN="$2";  shift 2 ;;
+    -F|--fixed)      FIXED=true;    shift ;;
+    -T|--timeout)    TIMEOUT="$2";  shift 2 ;;
+    -i|--interval)   INTERVAL="$2"; shift 2 ;;
+    -l|--lines)      LINES="$2";    shift 2 ;;
+    -A|--strip-ansi) STRIP_ANSI=true; shift ;;
+    -h|--help)       usage; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+[[ -z "$TARGET"  ]] && { echo "Error: -t TARGET is required"  >&2; exit 2; }
+[[ -z "$PATTERN" ]] && { echo "Error: -p PATTERN is required" >&2; exit 2; }
+
+capture() {
+  tmux capture-pane -t "$TARGET" -p -S -"$LINES" 2>/dev/null || return 2
+}
+
+match() {
+  local text="$1"
+  [[ -z "$text" ]] && return 1
+  if $STRIP_ANSI; then
+    text=$(printf '%s' "$text" | sed 's/\x1b\[[0-9;]*[mGKHFJ]//g')
+  fi
+  if $FIXED; then
+    printf '%s' "$text" | grep -qF "$PATTERN"
+  else
+    printf '%s' "$text" | grep -qE "$PATTERN"
+  fi
+}
+
+# 起動時にターゲット存在確認 (tmux エラーを exit 2 で伝播)
+if ! tmux display-message -t "$TARGET" -p "" >/dev/null 2>&1; then
+  echo "Error: tmux target '$TARGET' not found" >&2
+  exit 2
+fi
+
+# 即時チェック (T=0)
+if (( TIMEOUT == 0 )); then
+  out=$(capture) || exit 2
+  match "$out" && exit 0
+  exit 1
+fi
+
+# ポーリングループ
+start=$(date +%s)
+deadline=$(( start + TIMEOUT ))
+while (( $(date +%s) < deadline )); do
+  out=$(capture) || exit 2
+  match "$out" && exit 0
+  sleep "$INTERVAL"
+done
+
+exit 1

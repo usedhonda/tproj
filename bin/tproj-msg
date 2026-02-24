@@ -354,6 +354,8 @@ TMUX_TYPING_GUARD_SCAN_TAIL_LINES=48
 TMUX_TYPING_GUARD_MAX_PROMPT_DISTANCE_LINES=8
 TMUX_TYPING_GUARD_MAX_CONTINUATION_LINES=2
 TMUX_TYPING_GUARD_RECHECK_DELAY_SEC=0.12
+PROMPT_SIGNAL_MAX_AGE_SEC=5
+PROMPT_SIGNAL_FUTURE_TOLERANCE_SEC=2
 RELAY_BLOCK_EXIT=13
 BROADCAST_BLOCK_EXIT=14
 FANOUT_BLOCK_EXIT=15
@@ -676,6 +678,35 @@ looks_like_suggestion_text() {
   return 1
 }
 
+# Check if raw (ANSI-containing) captured text has dim prompt-line text.
+# Expects the full -e capture as $1. Returns 0 if suggestion (dim) detected.
+# Verified: CC/Cdx render suggestion text with SGR dim (\e[2m), user input has none.
+raw_prompt_has_dim() {
+  local raw_captured="$1" line prompt_raw plain
+  [[ -z "$raw_captured" ]] && return 1
+
+  prompt_raw=""
+  while IFS= read -r line; do
+    plain=$(printf '%s' "$line" | strip_ansi)
+    if is_prompt_line "$plain"; then
+      prompt_raw="$line"
+    fi
+  done <<< "$raw_captured"
+  [[ -z "$prompt_raw" ]] && return 1
+
+  local after_prompt after_plain
+  after_prompt=$(printf '%s' "$prompt_raw" | sed -E 's/^.*[›❯>][[:space:]]*//')
+  after_plain=$(printf '%s' "$after_prompt" | strip_ansi | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+  [[ -z "$after_plain" ]] && return 1
+
+  local esc=$'\x1b'
+  # SGR dim: ESC[2m or ESC[0;2m (not ESC[12m, ESC[22m)
+  printf '%s' "$after_prompt" | grep -qE "${esc}\[(0;)?2m|${esc}\[;2m" && return 0
+  # Bright black (SGR 90)
+  printf '%s' "$after_prompt" | grep -qE "${esc}\[90m" && return 0
+  return 1
+}
+
 # Signal output slots populated by read_prompt_state_signal:
 #   PROMPT_SIGNAL_STATE  -> idle | typing | suggestion | unknown
 #   PROMPT_SIGNAL_REASON -> parser reason (missing | invalid | signal)
@@ -688,7 +719,7 @@ PROMPT_SIGNAL_TS=""
 
 read_prompt_state_signal() {
   local pane="$1"
-  local raw state
+  local raw state now age
 
   PROMPT_SIGNAL_STATE=""
   PROMPT_SIGNAL_REASON="missing"
@@ -704,12 +735,30 @@ read_prompt_state_signal() {
   case "$state" in
     idle|typing|suggestion|unknown)
       PROMPT_SIGNAL_STATE="$state"
-      PROMPT_SIGNAL_REASON="signal"
       PROMPT_SIGNAL_SOURCE=$(tmux show-options -p -t "$pane" -v @prompt_state_src 2>/dev/null || true)
       PROMPT_SIGNAL_SOURCE=$(trim_spaces "${PROMPT_SIGNAL_SOURCE:-}")
       [[ -z "$PROMPT_SIGNAL_SOURCE" ]] && PROMPT_SIGNAL_SOURCE="tmux_option"
       PROMPT_SIGNAL_TS=$(tmux show-options -p -t "$pane" -v @prompt_state_ts 2>/dev/null || true)
       PROMPT_SIGNAL_TS=$(trim_spaces "${PROMPT_SIGNAL_TS:-}")
+      if [[ -z "$PROMPT_SIGNAL_TS" ]]; then
+        PROMPT_SIGNAL_REASON="missing_ts"
+        return 1
+      fi
+      if ! [[ "$PROMPT_SIGNAL_TS" =~ ^[0-9]+$ ]]; then
+        PROMPT_SIGNAL_REASON="invalid_ts"
+        return 1
+      fi
+      now=$(date +%s)
+      if (( PROMPT_SIGNAL_TS > now + PROMPT_SIGNAL_FUTURE_TOLERANCE_SEC )); then
+        PROMPT_SIGNAL_REASON="future_ts(ts=${PROMPT_SIGNAL_TS},now=${now})"
+        return 1
+      fi
+      age=$(( now - PROMPT_SIGNAL_TS ))
+      if (( age > PROMPT_SIGNAL_MAX_AGE_SEC )); then
+        PROMPT_SIGNAL_REASON="stale_age(${age}s>${PROMPT_SIGNAL_MAX_AGE_SEC}s)"
+        return 1
+      fi
+      PROMPT_SIGNAL_REASON="signal"
       return 0
       ;;
     *)
@@ -907,14 +956,16 @@ PROMPT_DRAFT_SNIPPET=""
 
 detect_prompt_draft_state() {
   local pane="$1"
-  local captured first_text first_cursor first_shortcuts
+  local raw_captured captured first_text first_cursor
   local second_text second_cursor
 
   PROMPT_DRAFT_STATE="unknown"
   PROMPT_DRAFT_REASON="capture_failed"
   PROMPT_DRAFT_SNIPPET=""
 
-  captured=$(tmux capture-pane -t "$pane" -p -S "-${TMUX_TYPING_GUARD_READ_LINES}" 2>/dev/null || true)
+  # Single capture with -e (ANSI codes preserved for dim detection).
+  raw_captured=$(tmux capture-pane -t "$pane" -e -p -S "-${TMUX_TYPING_GUARD_READ_LINES}" 2>/dev/null || true)
+  captured=$(printf '%s\n' "$raw_captured" | strip_ansi)
   parse_prompt_snapshot "$captured"
   if [[ "$PROMPT_PARSE_OK" != "true" ]]; then
     PROMPT_DRAFT_REASON="$PROMPT_PARSE_REASON"
@@ -923,8 +974,8 @@ detect_prompt_draft_state() {
 
   first_text="$PROMPT_PARSE_TEXT"
   first_cursor="$PROMPT_PARSE_HAS_CURSOR"
-  first_shortcuts="$PROMPT_PARSE_SHORTCUT_HINT"
 
+  # Empty prompt -> idle
   if [[ -z "$first_text" ]]; then
     PROMPT_DRAFT_STATE="idle"
     PROMPT_DRAFT_REASON="prompt_idle"
@@ -932,6 +983,7 @@ detect_prompt_draft_state() {
     return 0
   fi
 
+  # Cursor visible -> user is typing
   if [[ "$first_cursor" == "true" ]]; then
     PROMPT_DRAFT_STATE="typing"
     PROMPT_DRAFT_REASON="cursor_detected"
@@ -939,16 +991,26 @@ detect_prompt_draft_state() {
     return 0
   fi
 
-  if [[ "$first_shortcuts" == "true" ]] || looks_like_suggestion_text "$first_text"; then
+  # Dim text on prompt line -> suggestion (primary detection)
+  if raw_prompt_has_dim "$raw_captured"; then
+    PROMPT_DRAFT_STATE="suggestion"
+    PROMPT_DRAFT_REASON="dim_color_detected"
+    PROMPT_DRAFT_SNIPPET=$(printf '%s' "$first_text" | cut -c1-120)
+    return 0
+  fi
+
+  # Text-based suggestion hints (safety net for non-dim edge cases)
+  if [[ "$PROMPT_PARSE_SHORTCUT_HINT" == "true" ]] || looks_like_suggestion_text "$first_text"; then
     PROMPT_DRAFT_STATE="suggestion"
     PROMPT_DRAFT_REASON="suggestion_hint_detected"
     PROMPT_DRAFT_SNIPPET=$(printf '%s' "$first_text" | cut -c1-120)
     return 0
   fi
 
-  # Re-check quickly to avoid classifying a transient repaint as user typing.
+  # Re-check after short delay to distinguish transient repaint from real input.
   sleep "$TMUX_TYPING_GUARD_RECHECK_DELAY_SEC"
-  captured=$(tmux capture-pane -t "$pane" -p -S "-${TMUX_TYPING_GUARD_READ_LINES}" 2>/dev/null || true)
+  raw_captured=$(tmux capture-pane -t "$pane" -e -p -S "-${TMUX_TYPING_GUARD_READ_LINES}" 2>/dev/null || true)
+  captured=$(printf '%s\n' "$raw_captured" | strip_ansi)
   parse_prompt_snapshot "$captured"
   if [[ "$PROMPT_PARSE_OK" != "true" ]]; then
     PROMPT_DRAFT_STATE="unknown"
@@ -981,7 +1043,7 @@ detect_prompt_draft_state() {
     return 0
   fi
 
-  # Stable non-empty text without explicit suggestion hints is treated as typing.
+  # Stable non-empty, non-dim, non-hint text -> real user input
   PROMPT_DRAFT_STATE="typing"
   PROMPT_DRAFT_REASON="stable_non_empty_prompt"
   PROMPT_DRAFT_SNIPPET=$(printf '%s' "$second_text" | cut -c1-120)
@@ -1680,9 +1742,30 @@ if [[ "$STATUS_MODE" == "true" ]]; then
       exit 1
     fi
     local_live=$(get_liveness_status "$TARGET_PANE")
-    local_status=$(get_idle_status "$TARGET_PANE")
+    resolve_prompt_state "$TARGET_PANE"
+    local_detail_source="$PROMPT_RESOLVED_SOURCE"
+    local_detail_reason="$PROMPT_RESOLVED_REASON"
+    case "$PROMPT_RESOLVED_STATE" in
+      typing)
+        local_status="typing"
+        ;;
+      suggestion)
+        local_status="suggestion"
+        ;;
+      unknown)
+        local_status="busy"
+        ;;
+      *)
+        if is_target_idle "$TARGET_PANE"; then
+          local_status="idle"
+        else
+          local_status="busy"
+        fi
+        ;;
+    esac
     local_qcount=$(queue_count "$TARGET")
     printf "%-20s  %s/%s  (queued: %s)\n" "$TARGET" "$local_live" "$local_status" "$local_qcount"
+    printf "%-20s  detail: source=%s reason=%s\n" "" "$local_detail_source" "$local_detail_reason"
   else
     if [[ "$IS_WORKSPACE" == "true" ]]; then
       tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null | \
