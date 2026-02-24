@@ -5,6 +5,7 @@ set -euo pipefail
 #
 # Usage:
 #   tproj-msg <target> <message>         Send message (busy-aware, immediate return)
+#   tproj-msg --stdin <target>           Read message from stdin (safe for backticks/special chars)
 #   tproj-msg --version                  Show version + actual script path
 #   tproj-msg --fire <target> <message>  Send immediately (no idle check, auto-flush)
 #   tproj-msg --force <target> <message> Send immediately (no idle check, no auto-flush)
@@ -46,6 +47,7 @@ tproj-msg - Inter-pane messaging (busy-aware)
 
 Usage:
   tproj-msg <target> <message>         Send message (busy-aware, immediate return)
+  tproj-msg --stdin <target>           Read message from stdin (safe for backticks/special chars)
   tproj-msg --version                  Show version + actual script path
   tproj-msg --fire <target> <message>  Send immediately (no idle check, auto-flush)
   tproj-msg --force <target> <message> Send immediately (no idle check, no auto-flush)
@@ -186,6 +188,7 @@ ALLOW_RELAY=false
 ALLOW_RELAY_REASON=""
 ALLOW_FANOUT=false
 ALLOW_FANOUT_REASON=""
+STDIN_MODE=false
 TARGET=""
 MESSAGE=""
 READ_LINES=50
@@ -240,6 +243,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --flush)
       FLUSH_MODE=true
+      shift
+      ;;
+    --stdin)
+      STDIN_MODE=true
       shift
       ;;
     --status)
@@ -305,9 +312,16 @@ if [[ "$READ_MODE" == "true" ]]; then
 fi
 
 if [[ "$LIST_MODE" != "true" && "$READ_MODE" != "true" && "$FLUSH_MODE" != "true" && "$STATUS_MODE" != "true" ]]; then
-  [[ ${#POSITIONAL_ARGS[@]} -ge 2 ]] || { echo "Error: requires <target> <message>" >&2; show_usage; exit 1; }
-  TARGET="${POSITIONAL_ARGS[0]}"
-  MESSAGE="${POSITIONAL_ARGS[@]:1}"
+  if [[ "$STDIN_MODE" == "true" ]]; then
+    [[ ${#POSITIONAL_ARGS[@]} -ge 1 ]] || { echo "Error: --stdin requires <target>" >&2; show_usage; exit 1; }
+    TARGET="${POSITIONAL_ARGS[0]}"
+    MESSAGE=$(cat)
+    [[ -n "$MESSAGE" ]] || { echo "Error: --stdin provided but no message on stdin" >&2; exit 1; }
+  else
+    [[ ${#POSITIONAL_ARGS[@]} -ge 2 ]] || { echo "Error: requires <target> <message>" >&2; show_usage; exit 1; }
+    TARGET="${POSITIONAL_ARGS[0]}"
+    MESSAGE="${POSITIONAL_ARGS[@]:1}"
+  fi
 fi
 
 if [[ "$ALLOW_RELAY" == "true" && ( "$LIST_MODE" == "true" || "$READ_MODE" == "true" || "$FLUSH_MODE" == "true" || "$STATUS_MODE" == "true" || "$VERSION_MODE" == "true" ) ]]; then
@@ -627,26 +641,6 @@ has_cursor_glyph() {
   printf '%s\n' "$line" | grep -Eq '[▌█▋▍▎▏]'
 }
 
-looks_like_shortcuts_line() {
-  local line="$1" s lower
-  s=$(trim_spaces "$line")
-  [[ -z "$s" ]] && return 1
-  lower=$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')
-  [[ "$lower" == \?*shortcuts* ]]
-}
-
-contains_prompt_ui_marker() {
-  local line="$1" s lower
-  s=$(trim_spaces "$line")
-  [[ -z "$s" ]] && return 1
-  lower=$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')
-
-  [[ "$lower" == *"? for shortcuts"* ]] && return 0
-  [[ "$lower" =~ [0-9]+%[[:space:]]+context[[:space:]]+(left|window) ]] && return 0
-  [[ "$lower" == *"plan mode"* && "$lower" == *"context left"* ]] && return 0
-  return 1
-}
-
 strip_prompt_ui_tail() {
   local text cleaned
   if [[ $# -gt 0 ]]; then
@@ -659,23 +653,6 @@ strip_prompt_ui_tail() {
   cleaned=$(printf '%s' "$cleaned" \
     | sed -E 's/[[:space:]]+[0-9]+%[[:space:]]+context[[:space:]]+(left|window)$//')
   printf '%s' "$cleaned" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
-}
-
-looks_like_suggestion_text() {
-  local text="$1" lower
-  lower=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')
-
-  contains_prompt_ui_marker "$text" && return 0
-
-  # Codex placeholder examples.
-  [[ "$text" == *"{feature}"* ]] && return 0
-  [[ "$lower" =~ ^run[[:space:]]+/ ]] && return 0
-  [[ "$lower" =~ ^implement[[:space:]]+\{feature\} ]] && return 0
-  [[ "$lower" =~ ^try[[:space:]]+\".*\"$ ]] && return 0
-
-  # Claude placeholder-like prompt text often appears as a spaced parenthesized sentence.
-  [[ "$text" =~ ^[（(].*[[:space:]].*[)）]$ ]] && return 0
-  return 1
 }
 
 # Check if raw (ANSI-containing) captured text has dim prompt-line text.
@@ -804,12 +781,10 @@ resolve_prompt_state() {
 #   PROMPT_PARSE_REASON        -> parser reason
 #   PROMPT_PARSE_TEXT          -> normalized prompt draft text
 #   PROMPT_PARSE_HAS_CURSOR    -> true | false
-#   PROMPT_PARSE_SHORTCUT_HINT -> true | false
 PROMPT_PARSE_OK="false"
 PROMPT_PARSE_REASON="uninitialized"
 PROMPT_PARSE_TEXT=""
 PROMPT_PARSE_HAS_CURSOR="false"
-PROMPT_PARSE_SHORTCUT_HINT="false"
 
 parse_prompt_snapshot() {
   local captured="$1"
@@ -819,7 +794,6 @@ parse_prompt_snapshot() {
   PROMPT_PARSE_REASON="capture_failed"
   PROMPT_PARSE_TEXT=""
   PROMPT_PARSE_HAS_CURSOR="false"
-  PROMPT_PARSE_SHORTCUT_HINT="false"
 
   if [[ -z "$captured" ]]; then
     PROMPT_PARSE_REASON="empty_capture"
@@ -898,9 +872,6 @@ parse_prompt_snapshot() {
   local prompt_body first_draft
   prompt_body=$(printf '%s' "${_draft_tail[$prompt_index]}" \
     | sed -E 's/^[[:space:]]*[›❯>][[:space:]]*//')
-  if contains_prompt_ui_marker "$prompt_body"; then
-    PROMPT_PARSE_SHORTCUT_HINT="true"
-  fi
   if has_cursor_glyph "$prompt_body"; then
     PROMPT_PARSE_HAS_CURSOR="true"
   fi
@@ -919,12 +890,6 @@ parse_prompt_snapshot() {
     [[ -z "$trimmed" ]] && continue
     if is_tmux_footer_line "$raw" || is_tmux_divider_line "$raw" || is_prompt_line "$raw"; then
       break
-    fi
-    if looks_like_shortcuts_line "$raw"; then
-      PROMPT_PARSE_SHORTCUT_HINT="true"
-    fi
-    if contains_prompt_ui_marker "$raw"; then
-      PROMPT_PARSE_SHORTCUT_HINT="true"
     fi
     if has_cursor_glyph "$raw"; then
       PROMPT_PARSE_HAS_CURSOR="true"
@@ -995,14 +960,6 @@ detect_prompt_draft_state() {
   if raw_prompt_has_dim "$raw_captured"; then
     PROMPT_DRAFT_STATE="suggestion"
     PROMPT_DRAFT_REASON="dim_color_detected"
-    PROMPT_DRAFT_SNIPPET=$(printf '%s' "$first_text" | cut -c1-120)
-    return 0
-  fi
-
-  # Text-based suggestion hints (safety net for non-dim edge cases)
-  if [[ "$PROMPT_PARSE_SHORTCUT_HINT" == "true" ]] || looks_like_suggestion_text "$first_text"; then
-    PROMPT_DRAFT_STATE="suggestion"
-    PROMPT_DRAFT_REASON="suggestion_hint_detected"
     PROMPT_DRAFT_SNIPPET=$(printf '%s' "$first_text" | cut -c1-120)
     return 0
   fi
