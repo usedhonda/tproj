@@ -6,6 +6,7 @@ set -euo pipefail
 # Usage:
 #   tproj-msg <target> <message>         Send message (busy-aware, immediate return)
 #   tproj-msg --stdin <target>           Read message from stdin (safe for backticks/special chars)
+#   tproj-msg --session <name>            Specify tmux session (allows tmux-external calls)
 #   tproj-msg --version                  Show version + actual script path
 #   tproj-msg --fire <target> <message>  Send immediately (no idle check, auto-flush)
 #   tproj-msg --force <target> <message> Send immediately (no idle check, no auto-flush)
@@ -48,6 +49,7 @@ tproj-msg - Inter-pane messaging (busy-aware)
 Usage:
   tproj-msg <target> <message>         Send message (busy-aware, immediate return)
   tproj-msg --stdin <target>           Read message from stdin (safe for backticks/special chars)
+  tproj-msg --session <name>            Specify tmux session (allows tmux-external calls)
   tproj-msg --version                  Show version + actual script path
   tproj-msg --fire <target> <message>  Send immediately (no idle check, auto-flush)
   tproj-msg --force <target> <message> Send immediately (no idle check, no auto-flush)
@@ -189,6 +191,7 @@ ALLOW_RELAY_REASON=""
 ALLOW_FANOUT=false
 ALLOW_FANOUT_REASON=""
 STDIN_MODE=false
+EXPLICIT_SESSION=""
 TARGET=""
 MESSAGE=""
 READ_LINES=50
@@ -247,6 +250,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --stdin)
       STDIN_MODE=true
+      shift
+      ;;
+    --session)
+      shift
+      [[ $# -lt 1 ]] && { echo "Error: --session requires <name>" >&2; exit 1; }
+      EXPLICIT_SESSION="$1"
       shift
       ;;
     --status)
@@ -335,22 +344,31 @@ if [[ "$ALLOW_FANOUT" == "true" && ( "$LIST_MODE" == "true" || "$READ_MODE" == "
 fi
 
 # === Pre-flight: tmux check ===
-if [[ -z "${TMUX:-}" ]]; then
-  echo "Error: must be run inside tmux" >&2
+if [[ -n "$EXPLICIT_SESSION" ]]; then
+  # External caller (e.g. ClawGate) specified session explicitly
+  SESSION="$EXPLICIT_SESSION"
+  IS_WORKSPACE=true
+  MY_PANE=""
+  MY_ALIAS="gate"
+  MY_ROLE="gate"
+  MY_ROLE_RAW="gate"
+  MY_COLUMN=""
+elif [[ -z "${TMUX:-}" ]]; then
+  echo "Error: must be run inside tmux (or use --session <name>)" >&2
   exit 1
+else
+  # === Session detection ===
+  SESSION=$(tmux display-message -p '#S')
+  IS_WORKSPACE=false
+  [[ "$SESSION" == "tproj-workspace" ]] && IS_WORKSPACE=true
+
+  # === Sender info (for prefix) ===
+  MY_PANE="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
+  MY_ALIAS=$(tmux display-message -t "$MY_PANE" -p '#{@alias}' 2>/dev/null || true)
+  MY_ROLE_RAW=$(tmux display-message -t "$MY_PANE" -p '#{@role}' 2>/dev/null || true)
+  MY_COLUMN=$(tmux display-message -t "$MY_PANE" -p '#{@column}' 2>/dev/null || true)
+  MY_ROLE=$(role_to_short "$MY_ROLE_RAW")
 fi
-
-# === Session detection ===
-SESSION=$(tmux display-message -p '#S')
-IS_WORKSPACE=false
-[[ "$SESSION" == "tproj-workspace" ]] && IS_WORKSPACE=true
-
-# === Sender info (for prefix) ===
-MY_PANE="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
-MY_ALIAS=$(tmux display-message -t "$MY_PANE" -p '#{@alias}' 2>/dev/null || true)
-MY_ROLE_RAW=$(tmux display-message -t "$MY_PANE" -p '#{@role}' 2>/dev/null || true)
-MY_COLUMN=$(tmux display-message -t "$MY_PANE" -p '#{@column}' 2>/dev/null || true)
-MY_ROLE=$(role_to_short "$MY_ROLE_RAW")
 
 # === Queue directory ===
 QUEUE_DIR="/tmp/tproj-msg-queue"
@@ -1549,6 +1567,36 @@ send_via_gate() {
   fi
 }
 
+# Gate cross-adapter dedup: block same message via different adapters within TTL
+GATE_DEDUP_DIR="/tmp/tproj-msg-gate-dedup"
+GATE_DEDUP_TTL=60
+
+gate_dedup_check() {
+  local adapter="$1" msg_body="$2"
+  local msg_hash
+  msg_hash=$(printf '%s' "$msg_body" | shasum -a 1 | cut -d' ' -f1)
+  local dedup_file="${GATE_DEDUP_DIR}/${msg_hash}"
+  if [[ -f "$dedup_file" ]]; then
+    local prev_adapter prev_ts now_ts age
+    IFS=: read -r prev_adapter prev_ts < "$dedup_file"
+    now_ts=$(date +%s)
+    age=$((now_ts - prev_ts))
+    if [[ $age -lt $GATE_DEDUP_TTL && "$prev_adapter" != "$adapter" ]]; then
+      echo "Error: same message already sent via gate:${prev_adapter} ${age}s ago. Duplicate blocked." >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+gate_dedup_mark() {
+  local adapter="$1" msg_body="$2"
+  local msg_hash
+  msg_hash=$(printf '%s' "$msg_body" | shasum -a 1 | cut -d' ' -f1)
+  mkdir -p "$GATE_DEDUP_DIR"
+  printf '%s:%s' "$adapter" "$(date +%s)" > "${GATE_DEDUP_DIR}/${msg_hash}"
+}
+
 # Check ClawGate health
 gate_health() {
   local bridge_url
@@ -1778,9 +1826,9 @@ if is_gate_target "$TARGET"; then
   gate_adpt=""
   gate_hint=""
   sender_label=$(gate_sender_label)
-  # Structured header includes reply lane hint.
+  # Structured header includes reply lane hint + workspace for reverse routing.
   if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
-    HEADER="[tproj-msg:sender=${sender_label},project=${MY_ALIAS},reply=session]"
+    HEADER="[tproj-msg:sender=${sender_label},project=${MY_ALIAS},workspace=${SESSION},reply=session]"
   else
     HEADER="[tproj-msg:sender=${sender_label},reply=session]"
   fi
@@ -1816,7 +1864,23 @@ if is_gate_target "$TARGET"; then
     gate_msg=$(format_line_private_notice "$sender_label" "$private_body")
   fi
 
-  send_via_gate "$gate_adpt" "$gate_msg" "$gate_hint"
+  # Gate cross-adapter dedup check
+  if ! gate_dedup_check "$gate_adpt" "$MESSAGE"; then
+    exit 1
+  fi
+
+  if [[ "$gate_adpt" == "tmux" ]]; then
+    if ! send_via_gate "$gate_adpt" "$gate_msg" "$gate_hint"; then
+      echo "Error: gate:tmux failed. Run 'tproj-msg --help' or read /msg skill docs for gate adapter options." >&2
+      exit 1
+    fi
+    gate_dedup_mark "$gate_adpt" "$MESSAGE"
+    exit 0
+  fi
+  if send_via_gate "$gate_adpt" "$gate_msg" "$gate_hint"; then
+    gate_dedup_mark "$gate_adpt" "$MESSAGE"
+    exit 0
+  fi
   exit $?
 fi
 

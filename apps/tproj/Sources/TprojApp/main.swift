@@ -978,6 +978,31 @@ final class AppViewModel: ObservableObject {
     @Published var memoryLastUpdatedAt: Date?
     @Published var pendingDropColumns: Set<Int> = []
     @Published var sessionStopTarget: SessionStopTarget = .all
+    @Published var pendingSessionAction: SessionAction? = nil
+
+    enum SessionAction {
+        case end(SessionStopTarget)
+        case force(SessionStopTarget)
+
+        var title: String {
+            switch self {
+            case .end(let t): return "End Session (\(t.shortLabel))"
+            case .force(let t): return "Force Kill (\(t.shortLabel))"
+            }
+        }
+        var message: String {
+            switch self {
+            case .end(let t):
+                return t == .all
+                    ? "All panes (including agents) will be stopped."
+                    : "Core panes (CC/Cdx) will be stopped. Agents will remain."
+            case .force(let t):
+                return t == .all
+                    ? "All panes (including agents) will be force-killed. This cannot be undone."
+                    : "Core panes (CC/Cdx) will be force-killed. Agents will remain."
+            }
+        }
+    }
 
     private let fileManager = FileManager.default
     private let monitorStatusPath = "/tmp/tproj-monitor-status.json"
@@ -2892,11 +2917,11 @@ struct ContentView: View {
                                 }
                                 .fixedSize()
                                 ActionButton("End", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                                    Task { await vm.stopSession(target: vm.sessionStopTarget) }
+                                    vm.pendingSessionAction = .end(vm.sessionStopTarget)
                                 }
                                 .fixedSize()
                                 ActionButton("Force", tone: .danger, isEnabled: !vm.isBusy, dense: true) {
-                                    Task { await vm.killSession(target: vm.sessionStopTarget) }
+                                    vm.pendingSessionAction = .force(vm.sessionStopTarget)
                                 }
                                 .fixedSize()
                             }
@@ -3006,6 +3031,30 @@ struct ContentView: View {
                 ghosttyTracker.attach(to: window)
             }
         )
+        .alert(
+            vm.pendingSessionAction?.title ?? "",
+            isPresented: Binding<Bool>(
+                get: { vm.pendingSessionAction != nil },
+                set: { if !$0 { vm.pendingSessionAction = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) {
+                vm.pendingSessionAction = nil
+            }
+            Button("OK", role: .destructive) {
+                if let action = vm.pendingSessionAction {
+                    vm.pendingSessionAction = nil
+                    Task {
+                        switch action {
+                        case .end(let target): await vm.stopSession(target: target)
+                        case .force(let target): await vm.killSession(target: target)
+                        }
+                    }
+                }
+            }
+        } message: {
+            Text(vm.pendingSessionAction?.message ?? "")
+        }
     }
 
     private func recoverWindowFrameIfNeeded(_ window: NSWindow) {
