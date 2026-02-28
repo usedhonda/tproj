@@ -200,6 +200,7 @@ private func currentGhosttyFrame() -> NSRect? {
 @MainActor
 final class GhosttyWindowTracker: ObservableObject {
     @Published var isSnapped = false
+    var suspendDriftDetection = false
 
     private var pollTimer: DispatchSourceTimer?
     private weak var appWindow: NSWindow?
@@ -309,6 +310,12 @@ final class GhosttyWindowTracker: ObservableObject {
                 return
             }
 
+            // Skip drift check during collapse/expand animation
+            if suspendDriftDetection {
+                lastGhosttyFrame = ghosttyFrame
+                return
+            }
+
             // Drift check: has the user dragged tproj away?
             let expectedX = last.origin.x + snapOffset.x
             let expectedY = last.origin.y + snapOffset.y
@@ -382,10 +389,138 @@ final class GhosttyWindowTracker: ObservableObject {
         }
     }
 
+    // MARK: Snap offset recalculation (called after collapse/expand animation)
+
+    func updateSnapOffset() {
+        guard let window = appWindow, let ghosttyFrame = findGhosttyFrame(), isSnapped else { return }
+        snapOffset = CGPoint(
+            x: window.frame.origin.x - ghosttyFrame.origin.x,
+            y: window.frame.origin.y - ghosttyFrame.origin.y
+        )
+        lastGhosttyFrame = ghosttyFrame
+    }
+
     // MARK: Ghostty window discovery
 
     private func findGhosttyFrame() -> NSRect? {
         currentGhosttyFrame()
+    }
+}
+
+// MARK: - Window Collapse Controller
+
+@MainActor
+final class WindowCollapseController: ObservableObject {
+    @Published var isCollapsed = false
+    private weak var window: NSWindow?
+    private var normalWidth: CGFloat = 275
+    private var normalOrigin: NSPoint = .zero
+    static let collapsedWidth: CGFloat = 14
+
+    func attach(to window: NSWindow) {
+        self.window = window
+        // Detect collapsed state restored by macOS
+        if !isCollapsed && window.frame.width <= Self.collapsedWidth {
+            isCollapsed = true
+            window.isMovable = false
+            window.isMovableByWindowBackground = false
+            setTrafficLightsHidden(true)
+        }
+    }
+
+    func toggle(ghosttyTracker: GhosttyWindowTracker) {
+        if isCollapsed {
+            expand(ghosttyTracker: ghosttyTracker)
+        } else {
+            collapse(ghosttyTracker: ghosttyTracker)
+        }
+    }
+
+    private func shouldAnchorLeft(window: NSWindow) -> Bool {
+        guard let ghostty = currentGhosttyFrame() else { return false }
+        return abs(window.frame.minX - ghostty.maxX) < abs(window.frame.maxX - ghostty.minX)
+    }
+
+    private func setTrafficLightsHidden(_ hidden: Bool) {
+        guard let window = window else { return }
+        for buttonType: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+            window.standardWindowButton(buttonType)?.isHidden = hidden
+        }
+    }
+
+    private func collapse(ghosttyTracker: GhosttyWindowTracker) {
+        guard let window = window else { return }
+        normalWidth = window.frame.width
+        normalOrigin = window.frame.origin
+        ghosttyTracker.suspendDriftDetection = true
+
+        let targetWidth = Self.collapsedWidth
+        window.minSize = NSSize(width: targetWidth, height: window.minSize.height)
+
+        let ghostty = currentGhosttyFrame()
+        let anchorLeft = shouldAnchorLeft(window: window)
+
+        // X: stick to Ghostty's nearest edge
+        let newX: CGFloat
+        if let g = ghostty {
+            newX = anchorLeft ? g.maxX : g.minX - targetWidth
+        } else {
+            newX = anchorLeft ? window.frame.origin.x : window.frame.maxX - targetWidth
+        }
+        // Y: align top with Ghostty's top
+        let newY: CGFloat
+        if let g = ghostty {
+            newY = g.maxY - window.frame.height
+        } else {
+            newY = window.frame.origin.y
+        }
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.2
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            let newOrigin = NSPoint(x: newX, y: newY)
+            let newFrame = NSRect(origin: newOrigin, size: NSSize(width: targetWidth, height: window.frame.height))
+            window.animator().setFrame(newFrame, display: true)
+        }, completionHandler: { [weak self] in
+            DispatchQueue.main.async {
+                ghosttyTracker.updateSnapOffset()
+                ghosttyTracker.suspendDriftDetection = false
+                self?.setTrafficLightsHidden(true)
+                window.isMovable = false
+                window.isMovableByWindowBackground = false
+                self?.isCollapsed = true
+            }
+        })
+    }
+
+    private func expand(ghosttyTracker: GhosttyWindowTracker) {
+        guard let window = window else { return }
+        ghosttyTracker.suspendDriftDetection = true
+
+        let targetWidth = normalWidth
+
+        // Fallback: compute origin from Ghostty frame when normalOrigin was not saved
+        if normalOrigin == .zero, let g = currentGhosttyFrame() {
+            normalOrigin = NSPoint(x: g.minX - targetWidth, y: g.maxY - window.frame.height)
+        }
+
+        setTrafficLightsHidden(false)
+        window.isMovable = true
+        window.isMovableByWindowBackground = true
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.2
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            let newFrame = NSRect(origin: normalOrigin, size: NSSize(width: targetWidth, height: window.frame.height))
+            window.animator().setFrame(newFrame, display: true)
+        }, completionHandler: { [weak self] in
+            DispatchQueue.main.async {
+                window.minSize = NSSize(width: 200, height: window.minSize.height)
+                ghosttyTracker.updateSnapOffset()
+                ghosttyTracker.suspendDriftDetection = false
+                self?.isCollapsed = false
+            }
+        })
     }
 }
 
@@ -2883,12 +3018,32 @@ struct ContentView: View {
     @StateObject private var vm = AppViewModel()
     @StateObject private var ghosttyTracker = GhosttyWindowTracker()
     @StateObject private var windowLevelController = WindowLevelController()
+    @StateObject private var collapseController = WindowCollapseController()
     @State private var draggingColumnID: Int?
     @State private var dropInsertionIndex: Int?
     @State private var isDragActive = false
     @State private var didRecoverWindowFrame = false
 
     var body: some View {
+        if collapseController.isCollapsed {
+            CollapsedBarView {
+                collapseController.toggle(ghosttyTracker: ghosttyTracker)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(GhosttyTheme.current.background.ignoresSafeArea())
+            .background(
+                WindowAccessor { window in
+                    collapseController.attach(to: window)
+                    ghosttyTracker.attach(to: window)
+                }
+            )
+        } else {
+            normalContentView
+        }
+    }
+
+    @ViewBuilder
+    private var normalContentView: some View {
         ZStack {
             GhosttyTheme.current.background
                 .opacity(GhosttyTheme.current.backgroundOpacity)
@@ -3005,6 +3160,18 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity)
         }
+        .overlay(alignment: .topTrailing) {
+            Button(action: { collapseController.toggle(ghosttyTracker: ghosttyTracker) }) {
+                Image(systemName: "chevron.compact.left")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(GhosttyTheme.current.textSecondary)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 5)
+            .padding(.trailing, 4)
+        }
         .preferredColorScheme(.dark)
         .task {
             vm.onAppear()
@@ -3017,6 +3184,7 @@ struct ContentView: View {
         }
         .background(
             WindowAccessor { window in
+                collapseController.attach(to: window)
                 windowLevelController.attach(to: window)
                 if GhosttyTheme.current.backgroundOpacity < 1.0 {
                     window.backgroundColor = .clear
@@ -3628,6 +3796,35 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Collapsed Bar View
+
+struct CollapsedBarView: View {
+    let onExpand: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Color.clear
+            .overlay {
+                ZStack {
+                    GhosttyTheme.current.accentCyan.opacity(isHovered ? 0.5 : 0.3)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(GhosttyTheme.current.textSecondary)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { onExpand() }
+            .onHover { hovering in
+                isHovered = hovering
+                if hovering {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+    }
+}
+
 struct WindowAccessor: NSViewRepresentable {
     let onResolve: (NSWindow) -> Void
 
@@ -3767,7 +3964,7 @@ struct TprojApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 200, minHeight: 520, idealHeight: 980, maxHeight: 2200)
+                .frame(minWidth: 14, minHeight: 520, idealHeight: 980, maxHeight: 2200)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 275, height: 980)
