@@ -108,6 +108,38 @@ get_killable_agents() {
   done | sort -rn
 }
 
+graceful_exit_pane() {
+  local pane_id="$1"
+  local role="$2"
+
+  # Phase 1: Ctrl+C (interrupt)
+  tmux send-keys -t "$pane_id" C-c 2>/dev/null || true
+  sleep 0.3
+
+  # Phase 2: /exit (graceful request)
+  tmux send-keys -t "$pane_id" "/exit" C-m 2>/dev/null || true
+
+  # Phase 3: Wait up to 3s for graceful exit
+  local waited=0
+  while [[ $waited -lt 30 ]]; do
+    if ! tmux list-panes -F '#{pane_id}' 2>/dev/null | grep -qF "$pane_id"; then
+      log "  $role (pane $pane_id) exited gracefully"
+      return 0
+    fi
+    sleep 0.1
+    ((waited++)) || true
+  done
+
+  # Phase 4: SIGTERM -> SIGKILL (last resort)
+  local pane_pid
+  pane_pid=$(tmux display-message -t "$pane_id" -p '#{pane_pid}' 2>/dev/null) || return 0
+  kill "$pane_pid" 2>/dev/null || true
+  sleep 1
+  kill -9 "$pane_pid" 2>/dev/null || true
+  tmux kill-pane -t "$pane_id" 2>/dev/null || true
+  log "  $role (pane $pane_id) force-killed after timeout"
+}
+
 # --- Snapshot recording for cc-mem history ---
 record_snapshot() {
   local event="${1:-}"
@@ -237,15 +269,9 @@ check_claude_aggregate() {
   while IFS=' ' read -r rss pane_pid pane_id role; do
     [[ -z "$rss" ]] && continue
 
-    local children
-    children=$(pgrep -P "$pane_pid" 2>/dev/null || true)
-    for child in $children; do
-      kill "$child" 2>/dev/null || true
-    done
-    tmux kill-pane -t "$pane_id" 2>/dev/null || true
-
     local rss_mb=$(( rss / 1024 ))
-    log "  Killed $role (pane $pane_id, ~${rss_mb}MB)"
+    log "  CRIT defense: retiring $role (pane $pane_id, ~${rss_mb}MB)"
+    graceful_exit_pane "$pane_id" "$role"
     killed=$(( killed + 1 ))
 
     local new_total
@@ -275,12 +301,27 @@ while true; do
   if [[ $(( loop_count % AGGREGATE_EVERY )) -eq 0 ]]; then
     record_snapshot
 
-    # --- Pressure check (Jetsam risk alert) ---
+    # --- Pressure check (Jetsam risk alert + graceful defense) ---
     free_now=$(get_free_mb)
     if [[ "$free_now" -lt "$LOW_FREE_MB" ]]; then
       record_snapshot "PRESSURE: free=${free_now}MB"
       log "PRESSURE: free=${free_now}MB - Jetsam kill risk HIGH"
-      osascript -e "display notification \"Free memory: ${free_now}MB - Jetsam may kill processes\" with title \"Memory Guard\" subtitle \"LOW MEMORY\"" 2>/dev/null || true
+      osascript -e "display notification \"Free memory: ${free_now}MB - retiring idle agents\" with title \"Memory Guard\" subtitle \"LOW MEMORY\"" 2>/dev/null || true
+
+      # Gracefully retire idle agents (largest first) until free recovers
+      while IFS=' ' read -r rss pane_pid pane_id role; do
+        [[ -z "$rss" ]] && continue
+        rss_mb=$(( rss / 1024 ))
+        log "  PRESSURE defense: retiring $role (pane $pane_id, ~${rss_mb}MB)"
+        record_snapshot "PRESSURE_RETIRE: $role pane=$pane_id ${rss_mb}MB"
+        graceful_exit_pane "$pane_id" "$role"
+
+        free_now=$(get_free_mb)
+        if [[ "$free_now" -ge "$LOW_FREE_MB" ]]; then
+          log "  PRESSURE relieved: free=${free_now}MB"
+          break
+        fi
+      done <<< "$(get_killable_agents)"
     fi
 
     # --- Vanish detection (catch Jetsam/unexpected kills) ---
