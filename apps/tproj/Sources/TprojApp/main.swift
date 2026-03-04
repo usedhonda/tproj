@@ -3627,11 +3627,11 @@ struct ContentView: View {
                 ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
                     Task { await vm.toggleAIPane(role: "claude", for: column) }
                 }
-                .frame(width: 30)
+                .frame(width: 38)
                 ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
                 }
-                .frame(width: 32)
+                .frame(width: 38)
                 ActionButton("Yazi", tone: column.yaziPaneID == nil ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
                     Task { await vm.toggleYazi(for: column) }
                 }
@@ -3713,9 +3713,9 @@ struct ContentView: View {
             HStack(spacing: 1) {
                 Spacer()
                 ActionButton("CC", tone: .neutral, isEnabled: false, dense: true) {}
-                    .frame(width: 30)
+                    .frame(width: 38)
                 ActionButton("Cdx", tone: .neutral, isEnabled: false, dense: true) {}
-                    .frame(width: 32)
+                    .frame(width: 38)
                 ActionButton("Yazi", tone: .neutral, isEnabled: false, dense: true) {}
                     .frame(width: 38)
                 ActionButton("Term", tone: .neutral, isEnabled: false, dense: true) {}
