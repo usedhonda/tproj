@@ -1402,6 +1402,15 @@ gate_default_adapter() {
   echo "${adapter:-direct}"
 }
 
+gate_reply_callback_url() {
+  local url=""
+  if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
+    url=$(yq '.gui.bridge.reply_callback_url' "$WORKSPACE_CONFIG" 2>/dev/null || true)
+    [[ "$url" == "null" ]] && url=""
+  fi
+  echo "$url"
+}
+
 # Check if target is a gate target (gate or gate:adapter)
 is_gate_target() {
   [[ "$1" == "gate" || "$1" == gate:* ]]
@@ -1827,10 +1836,15 @@ if is_gate_target "$TARGET"; then
   gate_hint=""
   sender_label=$(gate_sender_label)
   # Structured header includes reply lane hint + workspace for reverse routing.
+  reply_url=$(gate_reply_callback_url)
   if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
-    HEADER="[tproj-msg:sender=${sender_label},project=${MY_ALIAS},workspace=${SESSION},reply=session]"
+    HEADER="[tproj-msg:sender=${sender_label},project=${MY_ALIAS},workspace=${SESSION},reply=session"
+    [[ -n "$reply_url" ]] && HEADER+=",return_url=${reply_url}"
+    HEADER+="]"
   else
-    HEADER="[tproj-msg:sender=${sender_label},reply=session]"
+    HEADER="[tproj-msg:sender=${sender_label},reply=session"
+    [[ -n "$reply_url" ]] && HEADER+=",return_url=${reply_url}"
+    HEADER+="]"
   fi
 
   if control_dedup_check_and_mark "$TARGET" "$MESSAGE"; then
