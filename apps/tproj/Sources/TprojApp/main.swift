@@ -1694,37 +1694,180 @@ final class AppViewModel: ObservableObject {
         loadLiveColumns()
     }
 
-    func stopPane(role: String, for column: LiveColumn) async {
-        let paneIDs: [String]
+    func toggleAIPane(role: String, for column: LiveColumn) async {
+        guard beginLayoutMutation(action: "toggle-\(role)") else { return }
+        let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
+        let beforeCount = workspacePaneCountSync()
+        var resultTag = "ok"
+        var note = "column=\(column.column)"
+        var lockHeld = false
+        defer {
+            if lockHeld {
+                _ = runCommand("/usr/bin/env", ["tmux", "wait-for", "-U", "tproj-layout"])
+            }
+            let afterCount = workspacePaneCountSync()
+            let elapsed = Int64(Date().timeIntervalSince1970 * 1000) - startedMS
+            logLayoutAction(
+                action: "toggle-\(role)",
+                before: beforeCount,
+                after: afterCount,
+                elapsedMS: elapsed,
+                result: resultTag,
+                note: note
+            )
+            endLayoutMutation()
+        }
+
+        let lockResult = await runCommandAsync("/usr/bin/env", ["tmux", "wait-for", "-L", "tproj-layout"])
+        guard lockResult.exitCode == 0 else {
+            resultTag = "lock-error"
+            note += " lock=acquire_failed"
+            statusText = "\(role): failed to acquire layout lock"
+            loadLiveColumns()
+            return
+        }
+        lockHeld = true
+
         let exitCmd: String
+        let paneIDs: [String]
+        let roleName: String
         switch role {
         case "claude":
             paneIDs = column.claudePaneIDs
             exitCmd = "exit"
+            roleName = "claude-p\(column.column)"
         case "codex":
             paneIDs = column.codexPaneIDs
             exitCmd = "/exit"
+            roleName = "codex-p\(column.column)"
         default: return
         }
-        guard !paneIDs.isEmpty else {
-            statusText = "No \(role) pane in #\(column.column)"
+
+        // Toggle off: graceful stop + kill-pane
+        if !paneIDs.isEmpty {
+            for paneID in paneIDs {
+                _ = await runCommandAsync("/usr/bin/env",
+                    ["tmux", "send-keys", "-t", paneID, "C-c", ""])
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            for paneID in paneIDs {
+                _ = await runCommandAsync("/usr/bin/env",
+                    ["tmux", "send-keys", "-t", paneID, exitCmd, "Enter"])
+            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            for paneID in paneIDs {
+                _ = await runCommandAsync("/usr/bin/env",
+                    ["tmux", "kill-pane", "-t", paneID])
+            }
+            note += " state=off"
+            statusText = "\(role) off for #\(column.column)"
+            loadLiveColumns()
             return
         }
-        isBusy = true
-        defer { isBusy = false }
 
-        for paneID in paneIDs {
-            _ = await runCommandAsync("/usr/bin/env",
-                ["tmux", "send-keys", "-t", paneID, "C-c", ""])
-        }
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        for paneID in paneIDs {
-            _ = await runCommandAsync("/usr/bin/env",
-                ["tmux", "send-keys", "-t", paneID, exitCmd, "Enter"])
+        // Toggle on: find sibling pane, split, configure, launch
+        let sessionTarget = "tproj-workspace:dev"
+        let listResult = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", sessionTarget, "-F", "#{pane_id}:#{@role}"])
+        guard listResult.exitCode == 0 else {
+            resultTag = "error"
+            note += " error=\(trimmedError(listResult))"
+            statusText = "\(role): \(trimmedError(listResult))"
+            loadLiveColumns()
+            return
         }
 
-        statusText = "Stopping \(role) in #\(column.column)"
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        let paneRoles: [(id: String, paneRole: String)] = listResult.stdout
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+            .compactMap { line in
+                let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                guard parts.count == 2 else { return nil }
+                return (id: parts[0], paneRole: parts[1])
+            }
+
+        // Find sibling: CC needs codex, Cdx needs claude, fallback to any pane in same column
+        let siblingRole: String
+        switch role {
+        case "claude":
+            siblingRole = "codex-p\(column.column)"
+            // CC below codex, 70% height
+        case "codex":
+            siblingRole = "claude-p\(column.column)"
+            // Cdx above claude, 30% height
+        default: return
+        }
+
+        guard let targetPaneID = paneRoles.first(where: { $0.paneRole == siblingRole })?.id
+                ?? paneRoles.first(where: { $0.paneRole.hasSuffix("-p\(column.column)") })?.id else {
+            resultTag = "error"
+            note += " error=no_target_pane"
+            statusText = "\(role): no pane for #\(column.column)"
+            return
+        }
+
+        let splitCommand: [String]
+        switch role {
+        case "claude":
+            splitCommand = ["tmux", "split-window", "-v", "-t", targetPaneID, "-l", "70%", "-c", "/tmp", "-P", "-F", "#{pane_id}"]
+        case "codex":
+            splitCommand = ["tmux", "split-window", "-v", "-b", "-t", targetPaneID, "-l", "30%", "-c", "/tmp", "-P", "-F", "#{pane_id}"]
+        default: return
+        }
+
+        let createResult = await runCommandAsync("/usr/bin/env", splitCommand)
+        guard createResult.exitCode == 0 else {
+            resultTag = "error"
+            note += " create_error=\(trimmedError(createResult))"
+            statusText = "\(role)[\(createResult.exitCode)]: \(trimmedError(createResult))"
+            return
+        }
+
+        let newPane = createResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newPane.isEmpty else {
+            resultTag = "error"
+            note += " error=empty_pane_id"
+            statusText = "\(role): empty pane id"
+            return
+        }
+
+        // Set tags
+        _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@role", roleName])
+        _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@column", "\(column.column)"])
+        _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@project", column.projectPath])
+
+        if let host = hostForColumn(column) {
+            _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_host", host])
+            _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_path", column.projectPath])
+
+            let remoteCmd: String
+            switch role {
+            case "claude":
+                let remotePath = shellDoubleQuote(column.projectPath)
+                remoteCmd = "ssh -t \(shellSingleQuote(host)) \"cd \(remotePath) && claude --continue 2>/dev/null || claude\""
+            case "codex":
+                let remotePath = shellDoubleQuote(column.projectPath)
+                remoteCmd = "ssh -t \(shellSingleQuote(host)) \"cd \(remotePath) && codex resume --last -s danger-full-access -a never --search\""
+            default: return
+            }
+            _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, remoteCmd, "C-m"])
+        } else {
+            let projPath = column.projectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? NSHomeDirectory() : column.projectPath
+            let launchCmd: String
+            switch role {
+            case "claude":
+                // Set title + prevent overwrite (CC only)
+                _ = await runCommandAsync("/usr/bin/env", ["tmux", "select-pane", "-t", newPane, "-T", "Claude Code"])
+                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "allow-set-title", "off"])
+                launchCmd = "cd \(shellSingleQuote(projPath)) && claude --continue 2>/dev/null || claude"
+            case "codex":
+                launchCmd = "cd \(shellSingleQuote(projPath)) && codex resume --last -s danger-full-access -a never --search"
+            default: return
+            }
+            _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, launchCmd, "C-m"])
+        }
+
+        note += " state=on"
+        statusText = "\(role) on for #\(column.column)"
         loadLiveColumns()
     }
 
@@ -3451,12 +3594,12 @@ struct ContentView: View {
             // Buttons row
             HStack(spacing: 1) {
                 Spacer()
-                ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy && !column.claudePaneIDs.isEmpty, dense: true) {
-                    Task { await vm.stopPane(role: "claude", for: column) }
+                ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
+                    Task { await vm.toggleAIPane(role: "claude", for: column) }
                 }
                 .frame(width: 30)
-                ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy && !column.codexPaneIDs.isEmpty, dense: true) {
-                    Task { await vm.stopPane(role: "codex", for: column) }
+                ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
+                    Task { await vm.toggleAIPane(role: "codex", for: column) }
                 }
                 .frame(width: 32)
                 ActionButton("Yazi", tone: column.yaziPaneID == nil ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
