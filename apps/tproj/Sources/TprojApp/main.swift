@@ -4,6 +4,10 @@ import AppKit
 import CoreMIDI
 import UniformTypeIdentifiers
 
+extension Notification.Name {
+    static let flipSnapSide = Notification.Name("flipSnapSide")
+}
+
 // MARK: - Ghostty Theme
 
 private extension Color {
@@ -231,6 +235,15 @@ final class GhosttyWindowTracker: ObservableObject {
         isSnapped = false
         lastGhosttyFrame = nil
         detachCooldownUntil = nil
+    }
+
+    func flipSide() {
+        guard let window = appWindow, let ghosttyFrame = findGhosttyFrame(), isSnapped else { return }
+        snapEdge = (snapEdge == .right) ? .left : .right
+        let target = anchoredOrigin(for: ghosttyFrame, windowSize: window.frame.size, preferredSide: snapEdge)
+        window.setFrameOrigin(target.origin)
+        snapEdge = target.side
+        lastGhosttyFrame = ghosttyFrame
     }
 
     deinit {
@@ -3514,6 +3527,7 @@ struct ContentView: View {
         }
         .background(
             WindowAccessor { window in
+                (NSApp.delegate as? AppDelegate)?.mainWindow = window
                 collapseController.attach(to: window)
                 windowLevelController.attach(to: window)
                 if GhosttyTheme.current.backgroundOpacity < 1.0 {
@@ -3552,6 +3566,12 @@ struct ContentView: View {
             }
         } message: {
             Text(vm.pendingSessionAction?.message ?? "")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .flipSnapSide)) { _ in
+            ghosttyTracker.flipSide()
+            if !collapseController.isCollapsed {
+                collapseController.toggle(ghosttyTracker: ghosttyTracker)
+            }
         }
     }
 
@@ -4297,20 +4317,59 @@ struct RowDropFallbackDelegate: DropDelegate {
     }
 }
 
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var mainWindow: NSWindow?
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        return false
+    }
+}
+
+private struct ShowWindowButton: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Show Window") {
+            openWindow(id: "main")
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        .keyboardShortcut("t", modifiers: [.command, .shift])
+    }
+}
+
 @main
 struct TprojApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     init() {
         loadAppIcon()
     }
 
     var body: some Scene {
-        WindowGroup {
+        Window("tproj", id: "main") {
             ContentView()
                 .frame(minWidth: 14, minHeight: 520, idealHeight: 980, maxHeight: 2200)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 275, height: 980)
         .windowResizability(.contentMinSize)
+
+        MenuBarExtra("tproj", systemImage: "rectangle.split.3x1") {
+            ShowWindowButton()
+            Button("Flip Side") {
+                NotificationCenter.default.post(name: .flipSnapSide, object: nil)
+            }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+            Divider()
+            Button("Quit tproj") { NSApp.terminate(nil) }
+                .keyboardShortcut("q")
+        }
     }
 
     private func loadAppIcon() {
