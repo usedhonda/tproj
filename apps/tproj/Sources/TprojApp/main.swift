@@ -1694,6 +1694,40 @@ final class AppViewModel: ObservableObject {
         loadLiveColumns()
     }
 
+    func stopPane(role: String, for column: LiveColumn) async {
+        let paneIDs: [String]
+        let exitCmd: String
+        switch role {
+        case "claude":
+            paneIDs = column.claudePaneIDs
+            exitCmd = "exit"
+        case "codex":
+            paneIDs = column.codexPaneIDs
+            exitCmd = "/exit"
+        default: return
+        }
+        guard !paneIDs.isEmpty else {
+            statusText = "No \(role) pane in #\(column.column)"
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+
+        for paneID in paneIDs {
+            _ = await runCommandAsync("/usr/bin/env",
+                ["tmux", "send-keys", "-t", paneID, "C-c", ""])
+        }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        for paneID in paneIDs {
+            _ = await runCommandAsync("/usr/bin/env",
+                ["tmux", "send-keys", "-t", paneID, exitCmd, "Enter"])
+        }
+
+        statusText = "Stopping \(role) in #\(column.column)"
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        loadLiveColumns()
+    }
+
     func toggleTerminal(for column: LiveColumn) async {
         guard beginLayoutMutation(action: "toggle-terminal") else { return }
         let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
@@ -3031,11 +3065,68 @@ struct ActionButton: View {
     }
 }
 
+private struct WorkspaceResizeDivider: View {
+    @Binding var height: Double
+    let maxHeight: Double
+    private let minHeight: Double = 100
+    @GestureState private var dragStartHeight: Double? = nil
+    @State private var isHovered = false
+    @State private var isDragging = false
+
+    var body: some View {
+        ZStack {
+            // 1pt visual line
+            Rectangle()
+                .fill(isDragging
+                    ? GhosttyTheme.current.accentCyan.opacity(0.6)
+                    : GhosttyTheme.current.foreground.opacity(isHovered ? 0.2 : 0.08))
+                .frame(height: 1)
+
+            // Grip handle (3 capsules, visible on hover/drag)
+            HStack(spacing: 2) {
+                ForEach(0..<3, id: \.self) { _ in
+                    Capsule()
+                        .fill(isDragging
+                            ? GhosttyTheme.current.accentCyan.opacity(0.5)
+                            : GhosttyTheme.current.foreground.opacity(0.3))
+                        .frame(width: 12, height: 2)
+                }
+            }
+            .opacity(isHovered || isDragging ? 1 : 0)
+        }
+        .frame(height: 20)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            isHovered = inside
+            if inside { NSCursor.resizeUpDown.push() }
+            else { NSCursor.pop() }
+        }
+        .gesture(
+            DragGesture(coordinateSpace: .global)
+                .updating($dragStartHeight) { _, state, _ in
+                    if state == nil { state = height }
+                }
+                .onChanged { value in
+                    isDragging = true
+                    let base = dragStartHeight ?? height
+                    height = min(max(base + value.translation.height, minHeight), maxHeight)
+                }
+                .onEnded { _ in
+                    isDragging = false
+                }
+        )
+        .animation(.easeOut(duration: 0.14), value: isHovered)
+        .animation(.easeOut(duration: 0.14), value: isDragging)
+    }
+}
+
 struct ContentView: View {
     @StateObject private var vm = AppViewModel()
     @StateObject private var ghosttyTracker = GhosttyWindowTracker()
     @StateObject private var windowLevelController = WindowLevelController()
     @StateObject private var collapseController = WindowCollapseController()
+    @AppStorage("workspaceSectionHeight") private var workspaceHeight: Double = 480
     @State private var draggingColumnID: Int?
     @State private var dropInsertionIndex: Int?
     @State private var isDragActive = false
@@ -3059,6 +3150,119 @@ struct ContentView: View {
         }
     }
 
+    private var workspaceRowCount: Int {
+        vm.liveColumns.count + vm.inactiveProjects.count
+    }
+
+    @ViewBuilder
+    private var workspaceControlHeader: some View {
+        HStack(spacing: 4) {
+            if ghosttyTracker.isSnapped {
+                Circle()
+                    .fill(GhosttyTheme.current.accentCyan)
+                    .frame(width: 5, height: 5)
+                    .shadow(color: GhosttyTheme.current.accentCyan.opacity(0.6), radius: 2)
+            }
+            Text(compactStatus(vm.statusText))
+                .font(GhosttyTheme.current.font(size: 11, weight: .medium))
+                .foregroundStyle(GhosttyTheme.current.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            if !vm.liveColumns.isEmpty {
+                ActionButton(vm.sessionStopTarget.shortLabel, tone: vm.sessionStopTarget == .all ? .primary : .neutral, isEnabled: !vm.isBusy, dense: true) {
+                    vm.sessionStopTarget = vm.sessionStopTarget == .all ? .core : .all
+                }
+                .fixedSize()
+                ActionButton("End", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                    vm.pendingSessionAction = .end(vm.sessionStopTarget)
+                }
+                .fixedSize()
+                ActionButton("Force", tone: .danger, isEnabled: !vm.isBusy, dense: true) {
+                    vm.pendingSessionAction = .force(vm.sessionStopTarget)
+                }
+                .fixedSize()
+            }
+            ActionButton("Sync", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                Task { await vm.refreshAll() }
+            }
+            .fixedSize()
+            ActionButton("Learn", tone: vm.isMIDILearning ? .primary : .neutral, isEnabled: !vm.isBusy, dense: true) {
+                vm.toggleMIDILearn()
+            }
+            .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private var workspaceListContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if vm.liveColumns.isEmpty {
+                startupDiagView()
+                    .font(GhosttyTheme.current.font(size: 12, weight: .medium))
+                    .foregroundStyle(GhosttyTheme.current.textSecondary)
+            } else {
+                let indexedColumns = Array(vm.liveColumns.enumerated())
+                ForEach(0...vm.liveColumns.count, id: \.self) { insertionIndex in
+                    dropInsertionGap(index: insertionIndex)
+                        .onDrop(
+                            of: [UTType.text],
+                            delegate: GapDropDelegate(
+                                insertionIndex: insertionIndex,
+                                totalCount: vm.liveColumns.count,
+                                draggingColumnID: $draggingColumnID,
+                                dropInsertionIndex: $dropInsertionIndex,
+                                isDragActive: $isDragActive,
+                                viewModel: vm
+                            )
+                        )
+
+                    if insertionIndex < indexedColumns.count {
+                        let column = indexedColumns[insertionIndex].element
+                        liveColumnRow(column)
+                            .onDrop(
+                                of: [UTType.text],
+                                delegate: RowDropFallbackDelegate(
+                                    rowIndex: insertionIndex,
+                                    totalCount: vm.liveColumns.count,
+                                    draggingColumnID: $draggingColumnID,
+                                    dropInsertionIndex: $dropInsertionIndex,
+                                    isDragActive: $isDragActive,
+                                    viewModel: vm
+                                )
+                            )
+                    }
+                }
+            }
+            ForEach(vm.inactiveProjects) { project in
+                inactiveProjectRow(project)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var remainingSections: some View {
+        SectionHeader(title: "Memory")
+        Card(compact: true, chrome: false) {
+            memorySection()
+        }
+
+        SectionHeader(title: "CC & Codex")
+        Card(compact: true, chrome: false) {
+            monitorSection()
+        }
+
+        SectionHeader(title: "Workspace YAML")
+        Card {
+            HStack(spacing: 0) {
+                ActionButton("Open workspace.yaml", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                    vm.openWorkspaceYAML()
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
     @ViewBuilder
     private var normalContentView: some View {
         ZStack {
@@ -3066,116 +3270,52 @@ struct ContentView: View {
                 .opacity(GhosttyTheme.current.backgroundOpacity)
                 .ignoresSafeArea()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    SectionHeader(title: "Current Workspace")
-                    Card(compact: true, chrome: false) {
-                        HStack(spacing: 4) {
-                            if ghosttyTracker.isSnapped {
-                                Circle()
-                                    .fill(GhosttyTheme.current.accentCyan)
-                                    .frame(width: 5, height: 5)
-                                    .shadow(color: GhosttyTheme.current.accentCyan.opacity(0.6), radius: 2)
-                            }
-                            Text(compactStatus(vm.statusText))
-                                .font(GhosttyTheme.current.font(size: 11, weight: .medium))
-                                .foregroundStyle(GhosttyTheme.current.textSecondary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            Spacer()
-                            if !vm.liveColumns.isEmpty {
-                                ActionButton(vm.sessionStopTarget.shortLabel, tone: vm.sessionStopTarget == .all ? .primary : .neutral, isEnabled: !vm.isBusy, dense: true) {
-                                    vm.sessionStopTarget = vm.sessionStopTarget == .all ? .core : .all
-                                }
-                                .fixedSize()
-                                ActionButton("End", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                                    vm.pendingSessionAction = .end(vm.sessionStopTarget)
-                                }
-                                .fixedSize()
-                                ActionButton("Force", tone: .danger, isEnabled: !vm.isBusy, dense: true) {
-                                    vm.pendingSessionAction = .force(vm.sessionStopTarget)
-                                }
-                                .fixedSize()
-                            }
-                            ActionButton("Sync", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                                Task { await vm.refreshAll() }
-                            }
-                            .fixedSize()
-                            ActionButton("Learn", tone: vm.isMIDILearning ? .primary : .neutral, isEnabled: !vm.isBusy, dense: true) {
-                                vm.toggleMIDILearn()
-                            }
-                            .fixedSize()
+            if workspaceRowCount < 10 {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        SectionHeader(title: "Current Workspace")
+                        Card(compact: true, chrome: false) {
+                            workspaceControlHeader
+                            workspaceListContent
                         }
-
-                        VStack(alignment: .leading, spacing: 0) {
-                            if vm.liveColumns.isEmpty {
-                                startupDiagView()
-                                    .font(GhosttyTheme.current.font(size: 12, weight: .medium))
-                                    .foregroundStyle(GhosttyTheme.current.textSecondary)
-                            } else {
-                                let indexedColumns = Array(vm.liveColumns.enumerated())
-                                ForEach(0...vm.liveColumns.count, id: \.self) { insertionIndex in
-                                    dropInsertionGap(index: insertionIndex)
-                                        .onDrop(
-                                            of: [UTType.text],
-                                            delegate: GapDropDelegate(
-                                                insertionIndex: insertionIndex,
-                                                totalCount: vm.liveColumns.count,
-                                                draggingColumnID: $draggingColumnID,
-                                                dropInsertionIndex: $dropInsertionIndex,
-                                                isDragActive: $isDragActive,
-                                                viewModel: vm
-                                            )
-                                        )
-
-                                    if insertionIndex < indexedColumns.count {
-                                        let column = indexedColumns[insertionIndex].element
-                                        liveColumnRow(column)
-                                            .onDrop(
-                                                of: [UTType.text],
-                                                delegate: RowDropFallbackDelegate(
-                                                    rowIndex: insertionIndex,
-                                                    totalCount: vm.liveColumns.count,
-                                                    draggingColumnID: $draggingColumnID,
-                                                    dropInsertionIndex: $dropInsertionIndex,
-                                                    isDragActive: $isDragActive,
-                                                    viewModel: vm
-                                                )
-                                            )
-                                    }
+                        remainingSections
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+                    .padding(.top, 4)
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                GeometryReader { geo in
+                    let maxH = geo.size.height * 0.8
+                    VStack(spacing: 0) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            SectionHeader(title: "Current Workspace")
+                            Card(compact: true, chrome: false) {
+                                workspaceControlHeader
+                                ScrollView {
+                                    workspaceListContent
                                 }
-                            }
-                            ForEach(vm.inactiveProjects) { project in
-                                inactiveProjectRow(project)
                             }
                         }
-                    }
+                        .frame(height: workspaceHeight)
+                        .padding(.horizontal, 4)
+                        .padding(.top, 4)
+                        .clipped()
 
-                    SectionHeader(title: "Memory")
-                    Card(compact: true, chrome: false) {
-                        memorySection()
-                    }
+                        WorkspaceResizeDivider(height: $workspaceHeight, maxHeight: maxH)
 
-                    SectionHeader(title: "CC & Codex")
-                    Card(compact: true, chrome: false) {
-                        monitorSection()
-                    }
-
-                    SectionHeader(title: "Workspace YAML")
-                    Card {
-                        HStack(spacing: 0) {
-                            ActionButton("Open workspace.yaml", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                                vm.openWorkspaceYAML()
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 4) {
+                                remainingSections
                             }
-                            Spacer(minLength: 0)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 4)
                         }
+                        .frame(maxWidth: .infinity)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 4)
-                .padding(.top, 4)
             }
-            .frame(maxWidth: .infinity)
         }
         .overlay(alignment: .topTrailing) {
             Button(action: { collapseController.toggle(ghosttyTracker: ghosttyTracker) }) {
@@ -3311,6 +3451,14 @@ struct ContentView: View {
             // Buttons row
             HStack(spacing: 1) {
                 Spacer()
+                ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy && !column.claudePaneIDs.isEmpty, dense: true) {
+                    Task { await vm.stopPane(role: "claude", for: column) }
+                }
+                .frame(width: 30)
+                ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy && !column.codexPaneIDs.isEmpty, dense: true) {
+                    Task { await vm.stopPane(role: "codex", for: column) }
+                }
+                .frame(width: 32)
                 ActionButton("Yazi", tone: column.yaziPaneID == nil ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
                     Task { await vm.toggleYazi(for: column) }
                 }
@@ -3388,9 +3536,13 @@ struct ContentView: View {
                 Spacer()
             }
 
-            // Button row (Yazi/Term disabled, Add enabled)
+            // Button row (CC/Cdx/Yazi/Term disabled, Add enabled)
             HStack(spacing: 1) {
                 Spacer()
+                ActionButton("CC", tone: .neutral, isEnabled: false, dense: true) {}
+                    .frame(width: 30)
+                ActionButton("Cdx", tone: .neutral, isEnabled: false, dense: true) {}
+                    .frame(width: 32)
                 ActionButton("Yazi", tone: .neutral, isEnabled: false, dense: true) {}
                     .frame(width: 38)
                 ActionButton("Term", tone: .neutral, isEnabled: false, dense: true) {}
