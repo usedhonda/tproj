@@ -1870,10 +1870,22 @@ if is_gate_target "$TARGET"; then
   fi
 
   if [[ "$gate_adpt" == "tmux" ]]; then
-    if ! send_via_gate "$gate_adpt" "$gate_msg" "$gate_hint"; then
-      echo "Error: gate:tmux failed. Run 'tproj-msg --help' or read /msg skill docs for gate adapter options." >&2
+    tmux_err=""
+    tmux_err=$(send_via_gate "$gate_adpt" "$gate_msg" "$gate_hint" 2>&1) || {
+      if echo "$tmux_err" | grep -q "session_busy"; then
+        echo "Info: gate:tmux session_busy -> auto-fallback to gate:direct" >&2
+        if send_via_gate "direct" "$gate_msg" "$gate_hint"; then
+          gate_dedup_mark "direct" "$MESSAGE"
+          exit 0
+        fi
+        echo "Error: gate:direct fallback also failed." >&2
+        exit 1
+      fi
+      echo "$tmux_err" >&2
+      echo "Error: gate:tmux failed. Use 'gate:direct' to bypass tmux." >&2
       exit 1
-    fi
+    }
+    echo "$tmux_err" >&2
     gate_dedup_mark "$gate_adpt" "$MESSAGE"
     exit 0
   fi
