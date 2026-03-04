@@ -215,7 +215,7 @@ final class GhosttyWindowTracker: ObservableObject {
     private weak var appWindow: NSWindow?
 
     private let snapThreshold: CGFloat = 12
-    private let snapYAlignThreshold: CGFloat = 100
+    private let snapYAlignThreshold: CGFloat = 100  // top-align when top edges within this
     private let snapGap: CGFloat = 0
     private var snapEdge: SnapEdge = .right
     private var lastGhosttyFrame: CGRect?
@@ -355,7 +355,8 @@ final class GhosttyWindowTracker: ObservableObject {
             windowSize: currentFrame.size,
             preferredSide: snapEdge
         )
-        let yFree = (ghosttyFrame.height - currentFrame.size.height) > snapYAlignThreshold
+        let topGap = abs(currentFrame.maxY - ghosttyFrame.maxY)
+        let yFree = topGap > snapYAlignThreshold
 
         if isSnapped {
             if suspendDriftDetection {
@@ -424,7 +425,8 @@ final class GhosttyWindowTracker: ObservableObject {
 
         snapEdge = leftToRight <= rightToLeft ? .right : .left
         let snapTarget = anchoredOrigin(for: ghosttyFrame, windowSize: appFrame.size, preferredSide: snapEdge)
-        let yFree = (ghosttyFrame.height - appFrame.size.height) > snapYAlignThreshold
+        let topGap = abs(appFrame.maxY - ghosttyFrame.maxY)
+        let yFree = topGap > snapYAlignThreshold
         let snapOrigin = yFree
             ? CGPoint(x: snapTarget.origin.x, y: appFrame.origin.y)
             : snapTarget.origin
@@ -441,7 +443,8 @@ final class GhosttyWindowTracker: ObservableObject {
         lastGhosttyFrame = ghosttyFrame
         // Re-snap to correct position after size change
         let target = anchoredOrigin(for: ghosttyFrame, windowSize: window.frame.size, preferredSide: snapEdge)
-        let yFree = (ghosttyFrame.height - window.frame.size.height) > snapYAlignThreshold
+        let topGap = abs(window.frame.maxY - ghosttyFrame.maxY)
+        let yFree = topGap > snapYAlignThreshold
         let followOrigin = yFree
             ? CGPoint(x: target.origin.x, y: window.frame.origin.y)
             : target.origin
