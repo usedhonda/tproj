@@ -1423,8 +1423,16 @@ normalize_gate_adapter() {
   local adapter="$1" lower resolved
   lower=$(printf '%s' "$adapter" | tr '[:upper:]' '[:lower:]')
   case "$lower" in
-    ""|session)
+    session)
       echo "tmux"
+      ;;
+    "")
+      resolved=$(printf '%s' "$(gate_default_adapter)" | tr '[:upper:]' '[:lower:]')
+      case "$resolved" in
+        ""|session|default) echo "tmux" ;;
+        direct) echo "direct" ;;
+        *) echo "$resolved" ;;
+      esac
       ;;
     default)
       resolved=$(printf '%s' "$(gate_default_adapter)" | tr '[:upper:]' '[:lower:]')
@@ -1441,8 +1449,8 @@ normalize_gate_adapter() {
 }
 
 # Extract adapter from gate target.
-# Defaults to session-first lane:
-#   gate          -> tmux (session)
+# Defaults to workspace default:
+#   gate          -> workspace default (default_adapter in workspace.yaml)
 #   gate:session  -> tmux (session)
 #   gate:default  -> workspace default
 #   gate:line     -> line
@@ -1451,7 +1459,7 @@ gate_adapter() {
   if [[ "$target" == gate:* ]]; then
     raw="${target#gate:}"
   else
-    raw="session"
+    raw="default"
   fi
   normalize_gate_adapter "$raw"
 }
