@@ -176,7 +176,8 @@ private func currentGhosttyFrame() -> NSRect? {
     guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
         return nil
     }
-    guard let screenHeight = NSScreen.main?.frame.height else { return nil }
+    // CG origin is top-left of PRIMARY display; use screens[0] (not .main which follows focus)
+    guard let screenHeight = NSScreen.screens.first?.frame.height else { return nil }
 
     for info in list {
         guard let name = info[kCGWindowOwnerName as String] as? String,
@@ -215,10 +216,10 @@ final class GhosttyWindowTracker: ObservableObject {
     private weak var appWindow: NSWindow?
 
     private let snapThreshold: CGFloat = 12
-    private let snapGap: CGFloat = 0
+    private let snapYAlignThreshold: CGFloat = 100
+    private let snapGap: CGFloat = 2
     private var snapEdge: SnapEdge = .right
     private var lastGhosttyFrame: CGRect?
-    private var lastWindowSize: CGSize?
     // After detach, suppress re-snap for a short period
     private var detachCooldownUntil: Date?
 
@@ -355,19 +356,7 @@ final class GhosttyWindowTracker: ObservableObject {
             windowSize: currentFrame.size,
             preferredSide: snapEdge
         )
-        // DEBUG: log snap coordinates on any change (remove after debugging)
-        let posChanged = lastWindowSize == nil
-            || lastWindowSize! != currentFrame.size
-            || lastGhosttyFrame != ghosttyFrame
-            || !nearlyEqual(currentOrigin, target.origin)
-        if posChanged {
-            NSLog("[snap] snapped=%d ghosttyMaxY=%.0f tprojMaxY=%.0f tprojH=%.0f targetY=%.0f curY=%.0f diff=%.0f",
-                  isSnapped ? 1 : 0,
-                  ghosttyFrame.maxY, currentFrame.maxY, currentFrame.height,
-                  target.origin.y, currentOrigin.y,
-                  currentFrame.maxY - ghosttyFrame.maxY)
-            lastWindowSize = currentFrame.size
-        }
+
 
         if isSnapped {
             if suspendDriftDetection {
@@ -375,8 +364,8 @@ final class GhosttyWindowTracker: ObservableObject {
                 return
             }
 
-            let detachDistance = hypot(currentOrigin.x - target.origin.x,
-                                       currentOrigin.y - target.origin.y)
+            // Detach by X-only (Y movement never triggers detach)
+            let xDrift = abs(currentOrigin.x - target.origin.x)
             let ghostMotion: CGFloat
             if let last = lastGhosttyFrame {
                 ghostMotion = hypot(ghosttyFrame.origin.x - last.origin.x,
@@ -385,13 +374,18 @@ final class GhosttyWindowTracker: ObservableObject {
                 ghostMotion = 0
             }
 
-            if detachDistance >= snapThreshold * 2 && ghostMotion < 2 {
+            if xDrift >= snapThreshold * 2 && ghostMotion < 2 {
                 isSnapped = false
                 detachCooldownUntil = Date().addingTimeInterval(0.4)
             } else {
                 snapEdge = target.side
-                if detachDistance >= 1.0 {
-                    window.setFrameOrigin(target.origin)
+                let topGap = abs(currentFrame.maxY - ghosttyFrame.maxY)
+                let snapY = (topGap <= snapYAlignThreshold)
+                    ? target.origin.y       // top-align
+                    : currentOrigin.y       // keep current Y
+                let followOrigin = CGPoint(x: target.origin.x, y: snapY)
+                if !nearlyEqual(currentOrigin, followOrigin) {
+                    window.setFrameOrigin(followOrigin)
                 }
             }
         } else {
@@ -425,7 +419,11 @@ final class GhosttyWindowTracker: ObservableObject {
 
         snapEdge = leftToRight <= rightToLeft ? .right : .left
         let snapTarget = anchoredOrigin(for: ghosttyFrame, windowSize: appFrame.size, preferredSide: snapEdge)
-        appWindow?.setFrameOrigin(snapTarget.origin)
+        let topGap = abs(appFrame.maxY - ghosttyFrame.maxY)
+        let snapOrigin = (topGap <= snapYAlignThreshold)
+            ? snapTarget.origin
+            : CGPoint(x: snapTarget.origin.x, y: appFrame.origin.y)
+        appWindow?.setFrameOrigin(snapOrigin)
         snapEdge = snapTarget.side
         isSnapped = true
     }
@@ -438,7 +436,11 @@ final class GhosttyWindowTracker: ObservableObject {
         lastGhosttyFrame = ghosttyFrame
         // Re-snap to correct position after size change
         let target = anchoredOrigin(for: ghosttyFrame, windowSize: window.frame.size, preferredSide: snapEdge)
-        window.setFrameOrigin(target.origin)
+        let topGap = abs(window.frame.maxY - ghosttyFrame.maxY)
+        let followOrigin = (topGap <= snapYAlignThreshold)
+            ? target.origin
+            : CGPoint(x: target.origin.x, y: window.frame.origin.y)
+        window.setFrameOrigin(followOrigin)
         snapEdge = target.side
     }
 
@@ -4398,6 +4400,5 @@ struct TprojApp: App {
         for key in keys {
             defaults.removeObject(forKey: key)
         }
-        NSLog("[snap] cleared autosave keys count=%d", keys.count)
     }
 }
