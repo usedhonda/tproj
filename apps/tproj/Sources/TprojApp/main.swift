@@ -677,25 +677,6 @@ struct LiveColumn: Identifiable {
     }
 }
 
-enum SessionStopTarget: String, CaseIterable, Identifiable {
-    case all = "all"
-    case core = "core"
-
-    var id: String { rawValue }
-
-    var shortLabel: String {
-        switch self {
-        case .all:
-            return "All"
-        case .core:
-            return "Core"
-        }
-    }
-
-    var includeAgents: Bool {
-        self == .all
-    }
-}
 
 struct CommandResult {
     var exitCode: Int32
@@ -1162,31 +1143,12 @@ final class AppViewModel: ObservableObject {
     @Published var memoryErrorText: String?
     @Published var memoryLastUpdatedAt: Date?
     @Published var pendingDropColumns: Set<Int> = []
-    @Published var sessionStopTarget: SessionStopTarget = .all
     @Published var pendingSessionAction: SessionAction? = nil
 
     enum SessionAction {
-        case end(SessionStopTarget)
-        case force(SessionStopTarget)
-
-        var title: String {
-            switch self {
-            case .end(let t): return "End Session (\(t.shortLabel))"
-            case .force(let t): return "Force Kill (\(t.shortLabel))"
-            }
-        }
-        var message: String {
-            switch self {
-            case .end(let t):
-                return t == .all
-                    ? "All panes (including agents) will be stopped."
-                    : "Core panes (CC/Cdx) will be stopped. Agents will remain."
-            case .force(let t):
-                return t == .all
-                    ? "All panes (including agents) will be force-killed. This cannot be undone."
-                    : "Core panes (CC/Cdx) will be force-killed. Agents will remain."
-            }
-        }
+        case stop
+        var title: String { "Stop Session" }
+        var message: String { "All panes will be stopped." }
     }
 
     private let fileManager = FileManager.default
@@ -1606,7 +1568,6 @@ final class AppViewModel: ObservableObject {
     private func logSessionSend(
         action: String,
         session: String,
-        target: SessionStopTarget,
         paneID: String,
         role: String,
         command: String
@@ -1615,7 +1576,7 @@ final class AppViewModel: ObservableObject {
             "\(currentISO8601Timestamp())",
             "action=\(action)",
             "session=\(session)",
-            "target=\(target.rawValue)",
+            "target=all",
             "pane=\(paneID)",
             "role=\(role)",
             "command=\(command)",
@@ -2380,30 +2341,30 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func shouldSendInterrupt(to role: String, target: SessionStopTarget) -> Bool {
+    private func shouldSendInterrupt(to role: String) -> Bool {
         if role.hasPrefix("claude") || role.hasPrefix("codex") || role.hasPrefix("terminal") {
             return true
         }
         if role.hasPrefix("agent") {
-            return target.includeAgents
+            return true
         }
         return false
     }
 
-    private func exitCommand(for role: String, target: SessionStopTarget) -> String? {
+    private func exitCommand(for role: String) -> String? {
         if role.hasPrefix("claude") || role.hasPrefix("terminal") {
             return "exit"
         }
         if role.hasPrefix("codex") {
             return "/exit"
         }
-        if role.hasPrefix("agent"), target.includeAgents {
+        if role.hasPrefix("agent") {
             return "/exit"
         }
         return nil
     }
 
-    func stopSession(target: SessionStopTarget = .all) async {
+    func stopSession() async {
         isBusy = true
         defer { isBusy = false }
 
@@ -2435,12 +2396,12 @@ final class AppViewModel: ObservableObject {
 
             // Send C-c to selected interactive panes, q to yazi panes.
             for pane in paneRoles {
-                if shouldSendInterrupt(to: pane.role, target: target) {
+                if shouldSendInterrupt(to: pane.role) {
                     _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "C-c", ""])
-                    logSessionSend(action: "stop-send", session: session, target: target, paneID: pane.id, role: pane.role, command: "C-c")
+                    logSessionSend(action: "stop-send", session: session, paneID: pane.id, role: pane.role, command: "C-c")
                 } else if pane.role.hasPrefix("yazi") {
                     _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "q", ""])
-                    logSessionSend(action: "stop-send", session: session, target: target, paneID: pane.id, role: pane.role, command: "q")
+                    logSessionSend(action: "stop-send", session: session, paneID: pane.id, role: pane.role, command: "q")
                 }
             }
 
@@ -2449,9 +2410,9 @@ final class AppViewModel: ObservableObject {
 
             // Send role-specific exit commands.
             for pane in paneRoles {
-                if let command = exitCommand(for: pane.role, target: target) {
+                if let command = exitCommand(for: pane.role) {
                     _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, command, "Enter"])
-                    logSessionSend(action: "stop-send", session: session, target: target, paneID: pane.id, role: pane.role, command: command)
+                    logSessionSend(action: "stop-send", session: session, paneID: pane.id, role: pane.role, command: command)
                 }
             }
         }
@@ -2489,57 +2450,31 @@ final class AppViewModel: ObservableObject {
         // Clean up dead-agents file
         try? FileManager.default.removeItem(atPath: "/tmp/tproj-dead-agents")
 
-        statusText = target == .all ? "Session stopped" : "Session stopped (core target)"
+        statusText = "Session stopped"
         liveColumns = []
     }
 
-    func killSession(target: SessionStopTarget = .all) async {
+    func startSession() async {
         isBusy = true
         defer { isBusy = false }
+        statusText = "Starting session..."
 
-        let sessions = await getTprojSessions()
-        guard !sessions.isEmpty else {
-            statusText = "No tproj sessions found"
-            liveColumns = []
-            return
+        let result = await runCommandAsync("/bin/zsh", ["-l", "-c", "tproj"])
+
+        await refreshAll()
+        if liveColumns.isEmpty && result.exitCode == 0 {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await refreshAll()
         }
+        statusText = liveColumns.isEmpty ? "Start failed" : "Session started"
+    }
+
+    private func killSession() async {
+        let sessions = await getTprojSessions()
+        guard !sessions.isEmpty else { return }
 
         // Collect descendant PIDs before killing (to clean up MCP servers)
         let descendantPids = await collectSessionDescendants(sessions: sessions)
-
-        // Force mode still sends one-shot graceful hints before kill.
-        for session in sessions {
-            let listResult = await runCommandAsync("/usr/bin/env", [
-                "tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_id}:#{@role}"
-            ])
-            guard listResult.exitCode == 0 else { continue }
-
-            let paneRoles: [(id: String, role: String)] = listResult.stdout
-                .split(separator: "\n", omittingEmptySubsequences: true)
-                .map(String.init)
-                .compactMap { line in
-                    let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-                    guard parts.count == 2 else { return nil }
-                    return (id: parts[0], role: parts[1])
-                }
-
-            for pane in paneRoles {
-                if shouldSendInterrupt(to: pane.role, target: target) {
-                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "C-c", ""])
-                    logSessionSend(action: "kill-send", session: session, target: target, paneID: pane.id, role: pane.role, command: "C-c")
-                } else if pane.role.hasPrefix("yazi") {
-                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, "q", ""])
-                    logSessionSend(action: "kill-send", session: session, target: target, paneID: pane.id, role: pane.role, command: "q")
-                }
-            }
-
-            for pane in paneRoles {
-                if let command = exitCommand(for: pane.role, target: target) {
-                    _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", pane.id, command, "Enter"])
-                    logSessionSend(action: "kill-send", session: session, target: target, paneID: pane.id, role: pane.role, command: command)
-                }
-            }
-        }
 
         // Kill team-watcher first
         _ = await runCommandAsync("/usr/bin/env", ["pkill", "-TERM", "-f", "bin/team-watcher"])
@@ -2555,9 +2490,6 @@ final class AppViewModel: ObservableObject {
 
         // Clean up dead-agents file
         try? FileManager.default.removeItem(atPath: "/tmp/tproj-dead-agents")
-
-        statusText = target == .all ? "Session killed" : "Session killed (core target)"
-        liveColumns = []
     }
 
     /// Get all tmux sessions with @tproj=true tag
@@ -3347,16 +3279,13 @@ struct ContentView: View {
                 .truncationMode(.tail)
             Spacer()
             if !vm.liveColumns.isEmpty {
-                ActionButton(vm.sessionStopTarget.shortLabel, tone: vm.sessionStopTarget == .all ? .primary : .neutral, isEnabled: !vm.isBusy, dense: true) {
-                    vm.sessionStopTarget = vm.sessionStopTarget == .all ? .core : .all
+                ActionButton("Stop", tone: .danger, isEnabled: !vm.isBusy, dense: true) {
+                    vm.pendingSessionAction = .stop
                 }
                 .fixedSize()
-                ActionButton("End", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                    vm.pendingSessionAction = .end(vm.sessionStopTarget)
-                }
-                .fixedSize()
-                ActionButton("Force", tone: .danger, isEnabled: !vm.isBusy, dense: true) {
-                    vm.pendingSessionAction = .force(vm.sessionStopTarget)
+            } else {
+                ActionButton("Start", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
+                    Task { await vm.startSession() }
                 }
                 .fixedSize()
             }
@@ -3536,7 +3465,7 @@ struct ContentView: View {
             }
         )
         .alert(
-            vm.pendingSessionAction?.title ?? "",
+            "Stop Session",
             isPresented: Binding<Bool>(
                 get: { vm.pendingSessionAction != nil },
                 set: { if !$0 { vm.pendingSessionAction = nil } }
@@ -3545,19 +3474,12 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) {
                 vm.pendingSessionAction = nil
             }
-            Button("OK", role: .destructive) {
-                if let action = vm.pendingSessionAction {
-                    vm.pendingSessionAction = nil
-                    Task {
-                        switch action {
-                        case .end(let target): await vm.stopSession(target: target)
-                        case .force(let target): await vm.killSession(target: target)
-                        }
-                    }
-                }
+            Button("Stop", role: .destructive) {
+                vm.pendingSessionAction = nil
+                Task { await vm.stopSession() }
             }
         } message: {
-            Text(vm.pendingSessionAction?.message ?? "")
+            Text("All panes will be stopped.")
         }
         .onReceive(NotificationCenter.default.publisher(for: .flipSnapSide)) { _ in
             ghosttyTracker.flipSide()
