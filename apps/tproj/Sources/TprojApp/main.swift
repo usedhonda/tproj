@@ -218,6 +218,7 @@ final class GhosttyWindowTracker: ObservableObject {
     private let snapGap: CGFloat = 0
     private var snapEdge: SnapEdge = .right
     private var lastGhosttyFrame: CGRect?
+    private var lastWindowSize: CGSize?
     // After detach, suppress re-snap for a short period
     private var detachCooldownUntil: Date?
 
@@ -354,6 +355,20 @@ final class GhosttyWindowTracker: ObservableObject {
             windowSize: currentFrame.size,
             preferredSide: snapEdge
         )
+        // DEBUG: log snap coordinates on any change (remove after debugging)
+        let posChanged = lastWindowSize == nil
+            || lastWindowSize! != currentFrame.size
+            || lastGhosttyFrame != ghosttyFrame
+            || !nearlyEqual(currentOrigin, target.origin)
+        if posChanged {
+            NSLog("[snap] snapped=%d ghosttyMaxY=%.0f tprojMaxY=%.0f tprojH=%.0f targetY=%.0f curY=%.0f diff=%.0f",
+                  isSnapped ? 1 : 0,
+                  ghosttyFrame.maxY, currentFrame.maxY, currentFrame.height,
+                  target.origin.y, currentOrigin.y,
+                  currentFrame.maxY - ghosttyFrame.maxY)
+            lastWindowSize = currentFrame.size
+        }
+
         if isSnapped {
             if suspendDriftDetection {
                 lastGhosttyFrame = ghosttyFrame
@@ -534,12 +549,7 @@ final class WindowCollapseController: ObservableObject {
 
         // Fallback: compute origin from Ghostty frame when normalOrigin was not saved
         if normalOrigin == .zero, let g = currentGhosttyFrame() {
-            let snapYAlignThreshold: CGFloat = 100
-            let heightDiff = g.height - window.frame.height
-            let fallbackY: CGFloat = heightDiff <= snapYAlignThreshold
-                ? g.maxY - window.frame.height  // top-align
-                : window.frame.origin.y          // keep current Y
-            normalOrigin = NSPoint(x: g.minX - targetWidth, y: fallbackY)
+            normalOrigin = NSPoint(x: g.minX - targetWidth, y: g.maxY - window.frame.height)
         }
 
         setTrafficLightsHidden(false)
@@ -3305,6 +3315,7 @@ struct ContentView: View {
             .background(GhosttyTheme.current.background.ignoresSafeArea())
             .background(
                 WindowAccessor { window in
+                    disableWindowFrameRestoration(window)
                     collapseController.attach(to: window)
                     ghosttyTracker.attach(to: window)
                 }
@@ -3505,6 +3516,7 @@ struct ContentView: View {
         }
         .background(
             WindowAccessor { window in
+                disableWindowFrameRestoration(window)
                 (NSApp.delegate as? AppDelegate)?.mainWindow = window
                 collapseController.attach(to: window)
                 windowLevelController.attach(to: window)
@@ -3551,6 +3563,12 @@ struct ContentView: View {
                 collapseController.toggle(ghosttyTracker: ghosttyTracker)
             }
         }
+    }
+
+    private func disableWindowFrameRestoration(_ window: NSWindow) {
+        // Prevent delayed scene/window restoration from overriding snap coordinates.
+        _ = window.setFrameAutosaveName("")
+        window.isRestorable = false
     }
 
     private func recoverWindowFrameIfNeeded(_ window: NSWindow) {
@@ -4326,11 +4344,12 @@ struct TprojApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
+        clearWindowFrameAutosave()
         loadAppIcon()
     }
 
     var body: some Scene {
-        Window("tproj", id: "main") {
+        WindowGroup("tproj", id: "main") {
             ContentView()
                 .frame(minWidth: 14, minHeight: 520, idealHeight: 980, maxHeight: 2200)
         }
@@ -4370,5 +4389,15 @@ struct TprojApp: App {
         if let icon = NSImage(contentsOfFile: devIcon.path) {
             NSApplication.shared.applicationIconImage = icon
         }
+    }
+
+    private func clearWindowFrameAutosave() {
+        let defaults = UserDefaults.standard
+        let keys = defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("NSWindow Frame ") }
+        guard !keys.isEmpty else { return }
+        for key in keys {
+            defaults.removeObject(forKey: key)
+        }
+        NSLog("[snap] cleared autosave keys count=%d", keys.count)
     }
 }
