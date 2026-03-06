@@ -4245,23 +4245,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    private func logMainWindowEvent(_ event: String, window: NSWindow?) {
+        guard let window else {
+            NSLog("[main-window] event=%@ window=nil", event)
+            return
+        }
+        NSLog(
+            "[main-window] event=%@ number=%ld visible=%d mini=%d key=%d main=%d frame=%@",
+            event,
+            window.windowNumber,
+            window.isVisible ? 1 : 0,
+            window.isMiniaturized ? 1 : 0,
+            window.isKeyWindow ? 1 : 0,
+            window.isMainWindow ? 1 : 0,
+            NSStringFromRect(window.frame)
+        )
+    }
+
     @discardableResult
     func presentMainWindow() -> Bool {
-        guard let window = mainWindow else { return false }
+        guard let window = mainWindow else {
+            logMainWindowEvent("present-main-window.missing", window: nil)
+            return false
+        }
+        logMainWindowEvent("present-main-window.before", window: window)
         if window.isMiniaturized {
             window.deminiaturize(nil)
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        logMainWindowEvent("present-main-window.after", window: window)
         return true
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        NSLog("[main-window] event=app-reopen hasVisibleWindows=%d", flag ? 1 : 0)
         if !flag {
             if presentMainWindow() {
+                NSLog("[main-window] event=app-reopen action=reuse-existing")
                 return false
             }
             NSApp.activate(ignoringOtherApps: true)
+            NSLog("[main-window] event=app-reopen action=activate-without-window")
             return true
         }
         return false
@@ -4273,8 +4298,11 @@ private struct ShowWindowButton: View {
     var body: some View {
         Button("Show Window") {
             if (NSApp.delegate as? AppDelegate)?.presentMainWindow() != true {
+                NSLog("[main-window] event=show-window action=open-window")
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
+            } else {
+                NSLog("[main-window] event=show-window action=reuse-existing")
             }
         }
         .keyboardShortcut("t", modifiers: [.command, .shift])
