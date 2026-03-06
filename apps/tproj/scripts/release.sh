@@ -1,158 +1,371 @@
 #!/usr/bin/env bash
+# tproj Release Script
+#
+# Usage:
+#   ./scripts/release.sh
+#   ./scripts/release.sh --skip-notarize
+#   ./scripts/release.sh --publish --notes-file docs/release/release-notes.md
+#
+# Required env vars:
+#   APPLE_ID
+#   APPLE_TEAM_ID  (fallback: TEAM_ID)
+#   APPLE_ID_PASSWORD  (fallback: APP_PASSWORD)
+#   SIGNING_ID
+
 set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-ROOT_DIR="$(cd "$APP_DIR/../.." && pwd)"
-RELEASE_DIR="$APP_DIR/dist/release"
 APP_NAME="tproj"
-APP_BUNDLE="$RELEASE_DIR/$APP_NAME.app"
-PAYLOAD_TAR="$RELEASE_DIR/tproj-cli-payload.tar.gz"
-DMG_PATH="$RELEASE_DIR/$APP_NAME.dmg"
-DMG_STAGING="$(mktemp -d /tmp/tproj-dmg-staging.XXXXXX)"
-SKIP_NOTARIZE=false
+APP_BUNDLE="$APP_DIR/dist/$APP_NAME.app"
+APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+ENTITLEMENTS_PATH="$APP_DIR/tproj.entitlements"
+DEFAULT_RELEASE_ROOT="/tmp/tproj-release"
+RELEASE_ROOT="${RELEASE_ROOT:-$DEFAULT_RELEASE_ROOT}"
 
-for arg in "$@"; do
-  case "$arg" in
+PUBLISH=false
+SKIP_NOTARIZE=false
+RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE:-docs/release/release-notes.md}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./scripts/release.sh
+  ./scripts/release.sh --skip-notarize
+  ./scripts/release.sh --publish --notes-file docs/release/release-notes.md
+
+Options:
+  --skip-notarize          Skip notarization and stapling
+  --publish                Create GitHub release after successful notarization
+  --notes-file <path>      Markdown release notes file (required for --publish)
+  -h, --help               Show this help
+
+Required environment variables:
+  APPLE_ID
+  APPLE_TEAM_ID  (fallback: TEAM_ID)
+  APPLE_ID_PASSWORD  (fallback: APP_PASSWORD)
+  SIGNING_ID
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --skip-notarize)
       SKIP_NOTARIZE=true
+      shift
+      ;;
+    --publish)
+      PUBLISH=true
+      shift
+      ;;
+    --notes-file)
+      if [[ $# -lt 2 ]]; then
+        echo -e "${RED}Error: --notes-file requires a path${NC}" >&2
+        exit 1
+      fi
+      RELEASE_NOTES_FILE="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
       ;;
     *)
-      echo "Unknown option: $arg"
-      echo "Usage: ./scripts/release.sh [--skip-notarize]"
+      echo -e "${RED}Error: Unknown argument: $1${NC}" >&2
+      usage
       exit 1
       ;;
   esac
 done
 
-cleanup() {
-  rm -rf "$DMG_STAGING"
-}
-trap cleanup EXIT
+# Env var compatibility: APPLE_TEAM_ID / TEAM_ID, APPLE_ID_PASSWORD / APP_PASSWORD
+APPLE_TEAM_ID="${APPLE_TEAM_ID:-${TEAM_ID:-}}"
+APPLE_ID_PASSWORD="${APPLE_ID_PASSWORD:-${APP_PASSWORD:-}}"
+export APPLE_TEAM_ID APPLE_ID_PASSWORD
 
-if [[ -f "$APP_DIR/.local/release.md" ]]; then
-  # shellcheck disable=SC1091
-  source "$APP_DIR/.local/release.md"
-fi
-
-require_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "Missing command: $1"
+require_command() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo -e "${RED}Error: required command not found: $cmd${NC}" >&2
     exit 1
   fi
 }
 
 require_env() {
-  if [[ -z "${!1:-}" ]]; then
-    echo "Missing required variable: $1"
+  local key="$1"
+  if [[ -z "${!key:-}" ]]; then
+    echo -e "${RED}Error: required env var missing: $key${NC}" >&2
     exit 1
   fi
 }
 
-require_cmd swift
-require_cmd hdiutil
-require_cmd codesign
-require_cmd xcrun
-require_cmd tar
+require_clean_worktree() {
+  if [[ -n "$(git status --porcelain)" ]]; then
+    echo -e "${RED}Error: git worktree is dirty. Commit or stash before --publish.${NC}" >&2
+    git status --short >&2
+    exit 1
+  fi
+}
+
+# Load credentials
+if [[ -f "$APP_DIR/.local/release.md" ]]; then
+  # shellcheck disable=SC1091
+  source "$APP_DIR/.local/release.md"
+  # Re-apply fallbacks after sourcing
+  APPLE_TEAM_ID="${APPLE_TEAM_ID:-${TEAM_ID:-}}"
+  APPLE_ID_PASSWORD="${APPLE_ID_PASSWORD:-${APP_PASSWORD:-}}"
+fi
+
+cd "$APP_DIR"
+
+require_command swift
+require_command xcrun
+require_command codesign
+require_command hdiutil
+require_command plutil
+require_command shasum
+require_command python3
+require_command lipo
+if [[ "$PUBLISH" == "true" ]]; then
+  require_command gh
+fi
 
 require_env SIGNING_ID
 if ! $SKIP_NOTARIZE; then
-  if [[ -z "${NOTARY_PROFILE:-}" ]]; then
-    require_env APPLE_ID
-    require_env TEAM_ID
-    require_env APP_PASSWORD
-  fi
+  require_env APPLE_ID
+  require_env APPLE_TEAM_ID
+  require_env APPLE_ID_PASSWORD
 fi
 
-echo "==> Build app"
+if [[ "$PUBLISH" == "true" ]]; then
+  require_clean_worktree
+fi
+
+if [[ "$PUBLISH" == "true" ]]; then
+  TOTAL_STEPS=9
+else
+  TOTAL_STEPS=8
+fi
+
+BUILD_STAMP="$(date +%Y%m%d-%H%M%S)"
+WORK_DIR="${RELEASE_ROOT}/${BUILD_STAMP}"
+DMG_PATH="${WORK_DIR}/${APP_NAME}.dmg"
+DMG_STAGING="${WORK_DIR}/dmg-contents"
+DMG_MOUNT="${WORK_DIR}/dmg-mount"
+NOTARY_JSON="${WORK_DIR}/notary-submit.json"
+MANIFEST_PATH="${WORK_DIR}/${APP_NAME}-release-manifest.json"
+ENTITLEMENTS_EXTRACT="${WORK_DIR}/entitlements.plist"
+
+mkdir -p "$WORK_DIR"
+
+echo -e "${GREEN}=== tproj Release ===${NC}"
+echo ""
+
+# --- Step 1: Build app ---
+echo -e "${GREEN}[1/${TOTAL_STEPS}] Building app (universal binary)...${NC}"
 "$APP_DIR/build-app.sh"
 
-echo "==> Prepare release directory"
-rm -rf "$RELEASE_DIR"
-mkdir -p "$RELEASE_DIR"
-cp -R "$APP_DIR/dist/$APP_NAME.app" "$APP_BUNDLE"
+VERSION="$(plutil -extract CFBundleShortVersionString raw "$APP_BUNDLE/Contents/Info.plist")"
+GIT_SHA="$(git rev-parse HEAD)"
+GIT_REF="$(git rev-parse --abbrev-ref HEAD)"
 
-echo "==> Sign app binaries"
-if [[ -d "$APP_BUNDLE/Contents/Resources" ]]; then
-  while IFS= read -r -d '' bin; do
-    codesign --force --options runtime --sign "$SIGNING_ID" "$bin"
-  done < <(find "$APP_BUNDLE/Contents/Resources" -type f -perm -111 -print0)
-fi
-codesign --force --options runtime --sign "$SIGNING_ID" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+echo "Version: ${YELLOW}${VERSION}${NC}"
+echo "Git SHA: ${YELLOW}${GIT_SHA}${NC}"
+echo "Artifacts: ${YELLOW}${WORK_DIR}${NC}"
 
-echo "==> Sign app bundle"
-codesign --force --options runtime --sign "$SIGNING_ID" "$APP_BUNDLE"
-codesign --verify --strict --verbose=2 "$APP_BUNDLE"
-
-echo "==> Package CLI payload"
-"$ROOT_DIR/scripts/package-cli-payload.sh" "$PAYLOAD_TAR"
-
-echo "==> Create installer launcher"
-cat > "$RELEASE_DIR/Install tproj.command" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-WORK_DIR="$(mktemp -d /tmp/tproj-install.XXXXXX)"
-LOG_FILE="/tmp/tproj-install-$(date +%Y%m%d_%H%M%S).log"
-
-cleanup() {
-  rm -rf "$WORK_DIR"
-}
-trap cleanup EXIT
-
-echo "tproj installer started"
-echo "log: $LOG_FILE"
-
-{
-  tar -xzf "$SELF_DIR/tproj-cli-payload.tar.gz" -C "$WORK_DIR"
-  cd "$WORK_DIR/tproj-cli-payload"
-  ./install.sh -y
-} | tee "$LOG_FILE"
-
+APP_ARCHS="$(lipo -archs "$APP_BINARY")"
+echo "Binary arch: ${APP_ARCHS}"
+echo -e "${GREEN}Build complete${NC}"
 echo
-echo "Install complete."
-echo "Open a new terminal and run: tproj --check"
-EOF
-chmod +x "$RELEASE_DIR/Install tproj.command"
 
-cp "$SCRIPT_DIR/README-QuickStart.txt" "$RELEASE_DIR/README-QuickStart.txt"
+# --- Step 2: Sign app ---
+echo -e "${GREEN}[2/${TOTAL_STEPS}] Signing and verifying app...${NC}"
+codesign --force --deep --options runtime \
+  --identifier com.usedhonda.tproj.desktop \
+  --entitlements "$ENTITLEMENTS_PATH" \
+  --sign "$SIGNING_ID" \
+  "$APP_BUNDLE"
+codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+SIGN_INFO="$(codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1)"
+SIGN_AUTHORITY="$(awk -F= '/^Authority=/{print $2; exit}' <<< "$SIGN_INFO")"
+if [[ -z "$SIGN_AUTHORITY" ]]; then
+  SIGN_AUTHORITY="$SIGNING_ID"
+fi
+codesign -d --entitlements :- "$APP_BUNDLE" > "$ENTITLEMENTS_EXTRACT" 2>/dev/null || cp "$ENTITLEMENTS_PATH" "$ENTITLEMENTS_EXTRACT"
+APP_SHA256="$(shasum -a 256 "$APP_BINARY" | awk '{print $1}')"
+ENTITLEMENTS_SHA256="$(shasum -a 256 "$ENTITLEMENTS_EXTRACT" | awk '{print $1}')"
+echo -e "${GREEN}App signing verified${NC}"
+echo
 
-echo "==> Build DMG staging"
+# --- Step 3: Create and verify DMG ---
+echo -e "${GREEN}[3/${TOTAL_STEPS}] Creating and verifying DMG...${NC}"
+rm -rf "$DMG_STAGING" "$DMG_MOUNT"
+mkdir -p "$DMG_STAGING" "$DMG_MOUNT"
 cp -R "$APP_BUNDLE" "$DMG_STAGING/"
-cp "$RELEASE_DIR/Install tproj.command" "$DMG_STAGING/"
-cp "$RELEASE_DIR/README-QuickStart.txt" "$DMG_STAGING/"
-cp "$PAYLOAD_TAR" "$DMG_STAGING/"
 ln -s /Applications "$DMG_STAGING/Applications"
+hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH" >/dev/null
 
-echo "==> Create DMG"
-hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH"
-
-echo "==> Sign DMG"
+# --- Step 4: Sign DMG ---
+echo -e "${GREEN}[4/${TOTAL_STEPS}] Signing DMG...${NC}"
 codesign --force --sign "$SIGNING_ID" "$DMG_PATH"
+codesign --verify --verbose=2 "$DMG_PATH"
+echo -e "${GREEN}DMG signed${NC}"
+echo
 
+# --- Step 5: Verify DMG payload ---
+echo -e "${GREEN}[5/${TOTAL_STEPS}] Verifying DMG payload...${NC}"
+hdiutil attach "$DMG_PATH" -readonly -nobrowse -mountpoint "$DMG_MOUNT" >/dev/null
+DMG_APP_BINARY="${DMG_MOUNT}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
+if [[ ! -f "$DMG_APP_BINARY" ]]; then
+  echo -e "${RED}Error: DMG payload missing app binary: $DMG_APP_BINARY${NC}" >&2
+  hdiutil detach "$DMG_MOUNT" -quiet >/dev/null 2>&1 || true
+  exit 1
+fi
+DMG_APP_SHA256="$(shasum -a 256 "$DMG_APP_BINARY" | awk '{print $1}')"
+hdiutil detach "$DMG_MOUNT" -quiet >/dev/null
+
+if [[ "$APP_SHA256" != "$DMG_APP_SHA256" ]]; then
+  echo -e "${RED}Error: DMG payload mismatch. Tested app and packaged app differ.${NC}" >&2
+  echo "App SHA256: $APP_SHA256" >&2
+  echo "DMG SHA256: $DMG_APP_SHA256" >&2
+  exit 1
+fi
+echo -e "${GREEN}DMG payload matches app bundle${NC}"
+echo
+
+# --- Step 6: Notarize ---
 if $SKIP_NOTARIZE; then
-  echo "==> Skip notarize/staple (--skip-notarize)"
+  echo -e "${GREEN}[6/${TOTAL_STEPS}] Notarization skipped (--skip-notarize)${NC}"
+  NOTARY_ID="skipped"
+  NOTARY_STATUS="skipped"
+  echo
 else
-  echo "==> Notarize DMG"
-  if [[ -n "${NOTARY_PROFILE:-}" ]]; then
-    xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait --timeout 900
-  else
-    xcrun notarytool submit "$DMG_PATH" \
-      --apple-id "$APPLE_ID" \
-      --team-id "$TEAM_ID" \
-      --password "$APP_PASSWORD" \
-      --wait --timeout 900
+  echo -e "${GREEN}[6/${TOTAL_STEPS}] Submitting DMG to notarization...${NC}"
+  xcrun notarytool submit "$DMG_PATH" \
+    --apple-id "$APPLE_ID" \
+    --team-id "$APPLE_TEAM_ID" \
+    --password "$APPLE_ID_PASSWORD" \
+    --wait \
+    --output-format json > "$NOTARY_JSON"
+
+  read -r NOTARY_ID NOTARY_STATUS < <(python3 - "$NOTARY_JSON" <<'PY'
+import json
+import sys
+
+notary_path = sys.argv[1]
+with open(notary_path, 'r', encoding='utf-8') as f:
+    data = json.load(f)
+print(data.get('id', ''), data.get('status', ''))
+PY
+  )
+
+  if [[ -z "$NOTARY_ID" || -z "$NOTARY_STATUS" ]]; then
+    echo -e "${RED}Error: failed to parse notarization response: $NOTARY_JSON${NC}" >&2
+    exit 1
   fi
 
-  echo "==> Staple"
-  xcrun stapler staple "$DMG_PATH"
+  if [[ "$NOTARY_STATUS" != "Accepted" ]]; then
+    echo -e "${RED}Error: notarization status is $NOTARY_STATUS (expected Accepted).${NC}" >&2
+    echo "See: $NOTARY_JSON" >&2
+    exit 1
+  fi
 
-  echo "==> Verify notarization"
-  xcrun stapler validate "$DMG_PATH"
-  spctl --assess --type open --context context:primary-signature --verbose "$DMG_PATH"
+  echo "Notary submission ID: $NOTARY_ID"
+  echo -e "${GREEN}Notarization accepted${NC}"
+  echo
+fi
+
+# --- Step 7: Staple ---
+if $SKIP_NOTARIZE; then
+  echo -e "${GREEN}[7/${TOTAL_STEPS}] Staple skipped (--skip-notarize)${NC}"
+  echo
+else
+  echo -e "${GREEN}[7/${TOTAL_STEPS}] Stapling and Gatekeeper assess...${NC}"
+  xcrun stapler staple "$DMG_PATH"
+  spctl --assess --verbose=4 --type install "$DMG_PATH"
+  echo -e "${GREEN}Staple + spctl assess passed${NC}"
+  echo
+fi
+
+# --- Step 8: Manifest ---
+echo -e "${GREEN}[8/${TOTAL_STEPS}] Writing release manifest...${NC}"
+DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
+CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export APP_NAME VERSION APP_BUNDLE APP_ARCHS APP_SHA256 SIGN_AUTHORITY
+export ENTITLEMENTS_SHA256 DMG_PATH DMG_SHA256 NOTARY_ID NOTARY_STATUS NOTARY_JSON
+export GIT_SHA GIT_REF CREATED_AT
+
+python3 - "$MANIFEST_PATH" <<'PY'
+import json
+import os
+import sys
+
+manifest_out = sys.argv[1]
+manifest = {
+    "app": {
+        "name": os.environ["APP_NAME"],
+        "version": os.environ["VERSION"],
+        "bundle": os.environ["APP_BUNDLE"],
+        "binary_arch": os.environ["APP_ARCHS"],
+        "binary_sha256": os.environ["APP_SHA256"],
+        "signing_authority": os.environ["SIGN_AUTHORITY"],
+        "entitlements_sha256": os.environ["ENTITLEMENTS_SHA256"],
+    },
+    "dmg": {
+        "path": os.environ["DMG_PATH"],
+        "sha256": os.environ["DMG_SHA256"],
+    },
+    "notarization": {
+        "submission_id": os.environ.get("NOTARY_ID", "skipped"),
+        "status": os.environ.get("NOTARY_STATUS", "skipped"),
+        "result_json": os.environ.get("NOTARY_JSON", ""),
+    },
+    "source": {
+        "git_sha": os.environ["GIT_SHA"],
+        "git_ref": os.environ["GIT_REF"],
+    },
+    "created_at": os.environ["CREATED_AT"],
+}
+with open(manifest_out, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2)
+    f.write("\n")
+PY
+
+echo "Manifest: $MANIFEST_PATH"
+echo -e "${GREEN}Manifest created${NC}"
+echo
+
+# --- Step 9: Publish ---
+if [[ "$PUBLISH" == "true" ]]; then
+  echo -e "${GREEN}[${TOTAL_STEPS}/${TOTAL_STEPS}] Publishing GitHub release...${NC}"
+  if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+    echo -e "${RED}Error: tag v${VERSION} already exists${NC}" >&2
+    exit 1
+  fi
+
+  gh release create "v${VERSION}" \
+    "$DMG_PATH" \
+    "$MANIFEST_PATH" \
+    --title "v${VERSION}" \
+    --notes-file "$RELEASE_NOTES_FILE"
+
+  echo -e "${GREEN}Published release: v${VERSION}${NC}"
+else
+  echo -e "${GREEN}Publish skipped${NC}"
+  echo "To publish:"
+  echo "  ./scripts/release.sh --publish --notes-file ${RELEASE_NOTES_FILE}"
 fi
 
 echo
-echo "Release artifact:"
-echo "  $DMG_PATH"
+echo -e "${GREEN}=== Release Complete ===${NC}"
+echo "Artifacts:"
+echo "  DMG:      $DMG_PATH"
+if ! $SKIP_NOTARIZE; then
+  echo "  Notary:   $NOTARY_JSON"
+fi
+echo "  Manifest: $MANIFEST_PATH"
