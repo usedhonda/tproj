@@ -21,6 +21,11 @@ private extension Color {
     }
 }
 
+private struct GhosttyWindowInfo {
+    let frame: NSRect
+    let windowNumber: Int
+}
+
 struct GhosttyTheme {
     let background: Color
     let foreground: Color
@@ -171,7 +176,7 @@ enum GhosttyConfigParser {
 
 // MARK: - Ghostty Window Tracker
 
-private func currentGhosttyFrame() -> NSRect? {
+private func currentGhosttyWindowInfo() -> GhosttyWindowInfo? {
     let options: CGWindowListOption = [.excludeDesktopElements, .optionOnScreenOnly]
     guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
         return nil
@@ -184,6 +189,7 @@ private func currentGhosttyFrame() -> NSRect? {
               name == "Ghostty",
               let layer = info[kCGWindowLayer as String] as? Int,
               layer == 0,   // normal windows only (skip menu bar, popups)
+              let number = info[kCGWindowNumber as String] as? Int,
               let bounds = info[kCGWindowBounds as String] as? [String: NSNumber],
               let x = bounds["X"],
               let y = bounds["Y"],
@@ -197,9 +203,295 @@ private func currentGhosttyFrame() -> NSRect? {
         let cgH = CGFloat(truncating: h)
         // CG coords (top-left origin) -> Cocoa coords (bottom-left origin)
         let cocoaY = screenHeight - cgY - cgH
-        return NSRect(x: cgX, y: cocoaY, width: cgW, height: cgH)
+        return GhosttyWindowInfo(
+            frame: NSRect(x: cgX, y: cocoaY, width: cgW, height: cgH),
+            windowNumber: number
+        )
     }
     return nil
+}
+
+private func currentGhosttyFrame() -> NSRect? {
+    currentGhosttyWindowInfo()?.frame
+}
+
+private struct PaneBackgroundGrid: Decodable, Equatable {
+    var width: Int
+    var height: Int
+
+    enum CodingKeys: String, CodingKey {
+        case width
+        case height
+    }
+
+    init(width: Int = 0, height: Int = 0) {
+        self.width = width
+        self.height = height
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        width = try c.decodeIfPresent(Int.self, forKey: .width) ?? 0
+        height = try c.decodeIfPresent(Int.self, forKey: .height) ?? 0
+    }
+}
+
+private struct PaneBackgroundPane: Identifiable, Decodable, Equatable {
+    var paneID: String
+    var role: String
+    var left: Int
+    var top: Int
+    var width: Int
+    var height: Int
+    var imagePath: String
+    var opacity: Double
+
+    var id: String { paneID }
+
+    enum CodingKeys: String, CodingKey {
+        case paneID = "pane_id"
+        case role
+        case left
+        case top
+        case width
+        case height
+        case imagePath = "image_path"
+        case opacity
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        paneID = try c.decodeIfPresent(String.self, forKey: .paneID) ?? ""
+        role = try c.decodeIfPresent(String.self, forKey: .role) ?? ""
+        left = try c.decodeIfPresent(Int.self, forKey: .left) ?? 0
+        top = try c.decodeIfPresent(Int.self, forKey: .top) ?? 0
+        width = try c.decodeIfPresent(Int.self, forKey: .width) ?? 0
+        height = try c.decodeIfPresent(Int.self, forKey: .height) ?? 0
+        imagePath = try c.decodeIfPresent(String.self, forKey: .imagePath) ?? ""
+        opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 0.24
+    }
+}
+
+private struct PaneBackgroundManifest: Decodable, Equatable {
+    var session: String
+    var window: String
+    var windowCells: PaneBackgroundGrid
+    var panes: [PaneBackgroundPane]
+
+    enum CodingKeys: String, CodingKey {
+        case session
+        case window
+        case windowCells = "window_cells"
+        case panes
+    }
+
+    init(
+        session: String = "",
+        window: String = "",
+        windowCells: PaneBackgroundGrid = PaneBackgroundGrid(),
+        panes: [PaneBackgroundPane] = []
+    ) {
+        self.session = session
+        self.window = window
+        self.windowCells = windowCells
+        self.panes = panes
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        session = try c.decodeIfPresent(String.self, forKey: .session) ?? ""
+        window = try c.decodeIfPresent(String.self, forKey: .window) ?? ""
+        windowCells = try c.decodeIfPresent(PaneBackgroundGrid.self, forKey: .windowCells) ?? PaneBackgroundGrid()
+        panes = try c.decodeIfPresent([PaneBackgroundPane].self, forKey: .panes) ?? []
+    }
+}
+
+private struct PaneBackgroundUnderlayView: View {
+    let manifest: PaneBackgroundManifest
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                Color.clear
+                ForEach(manifest.panes) { pane in
+                    if let image = NSImage(contentsOfFile: pane.imagePath) {
+                        let rect = paneRect(for: pane, in: geo.size)
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: rect.width, height: rect.height)
+                            .clipped()
+                            .opacity(pane.opacity)
+                            .position(x: rect.midX, y: rect.midY)
+                    }
+                }
+            }
+        }
+        .background(Color.clear)
+    }
+
+    private func paneRect(for pane: PaneBackgroundPane, in size: CGSize) -> CGRect {
+        let cols = max(CGFloat(manifest.windowCells.width), 1)
+        let rows = max(CGFloat(manifest.windowCells.height), 1)
+        let x = CGFloat(pane.left) / cols * size.width
+        let y = CGFloat(pane.top) / rows * size.height
+        let width = CGFloat(max(pane.width, 1)) / cols * size.width
+        let height = CGFloat(max(pane.height, 1)) / rows * size.height
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+@MainActor
+final class PaneBackgroundUnderlayController: ObservableObject {
+    private let manifestPath = "/tmp/tproj-pane-bg/current.json"
+    private let fileManager = FileManager.default
+    private weak var hostWindow: NSWindow?
+    private var underlayWindow: NSWindow?
+    private var pollTimer: DispatchSourceTimer?
+    private var lastManifestDate: Date?
+    private var cachedManifest: PaneBackgroundManifest?
+    private var lastGhosttyWindowNumber: Int?
+
+    func attach(to window: NSWindow) {
+        guard hostWindow !== window else { return }
+        hostWindow = window
+        startPolling()
+    }
+
+    func detach() {
+        stopPolling()
+        hideUnderlay()
+        hostWindow = nil
+    }
+
+    deinit {
+        pollTimer?.cancel()
+    }
+
+    private func startPolling() {
+        guard pollTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(250))
+        timer.setEventHandler { [weak self] in
+            self?.tick()
+        }
+        timer.resume()
+        pollTimer = timer
+    }
+
+    private func stopPolling() {
+        pollTimer?.cancel()
+        pollTimer = nil
+    }
+
+    private func tick() {
+        guard hostWindow != nil else {
+            hideUnderlay()
+            return
+        }
+
+        guard GhosttyTheme.current.backgroundOpacity < 1.0 else {
+            hideUnderlay()
+            return
+        }
+
+        guard let ghosttyInfo = currentGhosttyWindowInfo() else {
+            hideUnderlay()
+            return
+        }
+
+        guard let manifest = loadManifest(),
+              manifest.windowCells.width > 0,
+              manifest.windowCells.height > 0 else {
+            hideUnderlay()
+            return
+        }
+
+        let usablePanes = manifest.panes.filter {
+            !$0.imagePath.isEmpty && fileManager.fileExists(atPath: $0.imagePath)
+        }
+        guard !usablePanes.isEmpty else {
+            hideUnderlay()
+            return
+        }
+
+        let filteredManifest = PaneBackgroundManifest(
+            session: manifest.session,
+            window: manifest.window,
+            windowCells: manifest.windowCells,
+            panes: usablePanes
+        )
+
+        let window = ensureUnderlayWindow()
+        window.setFrame(ghosttyInfo.frame, display: true)
+        updateContent(of: window, manifest: filteredManifest)
+        window.order(.below, relativeTo: ghosttyInfo.windowNumber)
+        lastGhosttyWindowNumber = ghosttyInfo.windowNumber
+    }
+
+    private func loadManifest() -> PaneBackgroundManifest? {
+        guard let attrs = try? fileManager.attributesOfItem(atPath: manifestPath),
+              let modifiedAt = attrs[.modificationDate] as? Date else {
+            cachedManifest = nil
+            lastManifestDate = nil
+            return nil
+        }
+
+        if let cachedManifest, let lastManifestDate, lastManifestDate == modifiedAt {
+            return cachedManifest
+        }
+
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: manifestPath)),
+              let manifest = try? JSONDecoder().decode(PaneBackgroundManifest.self, from: data) else {
+            cachedManifest = nil
+            lastManifestDate = modifiedAt
+            return nil
+        }
+
+        cachedManifest = manifest
+        lastManifestDate = modifiedAt
+        return manifest
+    }
+
+    private func ensureUnderlayWindow() -> NSWindow {
+        if let underlayWindow {
+            return underlayWindow
+        }
+
+        let window = NSWindow(
+            contentRect: .zero,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.level = .normal
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        underlayWindow = window
+        return window
+    }
+
+    private func updateContent(of window: NSWindow, manifest: PaneBackgroundManifest) {
+        let view = PaneBackgroundUnderlayView(manifest: manifest)
+        if let hosting = window.contentView as? NSHostingView<PaneBackgroundUnderlayView> {
+            hosting.rootView = view
+        } else {
+            let hosting = NSHostingView(rootView: view)
+            hosting.wantsLayer = true
+            hosting.layer?.backgroundColor = NSColor.clear.cgColor
+            window.contentView = hosting
+        }
+    }
+
+    private func hideUnderlay() {
+        cachedManifest = nil
+        lastManifestDate = nil
+        lastGhosttyWindowNumber = nil
+        underlayWindow?.orderOut(nil)
+    }
 }
 
 private enum SnapEdge {
@@ -3234,6 +3526,7 @@ struct ContentView: View {
     @StateObject private var ghosttyTracker = GhosttyWindowTracker()
     @StateObject private var windowLevelController = WindowLevelController()
     @StateObject private var collapseController = WindowCollapseController()
+    @StateObject private var underlayController = PaneBackgroundUnderlayController()
     @AppStorage("workspaceSectionHeight") private var workspaceHeight: Double = 480
     @State private var draggingColumnID: Int?
     @State private var dropInsertionIndex: Int?
@@ -3252,6 +3545,7 @@ struct ContentView: View {
                     disableWindowFrameRestoration(window)
                     (NSApp.delegate as? AppDelegate)?.mainWindow = window
                     collapseController.attach(to: window)
+                    underlayController.attach(to: window)
                     ghosttyTracker.attach(to: window)
                 }
             )
@@ -3464,6 +3758,7 @@ struct ContentView: View {
                 (NSApp.delegate as? AppDelegate)?.mainWindow = window
                 collapseController.attach(to: window)
                 windowLevelController.attach(to: window)
+                underlayController.attach(to: window)
                 if GhosttyTheme.current.backgroundOpacity < 1.0 {
                     window.backgroundColor = .clear
                     window.isOpaque = false
