@@ -3309,8 +3309,10 @@ struct ContentView: View {
                     .font(GhosttyTheme.current.font(size: 12, weight: .medium))
                     .foregroundStyle(GhosttyTheme.current.textSecondary)
             } else {
-                let indexedColumns = Array(vm.liveColumns.enumerated())
-                ForEach(0...vm.liveColumns.count, id: \.self) { insertionIndex in
+                ForEach(Array(vm.liveColumns.enumerated()), id: \.element.id) { indexedColumn in
+                    let insertionIndex = indexedColumn.offset
+                    let column = indexedColumn.element
+
                     dropInsertionGap(index: insertionIndex)
                         .onDrop(
                             of: [UTType.text],
@@ -3324,22 +3326,32 @@ struct ContentView: View {
                             )
                         )
 
-                    if insertionIndex < indexedColumns.count {
-                        let column = indexedColumns[insertionIndex].element
-                        liveColumnRow(column)
-                            .onDrop(
-                                of: [UTType.text],
-                                delegate: RowDropFallbackDelegate(
-                                    rowIndex: insertionIndex,
-                                    totalCount: vm.liveColumns.count,
-                                    draggingColumnID: $draggingColumnID,
-                                    dropInsertionIndex: $dropInsertionIndex,
-                                    isDragActive: $isDragActive,
-                                    viewModel: vm
-                                )
+                    liveColumnRow(column)
+                        .onDrop(
+                            of: [UTType.text],
+                            delegate: RowDropFallbackDelegate(
+                                rowIndex: insertionIndex,
+                                totalCount: vm.liveColumns.count,
+                                draggingColumnID: $draggingColumnID,
+                                dropInsertionIndex: $dropInsertionIndex,
+                                isDragActive: $isDragActive,
+                                viewModel: vm
                             )
-                    }
+                        )
                 }
+                // Trailing drop gap
+                dropInsertionGap(index: vm.liveColumns.count)
+                    .onDrop(
+                        of: [UTType.text],
+                        delegate: GapDropDelegate(
+                            insertionIndex: vm.liveColumns.count,
+                            totalCount: vm.liveColumns.count,
+                            draggingColumnID: $draggingColumnID,
+                            dropInsertionIndex: $dropInsertionIndex,
+                            isDragActive: $isDragActive,
+                            viewModel: vm
+                        )
+                    )
             }
             ForEach(vm.inactiveProjects) { project in
                 inactiveProjectRow(project)
@@ -3565,12 +3577,12 @@ struct ContentView: View {
             // Buttons row
             HStack(spacing: 1) {
                 Spacer()
-                ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
-                    Task { await vm.toggleAIPane(role: "claude", for: column) }
-                }
-                .frame(width: 38)
                 ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
+                }
+                .frame(width: 38)
+                ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
+                    Task { await vm.toggleAIPane(role: "claude", for: column) }
                 }
                 .frame(width: 38)
                 ActionButton("Yazi", tone: column.yaziPaneID == nil ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
@@ -3650,12 +3662,12 @@ struct ContentView: View {
                 Spacer()
             }
 
-            // Button row (CC/Cdx/Yazi/Term disabled, Add enabled)
+            // Button row (Cdx/CC/Yazi/Term disabled, Add enabled)
             HStack(spacing: 1) {
                 Spacer()
-                ActionButton("CC", tone: .neutral, isEnabled: false, dense: true) {}
-                    .frame(width: 38)
                 ActionButton("Cdx", tone: .neutral, isEnabled: false, dense: true) {}
+                    .frame(width: 38)
+                ActionButton("CC", tone: .neutral, isEnabled: false, dense: true) {}
                     .frame(width: 38)
                 ActionButton("Yazi", tone: .neutral, isEnabled: false, dense: true) {}
                     .frame(width: 38)
