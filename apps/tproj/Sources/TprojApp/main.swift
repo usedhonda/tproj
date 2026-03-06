@@ -4305,19 +4305,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-private struct ShowWindowButton: View {
+private struct FlipSideButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
-        Button("Show Window") {
+        Button("Flip Side") {
+            // Ensure window is visible before flipping
             if (NSApp.delegate as? AppDelegate)?.presentMainWindow() != true {
-                NSLog("[main-window] event=show-window action=open-window")
+                NSLog("[main-window] event=flip-side action=open-window")
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
-            } else {
-                NSLog("[main-window] event=show-window action=reuse-existing")
+            }
+            // Post flip after a brief delay to let the window appear and snap
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                NotificationCenter.default.post(name: .flipSnapSide, object: nil)
             }
         }
-        .keyboardShortcut("t", modifiers: [.command, .shift])
+        .keyboardShortcut("f", modifiers: [.command, .shift])
     }
 }
 
@@ -4340,11 +4343,7 @@ struct TprojApp: App {
         .windowResizability(.contentMinSize)
 
         MenuBarExtra("tproj", systemImage: "rectangle.split.3x1") {
-            ShowWindowButton()
-            Button("Flip Side") {
-                NotificationCenter.default.post(name: .flipSnapSide, object: nil)
-            }
-            .keyboardShortcut("f", modifiers: [.command, .shift])
+            FlipSideButton()
             Divider()
             Button("Quit tproj") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
