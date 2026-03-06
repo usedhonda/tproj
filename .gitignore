@@ -26,16 +26,9 @@ plans/
 CLAUDE.md
 AGENTS.md
 
-# Personal/extension tools (not part of core)
-bin/tproj-msg
-bin/cc-mem
-bin/memory-guard
-bin/tproj-mem-json
-config/launchd/
-config/shared/
+# Personal/extension config (not part of core)
 config/claude/
 config/codex/
-install-extensions.sh
 
 # Developer logs
 docs/log/
