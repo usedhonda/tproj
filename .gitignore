@@ -18,8 +18,30 @@ plans/
 # CC persona (auto-generated)
 .persona.md
 
-# Cdx persona (auto-generated)
-.codex/config.toml
+# Cdx persona / config (user-specific)
+.codex/
 
+# Claude Code project config (user-specific)
+.claude/
+CLAUDE.md
 AGENTS.md
+
+# Personal/extension tools (not part of core)
+bin/tproj-msg
+bin/cc-mem
+bin/memory-guard
+bin/tproj-mem-json
+config/launchd/
+config/shared/
+config/claude/
+config/codex/
+install-extensions.sh
+
+# Developer logs
+docs/log/
 docs/
+
+# Swift build artifacts
+.build/
+apps/tproj/.build/
+apps/tproj/dist/

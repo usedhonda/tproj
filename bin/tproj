@@ -148,8 +148,10 @@ build_pane_label() {
     host_suffix="@${project_host}"
   fi
 
-  local persona
-  persona="$(cc-persona --label "$project_path" "$suffix" 2>/dev/null || true)"
+  local persona=""
+  if [[ -n "${TPROJ_LABEL_HOOK:-}" ]] && command -v "$TPROJ_LABEL_HOOK" &>/dev/null; then
+    persona="$("$TPROJ_LABEL_HOOK" --label "$project_path" "$suffix" 2>/dev/null || true)"
+  fi
 
   echo "${project_name}.${suffix}${host_suffix} ${persona}"
 }

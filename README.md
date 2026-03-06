@@ -1,176 +1,144 @@
 # tproj
 
-`tproj` is a tmux-based AI development workspace optimized for Claude Code, Codex, and yazi.
+A tmux-based workspace launcher for [Claude Code](https://github.com/anthropics/claude-code) and [Codex](https://github.com/openai/codex).
 
-## Highlights
+Spin up a structured terminal layout with Claude Code, Codex, and yazi side by side for any project.
 
-- Structured AI terminal layout for daily coding
-- Single-project and multi-project workspace modes
-- Per-pane communication tool (`tproj-msg`)
-- Built-in memory tooling (`cc-mem`, `memory-guard`, `tproj-mem-json`)
-- Native macOS SwiftUI controller app (`apps/tproj`)
+## Features
+
+- **Single-project mode** -- 3-pane layout: Claude Code + Codex + yazi
+- **Multi-project mode** -- column-based workspace across multiple projects
+- **Native macOS GUI** -- SwiftUI controller app with session management
+- **Remote SSH** -- launch the same layout on a remote host
+- **Workspace config** -- YAML-driven project management with aliases and per-project settings
 
 ## Requirements
-
-Install dependencies:
 
 ```bash
 brew install git tmux yazi bat yq node
 npm install -g @anthropic-ai/claude-code @openai/codex
 ```
 
-## Quick Start
+## Install
 
 ```bash
 git clone https://github.com/usedhonda/tproj.git
 cd tproj
 ./install.sh
+```
 
+The installer places scripts in `~/bin` and configuration under `~/.config`.
+
+## Usage
+
+```bash
+# Single-project mode (default)
 cd /path/to/your/project
 tproj
-```
 
-The installer places tools in `~/bin` and installs configuration under `~/.config`.
-
-## CLI Usage
-
-### Main commands
-
-```bash
-tproj                 # auto-detect mode (workspace or single-project)
-tproj stop            # graceful shutdown for active tproj sessions
-tproj kill            # force kill tproj sessions
-tproj --help          # full command reference
-```
-
-### Common options
-
-```bash
+# Force single-project mode
 tproj --single
+
+# Remote host
 tproj --remote <host>
-tproj --check
-tproj --add [alias]
-tproj --columns <N>
+
+# Graceful shutdown
+tproj stop
+
+# Force kill
+tproj kill
 ```
 
-## Troubleshooting `tproj-msg`
+## Multi-project workspace
 
-If `--force` still returns `session_typing_busy`, first verify which binary is running:
+Create a workspace config to manage multiple projects:
 
 ```bash
-command -v tproj-msg
-tproj-msg --version
+mkdir -p ~/.config/tproj
+cp config/workspace.yaml.example ~/.config/tproj/workspace.yaml
 ```
 
-Expected behavior in this repo:
+Edit the file to list your projects, then run `tproj`:
 
-- When launched from inside this repository, a stale `~/bin/tproj-msg` auto re-execs to `./bin/tproj-msg`.
-- `tproj-msg --version` prints `script_path` so you can confirm the actual executable.
+```yaml
+projects:
+  - path: /Users/you/projects/frontend
+    alias: fe
 
-If needed, resync manually:
+  - path: /Users/you/projects/backend
+    alias: be
+
+  - path: /Users/you/projects/infra
+    alias: infra
+    enabled: false   # available via --add but not started by default
+```
+
+### Workspace commands
 
 ```bash
-cp ./bin/tproj-msg ~/bin/tproj-msg
-hash -r
+tproj                 # start workspace (auto-detects workspace.yaml)
+tproj --check         # show configured projects and status
+tproj --add           # duplicate current column
+tproj --add <alias>   # add a disabled project by alias
+tproj --columns 3     # start only the first 3 projects
 ```
 
-## Modes
-
-### Single-project mode
-
-- Default mode when no workspace config exists
-- Opens Claude Code, Codex, and yazi panes in one project
-
-### Multi-project mode
-
-- Enabled when `~/.config/tproj/workspace.yaml` exists
-- Runs a column-based workspace across multiple projects
-- Start with `config/workspace.yaml.example` as a template
+See `config/workspace.yaml.example` for the full field reference.
 
 ## GUI App (macOS)
 
-Single-source runtime rule:
-
-- Launch only `apps/tproj/dist/tproj.app` (no `~/bin/tproj-gui`, no direct `.build/.../debug/tproj` launch).
-- Rebuild the `.app` before launching after Swift source changes.
-
-GUI target resolution order in `tproj`:
-
-1. `TPROJ_GUI_APP_PATH` environment variable
-2. `~/.config/tproj/workspace.yaml` -> `gui.app_path`
-3. Workspace project paths (`<project>/apps/tproj/dist/tproj.app`)
-4. Current project root (`apps/tproj/dist/tproj.app`)
-5. Release install path (`~/Applications/tproj.app`, `/Applications/tproj.app`)
-
-Recommended development setup:
+A native SwiftUI app for session control and monitoring.
 
 ```bash
 cd apps/tproj
-./dev-setup.sh
-```
-
-Recommended development run:
-
-```bash
-cd apps/tproj
-./dev-app.sh
-```
-
-### Run in development
-
-```bash
-cd apps/tproj
-swift run tproj
-```
-
-### Build `.app`
-
-```bash
-cd apps/tproj
-./build-app.sh
+swift build
+./build-app.sh       # creates dist/tproj.app
 open dist/tproj.app
 ```
 
-### Release DMG
+The GUI auto-launches when `tproj` starts a session. Configure `gui.app_path` in `workspace.yaml` to pin a specific build.
 
-```bash
-cd apps/tproj
-./scripts/release.sh
+## Extension hooks
+
+tproj supports hooks for customization:
+
+| Environment variable | Purpose | Example |
+|---------------------|---------|---------|
+| `TPROJ_LABEL_HOOK` | Custom pane label generator | `export TPROJ_LABEL_HOOK=my-label-script` |
+| `TPROJ_GUI_APP_PATH` | Override GUI app location | `export TPROJ_GUI_APP_PATH=~/Apps/tproj.app` |
+
+### `TPROJ_LABEL_HOOK`
+
+When set, tproj calls `$TPROJ_LABEL_HOOK --label <project_path> <cc|cdx>` to generate a suffix for pane titles. This lets you add persona labels, status indicators, or any custom text to your pane titles.
+
+## Repository layout
+
 ```
-
-### Publish GitHub release
-
-```bash
-cd apps/tproj
-./scripts/release.sh --publish --bump patch
+bin/
+  tproj                        # main launcher
+  tproj-drop-column             # batch column removal
+  tproj-toggle-yazi             # yazi pane toggle
+  rebalance-workspace-columns   # column width equalizer
+  reflow-agent-pane             # Agent Teams pane repositioner
+  team-watcher                  # Agent Teams hook daemon
+  agent-monitor                 # per-agent status display
+  sign-codex                    # macOS code signing for Codex
+  wait-for-pane-text            # wait for text in a tmux pane
+config/
+  tmux/tmux.conf                # tmux configuration
+  terminfo/                     # terminal capability files
+  yazi/                         # yazi file manager config
+  workspace.yaml.example        # workspace template
+apps/tproj/                     # SwiftUI GUI app source
 ```
-
-Release script options:
-
-- `--skip-notarize`
-- `--publish`
-- `--bump patch|minor|major`
-
-## Repository Layout
-
-- `bin/tproj`: primary launcher
-- `bin/tproj-drop-column`: batch drop helper (single rebalance pass)
-- `bin/tproj-msg`: inter-pane messaging helper
-- `bin/cc-mem`: memory monitor CLI
-- `bin/memory-guard`: launchd memory guard process
-- `bin/tproj-mem-json`: merged monitor JSON collector
-- `config/workspace.yaml.example`: workspace configuration template
-- `apps/tproj`: SwiftUI desktop app source
 
 ## Notes
 
-- `tproj` intentionally does not run npm global updates automatically.
-- For heavy multi-pane usage in Ghostty, consider lowering `scrollback-limit` (for example `3000`) to reduce terminal memory pressure.
-- Update manually when needed:
-
-```bash
-npm update -g @anthropic-ai/claude-code @openai/codex
-```
+- tproj does not run `npm update` automatically. Update manually when needed:
+  ```bash
+  npm update -g @anthropic-ai/claude-code @openai/codex
+  ```
+- For heavy multi-pane usage in Ghostty, consider lowering `scrollback-limit` (e.g. `3000`) to reduce memory pressure.
 
 ## License
 

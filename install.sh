@@ -224,65 +224,27 @@ fi
 # ========== 4. バックアップ & コピー ==========
 
 # 4.1 tproj スクリプト
-if $DRY_RUN; then
-  echo "[DRY-RUN] 📦 tproj -> ~/bin/"
-  echo "[DRY-RUN] 📦 tproj-drop-column -> ~/bin/"
-  echo "[DRY-RUN] 📦 tproj-toggle-yazi -> ~/bin/"
-  echo "[DRY-RUN] 📦 tproj-msg -> ~/bin/"
-  echo "[DRY-RUN] 📦 agent-monitor -> ~/bin/"
-  echo "[DRY-RUN] 📦 team-watcher -> ~/bin/"
-  echo "[DRY-RUN] 📦 reflow-agent-pane -> ~/bin/"
-  echo "[DRY-RUN] 📦 cc-mem -> ~/bin/"
-  echo "[DRY-RUN] 📦 memory-guard -> ~/bin/"
-  echo "[DRY-RUN] 📦 tproj-mem-json -> ~/bin/"
-  echo "[DRY-RUN] 📦 wait-for-pane-text -> ~/bin/"
-else
-  echo "📦 tproj, tproj-drop-column, tproj-toggle-yazi, tproj-msg, agent-monitor, team-watcher, reflow-agent-pane, rebalance-workspace-columns, sign-codex, cc-mem, memory-guard, tproj-mem-json, wait-for-pane-text -> ~/bin/"
-  mkdir -p ~/bin
-  cp "$SCRIPT_DIR/bin/tproj" ~/bin/tproj
-  cp "$SCRIPT_DIR/bin/tproj-drop-column" ~/bin/tproj-drop-column
-  cp "$SCRIPT_DIR/bin/tproj-toggle-yazi" ~/bin/tproj-toggle-yazi
-  cp "$SCRIPT_DIR/bin/tproj-msg" ~/bin/tproj-msg
-  cp "$SCRIPT_DIR/bin/agent-monitor" ~/bin/agent-monitor
-  cp "$SCRIPT_DIR/bin/team-watcher" ~/bin/team-watcher
-  cp "$SCRIPT_DIR/bin/reflow-agent-pane" ~/bin/reflow-agent-pane
-  cp "$SCRIPT_DIR/bin/rebalance-workspace-columns" ~/bin/rebalance-workspace-columns
-  cp "$SCRIPT_DIR/bin/sign-codex" ~/bin/sign-codex
-  cp "$SCRIPT_DIR/bin/cc-mem" ~/bin/cc-mem
-  cp "$SCRIPT_DIR/bin/memory-guard" ~/bin/memory-guard
-  cp "$SCRIPT_DIR/bin/tproj-mem-json" ~/bin/tproj-mem-json
-  cp "$SCRIPT_DIR/bin/wait-for-pane-text" ~/bin/wait-for-pane-text
-  chmod +x ~/bin/tproj ~/bin/tproj-drop-column ~/bin/tproj-toggle-yazi ~/bin/tproj-msg ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/rebalance-workspace-columns ~/bin/sign-codex ~/bin/cc-mem ~/bin/memory-guard ~/bin/tproj-mem-json ~/bin/wait-for-pane-text
+CORE_BINS=(tproj tproj-drop-column tproj-toggle-yazi agent-monitor team-watcher reflow-agent-pane rebalance-workspace-columns sign-codex wait-for-pane-text)
 
-  # 4.1.1 Legacy cleanup: remove stale binaries from previous installs
+if $DRY_RUN; then
+  for bin_name in "${CORE_BINS[@]}"; do
+    echo "[DRY-RUN] 📦 $bin_name -> ~/bin/"
+  done
+else
+  echo "📦 Core scripts -> ~/bin/"
+  mkdir -p ~/bin
+  for bin_name in "${CORE_BINS[@]}"; do
+    cp "$SCRIPT_DIR/bin/$bin_name" ~/bin/"$bin_name"
+    chmod +x ~/bin/"$bin_name"
+  done
+
+  # Legacy cleanup: remove stale binaries from previous installs
   for legacy_bin in tproj-gui tproj-mcp-init; do
     if [[ -f "$HOME/bin/$legacy_bin" ]]; then
       rm -f "$HOME/bin/$legacy_bin"
       echo "  removed legacy ~/bin/$legacy_bin"
     fi
   done
-fi
-
-# 4.1.2 memory-guard launchd
-MEMORY_GUARD_LABEL="com.tproj.memory-guard"
-MEMORY_GUARD_DOMAIN="gui/$(id -u)"
-MEMORY_GUARD_PLIST="$HOME/Library/LaunchAgents/${MEMORY_GUARD_LABEL}.plist"
-if $DRY_RUN; then
-  echo "[DRY-RUN] 📦 memory-guard launchd -> $MEMORY_GUARD_PLIST"
-  echo "[DRY-RUN] ♻️  launchctl reload $MEMORY_GUARD_LABEL"
-else
-  mkdir -p "$HOME/Library/LaunchAgents"
-  sed "s|__HOME__|$HOME|g" "$SCRIPT_DIR/config/launchd/${MEMORY_GUARD_LABEL}.plist.template" > "$MEMORY_GUARD_PLIST"
-
-  # Cleanup old label if present and reload current label.
-  launchctl bootout "$MEMORY_GUARD_DOMAIN/com.memory-guard" >/dev/null 2>&1 || true
-  launchctl bootout "$MEMORY_GUARD_DOMAIN/$MEMORY_GUARD_LABEL" >/dev/null 2>&1 || true
-  if launchctl bootstrap "$MEMORY_GUARD_DOMAIN" "$MEMORY_GUARD_PLIST" >/dev/null 2>&1; then
-    echo "✅ memory-guard launchd loaded ($MEMORY_GUARD_LABEL)"
-  else
-    echo "⚠️  memory-guard launchd load failed. Retry:"
-    echo "   launchctl bootstrap $MEMORY_GUARD_DOMAIN $MEMORY_GUARD_PLIST"
-  fi
 fi
 
 # 4.2 tmux 設定
@@ -321,50 +283,6 @@ if command -v ya &> /dev/null; then
       echo "  ⚠️  yazi plugin install failed (best-effort)."
       echo "     Retry manually: cd ~/.config/yazi && ya pack -i"
     fi
-  fi
-fi
-
-# 4.5 Claude Code カスタムコマンド
-if $DRY_RUN; then
-  echo "[DRY-RUN] 📦 Claude Code commands -> ~/.claude/commands/"
-else
-  echo "📦 Claude Code commands -> ~/.claude/commands/"
-  mkdir -p ~/.claude/commands
-  if ls "$SCRIPT_DIR/config/claude/commands/"*.md &>/dev/null; then
-    cp "$SCRIPT_DIR/config/claude/commands/"*.md ~/.claude/commands/
-  fi
-fi
-
-# 4.6 Claude Code スキル
-if $DRY_RUN; then
-  echo "[DRY-RUN] 📦 Claude Code skills -> ~/.claude/skills/"
-else
-  mkdir -p ~/.claude/skills
-  if ls "$SCRIPT_DIR/config/claude/skills/"* &>/dev/null; then
-    echo "📦 Claude Code skills -> ~/.claude/skills/"
-    cp -r "$SCRIPT_DIR/config/claude/skills/"* ~/.claude/skills/
-  fi
-fi
-
-# 4.7 Codex スキル
-if $DRY_RUN; then
-  echo "[DRY-RUN] 📦 Codex skills -> ~/.codex/skills/"
-else
-  mkdir -p ~/.codex/skills
-  if ls "$SCRIPT_DIR/config/codex/skills/"* &>/dev/null; then
-    echo "📦 Codex skills -> ~/.codex/skills/"
-    cp -r "$SCRIPT_DIR/config/codex/skills/"* ~/.codex/skills/
-  fi
-fi
-
-# 4.8 Shared skills (CC + Cdx)
-if [[ -d "$SCRIPT_DIR/config/shared/skills" ]]; then
-  if $DRY_RUN; then
-    echo "[DRY-RUN] 📦 Shared skills -> ~/.claude/skills/ + ~/.codex/skills/"
-  else
-    echo "📦 Shared skills -> ~/.claude/skills/ + ~/.codex/skills/"
-    cp -r "$SCRIPT_DIR/config/shared/skills/"* ~/.claude/skills/
-    cp -r "$SCRIPT_DIR/config/shared/skills/"* ~/.codex/skills/
   fi
 fi
 
@@ -416,28 +334,12 @@ else
 fi
 
 echo ""
-echo "📍 インストール先:"
-echo "   ~/bin/tproj"
-echo "   ~/bin/tproj-drop-column"
-echo "   ~/bin/tproj-toggle-yazi"
-echo "   ~/bin/tproj-msg"
-echo "   ~/bin/agent-monitor"
-echo "   ~/bin/team-watcher"
-echo "   ~/bin/reflow-agent-pane"
-echo "   ~/bin/cc-mem"
-echo "   ~/bin/memory-guard"
-echo "   ~/bin/tproj-mem-json"
+echo "Installed to:"
+echo "   ~/bin/ (core scripts)"
 echo "   ~/.tmux.conf"
 echo "   ~/.config/yazi/"
-echo "   ~/.claude/commands/"
-echo "   ~/.claude/skills/"
-echo "   ~/.codex/skills/"
-echo "   ~/Library/LaunchAgents/com.tproj.memory-guard.plist"
 echo ""
-echo "💡 使い方:"
-echo "   単一プロジェクト: cd <project> && tproj"
-echo "   マルチプロジェクト: ~/.config/tproj/workspace.yaml を作成してから tproj"
-echo ""
-echo "🩺 tproj-msg 実行元確認:"
-echo "   tproj-msg --version"
-echo "   (script_path が ~/bin/tproj-msg で古い場合) cp \"$SCRIPT_DIR/bin/tproj-msg\" ~/bin/tproj-msg"
+echo "Usage:"
+echo "   Single project: cd <project> && tproj"
+echo "   Multi-project:  cp config/workspace.yaml.example ~/.config/tproj/workspace.yaml"
+echo "                   # edit workspace.yaml, then run tproj"
