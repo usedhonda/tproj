@@ -3250,6 +3250,7 @@ struct ContentView: View {
             .background(
                 WindowAccessor { window in
                     disableWindowFrameRestoration(window)
+                    (NSApp.delegate as? AppDelegate)?.mainWindow = window
                     collapseController.attach(to: window)
                     ghosttyTracker.attach(to: window)
                 }
@@ -4244,9 +4245,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    @discardableResult
+    func presentMainWindow() -> Bool {
+        guard let window = mainWindow else { return false }
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        return true
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
+            if presentMainWindow() {
+                return false
+            }
             NSApp.activate(ignoringOtherApps: true)
+            return true
         }
         return false
     }
@@ -4256,8 +4272,10 @@ private struct ShowWindowButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button("Show Window") {
-            openWindow(id: "main")
-            NSApp.activate(ignoringOtherApps: true)
+            if (NSApp.delegate as? AppDelegate)?.presentMainWindow() != true {
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
         .keyboardShortcut("t", modifiers: [.command, .shift])
     }
@@ -4273,7 +4291,7 @@ struct TprojApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("tproj", id: "main") {
+        Window("tproj", id: "main") {
             ContentView()
                 .frame(minWidth: 14, minHeight: 520, idealHeight: 980, maxHeight: 2200)
         }
