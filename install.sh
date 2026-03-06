@@ -237,11 +237,10 @@ if $DRY_RUN; then
   echo "[DRY-RUN] 📦 tproj-mem-json -> ~/bin/"
   echo "[DRY-RUN] 📦 wait-for-pane-text -> ~/bin/"
 else
-  echo "📦 tproj, tproj-drop-column, tproj-mcp-init, tproj-toggle-yazi, tproj-msg, agent-monitor, team-watcher, reflow-agent-pane, rebalance-workspace-columns, sign-codex, cc-mem, memory-guard, tproj-mem-json, wait-for-pane-text -> ~/bin/"
+  echo "📦 tproj, tproj-drop-column, tproj-toggle-yazi, tproj-msg, agent-monitor, team-watcher, reflow-agent-pane, rebalance-workspace-columns, sign-codex, cc-mem, memory-guard, tproj-mem-json, wait-for-pane-text -> ~/bin/"
   mkdir -p ~/bin
   cp "$SCRIPT_DIR/bin/tproj" ~/bin/tproj
   cp "$SCRIPT_DIR/bin/tproj-drop-column" ~/bin/tproj-drop-column
-  cp "$SCRIPT_DIR/bin/tproj-mcp-init" ~/bin/tproj-mcp-init
   cp "$SCRIPT_DIR/bin/tproj-toggle-yazi" ~/bin/tproj-toggle-yazi
   cp "$SCRIPT_DIR/bin/tproj-msg" ~/bin/tproj-msg
   cp "$SCRIPT_DIR/bin/agent-monitor" ~/bin/agent-monitor
@@ -253,13 +252,15 @@ else
   cp "$SCRIPT_DIR/bin/memory-guard" ~/bin/memory-guard
   cp "$SCRIPT_DIR/bin/tproj-mem-json" ~/bin/tproj-mem-json
   cp "$SCRIPT_DIR/bin/wait-for-pane-text" ~/bin/wait-for-pane-text
-  chmod +x ~/bin/tproj ~/bin/tproj-drop-column ~/bin/tproj-mcp-init ~/bin/tproj-toggle-yazi ~/bin/tproj-msg ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/rebalance-workspace-columns ~/bin/sign-codex ~/bin/cc-mem ~/bin/memory-guard ~/bin/tproj-mem-json ~/bin/wait-for-pane-text
+  chmod +x ~/bin/tproj ~/bin/tproj-drop-column ~/bin/tproj-toggle-yazi ~/bin/tproj-msg ~/bin/agent-monitor ~/bin/team-watcher ~/bin/reflow-agent-pane ~/bin/rebalance-workspace-columns ~/bin/sign-codex ~/bin/cc-mem ~/bin/memory-guard ~/bin/tproj-mem-json ~/bin/wait-for-pane-text
 
-  # 4.1.1 Legacy cleanup: remove old GUI binary copy to avoid stale launches
-  if [[ -f "$HOME/bin/tproj-gui" ]]; then
-    rm -f "$HOME/bin/tproj-gui"
-    echo "  removed legacy ~/bin/tproj-gui"
-  fi
+  # 4.1.1 Legacy cleanup: remove stale binaries from previous installs
+  for legacy_bin in tproj-gui tproj-mcp-init; do
+    if [[ -f "$HOME/bin/$legacy_bin" ]]; then
+      rm -f "$HOME/bin/$legacy_bin"
+      echo "  removed legacy ~/bin/$legacy_bin"
+    fi
+  done
 fi
 
 # 4.1.2 memory-guard launchd

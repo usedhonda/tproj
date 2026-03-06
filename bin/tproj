@@ -325,7 +325,7 @@ cleanup_orphaned_mcp() {
   local orphans
   orphans=$(ps -eo pid=,ppid=,command= 2>/dev/null | \
     awk '$2 == 1' | \
-    grep -E '(context7-mcp|playwright-mcp|chrome-ai-bridge|claude-in-chrome-mcp|@playwright/mcp|@upstash/context7)' | \
+    grep -E '(context7-mcp|playwright-mcp|claude-in-chrome-mcp|@playwright/mcp|@upstash/context7)' | \
     awk '{print $1}') || true
   [[ -z "$orphans" ]] && return 0
   while IFS= read -r pid; do
@@ -1212,47 +1212,14 @@ start_workspace_tools() {
     done
   fi
 
-  # --- MCP phased startup (chrome-ai-bridge Primary/Proxy coordination) ---
-
-  # Phase 1: Start column 1 Codex only, wait for Primary MCP
-  start_codex_for_column "$session" "$no_update" 1 \
-    "${paths[0]}" "${types[0]}" "${hosts[0]}" "${cdx_launches[0]:-true}"
-
-  if [[ $num_projects -gt 1 ]]; then
-    "$HOME/bin/tproj-mcp-init" wait-primary 10 \
-      || "$HOME/bin/tproj-mcp-init" log-failure "phase1"
-  fi
-
-  # Phase 2: Staggered secondary Codex connections
-  # Batch 1: columns 2-3
-  local batch_started=false
-  for col in 2 3; do
-    [[ $col -le $num_projects ]] || continue
-    start_codex_for_column "$session" "$no_update" "$col" \
-      "${paths[$((col-1))]}" "${types[$((col-1))]}" "${hosts[$((col-1))]}" "${cdx_launches[$((col-1))]:-true}"
-    batch_started=true
+  # Start all Codex panes
+  for i in $(seq 1 $num_projects); do
+    start_codex_for_column "$session" "$no_update" "$i" \
+      "${paths[$((i-1))]}" "${types[$((i-1))]}" "${hosts[$((i-1))]}" "${cdx_launches[$((i-1))]:-true}"
+    sleep 0.2
   done
-  if [[ "$batch_started" == "true" ]]; then
-    sleep 3
-    "$HOME/bin/tproj-mcp-init" check \
-      || "$HOME/bin/tproj-mcp-init" log-failure "phase2-batch1"
-  fi
 
-  # Batch 2: columns 4-7
-  batch_started=false
-  for col in 4 5 6 7; do
-    [[ $col -le $num_projects ]] || continue
-    start_codex_for_column "$session" "$no_update" "$col" \
-      "${paths[$((col-1))]}" "${types[$((col-1))]}" "${hosts[$((col-1))]}" "${cdx_launches[$((col-1))]:-true}"
-    batch_started=true
-  done
-  if [[ "$batch_started" == "true" ]]; then
-    sleep 3
-    "$HOME/bin/tproj-mcp-init" check \
-      || "$HOME/bin/tproj-mcp-init" log-failure "phase2-batch2"
-  fi
-
-  # Claude panes: all columns simultaneously (no chrome-ai-bridge conflict)
+  # Start all Claude panes
   for i in $(seq 1 $num_projects); do
     start_claude_for_column "$session" "$no_update" "$i" \
       "${paths[$((i-1))]}" "${types[$((i-1))]}" "${hosts[$((i-1))]}" "${cc_launches[$((i-1))]:-true}"
@@ -1296,11 +1263,6 @@ fi
 
 # Clean up orphaned MCP server processes from previous sessions
 cleanup_orphaned_mcp
-
-# Workspace mode: aggressive chrome-ai-bridge cleanup (Phase 0)
-if [[ "$WORKSPACE_MODE" == "true" ]]; then
-  "$HOME/bin/tproj-mcp-init" cleanup
-fi
 
 # === セッション作成 & ツール起動 ===
 if [[ "$WORKSPACE_MODE" == "true" ]]; then
