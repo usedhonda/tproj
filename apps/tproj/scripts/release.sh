@@ -21,12 +21,14 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$APP_DIR/../.." && pwd)"
 APP_NAME="tproj"
 APP_BUNDLE="$APP_DIR/dist/$APP_NAME.app"
 APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 ENTITLEMENTS_PATH="$APP_DIR/tproj.entitlements"
 DEFAULT_RELEASE_ROOT="/tmp/tproj-release"
 RELEASE_ROOT="${RELEASE_ROOT:-$DEFAULT_RELEASE_ROOT}"
+DIST_RELEASE_DIR="$APP_DIR/dist/release"
 
 PUBLISH=false
 SKIP_NOTARIZE=false
@@ -157,6 +159,10 @@ WORK_DIR="${RELEASE_ROOT}/${BUILD_STAMP}"
 DMG_PATH="${WORK_DIR}/${APP_NAME}.dmg"
 DMG_STAGING="${WORK_DIR}/dmg-contents"
 DMG_MOUNT="${WORK_DIR}/dmg-mount"
+CLI_PAYLOAD_DIR="${WORK_DIR}/tproj-cli-payload"
+CLI_PAYLOAD_ARCHIVE="${WORK_DIR}/tproj-cli-payload.tar.gz"
+INSTALLER_PATH="${WORK_DIR}/Install tproj.command"
+QUICKSTART_PATH="${WORK_DIR}/README-QuickStart.txt"
 NOTARY_JSON="${WORK_DIR}/notary-submit.json"
 MANIFEST_PATH="${WORK_DIR}/${APP_NAME}-release-manifest.json"
 ENTITLEMENTS_EXTRACT="${WORK_DIR}/entitlements.plist"
@@ -203,10 +209,75 @@ echo -e "${GREEN}App signing verified${NC}"
 echo
 
 # --- Step 3: Create and verify DMG ---
-echo -e "${GREEN}[3/${TOTAL_STEPS}] Creating and verifying DMG...${NC}"
-rm -rf "$DMG_STAGING" "$DMG_MOUNT"
-mkdir -p "$DMG_STAGING" "$DMG_MOUNT"
+echo -e "${GREEN}[3/${TOTAL_STEPS}] Preparing release payload and creating DMG...${NC}"
+rm -rf "$DMG_STAGING" "$DMG_MOUNT" "$CLI_PAYLOAD_DIR"
+mkdir -p "$DMG_STAGING" "$DMG_MOUNT" "$CLI_PAYLOAD_DIR" "$DIST_RELEASE_DIR"
+
+cp "$REPO_ROOT/install.sh" "$CLI_PAYLOAD_DIR/install.sh"
+cp "$REPO_ROOT/README.md" "$CLI_PAYLOAD_DIR/README.md"
+cp -R "$REPO_ROOT/bin" "$CLI_PAYLOAD_DIR/bin"
+cp -R "$REPO_ROOT/config" "$CLI_PAYLOAD_DIR/config"
+find "$CLI_PAYLOAD_DIR" -name '.DS_Store' -delete
+tar -C "$WORK_DIR" -czf "$CLI_PAYLOAD_ARCHIVE" "$(basename "$CLI_PAYLOAD_DIR")"
+
+cat > "$INSTALLER_PATH" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORK_DIR="$(mktemp -d /tmp/tproj-install.XXXXXX)"
+LOG_FILE="/tmp/tproj-install-$(date +%Y%m%d_%H%M%S).log"
+
+cleanup() {
+  rm -rf "$WORK_DIR"
+}
+trap cleanup EXIT
+
+echo "tproj installer started"
+echo "log: $LOG_FILE"
+
+{
+  tar -xzf "$SELF_DIR/tproj-cli-payload.tar.gz" -C "$WORK_DIR"
+  cd "$WORK_DIR/tproj-cli-payload"
+  ./install.sh -y
+} | tee "$LOG_FILE"
+
+echo
+echo "Install complete."
+echo "Open a new terminal and run: tproj --check"
+EOF
+chmod +x "$INSTALLER_PATH"
+
+cat > "$QUICKSTART_PATH" <<'EOF'
+tproj Quick Start
+=================
+
+This DMG includes:
+- tproj.app (GUI)
+- Install tproj.command (CLI + config installer)
+- README-QuickStart.txt
+- tproj-cli-payload.tar.gz
+
+Recommended steps:
+1) Drag tproj.app to Applications
+2) Run "Install tproj.command"
+3) Open a new terminal
+4) Run: tproj --check
+5) Configure ~/.config/tproj/workspace.yaml if needed
+6) Launch GUI: open /Applications/tproj.app
+
+Notes:
+- The installer checks core dependencies.
+- yazi plugin install is best-effort. If it fails:
+  cd ~/.config/yazi && ya pack -i
+- If you already have local settings, install.sh creates backups.
+- The payload archive is included so the installer can run entirely from this DMG.
+EOF
+
 cp -R "$APP_BUNDLE" "$DMG_STAGING/"
+cp "$INSTALLER_PATH" "$DMG_STAGING/"
+cp "$QUICKSTART_PATH" "$DMG_STAGING/"
+cp "$CLI_PAYLOAD_ARCHIVE" "$DMG_STAGING/"
 ln -s /Applications "$DMG_STAGING/Applications"
 hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH" >/dev/null
 
@@ -221,11 +292,21 @@ echo
 echo -e "${GREEN}[5/${TOTAL_STEPS}] Verifying DMG payload...${NC}"
 hdiutil attach "$DMG_PATH" -readonly -nobrowse -mountpoint "$DMG_MOUNT" >/dev/null
 DMG_APP_BINARY="${DMG_MOUNT}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
+DMG_INSTALLER="${DMG_MOUNT}/Install tproj.command"
+DMG_QUICKSTART="${DMG_MOUNT}/README-QuickStart.txt"
+DMG_PAYLOAD="${DMG_MOUNT}/tproj-cli-payload.tar.gz"
 if [[ ! -f "$DMG_APP_BINARY" ]]; then
   echo -e "${RED}Error: DMG payload missing app binary: $DMG_APP_BINARY${NC}" >&2
   hdiutil detach "$DMG_MOUNT" -quiet >/dev/null 2>&1 || true
   exit 1
 fi
+for required_path in "$DMG_INSTALLER" "$DMG_QUICKSTART" "$DMG_PAYLOAD"; do
+  if [[ ! -f "$required_path" ]]; then
+    echo -e "${RED}Error: DMG payload missing required artifact: $required_path${NC}" >&2
+    hdiutil detach "$DMG_MOUNT" -quiet >/dev/null 2>&1 || true
+    exit 1
+  fi
+done
 DMG_APP_SHA256="$(shasum -a 256 "$DMG_APP_BINARY" | awk '{print $1}')"
 hdiutil detach "$DMG_MOUNT" -quiet >/dev/null
 
@@ -339,6 +420,11 @@ PY
 echo "Manifest: $MANIFEST_PATH"
 echo -e "${GREEN}Manifest created${NC}"
 echo
+
+cp "$INSTALLER_PATH" "$DIST_RELEASE_DIR/Install tproj.command"
+cp "$QUICKSTART_PATH" "$DIST_RELEASE_DIR/README-QuickStart.txt"
+cp "$CLI_PAYLOAD_ARCHIVE" "$DIST_RELEASE_DIR/tproj-cli-payload.tar.gz"
+cp "$DMG_PATH" "$DIST_RELEASE_DIR/${APP_NAME}.dmg"
 
 # --- Step 9: Publish ---
 if [[ "$PUBLISH" == "true" ]]; then

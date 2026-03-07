@@ -81,6 +81,13 @@ Output:
 
 - `apps/tproj/dist/release/tproj.dmg`
 
+DMG contents:
+
+- `tproj.app`
+- `Install tproj.command`
+- `README-QuickStart.txt`
+- `tproj-cli-payload.tar.gz`
+
 Before running release, create `apps/tproj/.local/release.md` with signing and notarization values.
 
 ## Runtime Dependencies
