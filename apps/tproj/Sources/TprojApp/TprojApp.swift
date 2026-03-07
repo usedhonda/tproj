@@ -28,6 +28,8 @@ private struct GhosttyWindowInfo {
 }
 
 struct GhosttyTheme {
+    static let minimumAppBackgroundOpacity = 0.9
+
     let background: Color
     let foreground: Color
     let cursorColor: Color
@@ -37,6 +39,7 @@ struct GhosttyTheme {
     let fontFamily: String?
     let fontSize: CGFloat
     let backgroundOpacity: Double
+    var appBackgroundOpacity: Double { max(backgroundOpacity, Self.minimumAppBackgroundOpacity) }
 
     var backgroundLighter: Color { background.brighten(0.10) }
     var cardBackground: Color { background.brighten(0.04) }
@@ -3871,7 +3874,7 @@ struct ContentView: View {
     private var normalContentView: some View {
         ZStack {
             GhosttyTheme.current.background
-                .opacity(GhosttyTheme.current.backgroundOpacity)
+                .opacity(GhosttyTheme.current.appBackgroundOpacity)
                 .ignoresSafeArea()
 
             if workspaceRowCount < 10 {
