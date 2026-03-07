@@ -483,21 +483,50 @@ launch_tproj_gui() {
 
 # レイアウト確定後フック（private 拡張用）
 # TPROJ_AFTER_LAYOUT_HOOK は実行可能コマンド/パスを指定する。
-# 起動フローをブロックしないよう非同期で起動し、失敗しても続行する。
-prime_after_layout_manifest() {
-  local session_name="$1"
+# 未設定時は runtime bin か sibling repo の tproj-pane-bg を自動検出する。
+resolve_after_layout_hook_path() {
   local hook_cmd="${TPROJ_AFTER_LAYOUT_HOOK:-}"
-  local log_file="/tmp/tproj-after-layout-${session_name}.log"
+  local resolved=""
+  local workspace_parent=""
+  local sibling_path=""
 
-  [[ -z "$hook_cmd" ]] && return 0
-  if ! command -v "$hook_cmd" >/dev/null 2>&1; then
+  if [[ -n "$hook_cmd" ]]; then
+    if command -v "$hook_cmd" >/dev/null 2>&1; then
+      command -v "$hook_cmd"
+      return 0
+    fi
+    if [[ -x "$hook_cmd" ]]; then
+      printf '%s\n' "$hook_cmd"
+      return 0
+    fi
     echo "Warning: TPROJ_AFTER_LAYOUT_HOOK not found: $hook_cmd" >&2
+    return 1
+  fi
+
+  resolved="$(runtime_bin_path "tproj-pane-bg" 2>/dev/null || true)"
+  if [[ -n "$resolved" ]]; then
+    printf '%s\n' "$resolved"
     return 0
   fi
 
-  local hook_path
-  hook_path="$(command -v "$hook_cmd" 2>/dev/null || true)"
-  [[ -z "$hook_path" ]] && hook_path="$hook_cmd"
+  workspace_parent="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  sibling_path="${workspace_parent}/tproj-ext/bin/tproj-pane-bg"
+  if [[ -x "$sibling_path" ]]; then
+    printf '%s\n' "$sibling_path"
+    return 0
+  fi
+
+  return 1
+}
+
+# 起動フローをブロックしないよう非同期で起動し、失敗しても続行する。
+prime_after_layout_manifest() {
+  local session_name="$1"
+  local hook_path=""
+  local log_file="/tmp/tproj-after-layout-${session_name}.log"
+
+  hook_path="$(resolve_after_layout_hook_path 2>/dev/null || true)"
+  [[ -z "$hook_path" ]] && return 0
 
   "$hook_path" sync --session "$session_name" --fast >>"$log_file" 2>&1 || true
 }
@@ -508,18 +537,11 @@ run_after_layout_hook() {
   local window_name="${3:-dev}"
   local project_root="${4:-}"
   local remote_host="${5:-}"
-  local hook_cmd="${TPROJ_AFTER_LAYOUT_HOOK:-}"
-
-  [[ -z "$hook_cmd" ]] && return 0
-  if ! command -v "$hook_cmd" >/dev/null 2>&1; then
-    echo "Warning: TPROJ_AFTER_LAYOUT_HOOK not found: $hook_cmd" >&2
-    return 0
-  fi
-
-  local hook_path
+  local hook_path=""
   local log_file="/tmp/tproj-after-layout-${session_name}.log"
-  hook_path="$(command -v "$hook_cmd" 2>/dev/null || true)"
-  [[ -z "$hook_path" ]] && hook_path="$hook_cmd"
+
+  hook_path="$(resolve_after_layout_hook_path 2>/dev/null || true)"
+  [[ -z "$hook_path" ]] && return 0
 
   local -a hook_args
   hook_args=("$hook_path" --session "$session_name" --window "$window_name" --mode "$mode")
