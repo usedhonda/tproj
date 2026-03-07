@@ -11,6 +11,15 @@ echo "==> Stop previous GUI processes"
 pkill -f 'apps/tproj/dist/tproj.app/Contents/MacOS/tproj|\.build/.*/tproj$|tproj-gui' 2>/dev/null || true
 
 echo "==> Launch app"
-open -ga "$APP_BUNDLE"
+if ! open -ga "$APP_BUNDLE"; then
+  echo "open -ga failed; retrying with open -na" >&2
+  open -na "$APP_BUNDLE"
+fi
+
+sleep 1
+if ! pgrep -f 'apps/tproj/dist/tproj.app/Contents/MacOS/tproj' >/dev/null 2>&1; then
+  echo "app process not detected after open -ga; retrying with open -na" >&2
+  open -na "$APP_BUNDLE"
+fi
 
 echo "Done: $APP_BUNDLE"
