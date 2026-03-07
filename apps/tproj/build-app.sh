@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
 APP_NAME="tproj"
 BUNDLE_ID="com.usedhonda.tproj.desktop"
 APP_VERSION="${APP_VERSION:-0.1.0}"
@@ -14,6 +15,7 @@ RES_DIR="$CONTENTS_DIR/Resources"
 BIN_SRC="$ROOT_DIR/.build/apple/Products/Release/tproj"
 BIN_DST="$MACOS_DIR/$APP_NAME"
 ICON_SRC="$ROOT_DIR/Resources/AppIcon.icns"
+RUNTIME_SEED_NAME="tproj-runtime-seed.tar.gz"
 
 mkdir -p "$DIST_DIR"
 
@@ -25,6 +27,18 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RES_DIR"
 cp "$BIN_SRC" "$BIN_DST"
 chmod +x "$BIN_DST"
+
+RUNTIME_TMP="$(mktemp -d /tmp/tproj-runtime-seed.XXXXXX)"
+cleanup() {
+  rm -rf "$RUNTIME_TMP"
+}
+trap cleanup EXIT
+
+mkdir -p "$RUNTIME_TMP/tproj-runtime"
+cp -R "$REPO_ROOT/bin" "$RUNTIME_TMP/tproj-runtime/bin"
+cp -R "$REPO_ROOT/config" "$RUNTIME_TMP/tproj-runtime/config"
+find "$RUNTIME_TMP/tproj-runtime" -name '.DS_Store' -delete
+tar -C "$RUNTIME_TMP" -czf "$RES_DIR/$RUNTIME_SEED_NAME" "tproj-runtime"
 
 if [[ -f "$ICON_SRC" ]]; then
   cp "$ICON_SRC" "$RES_DIR/AppIcon.icns"

@@ -2,6 +2,7 @@ import SwiftUI
 import Foundation
 import AppKit
 import CoreMIDI
+import CryptoKit
 import UniformTypeIdentifiers
 
 extension Notification.Name {
@@ -1496,6 +1497,21 @@ final class AppViewModel: ObservableObject {
         return "\(home)/.config/tproj/workspace.yaml"
     }
 
+    private var bundledRuntimeSeedName: String { "tproj-runtime-seed" }
+
+    private var appSupportRootURL: URL {
+        fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/tproj", isDirectory: true)
+    }
+
+    private var stagedRuntimeRootURL: URL {
+        appSupportRootURL.appendingPathComponent("runtime/current", isDirectory: true)
+    }
+
+    private var stagedRuntimeHashURL: URL {
+        stagedRuntimeRootURL.appendingPathComponent(".seed-sha256", isDirectory: false)
+    }
+
     var canAddColumn: Bool {
         !selectedAlias.isEmpty && !isBusy
     }
@@ -1516,6 +1532,125 @@ final class AppViewModel: ObservableObject {
     }
 
     // MARK: - GUI Config & Dependency Check
+
+    private func bundledRuntimeSeedURL() -> URL? {
+        Bundle.main.url(forResource: bundledRuntimeSeedName, withExtension: "tar.gz")
+    }
+
+    private func runtimeSeedDigest(for url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func ensureBundledRuntimeStaged(reportError: Bool) -> String? {
+        guard let seedURL = bundledRuntimeSeedURL() else { return nil }
+        guard let digest = runtimeSeedDigest(for: seedURL) else {
+            if reportError {
+                statusText = "Runtime seed digest failed"
+            }
+            return nil
+        }
+
+        let runtimeBin = stagedRuntimeRootURL.appendingPathComponent("bin/tproj", isDirectory: false)
+        if fileManager.isExecutableFile(atPath: runtimeBin.path),
+           let existingDigest = try? String(contentsOf: stagedRuntimeHashURL, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+           existingDigest == digest {
+            return stagedRuntimeRootURL.path
+        }
+
+        let runtimeParent = appSupportRootURL.appendingPathComponent("runtime", isDirectory: true)
+        let stageURL = runtimeParent.appendingPathComponent("stage-\(UUID().uuidString)", isDirectory: true)
+        let nextURL = runtimeParent.appendingPathComponent("current.next-\(UUID().uuidString)", isDirectory: true)
+        let backupURL = runtimeParent.appendingPathComponent("current.prev-\(UUID().uuidString)", isDirectory: true)
+
+        do {
+            try fileManager.createDirectory(at: runtimeParent, withIntermediateDirectories: true)
+            if fileManager.fileExists(atPath: stageURL.path) {
+                try fileManager.removeItem(at: stageURL)
+            }
+            try fileManager.createDirectory(at: stageURL, withIntermediateDirectories: true)
+
+            let extractResult = runCommand("/usr/bin/env", ["tar", "-xzf", seedURL.path, "-C", stageURL.path])
+            guard extractResult.exitCode == 0 else {
+                if reportError {
+                    statusText = "Runtime extract failed: \(trimmedError(extractResult))"
+                }
+                try? fileManager.removeItem(at: stageURL)
+                return nil
+            }
+
+            let extractedRoot = stageURL.appendingPathComponent("tproj-runtime", isDirectory: true)
+            guard fileManager.fileExists(atPath: extractedRoot.path) else {
+                if reportError {
+                    statusText = "Runtime extract missing payload"
+                }
+                try? fileManager.removeItem(at: stageURL)
+                return nil
+            }
+
+            if fileManager.fileExists(atPath: nextURL.path) {
+                try fileManager.removeItem(at: nextURL)
+            }
+            try fileManager.moveItem(at: extractedRoot, to: nextURL)
+            try digest.write(to: nextURL.appendingPathComponent(".seed-sha256"), atomically: true, encoding: .utf8)
+
+            if fileManager.fileExists(atPath: stagedRuntimeRootURL.path) {
+                if fileManager.fileExists(atPath: backupURL.path) {
+                    try fileManager.removeItem(at: backupURL)
+                }
+                try fileManager.moveItem(at: stagedRuntimeRootURL, to: backupURL)
+            }
+
+            try fileManager.moveItem(at: nextURL, to: stagedRuntimeRootURL)
+            try? fileManager.removeItem(at: backupURL)
+            try? fileManager.removeItem(at: stageURL)
+            return stagedRuntimeRootURL.path
+        } catch {
+            try? fileManager.removeItem(at: stageURL)
+            try? fileManager.removeItem(at: nextURL)
+            if reportError {
+                statusText = "Runtime stage failed: \(error.localizedDescription)"
+            }
+            return nil
+        }
+    }
+
+    private func bundledRuntimeCommand(commandName: String) -> String? {
+        guard bundledRuntimeSeedURL() != nil else { return nil }
+        guard let runtimeRoot = ensureBundledRuntimeStaged(reportError: false) else { return nil }
+        let candidate = URL(fileURLWithPath: runtimeRoot, isDirectory: true)
+            .appendingPathComponent("bin/\(commandName)", isDirectory: false).path
+        return fileManager.isExecutableFile(atPath: candidate) ? candidate : nil
+    }
+
+    private func resolveCommandPath(commandName: String) -> String? {
+        if let bundled = bundledRuntimeCommand(commandName: commandName) {
+            return bundled
+        }
+        if bundledRuntimeSeedURL() != nil {
+            return nil
+        }
+        if let repoCommand = locateInAncestorBin(commandName: commandName) {
+            return repoCommand
+        }
+        let homeCommand = "\(NSHomeDirectory())/bin/\(commandName)"
+        if fileManager.isExecutableFile(atPath: homeCommand) {
+            return homeCommand
+        }
+        return nil
+    }
+
+    private func runtimeLaunchCommand(commandName: String, arguments: [String]) -> (launchPath: String, arguments: [String])? {
+        guard let path = resolveCommandPath(commandName: commandName) else { return nil }
+        return (path, arguments)
+    }
+
+    private func fallbackLaunchCommand(commandName: String, arguments: [String]) -> (launchPath: String, arguments: [String])? {
+        guard bundledRuntimeSeedURL() == nil else { return nil }
+        return ("/usr/bin/env", [commandName] + arguments)
+    }
 
     private func loadGUIConfig() {
         // Try reading gui.extra_paths from workspace.yaml using yq on builtin PATH
@@ -1580,6 +1715,9 @@ final class AppViewModel: ObservableObject {
 
     func onAppear() {
         Task {
+            if bundledRuntimeSeedURL() != nil && ensureBundledRuntimeStaged(reportError: true) == nil {
+                return
+            }
             loadGUIConfig()
             let diag = checkDependencies()
             startupDiag = diag
@@ -1713,11 +1851,6 @@ final class AppViewModel: ObservableObject {
         let homeCollector = "\(NSHomeDirectory())/bin/\(command)"
         if fileManager.isExecutableFile(atPath: homeCollector) {
             return (homeCollector, ["--json"])
-        }
-
-        let bundledCollector = Bundle.main.resourceURL?.appendingPathComponent(command).path ?? ""
-        if !bundledCollector.isEmpty && fileManager.isExecutableFile(atPath: bundledCollector) {
-            return (bundledCollector, ["--json"])
         }
 
         if let repoCollector = locateInAncestorBin(commandName: command) {
@@ -1891,15 +2024,11 @@ final class AppViewModel: ObservableObject {
         return Int(role[numberRange])
     }
 
-    private func dropColumnCommand() -> (launchPath: String, arguments: [String]) {
-        if let repoScript = locateInAncestorBin(commandName: "tproj-drop-column") {
-            return (repoScript, [])
+    private func dropColumnCommand() -> (launchPath: String, arguments: [String])? {
+        if let command = runtimeLaunchCommand(commandName: "tproj-drop-column", arguments: []) {
+            return command
         }
-        let homeScript = "\(NSHomeDirectory())/bin/tproj-drop-column"
-        if fileManager.isExecutableFile(atPath: homeScript) {
-            return (homeScript, [])
-        }
-        return ("/usr/bin/env", ["tproj-drop-column"])
+        return fallbackLaunchCommand(commandName: "tproj-drop-column", arguments: [])
     }
 
     func addWorkspaceRow() {
@@ -1941,7 +2070,14 @@ final class AppViewModel: ObservableObject {
             endLayoutMutation()
         }
 
-        let result = await runCommandAsync("/usr/bin/env", ["tproj", "--add", alias])
+        guard let launch = runtimeLaunchCommand(commandName: "tproj", arguments: ["--no-gui", "--add", alias])
+                ?? fallbackLaunchCommand(commandName: "tproj", arguments: ["--no-gui", "--add", alias]) else {
+            resultTag = "error"
+            note = "alias=\(alias) error=runtime_unavailable"
+            statusText = "Bundled runtime unavailable"
+            return
+        }
+        let result = await runCommandAsync(launch.launchPath, launch.arguments)
         if result.exitCode == 0 {
             statusText = "Added column: \(alias)"
             loadLiveColumns()
@@ -1970,8 +2106,12 @@ final class AppViewModel: ObservableObject {
         isBusy = true
         defer { isBusy = false }
 
-        let scriptPath = "\(NSHomeDirectory())/bin/tproj-toggle-yazi"
-        let result = await runCommandAsync("/usr/bin/env", [scriptPath, "tproj-workspace", pane])
+        guard let launch = runtimeLaunchCommand(commandName: "tproj-toggle-yazi", arguments: ["tproj-workspace", pane])
+                ?? fallbackLaunchCommand(commandName: "tproj-toggle-yazi", arguments: ["tproj-workspace", pane]) else {
+            statusText = "Bundled runtime unavailable"
+            return
+        }
+        let result = await runCommandAsync(launch.launchPath, launch.arguments)
         if result.exitCode == 0 {
             statusText = "Toggled Yazi for #\(column.column)"
         } else {
@@ -2289,7 +2429,10 @@ final class AppViewModel: ObservableObject {
 
         let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
         let beforeCount = workspacePaneCountSync()
-        let dropCommand = dropColumnCommand()
+        guard let dropCommand = dropColumnCommand() else {
+            statusText = "Bundled runtime unavailable"
+            return
+        }
 
         pendingDropColumns.insert(columnNumber)
         liveColumns.removeAll { $0.column == columnNumber }
@@ -2452,7 +2595,9 @@ final class AppViewModel: ObservableObject {
         }
         note += " swaps=\(swapCount)"
 
-        _ = await runCommandAsync("\(NSHomeDirectory())/bin/rebalance-workspace-columns", ["tproj-workspace"])
+        if let rebalance = runtimeLaunchCommand(commandName: "rebalance-workspace-columns", arguments: ["tproj-workspace"]) {
+            _ = await runCommandAsync(rebalance.launchPath, rebalance.arguments)
+        }
         let normalized = await normalizeColumnsByVisualOrderAsync()
         if !normalized {
             resultTag = "warning"
@@ -2747,11 +2892,25 @@ final class AppViewModel: ObservableObject {
     }
 
     func startSession() async {
+        loadWorkspaceProjects()
+        let enabledProjects = workspaceProjects.filter {
+            $0.enabled && !$0.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !enabledProjects.isEmpty else {
+            statusText = "Create workspace.yaml with an enabled project first"
+            return
+        }
+
         isBusy = true
         defer { isBusy = false }
         statusText = "Starting session..."
 
-        let result = await runCommandAsync("/bin/zsh", ["-l", "-c", "tproj"])
+        guard let launch = runtimeLaunchCommand(commandName: "tproj", arguments: ["--no-gui"])
+                ?? fallbackLaunchCommand(commandName: "tproj", arguments: ["--no-gui"]) else {
+            statusText = "Bundled runtime unavailable"
+            return
+        }
+        let result = await runCommandAsync(launch.launchPath, launch.arguments)
 
         await refreshAll()
         if liveColumns.isEmpty && result.exitCode == 0 {

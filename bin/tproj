@@ -2,6 +2,67 @@
 set -euo pipefail
 setopt KSH_ARRAYS  # 0-based array indexing (bash compatibility)
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+resolve_tproj_runtime_root() {
+  if [[ -n "${TPROJ_RUNTIME_ROOT:-}" && -d "${TPROJ_RUNTIME_ROOT}/bin" && -d "${TPROJ_RUNTIME_ROOT}/config" ]]; then
+    echo "$TPROJ_RUNTIME_ROOT"
+    return 0
+  fi
+
+  local parent
+  parent="$(cd "$SCRIPT_DIR/.." && pwd)"
+  if [[ -d "$parent/bin" && -d "$parent/config" ]]; then
+    echo "$parent"
+    return 0
+  fi
+
+  return 1
+}
+
+TPROJ_RUNTIME_ROOT="${TPROJ_RUNTIME_ROOT:-$(resolve_tproj_runtime_root 2>/dev/null || true)}"
+
+runtime_bin_path() {
+  local name="$1"
+  local candidate=""
+
+  if [[ -n "${TPROJ_RUNTIME_ROOT:-}" ]]; then
+    candidate="$TPROJ_RUNTIME_ROOT/bin/$name"
+    [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
+  fi
+
+  candidate="$HOME/bin/$name"
+  [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
+
+  command -v "$name" 2>/dev/null || return 1
+}
+
+quoted_runtime_bin_path() {
+  local name="$1"
+  local resolved
+  resolved="$(runtime_bin_path "$name" 2>/dev/null || true)"
+  [[ -n "$resolved" ]] && printf '%q' "$resolved"
+}
+
+run_rebalance_workspace() {
+  local session="$1"
+  local rebalance_path
+  rebalance_path="$(runtime_bin_path "rebalance-workspace-columns" 2>/dev/null || true)"
+  [[ -z "$rebalance_path" ]] && return 0
+  "$rebalance_path" "$session" 2>/dev/null || true
+}
+
+mark_session_runtime() {
+  local session="$1"
+  tmux set-option -t "$session" @tproj true >/dev/null 2>&1 || true
+  if [[ -n "${TPROJ_RUNTIME_ROOT:-}" ]]; then
+    tmux set-option -t "$session" @tproj_runtime_root "$TPROJ_RUNTIME_ROOT" >/dev/null 2>&1 || true
+  fi
+  if [[ "$NO_GUI" == "true" ]]; then
+    tmux set-option -t "$session" @tproj_gui_mode 1 >/dev/null 2>&1 || true
+  fi
+}
+
 # Codex バイナリに署名（macOS コード署名問題の回避）
 sign_codex() {
   if [[ "$(uname)" == "Darwin" ]]; then
@@ -29,6 +90,7 @@ Usage:
 Options:
   --add [ALIAS]      Add workspace column (no arg: duplicate current, with alias: from workspace.yaml)
   --check            Show workspace.yaml projects, aliases, and enabled status
+  --no-gui           Skip GUI auto-launch (used by the app bundle)
   -c, --columns N    Start with only the first N projects from workspace.yaml
   -s, --single       Force single-project mode (ignore workspace.yaml)
   -r, --remote HOST  SSH remote connection
@@ -80,6 +142,7 @@ ADD_MODE=false
 ADD_ALIAS=""
 CHECK_MODE=false
 MAX_COLUMNS=""  # 空 = 制限なし
+NO_GUI=false
 
 # stop/kill サブコマンド
 if [[ "${1:-}" == "stop" ]]; then
@@ -101,6 +164,7 @@ while [[ $# -gt 0 ]]; do
         ADD_ALIAS="$1"; shift
       fi
       ;;
+    --no-gui) NO_GUI=true; shift ;;
     -c|--columns)
       [[ -z "${2:-}" ]] && { echo "Error: -c requires a number" >&2; exit 1; }
       MAX_COLUMNS="$2"; shift 2 ;;
@@ -289,6 +353,7 @@ _find_gui_target() {
 
 # TprojApp GUI を起動/再表示
 launch_tproj_gui() {
+  [[ "$NO_GUI" == "true" ]] && return 0
   local target kind path
   target="$(_find_gui_target 2>/dev/null)" || return 0
   kind="${target%%|*}"
@@ -631,7 +696,7 @@ add_workspace_column() {
   fi
 
   # 先にレイアウトを確定してから重いプロセスを起動し、Add直後の横揺れを抑える
-  "$HOME/bin/rebalance-workspace-columns" "$session" 2>/dev/null || true
+  run_rebalance_workspace "$session"
   sleep 0.15
 
   if [[ "$src_type" == "remote" ]]; then
@@ -646,7 +711,10 @@ add_workspace_column() {
     else
       tmux send-keys -t "$new_claude" "npm update -g @anthropic-ai/claude-code; hash -r; claude --continue || claude" C-m
       sleep 0.2
-      tmux send-keys -t "$new_codex" "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
+      local sign_codex_cmd
+      sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
+      [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
+      tmux send-keys -t "$new_codex" "npm update -g @openai/codex; $sign_codex_cmd; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
     fi
   else
     if has_claude_session "$src_path"; then
@@ -662,7 +730,10 @@ add_workspace_column() {
     else
       tmux send-keys -t "$new_claude" "npm update -g @anthropic-ai/claude-code; hash -r; $claude_cmd" C-m
       sleep 0.2
-      tmux send-keys -t "$new_codex" "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; cd \"$src_path\" && codex resume --last -s danger-full-access -a never --search" C-m
+      local sign_codex_cmd
+      sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
+      [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
+      tmux send-keys -t "$new_codex" "npm update -g @openai/codex; $sign_codex_cmd; hash -r; cd \"$src_path\" && codex resume --last -s danger-full-access -a never --search" C-m
     fi
   fi
 
@@ -1007,9 +1078,13 @@ create_workspace_layout() {
     first_dir="/tmp"  # リモートの場合は一時的なディレクトリ
   fi
   tmux new-session -d -s "$session" -c "$first_dir" -n dev
-  tmux set-option -t "$session" @tproj true
+  mark_session_runtime "$session"
   # 列削除時にも自動で横幅均等化
-  tmux set-hook -t "$session" after-kill-pane "run-shell -b '$HOME/bin/rebalance-workspace-columns \"$session\"'"
+  local rebalance_cmd
+  rebalance_cmd="$(quoted_runtime_bin_path "rebalance-workspace-columns")"
+  if [[ -n "$rebalance_cmd" ]]; then
+    tmux set-hook -t "$session" after-kill-pane "run-shell -b '$rebalance_cmd \"$session\"'"
+  fi
 
   local first_codex=$(tmux list-panes -t "$session:dev" -F '#{pane_id}' | head -1)
   codex_panes[0]="$first_codex"
@@ -1126,8 +1201,11 @@ start_codex_for_column() {
       tmux send-keys -t "$codex_pane" \
         "codex resume --last -s danger-full-access -a never --search" C-m
     else
+      local sign_codex_cmd
+      sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
+      [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
       tmux send-keys -t "$codex_pane" \
-        "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
+        "npm update -g @openai/codex; $sign_codex_cmd; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
     fi
   else
     # cdx: false のときはシェルで cd だけ
@@ -1139,8 +1217,11 @@ start_codex_for_column() {
     if [[ "$no_update" == "true" ]]; then
       tmux send-keys -t "$codex_pane" "$codex_cmd" C-m
     else
+      local sign_codex_cmd
+      sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
+      [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
       tmux send-keys -t "$codex_pane" \
-        "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; $codex_cmd" C-m
+        "npm update -g @openai/codex; $sign_codex_cmd; hash -r; $codex_cmd" C-m
     fi
   fi
 }
@@ -1317,7 +1398,7 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
 
     # 1) dev window を作成
     tmux new-session -d -s "$session" -c "$root" -n dev
-    tmux set-option -t "$session" @tproj true
+    mark_session_runtime "$session"
 
     # 2) VSCodeっぽい3ペイン（左メイン / 右上watch / 右下logs）
     tmux split-window -h -t "$session:dev" -c "$root"
@@ -1373,9 +1454,11 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
         sleep 0.1
         tmux send-keys -t "$session:dev.2" "codex resume --last -s danger-full-access -a never --search" C-m
       else
+        sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
+        [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
         tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code; hash -r; claude --continue || claude" C-m
         sleep 0.1
-        tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
+        tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex; $sign_codex_cmd; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
       fi
 
       sleep 0.3
@@ -1394,9 +1477,11 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
         sleep 0.1
         tmux send-keys -t "$session:dev.2" "codex resume --last -s danger-full-access -a never --search" C-m
       else
+        sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
+        [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
         tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code; hash -r; $claude_cmd" C-m
         sleep 0.1
-        tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex; ~/bin/sign-codex; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
+        tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex; $sign_codex_cmd; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
       fi
 
       sleep 0.3
