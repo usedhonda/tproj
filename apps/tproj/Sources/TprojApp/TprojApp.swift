@@ -2701,10 +2701,35 @@ final class AppViewModel: ObservableObject {
         defer { isBusy = false }
 
         do {
-            let content = renderWorkspaceYAML()
             let parent = URL(fileURLWithPath: workspacePath).deletingLastPathComponent()
             try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
-            try content.write(toFile: workspacePath, atomically: true, encoding: .utf8)
+
+            let content = renderWorkspaceYAML()
+            if !fileManager.fileExists(atPath: workspacePath) {
+                try content.write(toFile: workspacePath, atomically: true, encoding: .utf8)
+            } else {
+                let tempURL = parent.appendingPathComponent(".tproj-projects-\(UUID().uuidString).yaml")
+                try content.write(to: tempURL, atomically: true, encoding: .utf8)
+                defer { try? fileManager.removeItem(at: tempURL) }
+
+                let expression = ".projects = load(strenv(TPROJ_PROJECTS_TMP)).projects"
+                let result = runCommand(
+                    "/usr/bin/env",
+                    ["yq", "eval", "-i", expression, workspacePath],
+                    environment: ["TPROJ_PROJECTS_TMP": tempURL.path]
+                )
+
+                guard result.exitCode == 0 else {
+                    let errText = trimmedError(result)
+                    if errText.contains("No such file or directory") && errText.contains("yq") {
+                        statusText = "yq not installed (brew install yq)"
+                    } else {
+                        statusText = "Save failed: \(errText)"
+                    }
+                    return
+                }
+            }
+
             statusText = "Saved workspace.yaml"
             loadWorkspaceProjects()
             normalizeSelection()
@@ -3423,20 +3448,24 @@ final class AppViewModel: ObservableObject {
         return "'\(escaped)'"
     }
 
-    private func runCommand(_ launchPath: String, _ arguments: [String]) -> CommandResult {
-        Self.executeCommand(launchPath, arguments)
+    private func runCommand(_ launchPath: String, _ arguments: [String], environment: [String: String] = [:]) -> CommandResult {
+        Self.executeCommand(launchPath, arguments, environment: environment)
     }
 
-    private func runCommandAsync(_ launchPath: String, _ arguments: [String]) async -> CommandResult {
+    private func runCommandAsync(_ launchPath: String, _ arguments: [String], environment: [String: String] = [:]) async -> CommandResult {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let result = Self.executeCommand(launchPath, arguments)
+                let result = Self.executeCommand(launchPath, arguments, environment: environment)
                 continuation.resume(returning: result)
             }
         }
     }
 
-    nonisolated private static func executeCommand(_ launchPath: String, _ arguments: [String]) -> CommandResult {
+    nonisolated private static func executeCommand(
+        _ launchPath: String,
+        _ arguments: [String],
+        environment extraEnvironment: [String: String] = [:]
+    ) -> CommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
@@ -3444,6 +3473,9 @@ final class AppViewModel: ObservableObject {
         // GUI apps don't inherit the user's shell PATH; use resolved PATH
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = Self.resolvedPATH
+        for (key, value) in extraEnvironment {
+            env[key] = value
+        }
         process.environment = env
 
         let outPipe = Pipe()

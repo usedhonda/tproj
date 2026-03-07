@@ -13,6 +13,44 @@
 # Check configured projects with:
 #   tproj --check
 
+# ===== Optional global launch args =====
+#
+# These apply to both workspace mode and single-project mode.
+# They append to the built-in launcher command; they do not replace it.
+#
+# launch:
+#   claude:
+#     args:
+#       - --model
+#       - sonnet
+#   codex:
+#     args:
+#       - -m
+#       - gpt-5.3-codex
+#
+# ===== Optional tmux UI overrides =====
+#
+# These apply to tproj-created tmux windows only.
+# Values are tmux style tokens (for example: colour51, colour248, default, terminal).
+#
+# tmux_ui:
+#   pane_border:
+#     active_fg: colour51
+#     active_bold: true
+#     inactive_fg: colour248
+#   pane_title:
+#     active_prefix: "▶ "
+#     active_fg: colour255
+#     active_bg: colour236
+#     inactive_prefix: "  "
+#     inactive_fg: colour255
+#     inactive_bg: colour238
+#   window_text:
+#     active_fg: default
+#     active_bg: terminal
+#     inactive_fg: colour250
+#     inactive_bg: terminal
+
 # ===== Simple format (local projects only) =====
 #
 # A plain list of project paths.

@@ -115,6 +115,13 @@ Modes:
 Workspace Configuration:
   File: ~/.config/tproj/workspace.yaml
 
+  Global sections:
+    launch.claude.args
+    launch.codex.args
+    tmux_ui.pane_border
+    tmux_ui.pane_title
+    tmux_ui.window_text
+
   Example:
     projects:
       - /path/to/project1
@@ -143,6 +150,23 @@ ADD_ALIAS=""
 CHECK_MODE=false
 MAX_COLUMNS=""  # 空 = 制限なし
 NO_GUI=false
+
+declare -a GLOBAL_CLAUDE_ARGS
+declare -a GLOBAL_CODEX_ARGS
+
+TMUX_UI_PANE_BORDER_ACTIVE_FG="colour51"
+TMUX_UI_PANE_BORDER_ACTIVE_BOLD="true"
+TMUX_UI_PANE_BORDER_INACTIVE_FG="colour248"
+TMUX_UI_PANE_TITLE_ACTIVE_PREFIX="▶ "
+TMUX_UI_PANE_TITLE_ACTIVE_FG="colour255"
+TMUX_UI_PANE_TITLE_ACTIVE_BG="colour236"
+TMUX_UI_PANE_TITLE_INACTIVE_PREFIX="  "
+TMUX_UI_PANE_TITLE_INACTIVE_FG="colour255"
+TMUX_UI_PANE_TITLE_INACTIVE_BG="colour238"
+TMUX_UI_WINDOW_TEXT_ACTIVE_FG="default"
+TMUX_UI_WINDOW_TEXT_ACTIVE_BG="terminal"
+TMUX_UI_WINDOW_TEXT_INACTIVE_FG="colour250"
+TMUX_UI_WINDOW_TEXT_INACTIVE_BG="terminal"
 
 # stop/kill サブコマンド
 if [[ "${1:-}" == "stop" ]]; then
@@ -218,6 +242,90 @@ build_pane_label() {
   fi
 
   echo "${project_name}.${suffix}${host_suffix} ${persona}"
+}
+
+shell_join_tokens() {
+  local -a tokens=("$@")
+  local joined=""
+  local token
+  for token in "${tokens[@]}"; do
+    joined+="$(printf '%q' "$token") "
+  done
+  printf '%s' "${joined% }"
+}
+
+build_claude_continue_shell() {
+  local -a tokens=(claude --continue)
+  tokens+=("${GLOBAL_CLAUDE_ARGS[@]}")
+  shell_join_tokens "${tokens[@]}"
+}
+
+build_claude_fresh_shell() {
+  local -a tokens=(claude)
+  tokens+=("${GLOBAL_CLAUDE_ARGS[@]}")
+  shell_join_tokens "${tokens[@]}"
+}
+
+build_claude_launch_shell() {
+  local project_path="$1"
+  local project_type="$2"
+  local include_cd="${3:-true}"
+  local command=""
+
+  if [[ "$project_type" == "remote" ]]; then
+    command="$(build_claude_continue_shell) || $(build_claude_fresh_shell)"
+  else
+    if has_claude_session "$project_path"; then
+      command="$(build_claude_continue_shell)"
+    else
+      command="$(build_claude_fresh_shell)"
+    fi
+    if [[ "$include_cd" == "true" ]]; then
+      command="cd $(printf '%q' "$project_path") && $command"
+    fi
+  fi
+
+  printf '%s' "$command"
+}
+
+build_codex_launch_shell() {
+  local project_path="$1"
+  local project_type="$2"
+  local include_cd="${3:-true}"
+  local -a tokens=(codex resume --last -s danger-full-access -a never --search)
+  tokens+=("${GLOBAL_CODEX_ARGS[@]}")
+
+  local command
+  command="$(shell_join_tokens "${tokens[@]}")"
+  if [[ "$project_type" != "remote" && "$include_cd" == "true" ]]; then
+    command="cd $(printf '%q' "$project_path") && $command"
+  fi
+
+  printf '%s' "$command"
+}
+
+with_claude_update_prefix() {
+  local command="$1"
+  local no_update_mode="${2:-$NO_UPDATE}"
+  if [[ "$no_update_mode" == "true" ]]; then
+    printf '%s' "$command"
+    return 0
+  fi
+  printf 'npm update -g @anthropic-ai/claude-code; hash -r; %s' "$command"
+}
+
+with_codex_update_prefix() {
+  local command="$1"
+  local no_update_mode="${2:-$NO_UPDATE}"
+  if [[ "$no_update_mode" == "true" ]]; then
+    printf '%s' "$command"
+    return 0
+  fi
+
+  local sign_codex_cmd
+  sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
+  [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
+  printf 'npm update -g @openai/codex; %s; hash -r; %s' "$sign_codex_cmd" "$command"
 }
 
 # @tproj セッション一覧を取得（共通ヘルパー）
@@ -695,46 +803,29 @@ add_workspace_column() {
     tmux set-option -pt "$new_codex" @project "$src_path"
   fi
 
+  apply_tmux_ui_to_window "$session:dev"
+
   # 先にレイアウトを確定してから重いプロセスを起動し、Add直後の横揺れを抑える
   run_rebalance_workspace "$session"
   sleep 0.15
+
+  local claude_cmd codex_cmd include_cd="true"
+  [[ "$src_type" == "remote" ]] && include_cd="false"
+  claude_cmd="$(build_claude_launch_shell "$src_path" "$src_type" "$include_cd")"
+  codex_cmd="$(build_codex_launch_shell "$src_path" "$src_type" "$include_cd")"
 
   if [[ "$src_type" == "remote" ]]; then
     tmux send-keys -t "$new_claude" "ssh -t $src_host 'cd $src_path && exec \$SHELL -l'" C-m
     tmux send-keys -t "$new_codex" "ssh -t $src_host 'cd $src_path && exec \$SHELL -l'" C-m
     sleep 2
 
-    if [[ "$NO_UPDATE" == "true" ]]; then
-      tmux send-keys -t "$new_claude" "claude --continue || claude" C-m
-      sleep 0.2
-      tmux send-keys -t "$new_codex" "codex resume --last -s danger-full-access -a never --search" C-m
-    else
-      tmux send-keys -t "$new_claude" "npm update -g @anthropic-ai/claude-code; hash -r; claude --continue || claude" C-m
-      sleep 0.2
-      local sign_codex_cmd
-      sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
-      [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
-      tmux send-keys -t "$new_codex" "npm update -g @openai/codex; $sign_codex_cmd; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
-    fi
+    tmux send-keys -t "$new_claude" "$(with_claude_update_prefix "$claude_cmd")" C-m
+    sleep 0.2
+    tmux send-keys -t "$new_codex" "$(with_codex_update_prefix "$codex_cmd")" C-m
   else
-    if has_claude_session "$src_path"; then
-      claude_cmd="cd \"$src_path\" && claude --continue"
-    else
-      claude_cmd="cd \"$src_path\" && claude"
-    fi
-
-    if [[ "$NO_UPDATE" == "true" ]]; then
-      tmux send-keys -t "$new_claude" "$claude_cmd" C-m
-      sleep 0.2
-      tmux send-keys -t "$new_codex" "cd \"$src_path\" && codex resume --last -s danger-full-access -a never --search" C-m
-    else
-      tmux send-keys -t "$new_claude" "npm update -g @anthropic-ai/claude-code; hash -r; $claude_cmd" C-m
-      sleep 0.2
-      local sign_codex_cmd
-      sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
-      [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
-      tmux send-keys -t "$new_codex" "npm update -g @openai/codex; $sign_codex_cmd; hash -r; cd \"$src_path\" && codex resume --last -s danger-full-access -a never --search" C-m
-    fi
+    tmux send-keys -t "$new_claude" "$(with_claude_update_prefix "$claude_cmd")" C-m
+    sleep 0.2
+    tmux send-keys -t "$new_codex" "$(with_codex_update_prefix "$codex_cmd")" C-m
   fi
 
   tmux select-pane -t "$new_claude"
@@ -742,6 +833,179 @@ add_workspace_column() {
   release_layout_lock
   echo "✅ Added workspace column $new_col: $src_path" >&2
 }
+
+require_workspace_yq() {
+  if command -v yq &>/dev/null; then
+    return 0
+  fi
+
+  echo "" >&2
+  echo "❌ Error: yq is not installed (required for workspace.yaml config)" >&2
+  echo "" >&2
+  echo "Options:" >&2
+  echo "  1. Install yq:    brew install yq" >&2
+  echo "  2. Remove workspace.yaml to disable YAML config" >&2
+  echo "  3. Use single mode without workspace.yaml" >&2
+  exit 1
+}
+
+read_workspace_string_setting() {
+  local query="$1"
+  local default_value="$2"
+  local label="$3"
+  local value_type
+  value_type=$(yq eval "$query | type" "$WORKSPACE_CONFIG" 2>/dev/null || echo "null")
+
+  if [[ "$value_type" == "null" || "$value_type" == "!!null" ]]; then
+    printf '%s' "$default_value"
+    return 0
+  fi
+
+  if [[ "$value_type" != "!!str" ]]; then
+    echo "❌ Error: $label must be a string in $WORKSPACE_CONFIG" >&2
+    exit 1
+  fi
+
+  yq -r "$query" "$WORKSPACE_CONFIG" 2>/dev/null
+}
+
+read_workspace_bool_setting() {
+  local query="$1"
+  local default_value="$2"
+  local label="$3"
+  local value_type
+  value_type=$(yq eval "$query | type" "$WORKSPACE_CONFIG" 2>/dev/null || echo "null")
+
+  if [[ "$value_type" == "null" || "$value_type" == "!!null" ]]; then
+    printf '%s' "$default_value"
+    return 0
+  fi
+
+  if [[ "$value_type" != "!!bool" ]]; then
+    echo "❌ Error: $label must be a boolean in $WORKSPACE_CONFIG" >&2
+    exit 1
+  fi
+
+  yq -r "$query" "$WORKSPACE_CONFIG" 2>/dev/null
+}
+
+load_workspace_string_array() {
+  local query="$1"
+  local label="$2"
+  local target_name="$3"
+  local array_type
+  local -a values
+
+  array_type=$(yq eval "$query | type" "$WORKSPACE_CONFIG" 2>/dev/null || echo "null")
+  if [[ "$array_type" == "null" || "$array_type" == "!!null" ]]; then
+    eval "$target_name=()"
+    return 0
+  fi
+
+  if [[ "$array_type" != "!!seq" ]]; then
+    echo "❌ Error: $label must be an array of strings in $WORKSPACE_CONFIG" >&2
+    exit 1
+  fi
+
+  while IFS= read -r item_type; do
+    [[ -z "$item_type" ]] && continue
+    if [[ "$item_type" != "!!str" ]]; then
+      echo "❌ Error: $label must contain only strings in $WORKSPACE_CONFIG" >&2
+      exit 1
+    fi
+  done < <(yq -r "$query[] | type" "$WORKSPACE_CONFIG" 2>/dev/null || true)
+
+  values=()
+  while IFS= read -r item; do
+    values+=("$item")
+  done < <(yq -r "$query[]" "$WORKSPACE_CONFIG" 2>/dev/null || true)
+
+  eval "$target_name=()"
+  local value quoted_value
+  for value in "${values[@]}"; do
+    quoted_value="$(printf '%q' "$value")"
+    eval "$target_name+=($quoted_value)"
+  done
+}
+
+parse_global_workspace_config() {
+  [[ -f "$WORKSPACE_CONFIG" ]] || return 0
+  require_workspace_yq
+
+  load_workspace_string_array '.launch.claude.args' 'launch.claude.args' GLOBAL_CLAUDE_ARGS
+  load_workspace_string_array '.launch.codex.args' 'launch.codex.args' GLOBAL_CODEX_ARGS
+
+  TMUX_UI_PANE_BORDER_ACTIVE_FG="$(read_workspace_string_setting '.tmux_ui.pane_border.active_fg' "$TMUX_UI_PANE_BORDER_ACTIVE_FG" 'tmux_ui.pane_border.active_fg')"
+  TMUX_UI_PANE_BORDER_ACTIVE_BOLD="$(read_workspace_bool_setting '.tmux_ui.pane_border.active_bold' "$TMUX_UI_PANE_BORDER_ACTIVE_BOLD" 'tmux_ui.pane_border.active_bold')"
+  TMUX_UI_PANE_BORDER_INACTIVE_FG="$(read_workspace_string_setting '.tmux_ui.pane_border.inactive_fg' "$TMUX_UI_PANE_BORDER_INACTIVE_FG" 'tmux_ui.pane_border.inactive_fg')"
+
+  TMUX_UI_PANE_TITLE_ACTIVE_PREFIX="$(read_workspace_string_setting '.tmux_ui.pane_title.active_prefix' "$TMUX_UI_PANE_TITLE_ACTIVE_PREFIX" 'tmux_ui.pane_title.active_prefix')"
+  TMUX_UI_PANE_TITLE_ACTIVE_FG="$(read_workspace_string_setting '.tmux_ui.pane_title.active_fg' "$TMUX_UI_PANE_TITLE_ACTIVE_FG" 'tmux_ui.pane_title.active_fg')"
+  TMUX_UI_PANE_TITLE_ACTIVE_BG="$(read_workspace_string_setting '.tmux_ui.pane_title.active_bg' "$TMUX_UI_PANE_TITLE_ACTIVE_BG" 'tmux_ui.pane_title.active_bg')"
+  TMUX_UI_PANE_TITLE_INACTIVE_PREFIX="$(read_workspace_string_setting '.tmux_ui.pane_title.inactive_prefix' "$TMUX_UI_PANE_TITLE_INACTIVE_PREFIX" 'tmux_ui.pane_title.inactive_prefix')"
+  TMUX_UI_PANE_TITLE_INACTIVE_FG="$(read_workspace_string_setting '.tmux_ui.pane_title.inactive_fg' "$TMUX_UI_PANE_TITLE_INACTIVE_FG" 'tmux_ui.pane_title.inactive_fg')"
+  TMUX_UI_PANE_TITLE_INACTIVE_BG="$(read_workspace_string_setting '.tmux_ui.pane_title.inactive_bg' "$TMUX_UI_PANE_TITLE_INACTIVE_BG" 'tmux_ui.pane_title.inactive_bg')"
+
+  TMUX_UI_WINDOW_TEXT_ACTIVE_FG="$(read_workspace_string_setting '.tmux_ui.window_text.active_fg' "$TMUX_UI_WINDOW_TEXT_ACTIVE_FG" 'tmux_ui.window_text.active_fg')"
+  TMUX_UI_WINDOW_TEXT_ACTIVE_BG="$(read_workspace_string_setting '.tmux_ui.window_text.active_bg' "$TMUX_UI_WINDOW_TEXT_ACTIVE_BG" 'tmux_ui.window_text.active_bg')"
+  TMUX_UI_WINDOW_TEXT_INACTIVE_FG="$(read_workspace_string_setting '.tmux_ui.window_text.inactive_fg' "$TMUX_UI_WINDOW_TEXT_INACTIVE_FG" 'tmux_ui.window_text.inactive_fg')"
+  TMUX_UI_WINDOW_TEXT_INACTIVE_BG="$(read_workspace_string_setting '.tmux_ui.window_text.inactive_bg' "$TMUX_UI_WINDOW_TEXT_INACTIVE_BG" 'tmux_ui.window_text.inactive_bg')"
+}
+
+render_tmux_pane_border_format() {
+  local active_prefix_style="#[bg=${TMUX_UI_PANE_TITLE_ACTIVE_BG}]#[fg=${TMUX_UI_PANE_BORDER_ACTIVE_FG}]"
+  local active_text_style="#[fg=${TMUX_UI_PANE_TITLE_ACTIVE_FG}]"
+  local inactive_style="#[bg=${TMUX_UI_PANE_TITLE_INACTIVE_BG}]#[fg=${TMUX_UI_PANE_TITLE_INACTIVE_FG}]"
+
+  if [[ "$TMUX_UI_PANE_BORDER_ACTIVE_BOLD" == "true" ]]; then
+    active_prefix_style="${active_prefix_style}#[bold]"
+  fi
+
+  printf '#{?pane_active,%s%s%s#{pane_title},%s%s#{pane_title}}#[default]' \
+    "$active_prefix_style" \
+    "$TMUX_UI_PANE_TITLE_ACTIVE_PREFIX" \
+    "$active_text_style" \
+    "$inactive_style" \
+    "$TMUX_UI_PANE_TITLE_INACTIVE_PREFIX"
+}
+
+apply_tmux_ui_to_window() {
+  local target="$1"
+  local pane_border_format
+  local active_border_style="fg=${TMUX_UI_PANE_BORDER_ACTIVE_FG}"
+  local inactive_border_style="fg=${TMUX_UI_PANE_BORDER_INACTIVE_FG}"
+  local window_style="fg=${TMUX_UI_WINDOW_TEXT_INACTIVE_FG},bg=${TMUX_UI_WINDOW_TEXT_INACTIVE_BG}"
+  local window_active_style="fg=${TMUX_UI_WINDOW_TEXT_ACTIVE_FG},bg=${TMUX_UI_WINDOW_TEXT_ACTIVE_BG}"
+
+  [[ "$TMUX_UI_PANE_BORDER_ACTIVE_BOLD" == "true" ]] && active_border_style+=",bold"
+  pane_border_format="$(render_tmux_pane_border_format)"
+
+  tmux set-option -w -t "$target" pane-border-status top >/dev/null 2>&1 || true
+  tmux set-option -w -t "$target" pane-border-format "$pane_border_format" >/dev/null 2>&1 || true
+  tmux set-option -w -t "$target" pane-border-style "$inactive_border_style" >/dev/null 2>&1 || true
+  tmux set-option -w -t "$target" pane-active-border-style "$active_border_style" >/dev/null 2>&1 || true
+  tmux set-option -w -t "$target" window-style "$window_style" >/dev/null 2>&1 || true
+  tmux set-option -w -t "$target" window-active-style "$window_active_style" >/dev/null 2>&1 || true
+}
+
+print_global_workspace_config() {
+  local claude_args="(none)"
+  local codex_args="(none)"
+  [[ ${#GLOBAL_CLAUDE_ARGS[@]} -gt 0 ]] && claude_args="$(shell_join_tokens "${GLOBAL_CLAUDE_ARGS[@]}")"
+  [[ ${#GLOBAL_CODEX_ARGS[@]} -gt 0 ]] && codex_args="$(shell_join_tokens "${GLOBAL_CODEX_ARGS[@]}")"
+
+  echo "" >&2
+  echo "Global launch:" >&2
+  echo "  claude args: $claude_args" >&2
+  echo "  codex args:  $codex_args" >&2
+
+  echo "" >&2
+  echo "Resolved tmux_ui:" >&2
+  echo "  pane_border: active_fg=${TMUX_UI_PANE_BORDER_ACTIVE_FG} active_bold=${TMUX_UI_PANE_BORDER_ACTIVE_BOLD} inactive_fg=${TMUX_UI_PANE_BORDER_INACTIVE_FG}" >&2
+  echo "  pane_title:  active_prefix=$(printf '%q' "$TMUX_UI_PANE_TITLE_ACTIVE_PREFIX") active_fg=${TMUX_UI_PANE_TITLE_ACTIVE_FG} active_bg=${TMUX_UI_PANE_TITLE_ACTIVE_BG} inactive_prefix=$(printf '%q' "$TMUX_UI_PANE_TITLE_INACTIVE_PREFIX") inactive_fg=${TMUX_UI_PANE_TITLE_INACTIVE_FG} inactive_bg=${TMUX_UI_PANE_TITLE_INACTIVE_BG}" >&2
+  echo "  window_text: active_fg=${TMUX_UI_WINDOW_TEXT_ACTIVE_FG} active_bg=${TMUX_UI_WINDOW_TEXT_ACTIVE_BG} inactive_fg=${TMUX_UI_WINDOW_TEXT_INACTIVE_FG} inactive_bg=${TMUX_UI_WINDOW_TEXT_INACTIVE_BG}" >&2
+}
+
 # === YAML パース & ワークスペースモード判定 ===
 WORKSPACE_CONFIG="$HOME/.config/tproj/workspace.yaml"
 WORKSPACE_MODE=false
@@ -763,17 +1027,7 @@ declare -a PROJECT_CDX_LAUNCH
 parse_workspace_yaml() {
   echo "📋 Workspace: $WORKSPACE_CONFIG" >&2
 
-  # yq の存在確認
-  if ! command -v yq &>/dev/null; then
-    echo "" >&2
-    echo "❌ Error: yq is not installed (required for workspace mode)" >&2
-    echo "" >&2
-    echo "Options:" >&2
-    echo "  1. Install yq:    brew install yq" >&2
-    echo "  2. Use single mode: tproj -s" >&2
-    echo "  3. Remove workspace.yaml to disable workspace mode" >&2
-    exit 1
-  fi
+  require_workspace_yq
 
   # YAML 構文チェック
   if ! yq eval '.projects[]' "$WORKSPACE_CONFIG" &>/dev/null; then
@@ -886,6 +1140,10 @@ parse_workspace_yaml() {
   echo "" >&2
 }
 
+if [[ -f "$WORKSPACE_CONFIG" ]]; then
+  parse_global_workspace_config
+fi
+
 resolve_alias_to_project() {
   local target_alias="$1"
   local i
@@ -993,6 +1251,7 @@ if [[ "$CHECK_MODE" == "true" ]]; then
 
   echo "" >&2
   echo "Active: ${#PROJECT_PATHS[@]} / Catalog: ${#CATALOG_ALIASES[@]}" >&2
+  print_global_workspace_config
 
   if [[ ${#CATALOG_ALIASES[@]} -gt ${#PROJECT_PATHS[@]} ]]; then
     echo "" >&2
@@ -1167,6 +1426,8 @@ create_workspace_layout() {
     tmux resize-pane -t "$codex_pane" -x "$column_width" 2>/dev/null || true
   done
 
+  apply_tmux_ui_to_window "$session:dev"
+
   # git window（最初のローカルプロジェクトのディレクトリ、なければ /tmp）
   local git_dir="/tmp"
   for i in $(seq 0 $((num_projects - 1))); do
@@ -1176,6 +1437,7 @@ create_workspace_layout() {
     fi
   done
   tmux new-window -t "$session" -n git -c "$git_dir"
+  apply_tmux_ui_to_window "$session:git"
 }
 
 # Codex ペインを起動（1列分）
@@ -1193,36 +1455,23 @@ start_codex_for_column() {
     return 1
   fi
 
+  local codex_cmd include_cd="true"
+  [[ "$proj_type" == "remote" ]] && include_cd="false"
+  codex_cmd="$(build_codex_launch_shell "$proj_path" "$proj_type" "$include_cd")"
+
   if [[ "$proj_type" == "remote" ]]; then
     tmux send-keys -t "$codex_pane" \
       "ssh -t $proj_host 'cd $proj_path && exec \$SHELL -l'" C-m
     sleep 2
-    if [[ "$no_update" == "true" ]]; then
-      tmux send-keys -t "$codex_pane" \
-        "codex resume --last -s danger-full-access -a never --search" C-m
-    else
-      local sign_codex_cmd
-      sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
-      [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
-      tmux send-keys -t "$codex_pane" \
-        "npm update -g @openai/codex; $sign_codex_cmd; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
-    fi
+    tmux send-keys -t "$codex_pane" \
+      "$(with_codex_update_prefix "$codex_cmd" "$no_update")" C-m
   else
     # cdx: false のときはシェルで cd だけ
     if [[ "$cdx_launch" != "true" ]]; then
       tmux send-keys -t "$codex_pane" "cd \"$proj_path\"" C-m
       return
     fi
-    local codex_cmd="cd \"$proj_path\" && codex resume --last -s danger-full-access -a never --search"
-    if [[ "$no_update" == "true" ]]; then
-      tmux send-keys -t "$codex_pane" "$codex_cmd" C-m
-    else
-      local sign_codex_cmd
-      sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
-      [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
-      tmux send-keys -t "$codex_pane" \
-        "npm update -g @openai/codex; $sign_codex_cmd; hash -r; $codex_cmd" C-m
-    fi
+    tmux send-keys -t "$codex_pane" "$(with_codex_update_prefix "$codex_cmd" "$no_update")" C-m
   fi
 }
 
@@ -1241,34 +1490,22 @@ start_claude_for_column() {
     return 1
   fi
 
+  local claude_cmd include_cd="true"
+  [[ "$proj_type" == "remote" ]] && include_cd="false"
+  claude_cmd="$(build_claude_launch_shell "$proj_path" "$proj_type" "$include_cd")"
+
   if [[ "$proj_type" == "remote" ]]; then
     tmux send-keys -t "$claude_pane" \
       "ssh -t $proj_host 'cd $proj_path && exec \$SHELL -l'" C-m
     sleep 2
-    if [[ "$no_update" == "true" ]]; then
-      tmux send-keys -t "$claude_pane" "claude --continue || claude" C-m
-    else
-      tmux send-keys -t "$claude_pane" \
-        "npm update -g @anthropic-ai/claude-code; hash -r; claude --continue || claude" C-m
-    fi
+    tmux send-keys -t "$claude_pane" "$(with_claude_update_prefix "$claude_cmd" "$no_update")" C-m
   else
     # cc: false のときはシェルで cd だけ
     if [[ "$cc_launch" != "true" ]]; then
       tmux send-keys -t "$claude_pane" "cd \"$proj_path\"" C-m
       return
     fi
-    local claude_cmd
-    if has_claude_session "$proj_path"; then
-      claude_cmd="cd \"$proj_path\" && claude --continue"
-    else
-      claude_cmd="cd \"$proj_path\" && claude"
-    fi
-    if [[ "$no_update" == "true" ]]; then
-      tmux send-keys -t "$claude_pane" "$claude_cmd" C-m
-    else
-      tmux send-keys -t "$claude_pane" \
-        "npm update -g @anthropic-ai/claude-code; $claude_cmd" C-m
-    fi
+    tmux send-keys -t "$claude_pane" "$(with_claude_update_prefix "$claude_cmd" "$no_update")" C-m
   fi
 }
 
@@ -1429,6 +1666,8 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
 
     # 4) git window（差分やログ用）
     tmux new-window -t "$session" -n git -c "$root"
+    apply_tmux_ui_to_window "$session:dev"
+    apply_tmux_ui_to_window "$session:git"
 
     # GUI アプリ起動（全ペイン作成後、ツール起動前）
     launch_tproj_gui
@@ -1449,40 +1688,21 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
       sleep 2
 
       # リモートシェル内でツールを起動
-      if [[ "$NO_UPDATE" == "true" ]]; then
-        tmux send-keys -t "$session:dev.1" "claude --continue || claude" C-m
-        sleep 0.1
-        tmux send-keys -t "$session:dev.2" "codex resume --last -s danger-full-access -a never --search" C-m
-      else
-        sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
-        [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
-        tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code; hash -r; claude --continue || claude" C-m
-        sleep 0.1
-        tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex; $sign_codex_cmd; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
-      fi
+      claude_cmd="$(build_claude_launch_shell "$root" "remote" "false")"
+      codex_cmd="$(build_codex_launch_shell "$root" "remote" "false")"
+      tmux send-keys -t "$session:dev.1" "$(with_claude_update_prefix "$claude_cmd")" C-m
+      sleep 0.1
+      tmux send-keys -t "$session:dev.2" "$(with_codex_update_prefix "$codex_cmd")" C-m
 
       sleep 0.3
       tmux send-keys -t "$session:dev.3" "yazi" C-m
     else
       # --- ローカルモード ---
-      # セッション有無に応じた起動コマンドを構築
-      if has_claude_session "$root"; then
-        claude_cmd="claude --continue"
-      else
-        claude_cmd="claude"
-      fi
-
-      if [[ "$NO_UPDATE" == "true" ]]; then
-        tmux send-keys -t "$session:dev.1" "$claude_cmd" C-m
-        sleep 0.1
-        tmux send-keys -t "$session:dev.2" "codex resume --last -s danger-full-access -a never --search" C-m
-      else
-        sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
-        [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
-        tmux send-keys -t "$session:dev.1" "npm update -g @anthropic-ai/claude-code; hash -r; $claude_cmd" C-m
-        sleep 0.1
-        tmux send-keys -t "$session:dev.2" "npm update -g @openai/codex; $sign_codex_cmd; hash -r; codex resume --last -s danger-full-access -a never --search" C-m
-      fi
+      claude_cmd="$(build_claude_launch_shell "$root" "local" "false")"
+      codex_cmd="$(build_codex_launch_shell "$root" "local" "false")"
+      tmux send-keys -t "$session:dev.1" "$(with_claude_update_prefix "$claude_cmd")" C-m
+      sleep 0.1
+      tmux send-keys -t "$session:dev.2" "$(with_codex_update_prefix "$codex_cmd")" C-m
 
       sleep 0.3
       tmux send-keys -t "$session:dev.3" "yazi" C-m
