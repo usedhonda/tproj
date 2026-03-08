@@ -91,6 +91,7 @@ Options:
   --add [ALIAS]      Add workspace column (no arg: duplicate current, with alias: from workspace.yaml)
   --check            Show workspace.yaml projects, aliases, and enabled status
   --no-gui           Skip GUI auto-launch (used by the app bundle)
+  --sync-ui          Reapply pane title format + hooks to live tproj sessions
   -c, --columns N    Start with only the first N projects from workspace.yaml
   -s, --single       Force single-project mode (ignore workspace.yaml)
   -r, --remote HOST  SSH remote connection
@@ -148,6 +149,7 @@ FORCE_SINGLE_MODE=false
 ADD_MODE=false
 ADD_ALIAS=""
 CHECK_MODE=false
+SYNC_UI_MODE=false
 MAX_COLUMNS=""  # 空 = 制限なし
 NO_GUI=false
 
@@ -188,6 +190,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) show_help; exit 0 ;;
     --check) CHECK_MODE=true; shift ;;
+    --sync-ui) SYNC_UI_MODE=true; shift ;;
     --add)
       ADD_MODE=true; shift
       if [[ $# -gt 0 && "$1" != -* ]]; then
@@ -1038,9 +1041,9 @@ render_tmux_pane_border_format() {
     active_prefix_style="${active_prefix_style}#[bold]"
   fi
 
-  # Timestamp suffix: show @last_active if set, wrapped in ts_style
-  # #{?#{@last_active}, ts_style HH:MM:SS #[default],}
-  local ts_part="#{?#{@last_active}, ${ts_style}#{@last_active}#[default],}"
+  # Timestamp suffix: show @last_settled_at when a pane finishes a turn.
+  # Manual focus changes must not create or refresh this timestamp.
+  local ts_part="#{?#{@last_settled_at}, ${ts_style}#{@last_settled_at}#[default],}"
 
   # Active state
   local active_fmt="${active_prefix_style}${TMUX_UI_PANE_TITLE_ACTIVE_PREFIX}${active_text_style}#{pane_title}${ts_part}"
@@ -1085,7 +1088,12 @@ apply_tmux_ui_to_window() {
 install_pane_focus_hook() {
   local session="$1"
   local hook_path
-  hook_path="$(quoted_runtime_bin_path "tproj-pane-focus-hook" 2>/dev/null || true)"
+  local direct_hook="$SCRIPT_DIR/tproj-pane-focus-hook"
+  if [[ -x "$direct_hook" ]]; then
+    hook_path="$(printf '%q' "$direct_hook")"
+  else
+    hook_path="$(quoted_runtime_bin_path "tproj-pane-focus-hook" 2>/dev/null || true)"
+  fi
   [[ -z "$hook_path" ]] && return 0
 
   # Store color config in session env for the hook script
@@ -1095,6 +1103,31 @@ install_pane_focus_hook() {
   # Install after-select-pane hook
   tmux set-hook -t "$session" after-select-pane \
     "run-shell '$hook_path #{session_name} #{pane_id}'" 2>/dev/null || true
+}
+
+sync_tmux_ui_for_live_sessions() {
+  local -a sessions
+  local session
+  local window_index
+  local synced=0
+
+  sessions=("${(@f)$(find_tproj_sessions 2>/dev/null || true)}")
+  if [[ ${#sessions[@]} -eq 0 ]]; then
+    echo "No tproj sessions found to sync" >&2
+    return 0
+  fi
+
+  for session in "${sessions[@]}"; do
+    [[ -z "$session" ]] && continue
+    while IFS= read -r window_index; do
+      [[ -n "$window_index" ]] || continue
+      apply_tmux_ui_to_window "${session}:${window_index}"
+    done < <(tmux list-windows -t "$session" -F '#{window_index}' 2>/dev/null || true)
+    install_pane_focus_hook "$session"
+    synced=$((synced + 1))
+  done
+
+  echo "Synced UI for ${synced} tproj session(s)" >&2
 }
 
 print_global_workspace_config() {
@@ -1251,6 +1284,11 @@ parse_workspace_yaml() {
 
 if [[ -f "$WORKSPACE_CONFIG" ]]; then
   parse_global_workspace_config
+fi
+
+if [[ "$SYNC_UI_MODE" == "true" ]]; then
+  sync_tmux_ui_for_live_sessions
+  exit 0
 fi
 
 resolve_alias_to_project() {

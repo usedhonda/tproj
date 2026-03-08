@@ -1806,6 +1806,36 @@ final class AppViewModel: ObservableObject {
         statusText = "Reloaded: \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))"
     }
 
+    func syncUIAndRefreshAll() async {
+        isBusy = true
+        defer { isBusy = false }
+
+        guard let launch = runtimeLaunchCommand(commandName: "tproj", arguments: ["--sync-ui"])
+                ?? fallbackLaunchCommand(commandName: "tproj", arguments: ["--sync-ui"]) else {
+            statusText = "UI sync unavailable"
+            return
+        }
+
+        let result = await runCommandAsync(launch.launchPath, launch.arguments)
+
+        loadWorkspaceProjects()
+        await loadLiveColumnsAsync()
+        normalizeSelection()
+
+        if result.exitCode != 0 {
+            let reason = trimmedError(result)
+            statusText = reason.isEmpty ? "UI sync failed" : "UI sync failed: \(reason)"
+            return
+        }
+
+        let detail = trimmedError(result)
+        if !detail.isEmpty {
+            statusText = detail
+        } else {
+            statusText = "UI synced: \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))"
+        }
+    }
+
     private func startMemoryPolling() {
         guard memoryPollTask == nil else { return }
         memoryPollTask = Task { [weak self] in
@@ -3833,7 +3863,7 @@ struct ContentView: View {
             }
             .fixedSize()
             ActionButton("Sync", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                Task { await vm.refreshAll() }
+                Task { await vm.syncUIAndRefreshAll() }
             }
             .fixedSize()
             ActionButton("Learn", tone: vm.isMIDILearning ? .primary : .neutral, isEnabled: !vm.isBusy, dense: true) {

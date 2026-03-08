@@ -1,7 +1,7 @@
 #!/bin/zsh
 # tproj-pane-focus-hook - after-select-pane handler for pane focus history
 #
-# Manages prev1/prev2 pane ranking via @pane_rank and @last_active timestamps.
+# Manages prev1/prev2 pane ranking via @pane_rank.
 # Visual coloring is handled by pane-border-format (set in tproj) which reads
 # @pane_rank to conditionally apply prev1/prev2 styles.
 #
@@ -30,8 +30,6 @@ prev2="$(tmux show-environment -t "$session" TPROJ_PANE_PREV2 2>/dev/null | sed 
 # Verify new_active pane exists
 tmux display-message -t "$new_active" -p '' >/dev/null 2>&1 || exit 0
 
-now="$(date +%H:%M:%S)"
-
 # Helper: check if pane still exists
 pane_exists() {
   [[ -n "$1" ]] && tmux display-message -t "$1" -p '' >/dev/null 2>&1
@@ -47,14 +45,12 @@ if pane_exists "$prev1"; then
   tmux set-option -pt "$prev1" @pane_rank "prev2" 2>/dev/null || true
 fi
 
-# 3) Old active -> prev1 (set timestamp to when focus left)
+# 3) Old active -> prev1
 if pane_exists "$prev_active"; then
   tmux set-option -pt "$prev_active" @pane_rank "prev1" 2>/dev/null || true
-  tmux set-option -pt "$prev_active" @last_active "$now" 2>/dev/null || true
 fi
 
-# 4) New active: set @last_active (focus arrival time), clear pane_rank
-tmux set-option -pt "$new_active" @last_active "$now" 2>/dev/null || true
+# 4) New active: clear pane_rank
 tmux set-option -pt "$new_active" @pane_rank "" 2>/dev/null || true
 
 # 5) Update session env
