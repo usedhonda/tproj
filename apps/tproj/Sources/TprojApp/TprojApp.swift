@@ -1957,6 +1957,44 @@ final class AppViewModel: ObservableObject {
             .count
     }
 
+    // MARK: - Layout Lock (PID-based lockfile, shared with bin/tproj)
+
+    private let layoutLockfile = "/tmp/tproj-layout.lock"
+
+    private func acquireLayoutLockAsync(timeout: TimeInterval = 10) async -> Bool {
+        let myPID = ProcessInfo.processInfo.processIdentifier
+        let start = Date()
+        while Date().timeIntervalSince(start) < timeout {
+            // Try atomic create with O_CREAT|O_EXCL
+            let fd = open(layoutLockfile, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+            if fd >= 0 {
+                let pidStr = "\(myPID)\n"
+                pidStr.withCString { ptr in _ = write(fd, ptr, strlen(ptr)) }
+                close(fd)
+                return true
+            }
+            // File exists - check staleness
+            if let content = try? String(contentsOfFile: layoutLockfile, encoding: .utf8),
+               let holderPID = pid_t(content.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                if kill(holderPID, 0) != 0 {
+                    // Stale lock from dead process
+                    unlink(layoutLockfile)
+                    continue
+                }
+            } else {
+                // Corrupt lockfile
+                unlink(layoutLockfile)
+                continue
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        return false
+    }
+
+    private func releaseLayoutLock() {
+        unlink(layoutLockfile)
+    }
+
     private func appendLayoutLogLine(_ line: String) {
         guard let data = (line + "\n").data(using: .utf8) else { return }
         let url = URL(fileURLWithPath: layoutLogPath)
@@ -2140,9 +2178,7 @@ final class AppViewModel: ObservableObject {
         var note = "column=\(column.column)"
         var lockHeld = false
         defer {
-            if lockHeld {
-                _ = runCommand("/usr/bin/env", ["tmux", "wait-for", "-U", "tproj-layout"])
-            }
+            if lockHeld { releaseLayoutLock() }
             let afterCount = workspacePaneCountSync()
             let elapsed = Int64(Date().timeIntervalSince1970 * 1000) - startedMS
             logLayoutAction(
@@ -2156,8 +2192,7 @@ final class AppViewModel: ObservableObject {
             endLayoutMutation()
         }
 
-        let lockResult = await runCommandAsync("/usr/bin/env", ["tmux", "wait-for", "-L", "tproj-layout"])
-        guard lockResult.exitCode == 0 else {
+        guard await acquireLayoutLockAsync() else {
             resultTag = "lock-error"
             note += " lock=acquire_failed"
             statusText = "\(role): failed to acquire layout lock"
@@ -2317,9 +2352,7 @@ final class AppViewModel: ObservableObject {
         var note = "column=\(column.column)"
         var lockHeld = false
         defer {
-            if lockHeld {
-                _ = runCommand("/usr/bin/env", ["tmux", "wait-for", "-U", "tproj-layout"])
-            }
+            if lockHeld { releaseLayoutLock() }
             let afterCount = workspacePaneCountSync()
             let elapsed = Int64(Date().timeIntervalSince1970 * 1000) - startedMS
             logLayoutAction(
@@ -2333,8 +2366,7 @@ final class AppViewModel: ObservableObject {
             endLayoutMutation()
         }
 
-        let lockResult = await runCommandAsync("/usr/bin/env", ["tmux", "wait-for", "-L", "tproj-layout"])
-        guard lockResult.exitCode == 0 else {
+        guard await acquireLayoutLockAsync() else {
             resultTag = "lock-error"
             note += " lock=acquire_failed"
             statusText = "Term: failed to acquire layout lock"
@@ -2509,9 +2541,7 @@ final class AppViewModel: ObservableObject {
         var note = "mode=insert from=\(sourceColumn) insertion=\(insertionIndex)"
         var lockHeld = false
         defer {
-            if lockHeld {
-                _ = runCommand("/usr/bin/env", ["tmux", "wait-for", "-U", "tproj-layout"])
-            }
+            if lockHeld { releaseLayoutLock() }
             let afterCount = workspacePaneCountSync()
             let elapsed = Int64(Date().timeIntervalSince1970 * 1000) - startedMS
             logLayoutAction(
@@ -2525,8 +2555,7 @@ final class AppViewModel: ObservableObject {
             endLayoutMutation()
         }
 
-        let lockResult = await runCommandAsync("/usr/bin/env", ["tmux", "wait-for", "-L", "tproj-layout"])
-        guard lockResult.exitCode == 0 else {
+        guard await acquireLayoutLockAsync() else {
             resultTag = "lock-error"
             note += " lock=acquire_failed"
             statusText = "Reorder failed: lock"

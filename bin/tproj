@@ -340,45 +340,39 @@ find_tproj_sessions() {
     | grep ':true$' | cut -d: -f1
 }
 
-# tmux レイアウト変更を直列化する共有ロック
-TPROJ_LAYOUT_LOCK_NAME="tproj-layout"
+# tmux レイアウト変更を直列化する共有ロック (PID-based lockfile)
+TPROJ_LAYOUT_LOCKFILE="/tmp/tproj-layout.lock"
 TPROJ_LAYOUT_LOCK_HELD=false
 
 acquire_layout_lock() {
   local timeout="${TPROJ_LOCK_TIMEOUT:-10}"
-  local lock_name="$TPROJ_LAYOUT_LOCK_NAME"
-
-  # Try to acquire with timeout (background wait-for + kill after timeout)
-  tmux wait-for -L "$lock_name" &
-  local wait_pid=$!
+  local lockfile="$TPROJ_LAYOUT_LOCKFILE"
   local i=0
-  while kill -0 "$wait_pid" 2>/dev/null; do
+  while true; do
+    # Try atomic create (noclobber = O_EXCL)
+    if (set -C; echo $$ > "$lockfile") 2>/dev/null; then
+      TPROJ_LAYOUT_LOCK_HELD=true
+      return 0
+    fi
+    # Lock exists - check if holder is still alive
+    local holder_pid
+    holder_pid=$(cat "$lockfile" 2>/dev/null) || true
+    if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
+      # Stale lock from dead process - remove and retry immediately
+      rm -f "$lockfile"
+      continue
+    fi
     sleep 0.5
     i=$((i + 1))
     if [[ $i -ge $((timeout * 2)) ]]; then
-      kill "$wait_pid" 2>/dev/null || true
-      wait "$wait_pid" 2>/dev/null || true
-      # Force-release stale lock and retry once
-      tmux wait-for -U "$lock_name" 2>/dev/null || true
-      tmux wait-for -L "$lock_name" &
-      wait_pid=$!
-      sleep 0.5
-      if kill -0 "$wait_pid" 2>/dev/null; then
-        kill "$wait_pid" 2>/dev/null || true
-        wait "$wait_pid" 2>/dev/null || true
-        return 1
-      fi
-      wait "$wait_pid" 2>/dev/null || true
-      break
+      return 1
     fi
   done
-  wait "$wait_pid" 2>/dev/null || return 1
-  TPROJ_LAYOUT_LOCK_HELD=true
 }
 
 release_layout_lock() {
   if [[ "$TPROJ_LAYOUT_LOCK_HELD" == "true" ]]; then
-    tmux wait-for -U "$TPROJ_LAYOUT_LOCK_NAME" 2>/dev/null || true
+    rm -f "$TPROJ_LAYOUT_LOCKFILE"
     TPROJ_LAYOUT_LOCK_HELD=false
   fi
 }
