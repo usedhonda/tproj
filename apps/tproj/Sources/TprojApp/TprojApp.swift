@@ -2959,34 +2959,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func startSession() async {
-        loadWorkspaceProjects()
-        let enabledProjects = workspaceProjects.filter {
-            $0.enabled && !$0.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        guard !enabledProjects.isEmpty else {
-            statusText = "Create workspace.yaml with an enabled project first"
-            return
-        }
 
-        isBusy = true
-        defer { isBusy = false }
-        statusText = "Starting session..."
-
-        guard let launch = runtimeLaunchCommand(commandName: "tproj", arguments: ["--no-gui"])
-                ?? fallbackLaunchCommand(commandName: "tproj", arguments: ["--no-gui"]) else {
-            statusText = "Bundled runtime unavailable"
-            return
-        }
-        let result = await runCommandAsync(launch.launchPath, launch.arguments)
-
-        await refreshAll()
-        if liveColumns.isEmpty && result.exitCode == 0 {
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            await refreshAll()
-        }
-        statusText = liveColumns.isEmpty ? "Start failed" : "Session started"
-    }
 
     private func killSession() async {
         let sessions = await getTprojSessions()
@@ -3855,17 +3828,10 @@ struct ContentView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer()
-            if !vm.liveColumns.isEmpty {
-                ActionButton("Stop", tone: .danger, isEnabled: !vm.isBusy, dense: true) {
-                    vm.pendingSessionAction = .stop
-                }
-                .fixedSize()
-            } else {
-                ActionButton("Start", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
-                    Task { await vm.startSession() }
-                }
-                .fixedSize()
+            ActionButton("Stop", tone: .danger, isEnabled: !vm.isBusy && !vm.liveColumns.isEmpty, dense: true) {
+                vm.pendingSessionAction = .stop
             }
+            .fixedSize()
             ActionButton("Sync", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
                 Task { await vm.refreshAll() }
             }
