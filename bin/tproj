@@ -1108,7 +1108,7 @@ install_pane_focus_hook() {
 sync_tmux_ui_for_live_sessions() {
   local -a sessions
   local session
-  local window_index
+  local window_name
   local synced=0
 
   sessions=("${(@f)$(find_tproj_sessions 2>/dev/null || true)}")
@@ -1119,10 +1119,10 @@ sync_tmux_ui_for_live_sessions() {
 
   for session in "${sessions[@]}"; do
     [[ -z "$session" ]] && continue
-    while IFS= read -r window_index; do
-      [[ -n "$window_index" ]] || continue
-      apply_tmux_ui_to_window "${session}:${window_index}"
-    done < <(tmux list-windows -t "$session" -F '#{window_index}' 2>/dev/null || true)
+    while IFS= read -r window_name; do
+      [[ -n "$window_name" ]] || continue
+      apply_tmux_ui_to_window "${session}:${window_name}"
+    done < <(tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null || true)
     install_pane_focus_hook "$session"
     synced=$((synced + 1))
   done
