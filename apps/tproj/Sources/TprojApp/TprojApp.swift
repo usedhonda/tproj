@@ -2703,41 +2703,12 @@ final class AppViewModel: ObservableObject {
         isBusy = true
         defer { isBusy = false }
 
-        do {
-            let parent = URL(fileURLWithPath: workspacePath).deletingLastPathComponent()
-            try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
-
-            let content = renderWorkspaceYAML()
-            if !fileManager.fileExists(atPath: workspacePath) {
-                try content.write(toFile: workspacePath, atomically: true, encoding: .utf8)
-            } else {
-                let tempURL = parent.appendingPathComponent(".tproj-projects-\(UUID().uuidString).yaml")
-                try content.write(to: tempURL, atomically: true, encoding: .utf8)
-                defer { try? fileManager.removeItem(at: tempURL) }
-
-                let expression = ".projects = load(strenv(TPROJ_PROJECTS_TMP)).projects"
-                let result = runCommand(
-                    "/usr/bin/env",
-                    ["yq", "eval", "-i", expression, workspacePath],
-                    environment: ["TPROJ_PROJECTS_TMP": tempURL.path]
-                )
-
-                guard result.exitCode == 0 else {
-                    let errText = trimmedError(result)
-                    if errText.contains("No such file or directory") && errText.contains("yq") {
-                        statusText = "yq not installed (brew install yq)"
-                    } else {
-                        statusText = "Save failed: \(errText)"
-                    }
-                    return
-                }
-            }
-
+        if let message = persistWorkspaceProjects(workspaceProjects, createIfMissing: true) {
+            statusText = message
+        } else {
             statusText = "Saved workspace.yaml"
             loadWorkspaceProjects()
             normalizeSelection()
-        } catch {
-            statusText = "Save failed: \(error.localizedDescription)"
         }
     }
 
@@ -2840,6 +2811,17 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        let workspaceSessionWasPresent = sessions.contains("tproj-workspace")
+        let rememberedPaths = Set(
+            liveColumns
+                .map { $0.projectPath.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        let shouldPersistWorkspaceSet =
+            workspaceSessionWasPresent &&
+            !rememberedPaths.isEmpty &&
+            fileManager.fileExists(atPath: workspacePath)
+
         // Collect descendant PIDs before stopping (to clean up MCP servers)
         let descendantPids = await collectSessionDescendants(sessions: sessions)
 
@@ -2915,8 +2897,28 @@ final class AppViewModel: ObservableObject {
         // Clean up dead-agents file
         try? FileManager.default.removeItem(atPath: "/tmp/tproj-dead-agents")
 
-        statusText = "Session stopped"
         liveColumns = []
+
+        guard shouldPersistWorkspaceSet else {
+            statusText = "Session stopped"
+            return
+        }
+
+        let updatedProjects = workspaceProjects.map { project in
+            var updated = project
+            let trimmedPath = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            updated.enabled = rememberedPaths.contains(trimmedPath)
+            return updated
+        }
+
+        if let message = persistWorkspaceProjects(updatedProjects, createIfMissing: false) {
+            statusText = "Session stopped (\(message))"
+        } else {
+            workspaceProjects = updatedProjects
+            loadWorkspaceProjects()
+            normalizeSelection()
+            statusText = "Session stopped (saved startup set)"
+        }
     }
 
     func startSession() async {
@@ -3418,11 +3420,50 @@ final class AppViewModel: ObservableObject {
             .replacingOccurrences(of: "`", with: "\\`")
     }
 
-    private func renderWorkspaceYAML() -> String {
+    private func persistWorkspaceProjects(_ projects: [WorkspaceProject], createIfMissing: Bool) -> String? {
+        do {
+            let parent = URL(fileURLWithPath: workspacePath).deletingLastPathComponent()
+            try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+
+            let content = renderWorkspaceYAML(projects)
+            if !fileManager.fileExists(atPath: workspacePath) {
+                guard createIfMissing else {
+                    return "workspace.yaml not found"
+                }
+                try content.write(toFile: workspacePath, atomically: true, encoding: .utf8)
+                return nil
+            }
+
+            let tempURL = parent.appendingPathComponent(".tproj-projects-\(UUID().uuidString).yaml")
+            try content.write(to: tempURL, atomically: true, encoding: .utf8)
+            defer { try? fileManager.removeItem(at: tempURL) }
+
+            let expression = ".projects = load(strenv(TPROJ_PROJECTS_TMP)).projects"
+            let result = runCommand(
+                "/usr/bin/env",
+                ["yq", "eval", "-i", expression, workspacePath],
+                environment: ["TPROJ_PROJECTS_TMP": tempURL.path]
+            )
+
+            guard result.exitCode == 0 else {
+                let errText = trimmedError(result)
+                if errText.contains("No such file or directory") && errText.contains("yq") {
+                    return "yq not installed (brew install yq)"
+                }
+                return "Save failed: \(errText)"
+            }
+
+            return nil
+        } catch {
+            return "Save failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func renderWorkspaceYAML(_ projects: [WorkspaceProject]) -> String {
         var lines: [String] = []
         lines.append("projects:")
 
-        for project in workspaceProjects {
+        for project in projects {
             lines.append("  - path: \(yamlQuote(project.path))")
 
             // type: only write when remote (local is default)

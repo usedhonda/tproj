@@ -115,7 +115,7 @@ projects:
   # Local project (disabled at startup, can be added later)
   - path: /Users/<username>/projects/claude/statusline
     alias: sl
-    enabled: false
+    enabled: false   # GUI Stop remembers the current manual-Start set by rewriting enabled
 
   # Remote project over SSH
   - path: /Users/<username>/projects/others/openclaw_general
@@ -139,6 +139,8 @@ projects:
 #
 # enabled : bool (optional, default: true)
 #           false means excluded at startup but available via --add.
+#           When a workspace session is stopped from the GUI, the current running set
+#           is written back here and becomes the next manual Start set.
 
 # ===== Recommended limits =====
 #

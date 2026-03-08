@@ -73,6 +73,8 @@ projects:
     enabled: false   # available via --add but not started by default
 ```
 
+In workspace mode, the GUI `Stop` action remembers the projects that were actually running by writing that set back into `projects[].enabled`. The next manual `Start` uses that saved subset.
+
 ### Workspace commands
 
 ```bash
