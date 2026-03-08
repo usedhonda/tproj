@@ -38,6 +38,8 @@
 #     active_fg: colour51
 #     active_bold: true
 #     inactive_fg: colour248
+#     prev1_fg: colour211
+#     prev2_fg: colour175
 #   pane_title:
 #     active_prefix: "▶ "
 #     active_fg: colour255
@@ -45,6 +47,10 @@
 #     inactive_prefix: "  "
 #     inactive_fg: colour255
 #     inactive_bg: colour238
+#     prev1_fg: colour211
+#     prev1_bg: colour237
+#     prev2_fg: colour175
+#     prev2_bg: colour237
 #   window_text:
 #     active_fg: default
 #     active_bg: terminal

@@ -224,7 +224,7 @@ fi
 # ========== 4. バックアップ & コピー ==========
 
 # 4.1 tproj スクリプト
-CORE_BINS=(tproj tproj-drop-column tproj-toggle-yazi agent-monitor team-watcher reflow-agent-pane rebalance-workspace-columns sign-codex wait-for-pane-text)
+CORE_BINS=(tproj tproj-drop-column tproj-toggle-yazi tproj-pane-focus-hook agent-monitor team-watcher reflow-agent-pane rebalance-workspace-columns sign-codex wait-for-pane-text)
 
 if $DRY_RUN; then
   for bin_name in "${CORE_BINS[@]}"; do
