@@ -345,7 +345,34 @@ TPROJ_LAYOUT_LOCK_NAME="tproj-layout"
 TPROJ_LAYOUT_LOCK_HELD=false
 
 acquire_layout_lock() {
-  tmux wait-for -L "$TPROJ_LAYOUT_LOCK_NAME" 2>/dev/null || return 1
+  local timeout="${TPROJ_LOCK_TIMEOUT:-10}"
+  local lock_name="$TPROJ_LAYOUT_LOCK_NAME"
+
+  # Try to acquire with timeout (background wait-for + kill after timeout)
+  tmux wait-for -L "$lock_name" &
+  local wait_pid=$!
+  local i=0
+  while kill -0 "$wait_pid" 2>/dev/null; do
+    sleep 0.5
+    i=$((i + 1))
+    if [[ $i -ge $((timeout * 2)) ]]; then
+      kill "$wait_pid" 2>/dev/null || true
+      wait "$wait_pid" 2>/dev/null || true
+      # Force-release stale lock and retry once
+      tmux wait-for -U "$lock_name" 2>/dev/null || true
+      tmux wait-for -L "$lock_name" &
+      wait_pid=$!
+      sleep 0.5
+      if kill -0 "$wait_pid" 2>/dev/null; then
+        kill "$wait_pid" 2>/dev/null || true
+        wait "$wait_pid" 2>/dev/null || true
+        return 1
+      fi
+      wait "$wait_pid" 2>/dev/null || true
+      break
+    fi
+  done
+  wait "$wait_pid" 2>/dev/null || return 1
   TPROJ_LAYOUT_LOCK_HELD=true
 }
 

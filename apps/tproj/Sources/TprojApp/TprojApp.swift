@@ -1801,7 +1801,7 @@ final class AppViewModel: ObservableObject {
         defer { isBusy = false }
 
         loadWorkspaceProjects()
-        loadLiveColumns()
+        await loadLiveColumnsAsync()
         normalizeSelection()
         statusText = "Reloaded: \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))"
     }
@@ -1947,6 +1947,16 @@ final class AppViewModel: ObservableObject {
             .count
     }
 
+    private func workspacePaneCountAsync() async -> Int {
+        let result = await runCommandAsync("/usr/bin/env", [
+            "tmux", "list-panes", "-t", "tproj-workspace:dev", "-F", "#{pane_id}"
+        ])
+        guard result.exitCode == 0 else { return -1 }
+        return result.stdout
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .count
+    }
+
     private func appendLayoutLogLine(_ line: String) {
         guard let data = (line + "\n").data(using: .utf8) else { return }
         let url = URL(fileURLWithPath: layoutLogPath)
@@ -2056,39 +2066,38 @@ final class AppViewModel: ObservableObject {
     func addColumnByAlias(_ alias: String) async {
         guard beginLayoutMutation(action: "add-column") else { return }
         let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
-        let beforeCount = workspacePaneCountSync()
+        let beforeCount = await workspacePaneCountAsync()
         var resultTag = "ok"
         var note = "alias=\(alias)"
-        defer {
-            let afterCount = workspacePaneCountSync()
-            let elapsed = Int64(Date().timeIntervalSince1970 * 1000) - startedMS
-            logLayoutAction(
-                action: "add-column",
-                before: beforeCount,
-                after: afterCount,
-                elapsedMS: elapsed,
-                result: resultTag,
-                note: note
-            )
-            endLayoutMutation()
-        }
 
-        guard let launch = runtimeLaunchCommand(commandName: "tproj", arguments: ["--no-gui", "--add", alias])
-                ?? fallbackLaunchCommand(commandName: "tproj", arguments: ["--no-gui", "--add", alias]) else {
+        if let launch = runtimeLaunchCommand(commandName: "tproj", arguments: ["--no-gui", "--add", alias])
+                ?? fallbackLaunchCommand(commandName: "tproj", arguments: ["--no-gui", "--add", alias]) {
+            let result = await runCommandAsync(launch.launchPath, launch.arguments)
+            if result.exitCode == 0 {
+                statusText = "Added column: \(alias)"
+                await loadLiveColumnsAsync()
+            } else {
+                resultTag = "error"
+                note = "alias=\(alias) error=\(trimmedError(result))"
+                statusText = "Add failed: \(trimmedError(result))"
+            }
+        } else {
             resultTag = "error"
             note = "alias=\(alias) error=runtime_unavailable"
             statusText = "Bundled runtime unavailable"
-            return
         }
-        let result = await runCommandAsync(launch.launchPath, launch.arguments)
-        if result.exitCode == 0 {
-            statusText = "Added column: \(alias)"
-            loadLiveColumns()
-        } else {
-            resultTag = "error"
-            note = "alias=\(alias) error=\(trimmedError(result))"
-            statusText = "Add failed: \(trimmedError(result))"
-        }
+
+        let afterCount = await workspacePaneCountAsync()
+        let elapsed = Int64(Date().timeIntervalSince1970 * 1000) - startedMS
+        logLayoutAction(
+            action: "add-column",
+            before: beforeCount,
+            after: afterCount,
+            elapsedMS: elapsed,
+            result: resultTag,
+            note: note
+        )
+        endLayoutMutation()
     }
 
     func toggleMIDILearn() {
@@ -2120,13 +2129,13 @@ final class AppViewModel: ObservableObject {
         } else {
             statusText = "Yazi toggle failed: \(trimmedError(result))"
         }
-        loadLiveColumns()
+        await loadLiveColumnsAsync()
     }
 
     func toggleAIPane(role: String, for column: LiveColumn) async {
         guard beginLayoutMutation(action: "toggle-\(role)") else { return }
         let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
-        let beforeCount = workspacePaneCountSync()
+        let beforeCount = await workspacePaneCountAsync()
         var resultTag = "ok"
         var note = "column=\(column.column)"
         var lockHeld = false
@@ -2152,7 +2161,7 @@ final class AppViewModel: ObservableObject {
             resultTag = "lock-error"
             note += " lock=acquire_failed"
             statusText = "\(role): failed to acquire layout lock"
-            loadLiveColumns()
+            await loadLiveColumnsAsync()
             return
         }
         lockHeld = true
@@ -2190,7 +2199,7 @@ final class AppViewModel: ObservableObject {
             }
             note += " state=off"
             statusText = "\(role) off for #\(column.column)"
-            loadLiveColumns()
+            await loadLiveColumnsAsync()
             return
         }
 
@@ -2201,7 +2210,7 @@ final class AppViewModel: ObservableObject {
             resultTag = "error"
             note += " error=\(trimmedError(listResult))"
             statusText = "\(role): \(trimmedError(listResult))"
-            loadLiveColumns()
+            await loadLiveColumnsAsync()
             return
         }
 
@@ -2297,13 +2306,13 @@ final class AppViewModel: ObservableObject {
 
         note += " state=on"
         statusText = "\(role) on for #\(column.column)"
-        loadLiveColumns()
+        await loadLiveColumnsAsync()
     }
 
     func toggleTerminal(for column: LiveColumn) async {
         guard beginLayoutMutation(action: "toggle-terminal") else { return }
         let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
-        let beforeCount = workspacePaneCountSync()
+        let beforeCount = await workspacePaneCountAsync()
         var resultTag = "ok"
         var note = "column=\(column.column)"
         var lockHeld = false
@@ -2329,7 +2338,7 @@ final class AppViewModel: ObservableObject {
             resultTag = "lock-error"
             note += " lock=acquire_failed"
             statusText = "Term: failed to acquire layout lock"
-            loadLiveColumns()
+            await loadLiveColumnsAsync()
             return
         }
         lockHeld = true
@@ -2340,7 +2349,7 @@ final class AppViewModel: ObservableObject {
             resultTag = "error"
             note += " error=\(trimmedError(listResult))"
             statusText = "Term: \(trimmedError(listResult))"
-            loadLiveColumns()
+            await loadLiveColumnsAsync()
             return
         }
 
@@ -2366,7 +2375,7 @@ final class AppViewModel: ObservableObject {
             statusText = killResult.exitCode == 0
                 ? "Terminal off for #\(column.column)"
                 : "Term off failed: \(trimmedError(killResult))"
-            loadLiveColumns()
+            await loadLiveColumnsAsync()
             return
         }
 
@@ -2415,7 +2424,7 @@ final class AppViewModel: ObservableObject {
 
         note += " state=on"
         statusText = "Terminal on for #\(column.column)"
-        loadLiveColumns()
+        await loadLiveColumnsAsync()
     }
 
     func removeColumn(_ column: LiveColumn) async {
@@ -2431,7 +2440,7 @@ final class AppViewModel: ObservableObject {
         }
 
         let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
-        let beforeCount = workspacePaneCountSync()
+        let beforeCount = await workspacePaneCountAsync()
         guard let dropCommand = dropColumnCommand() else {
             statusText = "Bundled runtime unavailable"
             return
@@ -2476,8 +2485,8 @@ final class AppViewModel: ObservableObject {
                 }
             }
 
-            self.loadLiveColumns()
-            let afterCount = workspacePaneCountSync()
+            await self.loadLiveColumnsAsync()
+            let afterCount = await workspacePaneCountAsync()
             let elapsed = Int64(Date().timeIntervalSince1970 * 1000) - startedMS
             self.logLayoutAction(
                 action: "drop-column",
@@ -2495,7 +2504,7 @@ final class AppViewModel: ObservableObject {
         guard beginLayoutMutation(action: "reorder-column") else { return }
 
         let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
-        let beforeCount = workspacePaneCountSync()
+        let beforeCount = await workspacePaneCountAsync()
         var resultTag = "ok"
         var note = "mode=insert from=\(sourceColumn) insertion=\(insertionIndex)"
         var lockHeld = false
@@ -2521,7 +2530,7 @@ final class AppViewModel: ObservableObject {
             resultTag = "lock-error"
             note += " lock=acquire_failed"
             statusText = "Reorder failed: lock"
-            loadLiveColumns()
+            await loadLiveColumnsAsync()
             return
         }
         lockHeld = true
@@ -2531,7 +2540,7 @@ final class AppViewModel: ObservableObject {
             resultTag = "blocked"
             note += " reason=agents_active"
             statusText = "Reorder disabled while agent panes are active"
-            loadLiveColumns()
+            await loadLiveColumnsAsync()
             return
         }
 
@@ -2539,7 +2548,7 @@ final class AppViewModel: ObservableObject {
             resultTag = "error"
             note += " error=source_column_missing"
             statusText = "Reorder failed: source column missing"
-            loadLiveColumns()
+            await loadLiveColumnsAsync()
             return
         }
 
@@ -2553,7 +2562,7 @@ final class AppViewModel: ObservableObject {
         guard targetIndex != sourceIndex else {
             note += " noop=1 reason=same_index_resolved"
             statusText = "Reorder unchanged"
-            loadLiveColumns()
+            await loadLiveColumnsAsync()
             return
         }
 
@@ -2562,7 +2571,7 @@ final class AppViewModel: ObservableObject {
             resultTag = "error"
             note += " error=source_index_out_of_range"
             statusText = "Reorder failed: source index out of range"
-            loadLiveColumns()
+            await loadLiveColumnsAsync()
             return
         }
 
@@ -2575,7 +2584,7 @@ final class AppViewModel: ObservableObject {
                     resultTag = "error"
                     note += " pair=\(leftColumn)<->\(rightColumn) error=\(error)"
                     statusText = "Reorder failed: \(error)"
-                    loadLiveColumns()
+                    await loadLiveColumnsAsync()
                     return
                 }
                 orderedColumns.swapAt(idx, idx + 1)
@@ -2589,7 +2598,7 @@ final class AppViewModel: ObservableObject {
                     resultTag = "error"
                     note += " pair=\(leftColumn)<->\(rightColumn) error=\(error)"
                     statusText = "Reorder failed: \(error)"
-                    loadLiveColumns()
+                    await loadLiveColumnsAsync()
                     return
                 }
                 orderedColumns.swapAt(idx - 1, idx)
@@ -2610,7 +2619,7 @@ final class AppViewModel: ObservableObject {
             note += " normalized=1"
             statusText = "Moved #\(sourceColumn) to position \(targetIndex + 1)"
         }
-        loadLiveColumns()
+        await loadLiveColumnsAsync()
         refreshColumnIdentities()
     }
 
@@ -3127,7 +3136,16 @@ final class AppViewModel: ObservableObject {
     private func loadLiveColumns() {
         let format = "#{@column}|#{@role}|#{@project}|#{@remote_host}|#{@remote_path}|#{pane_width}|#{pane_left}|#{pane_id}"
         let result = runCommand("/usr/bin/env", ["tmux", "list-panes", "-t", "tproj-workspace:dev", "-F", format])
+        applyLiveColumnsResult(result)
+    }
 
+    private func loadLiveColumnsAsync() async {
+        let format = "#{@column}|#{@role}|#{@project}|#{@remote_host}|#{@remote_path}|#{pane_width}|#{pane_left}|#{pane_id}"
+        let result = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", "tproj-workspace:dev", "-F", format])
+        applyLiveColumnsResult(result)
+    }
+
+    private func applyLiveColumnsResult(_ result: CommandResult) {
         guard result.exitCode == 0 else {
             liveColumns = []
             return
