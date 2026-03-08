@@ -1707,13 +1707,14 @@ fi
 # Clean up orphaned MCP server processes from previous sessions
 cleanup_orphaned_mcp
 
+# === GUI アプリ即時起動（レイアウト構築と並行） ===
+launch_tproj_gui
+
 # === セッション作成 & ツール起動 ===
 if [[ "$WORKSPACE_MODE" == "true" ]]; then
     # --- マルチプロジェクトモード ---
     create_workspace_layout "$session" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}" -- "${PROJECT_ALIASES[@]}"
     prime_after_layout_manifest "$session"
-    # GUI アプリ起動（レイアウト完成後、ツール起動前）
-    launch_tproj_gui
     run_after_layout_hook "$session" "workspace" "dev"
     start_workspace_tools "$session" "$NO_UPDATE" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}" -- "${PROJECT_ALIASES[@]}" -- "${PROJECT_CC_LAUNCH[@]}" -- "${PROJECT_CDX_LAUNCH[@]}"
 
@@ -1761,8 +1762,6 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
     install_pane_focus_hook "$session"
 
     prime_after_layout_manifest "$session"
-    # GUI アプリ起動（全ペイン作成後、ツール起動前）
-    launch_tproj_gui
     run_after_layout_hook "$session" "single" "dev" "$root" "$REMOTE_HOST"
 
     # 5) コマンドを自動起動（リモート/ローカルで分岐）

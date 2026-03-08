@@ -1,7 +1,13 @@
 #!/bin/zsh
 # tproj-pane-focus-hook - after-select-pane handler for pane focus history
 #
-# Manages prev1/prev2 pane coloring and @last_active timestamps.
+# Manages prev1/prev2 pane ranking via @pane_rank and @last_active timestamps.
+# Visual coloring is handled by pane-border-format (set in tproj) which reads
+# @pane_rank to conditionally apply prev1/prev2 styles.
+#
+# NOTE: pane-border-style at pane level (-pt) is NOT used because tmux 3.6a
+# treats it as window-scoped — set-option -up on one pane clears ALL panes.
+#
 # Called by tmux after-select-pane hook with session name and new active pane_id.
 #
 # Usage: tproj-pane-focus-hook <session> <pane_id>
@@ -24,12 +30,6 @@ prev2="$(tmux show-environment -t "$session" TPROJ_PANE_PREV2 2>/dev/null | sed 
 # Verify new_active pane exists
 tmux display-message -t "$new_active" -p '' >/dev/null 2>&1 || exit 0
 
-# Read color config from session env (set by install_pane_focus_hook in tproj)
-prev1_border_fg="$(tmux show-environment -t "$session" TPROJ_PREV1_BORDER_FG 2>/dev/null | sed 's/^[^=]*=//' || true)"
-prev2_border_fg="$(tmux show-environment -t "$session" TPROJ_PREV2_BORDER_FG 2>/dev/null | sed 's/^[^=]*=//' || true)"
-[[ -z "$prev1_border_fg" ]] && prev1_border_fg="colour211"
-[[ -z "$prev2_border_fg" ]] && prev2_border_fg="colour175"
-
 now="$(date +%H:%M:%S)"
 
 # Helper: check if pane still exists
@@ -37,21 +37,18 @@ pane_exists() {
   [[ -n "$1" ]] && tmux display-message -t "$1" -p '' >/dev/null 2>&1
 }
 
-# 1) Old prev2 -> reset to window default (remove pane-level override)
+# 1) Old prev2 -> reset (clear rank)
 if pane_exists "$prev2"; then
-  tmux set-option -up -t "$prev2" pane-border-style 2>/dev/null || true
   tmux set-option -pt "$prev2" @pane_rank "" 2>/dev/null || true
 fi
 
 # 2) Old prev1 -> prev2
 if pane_exists "$prev1"; then
-  tmux set-option -pt "$prev1" pane-border-style "fg=$prev2_border_fg" 2>/dev/null || true
   tmux set-option -pt "$prev1" @pane_rank "prev2" 2>/dev/null || true
 fi
 
 # 3) Old active -> prev1 (set timestamp to when focus left)
 if pane_exists "$prev_active"; then
-  tmux set-option -pt "$prev_active" pane-border-style "fg=$prev1_border_fg" 2>/dev/null || true
   tmux set-option -pt "$prev_active" @pane_rank "prev1" 2>/dev/null || true
   tmux set-option -pt "$prev_active" @last_active "$now" 2>/dev/null || true
 fi
@@ -59,8 +56,6 @@ fi
 # 4) New active: set @last_active (focus arrival time), clear pane_rank
 tmux set-option -pt "$new_active" @last_active "$now" 2>/dev/null || true
 tmux set-option -pt "$new_active" @pane_rank "" 2>/dev/null || true
-# Remove any pane-level border override so window-level active style applies
-tmux set-option -up -t "$new_active" pane-border-style 2>/dev/null || true
 
 # 5) Update session env
 tmux set-environment -t "$session" TPROJ_PANE_PREV1 "${prev_active:-}" 2>/dev/null || true
