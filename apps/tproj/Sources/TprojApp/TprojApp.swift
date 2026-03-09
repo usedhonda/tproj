@@ -312,6 +312,10 @@ private struct PaneBackgroundManifest: Decodable, Equatable {
 
 private struct PaneBackgroundUnderlayView: View {
     let manifest: PaneBackgroundManifest
+    private let imageBrightness = 0.025
+    private let imageSaturation = 1.04
+    private let imageContrast = 0.95
+    private let textReadabilityScrim = 0.07
 
     var body: some View {
         GeometryReader { geo in
@@ -325,6 +329,12 @@ private struct PaneBackgroundUnderlayView: View {
                             .aspectRatio(contentMode: .fill)
                             .frame(width: rect.width, height: rect.height)
                             .clipped()
+                            .brightness(imageBrightness)
+                            .saturation(imageSaturation)
+                            .contrast(imageContrast)
+                            .overlay {
+                                Color.black.opacity(textReadabilityScrim)
+                            }
                             .opacity(pane.opacity)
                             .position(x: rect.midX, y: rect.midY)
                     }
