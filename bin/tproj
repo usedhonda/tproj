@@ -452,16 +452,17 @@ _read_workspace_gui_app_path() {
   _normalize_gui_app_path "$raw"
 }
 
-# GUI 起動ターゲット選択（.app のみ）
+# GUI 起動ターゲット選択
 # 優先順位:
 #   1) TPROJ_GUI_APP_PATH 環境変数
 #   2) ~/.config/tproj/workspace.yaml の gui.app_path
 #   3) tproj workspace 内の apps/tproj/dist/tproj.app
 #   4) 現在プロジェクト root の apps/tproj/dist/tproj.app
 #   5) 配布版の標準配置（~/Applications, /Applications）
+#   6) debug バイナリ (.build/arm64-apple-macosx/debug/tproj)
 #
 # 返り値フォーマット:
-#   app|/path/to/tproj.app
+#   app|/path/to/tproj.app  または  bin|/path/to/tproj
 _find_gui_target() {
   local p app configured
 
@@ -486,6 +487,16 @@ _find_gui_target() {
     [[ -d "$app" ]] && { echo "app|$app"; return 0; }
   done
 
+  # (6) debug バイナリのフォールバック
+  local debug_bin
+  debug_bin="$root/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
+  [[ -x "$debug_bin" ]] && { echo "bin|$debug_bin"; return 0; }
+
+  for p in "${PROJECT_PATHS[@]}"; do
+    debug_bin="$p/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
+    [[ -x "$debug_bin" ]] && { echo "bin|$debug_bin"; return 0; }
+  done
+
   return 1
 }
 
@@ -498,17 +509,24 @@ launch_tproj_gui() {
   path="${target#*|}"
   [[ -z "$path" ]] && return 0
 
-  [[ "$kind" == "app" ]] || return 0
   if _tproj_gui_running; then
-    # 既存プロセスがいる場合も再表示する
-    open -a "$path" >/dev/null 2>&1 \
-      || osascript -e 'tell application id "com.usedhonda.tproj.desktop" to activate' >/dev/null 2>&1 \
-      || true
+    if [[ "$kind" == "app" ]]; then
+      # 既存プロセスがいる場合も再表示する
+      open -a "$path" >/dev/null 2>&1 \
+        || osascript -e 'tell application id "com.usedhonda.tproj.desktop" to activate' >/dev/null 2>&1 \
+        || true
+    fi
+    # debug バイナリが既に動いている場合は何もしない（常に表示されている）
     return 0
   fi
 
-  # 初回は背景起動（Terminal に "Last login ...; exit" を出さない）
-  open -g "$path" >/dev/null 2>&1 || true
+  if [[ "$kind" == "app" ]]; then
+    # 初回は背景起動（Terminal に "Last login ...; exit" を出さない）
+    open -g "$path" >/dev/null 2>&1 || true
+  elif [[ "$kind" == "bin" ]]; then
+    "$path" &
+    disown
+  fi
 }
 
 # レイアウト確定後フック（private 拡張用）
