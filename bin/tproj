@@ -523,6 +523,11 @@ launch_tproj_gui() {
     return 0
   fi
 
+  # 起動前に全 GUI プロセスを kill（二重起動防止）
+  # パターンは dev-app.sh L26 と同一
+  pkill -f 'apps/tproj/dist/tproj.app/Contents/MacOS/tproj|\.build/.*/tproj$|tproj-gui' 2>/dev/null || true
+  sleep 0.3
+
   if [[ "$kind" == "app" ]]; then
     # 初回は背景起動（Terminal に "Last login ...; exit" を出さない）
     open -g "$path" >/dev/null 2>&1 || true
