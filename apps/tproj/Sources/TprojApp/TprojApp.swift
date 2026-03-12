@@ -2901,11 +2901,11 @@ final class AppViewModel: ObservableObject {
         }
 
         let workspaceSessionWasPresent = sessions.contains("tproj-workspace")
-        let rememberedPaths = Set(
-            liveColumns
-                .map { $0.projectPath.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-        )
+        let orderedActivePaths = liveColumns
+            .sorted { $0.column < $1.column }
+            .map { $0.projectPath.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let rememberedPaths = Set(orderedActivePaths)
         let shouldPersistWorkspaceSet =
             workspaceSessionWasPresent &&
             !rememberedPaths.isEmpty &&
@@ -2993,11 +2993,32 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let updatedProjects = workspaceProjects.map { project in
+        // Build a lookup from workspaceProjects, update enabled flag
+        var projectsByPath: [String: WorkspaceProject] = [:]
+        for project in workspaceProjects {
             var updated = project
             let trimmedPath = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
             updated.enabled = rememberedPaths.contains(trimmedPath)
-            return updated
+            projectsByPath[trimmedPath] = updated
+        }
+
+        // Active projects in liveColumns order first, then inactive ones
+        var updatedProjects: [WorkspaceProject] = []
+        var usedPaths = Set<String>()
+        for activePath in orderedActivePaths {
+            if let project = projectsByPath[activePath], !usedPaths.contains(activePath) {
+                updatedProjects.append(project)
+                usedPaths.insert(activePath)
+            }
+        }
+        for project in workspaceProjects {
+            let trimmedPath = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !usedPaths.contains(trimmedPath) {
+                var inactive = project
+                inactive.enabled = false
+                updatedProjects.append(inactive)
+                usedPaths.insert(trimmedPath)
+            }
         }
 
         if let message = persistWorkspaceProjects(updatedProjects, createIfMissing: false) {
