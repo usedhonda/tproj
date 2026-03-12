@@ -516,6 +516,7 @@ private enum SnapEdge {
 @MainActor
 final class GhosttyWindowTracker: ObservableObject {
     @Published var isSnapped = false
+    @Published var isDragSuspended = false
     var suspendDriftDetection = false
 
     private var pollTimer: DispatchSourceTimer?
@@ -668,6 +669,16 @@ final class GhosttyWindowTracker: ObservableObject {
             if suspendDriftDetection {
                 lastGhosttyFrame = ghosttyFrame
                 return
+            }
+
+            if isDragSuspended {
+                let dragPB = NSPasteboard(name: .drag)
+                if dragPB.types == nil || dragPB.types?.isEmpty == true {
+                    isDragSuspended = false
+                } else {
+                    lastGhosttyFrame = ghosttyFrame
+                    return
+                }
             }
 
             // Detach by X-only (Y movement never triggers detach)
@@ -3828,6 +3839,14 @@ struct ContentView: View {
     @State private var isDragActive = false
     @State private var didRecoverWindowFrame = false
 
+    private func setDragLock(_ locked: Bool) {
+        ghosttyTracker.isDragSuspended = locked
+        guard !collapseController.isCollapsed,
+              let w = (NSApp.delegate as? AppDelegate)?.mainWindow else { return }
+        w.isMovableByWindowBackground = !locked
+        w.isMovable = !locked
+    }
+
     var body: some View {
         if collapseController.isCollapsed {
             CollapsedBarView {
@@ -4038,6 +4057,16 @@ struct ContentView: View {
             if !busy, draggingColumnID == nil {
                 dropInsertionIndex = nil
                 isDragActive = false
+            }
+        }
+        .onChange(of: isDragActive) { dragging in
+            setDragLock(dragging)
+        }
+        .onChange(of: ghosttyTracker.isDragSuspended) { suspended in
+            if !suspended {
+                setDragLock(false)
+                isDragActive = false
+                draggingColumnID = nil
             }
         }
         .background(
