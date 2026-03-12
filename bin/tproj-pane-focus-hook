@@ -1,12 +1,12 @@
 #!/bin/zsh
 # tproj-pane-focus-hook - after-select-pane handler for pane focus history
 #
-# Manages prev1/prev2 pane ranking via @pane_rank.
-# Visual coloring is handled by pane-border-format (set in tproj) which reads
-# @pane_rank to conditionally apply prev1/prev2 styles.
+# Manages prev1/prev2/prev3 pane ranking via @pane_rank.
+# Only updates rank for AUTO-FOCUS events (CCStatusBar AutofocusManager).
+# Manual pane selections are ignored.
 #
-# NOTE: pane-border-style at pane level (-pt) is NOT used because tmux 3.6a
-# treats it as window-scoped — set-option -up on one pane clears ALL panes.
+# Visual coloring is handled by pane-border-format (set in tproj) which reads
+# @pane_rank to conditionally apply prev1/prev2/prev3 styles.
 #
 # Called by tmux after-select-pane hook with session name and new active pane_id.
 #
@@ -19,41 +19,54 @@ set -euo pipefail
 session="$1"
 new_active="$2"
 
-# Read previous state from session env
-prev_active="$(tmux show-environment -t "$session" TPROJ_PANE_LAST_ACTIVE 2>/dev/null | sed 's/^[^=]*=//' || true)"
-prev1="$(tmux show-environment -t "$session" TPROJ_PANE_PREV1 2>/dev/null | sed 's/^[^=]*=//' || true)"
-prev2="$(tmux show-environment -t "$session" TPROJ_PANE_PREV2 2>/dev/null | sed 's/^[^=]*=//' || true)"
+# --- auto-focus gate ---
+pending="$(tmux show-environment -t "$session" TPROJ_AUTOFOCUS_PENDING 2>/dev/null | sed 's/^[^=]*=//' || true)"
 
-# Same pane re-selected -> skip
-[[ "$new_active" == "$prev_active" ]] && exit 0
+# Clear flag unconditionally (auto or manual)
+tmux set-environment -t "$session" -u TPROJ_AUTOFOCUS_PENDING 2>/dev/null || true
 
-# Verify new_active pane exists
-tmux display-message -t "$new_active" -p '' >/dev/null 2>&1 || exit 0
+# Not auto-focus -> do not update rank
+[[ -n "$pending" ]] || exit 0
 
-# Helper: check if pane still exists
+# Verify pending target matches new_active (resolve pane_id from pending target)
+pending_pane_id="$(tmux display-message -t "$pending" -p '#{pane_id}' 2>/dev/null || true)"
+[[ "$pending_pane_id" == "$new_active" ]] || exit 0
+
+# --- rank update (auto-focus only reaches here) ---
+prev1="$(tmux show-environment -t "$session" TPROJ_IDLE_PREV1 2>/dev/null | sed 's/^[^=]*=//' || true)"
+prev2="$(tmux show-environment -t "$session" TPROJ_IDLE_PREV2 2>/dev/null | sed 's/^[^=]*=//' || true)"
+prev3="$(tmux show-environment -t "$session" TPROJ_IDLE_PREV3 2>/dev/null | sed 's/^[^=]*=//' || true)"
+
 pane_exists() {
   [[ -n "$1" ]] && tmux display-message -t "$1" -p '' >/dev/null 2>&1
 }
 
-# 1) Old prev2 -> reset (clear rank)
-if pane_exists "$prev2"; then
-  tmux set-option -pt "$prev2" @pane_rank "" 2>/dev/null || true
+# If same pane is re-auto-focused, remove it from existing position and re-insert at front
+if [[ "$new_active" == "$prev1" ]]; then
+  prev1="$prev2"; prev2="$prev3"; prev3=""
+elif [[ "$new_active" == "$prev2" ]]; then
+  prev2="$prev3"; prev3=""
+elif [[ "$new_active" == "$prev3" ]]; then
+  prev3=""
 fi
 
-# 2) Old prev1 -> prev2
+# Old prev3 -> clear rank
+if pane_exists "$prev3"; then
+  tmux set-option -pt "$prev3" @pane_rank "" 2>/dev/null || true
+fi
+
+# Shift: prev2 -> prev3, prev1 -> prev2
+if pane_exists "$prev2"; then
+  tmux set-option -pt "$prev2" @pane_rank "prev3" 2>/dev/null || true
+fi
 if pane_exists "$prev1"; then
   tmux set-option -pt "$prev1" @pane_rank "prev2" 2>/dev/null || true
 fi
 
-# 3) Old active -> prev1
-if pane_exists "$prev_active"; then
-  tmux set-option -pt "$prev_active" @pane_rank "prev1" 2>/dev/null || true
-fi
+# new_active -> prev1
+tmux set-option -pt "$new_active" @pane_rank "prev1" 2>/dev/null || true
 
-# 4) New active: clear pane_rank
-tmux set-option -pt "$new_active" @pane_rank "" 2>/dev/null || true
-
-# 5) Update session env
-tmux set-environment -t "$session" TPROJ_PANE_PREV1 "${prev_active:-}" 2>/dev/null || true
-tmux set-environment -t "$session" TPROJ_PANE_PREV2 "${prev1:-}" 2>/dev/null || true
-tmux set-environment -t "$session" TPROJ_PANE_LAST_ACTIVE "$new_active" 2>/dev/null || true
+# Save state (use IDLE_ prefix to avoid collision with old TPROJ_PANE_* vars)
+tmux set-environment -t "$session" TPROJ_IDLE_PREV1 "$new_active" 2>/dev/null || true
+tmux set-environment -t "$session" TPROJ_IDLE_PREV2 "${prev1:-}" 2>/dev/null || true
+tmux set-environment -t "$session" TPROJ_IDLE_PREV3 "${prev2:-}" 2>/dev/null || true

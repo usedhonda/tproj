@@ -1,0 +1,45 @@
+#!/bin/zsh
+# tproj-pane-clear-rank - UserPromptSubmit hook
+#
+# Clears @pane_rank for the current pane when the user submits a prompt.
+# This signals "this pane is no longer idle / waiting for input".
+# No-op outside tmux.
+
+set -euo pipefail
+
+pane="${TMUX_PANE:-}"
+[[ -n "$pane" ]] || exit 0
+
+# Skip if no rank is set
+rank="$(tmux show-options -pt "$pane" -v @pane_rank 2>/dev/null || true)"
+[[ -n "$rank" ]] || exit 0
+
+# Clear rank
+tmux set-option -pt "$pane" @pane_rank "" 2>/dev/null || true
+
+# Remove from session IDLE_PREV list and compact
+session="$(tmux display-message -p '#{session_name}' 2>/dev/null || true)"
+[[ -n "$session" ]] || exit 0
+
+prev1="$(tmux show-environment -t "$session" TPROJ_IDLE_PREV1 2>/dev/null | sed 's/^[^=]*=//' || true)"
+prev2="$(tmux show-environment -t "$session" TPROJ_IDLE_PREV2 2>/dev/null | sed 's/^[^=]*=//' || true)"
+prev3="$(tmux show-environment -t "$session" TPROJ_IDLE_PREV3 2>/dev/null | sed 's/^[^=]*=//' || true)"
+
+# Collect remaining slots (exclude current pane)
+slots=()
+[[ "$prev1" != "$pane" && -n "$prev1" ]] && slots+=("$prev1")
+[[ "$prev2" != "$pane" && -n "$prev2" ]] && slots+=("$prev2")
+[[ "$prev3" != "$pane" && -n "$prev3" ]] && slots+=("$prev3")
+
+# Update env vars
+tmux set-environment -t "$session" TPROJ_IDLE_PREV1 "${slots[1]:-}" 2>/dev/null || true
+tmux set-environment -t "$session" TPROJ_IDLE_PREV2 "${slots[2]:-}" 2>/dev/null || true
+tmux set-environment -t "$session" TPROJ_IDLE_PREV3 "${slots[3]:-}" 2>/dev/null || true
+
+# Re-assign ranks to remaining panes
+for i in 1 2 3; do
+  local_pane="${slots[$i]:-}"
+  if [[ -n "$local_pane" ]] && tmux display-message -t "$local_pane" -p '' >/dev/null 2>&1; then
+    tmux set-option -pt "$local_pane" @pane_rank "prev${i}" 2>/dev/null || true
+  fi
+done

@@ -171,6 +171,9 @@ TMUX_UI_PANE_TITLE_PREV1_FG="colour211"
 TMUX_UI_PANE_TITLE_PREV1_BG="colour237"
 TMUX_UI_PANE_TITLE_PREV2_FG="colour175"
 TMUX_UI_PANE_TITLE_PREV2_BG="colour237"
+TMUX_UI_PANE_BORDER_PREV3_FG="colour139"
+TMUX_UI_PANE_TITLE_PREV3_FG="colour139"
+TMUX_UI_PANE_TITLE_PREV3_BG="colour237"
 TMUX_UI_WINDOW_TEXT_ACTIVE_FG="default"
 TMUX_UI_WINDOW_TEXT_ACTIVE_BG="terminal"
 TMUX_UI_WINDOW_TEXT_INACTIVE_FG="colour250"
@@ -1028,6 +1031,7 @@ parse_global_workspace_config() {
   TMUX_UI_PANE_BORDER_INACTIVE_FG="$(read_workspace_string_setting '.tmux_ui.pane_border.inactive_fg' "$TMUX_UI_PANE_BORDER_INACTIVE_FG" 'tmux_ui.pane_border.inactive_fg')"
   TMUX_UI_PANE_BORDER_PREV1_FG="$(read_workspace_string_setting '.tmux_ui.pane_border.prev1_fg' "$TMUX_UI_PANE_BORDER_PREV1_FG" 'tmux_ui.pane_border.prev1_fg')"
   TMUX_UI_PANE_BORDER_PREV2_FG="$(read_workspace_string_setting '.tmux_ui.pane_border.prev2_fg' "$TMUX_UI_PANE_BORDER_PREV2_FG" 'tmux_ui.pane_border.prev2_fg')"
+  TMUX_UI_PANE_BORDER_PREV3_FG="$(read_workspace_string_setting '.tmux_ui.pane_border.prev3_fg' "$TMUX_UI_PANE_BORDER_PREV3_FG" 'tmux_ui.pane_border.prev3_fg')"
 
   TMUX_UI_PANE_TITLE_ACTIVE_PREFIX="$(read_workspace_string_setting '.tmux_ui.pane_title.active_prefix' "$TMUX_UI_PANE_TITLE_ACTIVE_PREFIX" 'tmux_ui.pane_title.active_prefix')"
   TMUX_UI_PANE_TITLE_ACTIVE_FG="$(read_workspace_string_setting '.tmux_ui.pane_title.active_fg' "$TMUX_UI_PANE_TITLE_ACTIVE_FG" 'tmux_ui.pane_title.active_fg')"
@@ -1039,6 +1043,8 @@ parse_global_workspace_config() {
   TMUX_UI_PANE_TITLE_PREV1_BG="$(read_workspace_string_setting '.tmux_ui.pane_title.prev1_bg' "$TMUX_UI_PANE_TITLE_PREV1_BG" 'tmux_ui.pane_title.prev1_bg')"
   TMUX_UI_PANE_TITLE_PREV2_FG="$(read_workspace_string_setting '.tmux_ui.pane_title.prev2_fg' "$TMUX_UI_PANE_TITLE_PREV2_FG" 'tmux_ui.pane_title.prev2_fg')"
   TMUX_UI_PANE_TITLE_PREV2_BG="$(read_workspace_string_setting '.tmux_ui.pane_title.prev2_bg' "$TMUX_UI_PANE_TITLE_PREV2_BG" 'tmux_ui.pane_title.prev2_bg')"
+  TMUX_UI_PANE_TITLE_PREV3_FG="$(read_workspace_string_setting '.tmux_ui.pane_title.prev3_fg' "$TMUX_UI_PANE_TITLE_PREV3_FG" 'tmux_ui.pane_title.prev3_fg')"
+  TMUX_UI_PANE_TITLE_PREV3_BG="$(read_workspace_string_setting '.tmux_ui.pane_title.prev3_bg' "$TMUX_UI_PANE_TITLE_PREV3_BG" 'tmux_ui.pane_title.prev3_bg')"
 
   TMUX_UI_WINDOW_TEXT_ACTIVE_FG="$(read_workspace_string_setting '.tmux_ui.window_text.active_fg' "$TMUX_UI_WINDOW_TEXT_ACTIVE_FG" 'tmux_ui.window_text.active_fg')"
   TMUX_UI_WINDOW_TEXT_ACTIVE_BG="$(read_workspace_string_setting '.tmux_ui.window_text.active_bg' "$TMUX_UI_WINDOW_TEXT_ACTIVE_BG" 'tmux_ui.window_text.active_bg')"
@@ -1053,6 +1059,7 @@ render_tmux_pane_border_format() {
   local prev1_prefix_style="#[bg=${TMUX_UI_PANE_TITLE_PREV1_BG}]#[fg=${TMUX_UI_PANE_BORDER_PREV1_FG}]"
   local prev1_text_style="#[fg=${TMUX_UI_PANE_TITLE_PREV1_FG}]"
   local prev2_style="#[bg=${TMUX_UI_PANE_TITLE_PREV2_BG}]#[fg=${TMUX_UI_PANE_TITLE_PREV2_FG}]"
+  local prev3_style="#[bg=${TMUX_UI_PANE_TITLE_PREV3_BG}]#[fg=${TMUX_UI_PANE_TITLE_PREV3_FG}]"
   local ts_style="#[fg=colour243]"
 
   if [[ "$TMUX_UI_PANE_BORDER_ACTIVE_BOLD" == "true" ]]; then
@@ -1072,15 +1079,19 @@ render_tmux_pane_border_format() {
   # prev2 state
   local prev2_fmt="${prev2_style}${TMUX_UI_PANE_TITLE_INACTIVE_PREFIX}#{pane_title}${ts_part}"
 
+  # prev3 state
+  local prev3_fmt="${prev3_style}${TMUX_UI_PANE_TITLE_INACTIVE_PREFIX}#{pane_title}${ts_part}"
+
   # inactive state (default)
   local inactive_fmt="${inactive_style}${TMUX_UI_PANE_TITLE_INACTIVE_PREFIX}#{pane_title}${ts_part}"
 
-  # Nested conditional: active -> prev1 -> prev2 -> inactive
-  # #{?pane_active, ACTIVE, #{?#{==:#{@pane_rank},prev1}, PREV1, #{?#{==:#{@pane_rank},prev2}, PREV2, INACTIVE}}}
-  printf '#{?pane_active,%s,#{?#{==:#{@pane_rank},prev1},%s,#{?#{==:#{@pane_rank},prev2},%s,%s}}}#[default]' \
+  # Nested conditional: active -> prev1 -> prev2 -> prev3 -> inactive
+  # #{?pane_active, ACTIVE, #{?#{==:#{@pane_rank},prev1}, PREV1, #{?#{==:#{@pane_rank},prev2}, PREV2, #{?#{==:#{@pane_rank},prev3}, PREV3, INACTIVE}}}}
+  printf '#{?pane_active,%s,#{?#{==:#{@pane_rank},prev1},%s,#{?#{==:#{@pane_rank},prev2},%s,#{?#{==:#{@pane_rank},prev3},%s,%s}}}}#[default]' \
     "$active_fmt" \
     "$prev1_fmt" \
     "$prev2_fmt" \
+    "$prev3_fmt" \
     "$inactive_fmt"
 }
 
@@ -1117,6 +1128,7 @@ install_pane_focus_hook() {
   # Store color config in session env for the hook script
   tmux set-environment -t "$session" TPROJ_PREV1_BORDER_FG "$TMUX_UI_PANE_BORDER_PREV1_FG" 2>/dev/null || true
   tmux set-environment -t "$session" TPROJ_PREV2_BORDER_FG "$TMUX_UI_PANE_BORDER_PREV2_FG" 2>/dev/null || true
+  tmux set-environment -t "$session" TPROJ_PREV3_BORDER_FG "$TMUX_UI_PANE_BORDER_PREV3_FG" 2>/dev/null || true
 
   # Install after-select-pane hook
   tmux set-hook -t "$session" after-select-pane \
