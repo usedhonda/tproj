@@ -91,6 +91,7 @@ Options:
   --add [ALIAS]      Add workspace column (no arg: duplicate current, with alias: from workspace.yaml)
   --check            Show workspace.yaml projects, aliases, and enabled status
   --no-gui           Skip GUI auto-launch (used by the app bundle)
+  --repair           Repair pane tags (@alias, @column, pane_title) from @role + @project
   --sync-ui          Reapply pane title format + hooks to live tproj sessions
   -c, --columns N    Start with only the first N projects from workspace.yaml
   -s, --single       Force single-project mode (ignore workspace.yaml)
@@ -150,6 +151,7 @@ ADD_MODE=false
 ADD_ALIAS=""
 CHECK_MODE=false
 SYNC_UI_MODE=false
+REPAIR_MODE=false
 MAX_COLUMNS=""  # 空 = 制限なし
 NO_GUI=false
 
@@ -194,6 +196,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help) show_help; exit 0 ;;
     --check) CHECK_MODE=true; shift ;;
     --sync-ui) SYNC_UI_MODE=true; shift ;;
+    --repair) REPAIR_MODE=true; shift ;;
     --add)
       ADD_MODE=true; shift
       if [[ $# -gt 0 && "$1" != -* ]]; then
@@ -1140,6 +1143,61 @@ install_pane_focus_hook() {
     "run-shell '$hook_path #{session_name} #{pane_id}'" 2>/dev/null || true
 }
 
+repair_workspace_tags() {
+  local session="$1"
+  local repaired=0
+  local pane_id role project alias column tool_kind
+  local clean_project i label_kind proj_type proj_host parsed title
+
+  while IFS=$'\t' read -r pane_id role project; do
+    [[ -z "$role" || "$role" == "(null)" ]] && continue
+    # role = "claude-p4" or "codex-p4"
+    case "$role" in
+      claude-p[0-9]*) tool_kind="claude"; column="${role#claude-p}" ;;
+      codex-p[0-9]*)  tool_kind="codex";  column="${role#codex-p}" ;;
+      *) continue ;;
+    esac
+
+    # Reverse-lookup alias from @project via CATALOG arrays
+    alias=""
+    clean_project="${project%/}"
+    for ((i=0; i<${#CATALOG_PATHS[@]}; i++)); do
+      if [[ "${CATALOG_PATHS[$i]%/}" == "$clean_project" ]]; then
+        alias="${CATALOG_ALIASES[$i]}"
+        break
+      fi
+    done
+    [[ -z "$alias" ]] && alias="$(basename "$clean_project" 2>/dev/null || echo "unknown")"
+
+    # Set tags
+    tmux set-option -pt "$pane_id" @alias "$alias" 2>/dev/null || true
+    tmux set-option -pt "$pane_id" @column "$column" 2>/dev/null || true
+
+    # CC panes: prevent title override
+    if [[ "$tool_kind" == "claude" ]]; then
+      tmux set-option -pt "$pane_id" allow-set-title off 2>/dev/null || true
+    fi
+
+    # Rebuild pane_title
+    label_kind="CC"
+    [[ "$tool_kind" == "codex" ]] && label_kind="Codex"
+
+    proj_type="local"; proj_host=""
+    if [[ "$project" == ssh://* ]]; then
+      proj_type="remote"
+      parsed="${project#ssh://}"
+      proj_host="${parsed%%/*}"
+    fi
+
+    title="$(build_pane_label "$proj_type" "$proj_host" "$clean_project" "$label_kind" "$alias")"
+    tmux select-pane -t "$pane_id" -T "$title" 2>/dev/null || true
+
+    ((repaired++)) || true
+  done < <(tmux list-panes -t "$session:dev" -F "#{pane_id}	#{@role}	#{@project}" 2>/dev/null)
+
+  echo "Repaired $repaired pane(s) in $session" >&2
+}
+
 sync_tmux_ui_for_live_sessions() {
   local -a sessions
   local session
@@ -1323,6 +1381,21 @@ fi
 
 if [[ "$SYNC_UI_MODE" == "true" ]]; then
   sync_tmux_ui_for_live_sessions
+  exit 0
+fi
+
+if [[ "$REPAIR_MODE" == "true" ]]; then
+  parse_workspace_yaml
+  _repair_sessions=("${(@f)$(find_tproj_sessions 2>/dev/null || true)}")
+  if [[ ${#_repair_sessions[@]} -eq 0 ]]; then
+    echo "No tproj sessions found to repair" >&2
+    exit 1
+  fi
+  for _rs in "${_repair_sessions[@]}"; do
+    [[ -z "$_rs" ]] && continue
+    repair_workspace_tags "$_rs"
+    apply_tmux_ui_to_window "${_rs}:dev"
+  done
   exit 0
 fi
 
