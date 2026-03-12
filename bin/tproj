@@ -459,10 +459,10 @@ _read_workspace_gui_app_path() {
 # 優先順位:
 #   1) TPROJ_GUI_APP_PATH 環境変数
 #   2) ~/.config/tproj/workspace.yaml の gui.app_path
-#   3) tproj workspace 内の apps/tproj/dist/tproj.app
-#   4) 現在プロジェクト root の apps/tproj/dist/tproj.app
-#   5) 配布版の標準配置（~/Applications, /Applications）
-#   6) debug バイナリ (.build/arm64-apple-macosx/debug/tproj)
+#   3) debug バイナリ (.build/arm64-apple-macosx/debug/tproj) — 開発優先
+#   4) tproj workspace 内の apps/tproj/dist/tproj.app
+#   5) 現在プロジェクト root の apps/tproj/dist/tproj.app
+#   6) 配布版の標準配置（~/Applications, /Applications）
 #
 # 返り値フォーマット:
 #   app|/path/to/tproj.app  または  bin|/path/to/tproj
@@ -478,26 +478,26 @@ _find_gui_target() {
   app="$(_read_workspace_gui_app_path 2>/dev/null)" \
     && { echo "app|$app"; return 0; }
 
+  # (3) debug バイナリ（開発時は常にこちらを優先）
+  local debug_bin
+  for p in "${PROJECT_PATHS[@]}" "$root"; do
+    debug_bin="$p/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
+    [[ -x "$debug_bin" ]] && { echo "bin|$debug_bin"; return 0; }
+  done
+
+  # (4) workspace 内 dist app bundle
   for p in "${PROJECT_PATHS[@]}"; do
     app="$p/apps/tproj/dist/tproj.app"
     [[ -d "$app" ]] && { echo "app|$app"; return 0; }
   done
 
+  # (5) current root dist
   app="$root/apps/tproj/dist/tproj.app"
   [[ -d "$app" ]] && { echo "app|$app"; return 0; }
 
+  # (6) 標準配置
   for app in "$HOME/Applications/tproj.app" "/Applications/tproj.app"; do
     [[ -d "$app" ]] && { echo "app|$app"; return 0; }
-  done
-
-  # (6) debug バイナリのフォールバック
-  local debug_bin
-  debug_bin="$root/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
-  [[ -x "$debug_bin" ]] && { echo "bin|$debug_bin"; return 0; }
-
-  for p in "${PROJECT_PATHS[@]}"; do
-    debug_bin="$p/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
-    [[ -x "$debug_bin" ]] && { echo "bin|$debug_bin"; return 0; }
   done
 
   return 1
