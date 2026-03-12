@@ -1,0 +1,116 @@
+#!/bin/bash
+# tproj-pane-watchdog - Auto-restart CC/Cdx when their process dies
+# Polls CC/Cdx panes for child processes; restarts via @launch_cmd after 3 misses.
+# Usage: tproj-pane-watchdog <session> &
+set -eo pipefail
+
+SESSION="${1:-}"
+[[ -z "$SESSION" ]] && exit 1
+
+POLL_INTERVAL=5
+MISS_THRESHOLD=3
+CIRCUIT_WINDOW=120
+CIRCUIT_MAX=3
+
+# Associative arrays for tracking per-pane state
+declare -A miss_count       # pane_id -> consecutive miss count
+declare -A restart_times    # pane_id -> space-separated epoch list of recent restarts
+
+log() { echo "[watchdog] $*" >&2; }
+
+is_stopping() {
+  local val
+  val=$(tmux show-environment -t "$SESSION" TPROJ_STOPPING 2>/dev/null | grep -v '^-' | cut -d= -f2) || true
+  [[ "$val" == "1" ]]
+}
+
+session_alive() {
+  tmux has-session -t "$SESSION" 2>/dev/null
+}
+
+# Check if a pane's shell has CC/Cdx child processes
+has_tool_child() {
+  local pane_id="$1"
+  local shell_pid
+  shell_pid=$(tmux display-message -t "$pane_id" -p '#{pane_pid}' 2>/dev/null) || return 1
+  [[ -z "$shell_pid" ]] && return 1
+  # Look for claude, codex, or node children
+  pgrep -P "$shell_pid" -f 'claude|codex|node' >/dev/null 2>&1
+}
+
+# Check circuit breaker: too many restarts in CIRCUIT_WINDOW seconds
+circuit_open() {
+  local pane_id="$1"
+  local now times recent count t
+  now=$(date +%s)
+  times="${restart_times[$pane_id]:-}"
+  [[ -z "$times" ]] && return 1
+
+  recent=""
+  count=0
+  for t in $times; do
+    if (( now - t < CIRCUIT_WINDOW )); then
+      recent="${recent:+$recent }$t"
+      ((count++)) || true
+    fi
+  done
+  restart_times[$pane_id]="$recent"
+  (( count >= CIRCUIT_MAX ))
+}
+
+record_restart() {
+  local pane_id="$1"
+  local now
+  now=$(date +%s)
+  restart_times[$pane_id]="${restart_times[$pane_id]:+${restart_times[$pane_id]} }$now"
+}
+
+restart_pane() {
+  local pane_id="$1" launch_cmd="$2" role="$3"
+
+  if circuit_open "$pane_id"; then
+    log "CIRCUIT BREAKER: $role ($pane_id) restarted ${CIRCUIT_MAX}+ times in ${CIRCUIT_WINDOW}s -- skipping"
+    return 0
+  fi
+
+  log "Restarting $role in $pane_id"
+  tmux send-keys -t "$pane_id" "$launch_cmd" C-m 2>/dev/null || true
+  record_restart "$pane_id"
+  miss_count[$pane_id]=0
+}
+
+# === Main loop ===
+log "Started for session $SESSION (pid=$$)"
+
+while true; do
+  sleep "$POLL_INTERVAL"
+
+  # Exit conditions
+  is_stopping && { log "TPROJ_STOPPING detected -- exiting"; exit 0; }
+  session_alive || { log "Session gone -- exiting"; exit 0; }
+
+  # Enumerate CC/Cdx panes
+  while IFS=$'\t' read -r pane_id role launch_cmd; do
+    [[ -z "$pane_id" || -z "$role" ]] && continue
+
+    # Only watch claude* and codex* roles
+    case "$role" in
+      claude|claude-p[0-9]*|codex|codex-p[0-9]*) ;;
+      *) continue ;;
+    esac
+
+    # No launch_cmd saved -> can't restart
+    [[ -z "$launch_cmd" || "$launch_cmd" == "(null)" ]] && continue
+
+    if has_tool_child "$pane_id"; then
+      miss_count[$pane_id]=0
+    else
+      miss_count[$pane_id]=$(( ${miss_count[$pane_id]:-0} + 1 ))
+      local mc=${miss_count[$pane_id]}
+      if (( mc >= MISS_THRESHOLD )); then
+        restart_pane "$pane_id" "$launch_cmd" "$role"
+      fi
+    fi
+  done < <(tmux list-panes -t "$SESSION:dev" \
+    -F "#{pane_id}	#{@role}	#{@launch_cmd}" 2>/dev/null || true)
+done

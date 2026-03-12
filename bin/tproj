@@ -662,6 +662,12 @@ kill_session() {
     return 0
   fi
 
+  # Signal watchdog to exit before killing sessions
+  while IFS= read -r _s; do
+    [[ -z "$_s" ]] && continue
+    tmux set-environment -t "$_s" TPROJ_STOPPING 1 2>/dev/null || true
+  done <<< "$sessions"
+
   # Collect descendant PIDs before killing (to clean up MCP servers)
   local desc_pids
   desc_pids=$(collect_session_descendants "$sessions") || true
@@ -669,6 +675,7 @@ kill_session() {
   while IFS= read -r session; do
     [[ -z "$session" ]] && continue
     pkill -TERM -f "bin/team-watcher" 2>/dev/null || true
+    pkill -TERM -f "bin/tproj-pane-watchdog" 2>/dev/null || true
     tmux kill-session -t "$session" 2>/dev/null || true
   done <<< "$sessions"
 
@@ -691,6 +698,13 @@ stop_session() {
     echo "No active tproj session" >&2
     return 0
   fi
+
+  # Signal watchdog to exit before stopping sessions
+  while IFS= read -r _s; do
+    [[ -z "$_s" ]] && continue
+    tmux set-environment -t "$_s" TPROJ_STOPPING 1 2>/dev/null || true
+  done <<< "$sessions"
+  pkill -TERM -f "bin/tproj-pane-watchdog" 2>/dev/null || true
 
   # Collect descendant PIDs before stopping (to clean up MCP servers)
   local desc_pids
@@ -884,6 +898,10 @@ add_workspace_column() {
   tmux set-option -pt "$new_claude" @alias "$src_alias"
   tmux set-option -pt "$new_codex" @alias "$src_alias"
 
+  # Keep pane alive if shell dies (watchdog will respawn)
+  tmux set-option -pt "$new_claude" remain-on-exit on 2>/dev/null || true
+  tmux set-option -pt "$new_codex" remain-on-exit on 2>/dev/null || true
+
   claude_title="$(build_pane_label "$src_type" "$src_host" "$src_path" "CC" "$src_alias")"
   codex_title="$(build_pane_label "$src_type" "$src_host" "$src_path" "Codex" "$src_alias")"
   tmux set-option -pt "$new_claude" allow-set-title off 2>/dev/null || true
@@ -926,6 +944,10 @@ add_workspace_column() {
     sleep 0.2
     tmux send-keys -t "$new_codex" "$(with_codex_update_prefix "$codex_cmd")" C-m
   fi
+
+  # Save launch commands for watchdog auto-restart
+  tmux set-option -pt "$new_claude" @launch_cmd "$claude_cmd" 2>/dev/null || true
+  tmux set-option -pt "$new_codex" @launch_cmd "$codex_cmd" 2>/dev/null || true
 
   tmux select-pane -t "$new_claude"
   tmux select-window -t "$session:dev"
@@ -1141,6 +1163,12 @@ install_pane_focus_hook() {
   # Install after-select-pane hook
   tmux set-hook -t "$session" after-select-pane \
     "run-shell '$hook_path #{session_name} #{pane_id}'" 2>/dev/null || true
+
+  # Install pane-died hook: respawn CC/Cdx panes whose shell has exited
+  # Only respawn if @role matches claude* or codex*; other panes are left alone.
+  tmux set-hook -t "$session" pane-died \
+    "if-shell -F '#{m:claude*,#{@role}}' 'respawn-pane' \
+     'if-shell -F \"#{m:codex*,#{@role}}\" \"respawn-pane\"'" 2>/dev/null || true
 }
 
 repair_workspace_tags() {
@@ -1646,6 +1674,10 @@ create_workspace_layout() {
     tmux set-option -pt "$codex_pane" @alias "${aliases[$((i-1))]}"
     tmux set-option -pt "$claude_pane" @alias "${aliases[$((i-1))]}"
 
+    # Keep pane alive if shell dies (watchdog will respawn)
+    tmux set-option -pt "$codex_pane" remain-on-exit on 2>/dev/null || true
+    tmux set-option -pt "$claude_pane" remain-on-exit on 2>/dev/null || true
+
     # ペインタイトル設定
     local codex_title claude_title
     codex_title="$(build_pane_label "$proj_type" "$proj_host" "$proj_path" "Codex" "${aliases[$((i-1))]}")"
@@ -1729,6 +1761,9 @@ start_codex_for_column() {
     fi
     tmux send-keys -t "$codex_pane" "$(with_codex_update_prefix "$codex_cmd" "$no_update")" C-m
   fi
+
+  # Save launch command for watchdog auto-restart
+  tmux set-option -pt "$codex_pane" @launch_cmd "$codex_cmd" 2>/dev/null || true
 }
 
 # Claude ペインを起動（1列分）
@@ -1763,6 +1798,9 @@ start_claude_for_column() {
     fi
     tmux send-keys -t "$claude_pane" "$(with_claude_update_prefix "$claude_cmd" "$no_update")" C-m
   fi
+
+  # Save launch command for watchdog auto-restart
+  tmux set-option -pt "$claude_pane" @launch_cmd "$claude_cmd" 2>/dev/null || true
 }
 
 # プロジェクト別ツール起動（MCP フェーズ制御付き）
@@ -1910,6 +1948,10 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
     tmux set-option -pt "$session:dev.2" @alias "$name"
     tmux set-option -pt "$session:dev.3" @alias "$name"
 
+    # Keep CC/Cdx panes alive if shell dies (watchdog will respawn)
+    tmux set-option -pt "$session:dev.1" remain-on-exit on 2>/dev/null || true
+    tmux set-option -pt "$session:dev.2" remain-on-exit on 2>/dev/null || true
+
     # 3.1) ペインタイトル設定（Claude/Codexのみ）
     title_host="local"
     [[ -n "$REMOTE_HOST" ]] && title_host="$REMOTE_HOST"
@@ -1952,6 +1994,10 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
       sleep 0.1
       tmux send-keys -t "$session:dev.2" "$(with_codex_update_prefix "$codex_cmd")" C-m
 
+      # Save launch commands for watchdog auto-restart
+      tmux set-option -pt "$session:dev.1" @launch_cmd "$claude_cmd" 2>/dev/null || true
+      tmux set-option -pt "$session:dev.2" @launch_cmd "$codex_cmd" 2>/dev/null || true
+
       sleep 0.3
       tmux send-keys -t "$session:dev.3" "yazi" C-m
     else
@@ -1962,6 +2008,10 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
       sleep 0.1
       tmux send-keys -t "$session:dev.2" "$(with_codex_update_prefix "$codex_cmd")" C-m
 
+      # Save launch commands for watchdog auto-restart
+      tmux set-option -pt "$session:dev.1" @launch_cmd "$claude_cmd" 2>/dev/null || true
+      tmux set-option -pt "$session:dev.2" @launch_cmd "$codex_cmd" 2>/dev/null || true
+
       sleep 0.3
       tmux send-keys -t "$session:dev.3" "yazi" C-m
 
@@ -1970,6 +2020,15 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
 
     tmux select-window -t "$session:dev"
     tmux select-pane -t "$session:dev.1"
+fi
+
+# Start watchdog daemon for auto-restart of crashed CC/Cdx
+if [[ -x "$HOME/bin/tproj-pane-watchdog" ]]; then
+  "$HOME/bin/tproj-pane-watchdog" "$session" &
+  disown
+elif [[ -x "$SCRIPT_DIR/tproj-pane-watchdog" ]]; then
+  "$SCRIPT_DIR/tproj-pane-watchdog" "$session" &
+  disown
 fi
 
 exec tmux attach -t "$session"
