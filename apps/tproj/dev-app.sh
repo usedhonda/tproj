@@ -4,10 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_BUNDLE="$SCRIPT_DIR/dist/tproj.app"
 DEBUG_BIN="$SCRIPT_DIR/.build/arm64-apple-macosx/debug/tproj"
-MODE="release"
+MODE="debug"
 
-if [[ "${1:-}" == "--debug" ]]; then
-  MODE="debug"
+if [[ "${1:-}" == "--release" ]]; then
+  MODE="release"
 fi
 
 # --- Build ---
