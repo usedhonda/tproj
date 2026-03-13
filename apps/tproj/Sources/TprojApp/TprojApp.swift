@@ -483,7 +483,7 @@ final class PaneBackgroundUnderlayController: ObservableObject {
         window.hasShadow = false
         window.ignoresMouseEvents = true
         window.level = .normal
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         underlayWindow = window
         return window
     }
