@@ -461,8 +461,8 @@ _read_workspace_gui_app_path() {
 # GUI 起動ターゲット選択
 # 優先順位:
 #   1) TPROJ_GUI_APP_PATH 環境変数
-#   2) ~/.config/tproj/workspace.yaml の gui.app_path
-#   3) debug バイナリ (.build/arm64-apple-macosx/debug/tproj) — 開発優先
+#   2) debug バイナリ (.build/arm64-apple-macosx/debug/tproj) — 開発優先
+#   3) ~/.config/tproj/workspace.yaml の gui.app_path
 #   4) tproj workspace 内の apps/tproj/dist/tproj.app
 #   5) 現在プロジェクト root の apps/tproj/dist/tproj.app
 #   6) 配布版の標準配置（~/Applications, /Applications）
@@ -478,15 +478,16 @@ _find_gui_target() {
       && { echo "app|$app"; return 0; }
   fi
 
-  app="$(_read_workspace_gui_app_path 2>/dev/null)" \
-    && { echo "app|$app"; return 0; }
-
-  # (3) debug バイナリ（開発時は常にこちらを優先）
+  # (2) debug バイナリ（開発時は常にこちらを優先）
   local debug_bin
   for p in "${PROJECT_PATHS[@]}" "$root"; do
     debug_bin="$p/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
     [[ -x "$debug_bin" ]] && { echo "bin|$debug_bin"; return 0; }
   done
+
+  # (3) workspace.yaml gui.app_path
+  app="$(_read_workspace_gui_app_path 2>/dev/null)" \
+    && { echo "app|$app"; return 0; }
 
   # (4) workspace 内 dist app bundle
   for p in "${PROJECT_PATHS[@]}"; do
@@ -662,10 +663,11 @@ kill_session() {
     return 0
   fi
 
-  # Signal watchdog to exit before killing sessions
+  # Signal watchdog to exit and unhook pane-died before killing sessions
   while IFS= read -r _s; do
     [[ -z "$_s" ]] && continue
     tmux set-environment -t "$_s" TPROJ_STOPPING 1 2>/dev/null || true
+    tmux set-hook -u -t "$_s" pane-died 2>/dev/null || true
   done <<< "$sessions"
 
   # Collect descendant PIDs before killing (to clean up MCP servers)
@@ -699,10 +701,11 @@ stop_session() {
     return 0
   fi
 
-  # Signal watchdog to exit before stopping sessions
+  # Signal watchdog to exit and unhook pane-died before stopping sessions
   while IFS= read -r _s; do
     [[ -z "$_s" ]] && continue
     tmux set-environment -t "$_s" TPROJ_STOPPING 1 2>/dev/null || true
+    tmux set-hook -u -t "$_s" pane-died 2>/dev/null || true
   done <<< "$sessions"
   pkill -TERM -f "bin/tproj-pane-watchdog" 2>/dev/null || true
 
@@ -1167,8 +1170,8 @@ install_pane_focus_hook() {
   # Install pane-died hook: respawn CC/Cdx panes whose shell has exited
   # Only respawn if @role matches claude* or codex*; other panes are left alone.
   tmux set-hook -t "$session" pane-died \
-    "if-shell -F '#{m:claude*,#{@role}}' 'respawn-pane' \
-     'if-shell -F \"#{m:codex*,#{@role}}\" \"respawn-pane\"'" 2>/dev/null || true
+    "if-shell -F '#{m:claude*,#{@role}}' 'respawn-pane -t #{pane_id}' \
+     'if-shell -F \"#{m:codex*,#{@role}}\" \"respawn-pane -t #{pane_id}\"'" 2>/dev/null || true
 }
 
 repair_workspace_tags() {
