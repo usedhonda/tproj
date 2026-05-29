@@ -2240,7 +2240,14 @@ if [[ "$READ_MODE" == "true" ]]; then
     # R1' Stage 3: determine tag (ACK/DONE/BLOCK/BLOCKED) for this reply_id and
     # shadow-write the state transition before cache removal. Fail-open.
     if declare -F tt_db_transition_task >/dev/null 2>&1; then
-      _tag=$(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo "\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*${reply_id}[[:space:]]*\]" | head -1 | sed -E 's/^\[([A-Z]+):.*$/\1/')
+      # Pick the highest-precedence tag for this reply_id: terminal tags
+      # (DONE/BLOCK) win over ACK regardless of buffer order, so an ACK still
+      # visible in scrollback cannot block the done/blocked transition.
+      _tags=$(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo "\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*${reply_id}[[:space:]]*\]" | sed -E 's/^\[([A-Z]+):.*$/\1/')
+      if printf '%s\n' "$_tags" | grep -q '^DONE$'; then _tag=DONE
+      elif printf '%s\n' "$_tags" | grep -qE '^BLOCK(ED)?$'; then _tag=BLOCK
+      elif printf '%s\n' "$_tags" | grep -q '^ACK$'; then _tag=ACK
+      else _tag=""; fi
       case "$_tag" in
         ACK) _state="acked" ;;
         DONE) _state="done" ;;
@@ -2252,7 +2259,7 @@ if [[ "$READ_MODE" == "true" ]]; then
     tt_cache_remove_task "$TARGET" "$reply_id" >/dev/null 2>&1 || true
     echo "TASK_REPLIED=${reply_id}" >&2
     FOUND_REPLY=0
-  done < <(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo '\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*[^]]+\]' | sed -E 's/^\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*//; s/\]$//' | awk 'NF {print $0}')
+  done < <(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo '\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*[^]]+\]' | sed -E 's/^\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*//; s/\]$//' | awk 'NF {print $0}' | sort -u)
 
   exit "$FOUND_REPLY"
 fi
