@@ -1388,8 +1388,8 @@ is_target_idle() {
       # 1st is host_info) is received. </dev/null avoids consuming caller stdin.
       sessions_json=$(timeout 1 websocat --no-async-stdio -n ws://localhost:8080/ws/sessions </dev/null 2>/dev/null \
         | head -5 \
-        | jq -r 'select(.type == "sessions.list")' 2>/dev/null \
-        | head -1) || true
+        | jq -rc 'select(.type == "sessions.list")' 2>/dev/null \
+        | head -1) || true   # -c: keep object on ONE line so head -1 gets it all
 
       if [[ -n "${sessions_json:-}" ]]; then
         status=$(echo "$sessions_json" | jq -r \
