@@ -1383,7 +1383,10 @@ is_target_idle() {
 
     if [[ -n "$target_tty" ]]; then
       local sessions_json status
-      sessions_json=$(timeout 1 websocat -n1 ws://localhost:8080/ws/sessions 2>/dev/null \
+      # websocat 1.14+ needs --no-async-stdio (else EINVAL after handshake), and
+      # -n (no-close) without --one-message so the 2nd frame (sessions.list, the
+      # 1st is host_info) is received. </dev/null avoids consuming caller stdin.
+      sessions_json=$(timeout 1 websocat --no-async-stdio -n ws://localhost:8080/ws/sessions </dev/null 2>/dev/null \
         | head -5 \
         | jq -r 'select(.type == "sessions.list")' 2>/dev/null \
         | head -1) || true
