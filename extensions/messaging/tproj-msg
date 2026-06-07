@@ -1375,9 +1375,15 @@ get_liveness_status() {
 #   2. tmux prompt marker: CC ❯ or Codex › -> IDLE, otherwise -> BUSY
 is_target_idle() {
   local pane="$1"
+  local target_type
+  target_type=$(get_target_type "$pane")
 
-  # Step 1: WebSocket check (fast, 1s timeout)
-  if command -v websocat >/dev/null 2>&1; then
+  # Step 1: WebSocket check (fast, 1s timeout).
+  # Codex (cdx) panes are EXCLUDED: the CCStatusBar :8080 server misreports
+  # Codex panes as "running" even when idle, so trusting it would queue
+  # cdx-bound messages indefinitely. Codex idle is read reliably from the
+  # prompt marker (Step 2), matching pre-websocat-fix behavior.
+  if [[ "$target_type" != "cdx" ]] && command -v websocat >/dev/null 2>&1; then
     local target_tty
     target_tty=$(tmux display-message -t "$pane" -p '#{pane_tty}' 2>/dev/null || true)
 
@@ -1410,9 +1416,6 @@ is_target_idle() {
   fi
 
   # Step 2: tmux prompt marker check (instant, no sleep)
-  local target_type
-  target_type=$(get_target_type "$pane")
-
   case "$target_type" in
     cc|agent)
       has_cc_prompt "$pane" && return 0
