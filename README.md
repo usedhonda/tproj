@@ -105,6 +105,20 @@ Verify your environment anytime:
 tproj --check
 ```
 
+### Optional: Gemini API key for pane backgrounds
+
+Pane background art (the persona portraits) is generated via Google's Gemini API.
+To enable it, get a key from <https://aistudio.google.com/apikey> and export it:
+
+```bash
+export GEMINI_API_KEY="your-key-here"   # add to your shell profile (~/.zshrc, etc.)
+```
+
+Without a key, tproj runs normally — panes just have no background art (fail-open).
+The art style defaults to a generic hand-drawn anime look; to customize it, create
+`~/.config/tproj/pane-bg.local` and set `TPROJ_PANE_BG_STYLE_REF_EN` / `_REF_JP` /
+`_AUTHOR_JP` (machine-local, never committed).
+
 ## Usage
 
 ```bash
