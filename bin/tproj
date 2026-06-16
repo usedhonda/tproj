@@ -212,11 +212,16 @@ if [[ "${1:-}" == "init" ]]; then
 
   if [[ ${#MISSING_BREW[@]} -gt 0 ]]; then
     echo "Install missing brew packages: ${MISSING_BREW[*]}"
-    printf "  brew install %s\n" "${MISSING_BREW[*]}"
-    printf "Run now? [Y/n] "
-    read -r answer
-    if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
-      brew install "${MISSING_BREW[@]}"
+    if command -v brew >/dev/null 2>&1; then
+      printf "  brew install %s\n" "${MISSING_BREW[*]}"
+      printf "Run now? [Y/n] "
+      read -r answer
+      if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
+        brew install "${MISSING_BREW[@]}"
+      fi
+    else
+      echo "  Homebrew not found. Install it first: https://brew.sh"
+      echo "  then run: brew install ${MISSING_BREW[*]}"
     fi
     echo ""
   fi
@@ -600,7 +605,7 @@ _find_gui_target() {
     [[ -x "$gui_bin" ]] && { echo "$gui_bin"; return 0; }
   done
 
-  echo "tproj: warning: GUI app not found (set TPROJ_GUI_APP_PATH or brew install --cask tproj)" >&2
+  echo "tproj: warning: GUI app not found - build it with 'cd apps/tproj && ./dev-app.sh', or set TPROJ_GUI_APP_PATH (the CLI workspace runs fine without it)" >&2
   return 1
 }
 

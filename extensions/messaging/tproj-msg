@@ -1390,18 +1390,21 @@ is_target_idle() {
     if [[ -n "$target_tty" ]]; then
       local sessions_json status ws_to
       # macOS ships no GNU `timeout`; prefer it, fall back to `gtimeout` (brew
-      # coreutils), else run unbounded (head -5 + websocat exit still cap the
-      # read against a live server; a dead :8080 fails fast on connect).
+      # coreutils). Without either, SKIP the WS probe entirely: an unbounded read
+      # on a connected-but-silent :8080 could hang the idle check, so fall
+      # straight through to the tmux prompt heuristic (README "falls back").
       if command -v timeout >/dev/null 2>&1; then ws_to="timeout 1"
       elif command -v gtimeout >/dev/null 2>&1; then ws_to="gtimeout 1"
       else ws_to=""; fi
-      # websocat 1.14+ needs --no-async-stdio (else EINVAL after handshake), and
-      # -n (no-close) without --one-message so the 2nd frame (sessions.list, the
-      # 1st is host_info) is received. </dev/null avoids consuming caller stdin.
-      sessions_json=$($ws_to websocat --no-async-stdio -n ws://localhost:8080/ws/sessions </dev/null 2>/dev/null \
-        | head -5 \
-        | jq -rc 'select(.type == "sessions.list")' 2>/dev/null \
-        | head -1) || true   # -c: keep object on ONE line so head -1 gets it all
+      if [[ -n "$ws_to" ]]; then
+        # websocat 1.14+ needs --no-async-stdio (else EINVAL after handshake), and
+        # -n (no-close) without --one-message so the 2nd frame (sessions.list, the
+        # 1st is host_info) is received. </dev/null avoids consuming caller stdin.
+        sessions_json=$($ws_to websocat --no-async-stdio -n ws://localhost:8080/ws/sessions </dev/null 2>/dev/null \
+          | head -5 \
+          | jq -rc 'select(.type == "sessions.list")' 2>/dev/null \
+          | head -1) || true   # -c: keep object on ONE line so head -1 gets it all
+      fi
 
       if [[ -n "${sessions_json:-}" ]]; then
         status=$(echo "$sessions_json" | jq -r \

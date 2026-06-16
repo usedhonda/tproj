@@ -24,7 +24,6 @@ tproj               # launch workspace
 - **Inter-AI messaging** — `tproj-msg` for CC ↔ Cdx ↔ cross-project communication
 - **Agent Teams** — Claude Code Agent Teams pane management with auto-reflow
 - **Remote SSH** — launch the same layout on a remote host
-- **Homebrew distribution** — `brew install --cask tproj` with clean uninstall
 
 ## Requirements
 
@@ -33,7 +32,9 @@ tproj               # launch workspace
 - tmux, yazi, bat, yq, jq, node/npm, git
 - Recommended terminal: [Ghostty](https://ghostty.org)
 
-Dependencies are checked and can be auto-installed during `tproj init`.
+Dependencies are checked and can be auto-installed during `tproj init`. Homebrew is
+required only for that automatic dependency installation; otherwise install the
+listed tools manually.
 
 ## What needs what
 
@@ -221,12 +222,23 @@ docs/                           documentation
 
 ## Uninstall
 
+From-source install — remove the CLI scripts and the built app, keeping your config:
+
+```bash
+rm -f ~/bin/tproj ~/bin/tproj-* ~/bin/rebalance-workspace-columns
+rm -rf apps/tproj/dist          # only if you built the GUI app
+```
+
+Your tmux/yazi configs were backed up at install time (`~/.tmux.conf.bak.*`,
+`~/.config/yazi/*.bak.*`) — restore them if you want. User config
+(`~/.config/tproj/`, `~/.claude/`) is preserved.
+
+Homebrew install (maintainer channel):
+
 ```bash
 brew uninstall --cask tproj
 brew untap usedhonda/tproj
 ```
-
-This removes the app and CLI tools. User config (`~/.config/tproj/`, `~/.claude/`) is preserved.
 
 ## Notes
 
