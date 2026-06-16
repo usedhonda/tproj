@@ -33,6 +33,12 @@ while IFS= read -r target; do
     [[ -n "$task_id" ]] || continue
     if printf '%s\n' "$read_output" | grep -q "TASK_REPLIED=${task_id}"; then
       echo "[inbox-notice] reply arrived from ${target} task=${task_id} — review with tproj-msg --read ${target} 40"
+      # R1' Stage 4: mark notified_at on the latest inbound message for this task_id
+      # so the R2' Monitor doesn't re-emit the same task. Fail-open.
+      if declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_set_notified >/dev/null 2>&1; then
+        _notify_id="$(tt_db_exec_safe "SELECT id FROM messages WHERE task_id='${task_id}' AND direction='inbound' ORDER BY id DESC LIMIT 1;" 2>/dev/null || true)"
+        [[ -n "$_notify_id" ]] && tt_db_set_notified "$_notify_id" 2>/dev/null || true
+      fi
     fi
   done <<< "$pending_ids"
 done < <(tt_cache_list_targets)

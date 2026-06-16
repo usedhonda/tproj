@@ -1,0 +1,152 @@
+#!/bin/bash
+# tproj-inbox-monitor - CC-side SQLite tail for tproj-msg inbound notifications.
+#
+# Invoked by Claude Code's Monitor tool:
+#   Monitor(command="tproj-inbox-monitor", persistent=true)
+#
+# Emits a LOW-FREQUENCY "arrival bell" digest, NOT message bodies. Each emitted
+# line is one in-context notification summarizing how many new inbound rows
+# arrived (sender / task_id / msg_id only). The body is deliberately NOT shown:
+# bodies can contain quotes/brackets/backticks/control tags that corrupt the
+# model's tool-call generation when injected mid-turn. Read actual content with
+# `tproj-msg --read <target>`.
+#
+# We poll every 5s to keep the cursor current and mark rows read (dedupe vs the
+# UserPromptSubmit hook), but emit a digest at most once per debounce window
+# (default 30s), collapsing any burst into a single line.
+#
+# Fail-open: DB missing or sqlite3 absent => sleep and retry instead of crashing.
+
+set -u
+
+DB="${TPROJ_MSG_DB_PATH:-$HOME/.local/share/tproj-msg/messages.db}"
+SESSION="${TMUX_SESSION:-$(tmux display-message -p '#S' 2>/dev/null || echo unknown)}"
+MY_ALIAS="${TPROJ_MONITOR_ALIAS:-$(tmux display-message -p '#{@alias}' 2>/dev/null || echo unknown)}"
+MY_ROLE="${TPROJ_MONITOR_ROLE:-cc}"
+CONSUMER="${SESSION}:${MY_ALIAS}.${MY_ROLE}"
+TO_ALIAS="${MY_ALIAS}.${MY_ROLE}"
+POLL="${TPROJ_MONITOR_POLL_SEC:-5}"
+RETRY_SLEEP="${TPROJ_MONITOR_RETRY_SEC:-60}"
+DEBOUNCE="${TPROJ_MONITOR_DEBOUNCE_SEC:-30}"
+MAX_PARTS="${TPROJ_MONITOR_MAX_PARTS:-5}"
+
+# Debounce state (persists across poll cycles in this long-running process).
+PENDING_COUNT=0
+PENDING_PARTS=""
+LAST_EMIT=0
+
+# Escape single quotes for inline SQL (SQLite literal).
+sql_quote() {
+  printf '%s' "$1" | sed "s/'/''/g"
+}
+
+require_db() {
+  command -v sqlite3 >/dev/null 2>&1 || return 1
+  [[ -r "$DB" ]]
+}
+
+bootstrap_cursor() {
+  local consumer_sql
+  consumer_sql=$(sql_quote "$CONSUMER")
+  sqlite3 -bail "$DB" <<SQL 2>/dev/null
+.output /dev/null
+PRAGMA busy_timeout=5000;
+.output stdout
+INSERT OR IGNORE INTO monitor_cursors(consumer, last_message_id, updated_at)
+VALUES ('${consumer_sql}', COALESCE((SELECT MAX(id) FROM messages), 0), strftime('%s','now'));
+SQL
+}
+
+# Single-line arrival bell. No bodies. Points the model to --read for content.
+emit_digest() {
+  local extra=""
+  (( PENDING_COUNT > MAX_PARTS )) && extra=" +$(( PENDING_COUNT - MAX_PARTS )) more"
+  if (( PENDING_COUNT == 1 )); then
+    printf '[inbox-notice] 1 new inbound: %s - read with: tproj-msg --read %s\n' \
+      "$PENDING_PARTS" "$TO_ALIAS"
+  else
+    printf '[inbox-notice] %d new inbound: %s%s - read with: tproj-msg --read %s\n' \
+      "$PENDING_COUNT" "$PENDING_PARTS" "$extra" "$TO_ALIAS"
+  fi
+  PENDING_COUNT=0
+  PENDING_PARTS=""
+  LAST_EMIT=$(date +%s)
+}
+
+poll_once() {
+  local consumer_sql to_sql
+  consumer_sql=$(sql_quote "$CONSUMER")
+  to_sql=$(sql_quote "$TO_ALIAS")
+  local rows last_id mid from tid frag
+  # Metadata only - body is deliberately NOT selected (see header).
+  rows=$(sqlite3 -separator $'\x1f' "$DB" <<SQL 2>/dev/null
+.output /dev/null
+PRAGMA busy_timeout=5000;
+.output stdout
+SELECT m.id, m.from_alias, COALESCE(m.task_id, '')
+  FROM messages m
+  JOIN monitor_cursors c ON c.consumer = '${consumer_sql}'
+ WHERE m.to_alias = '${to_sql}'
+   AND m.id > c.last_message_id
+   AND m.direction = 'inbound'
+   AND m.read_at IS NULL
+   AND m.notified_at IS NULL
+ ORDER BY m.id ASC
+ LIMIT 50;
+SQL
+) || rows=""
+
+  if [[ -n "$rows" ]]; then
+    last_id=""
+    while IFS=$'\x1f' read -r mid from tid; do
+      # Numeric guard: skip any physical line whose first field is not a row id.
+      [[ "$mid" =~ ^[0-9]+$ ]] || continue
+      PENDING_COUNT=$(( PENDING_COUNT + 1 ))
+      # Keep at most MAX_PARTS fragments; the rest are counted as "+N more".
+      if (( PENDING_COUNT <= MAX_PARTS )); then
+        frag="${from}(msg=${mid}"
+        [[ -n "$tid" ]] && frag="${frag},task=${tid}"
+        frag="${frag})"
+        if [[ -z "$PENDING_PARTS" ]]; then
+          PENDING_PARTS="$frag"
+        else
+          PENDING_PARTS="${PENDING_PARTS} ${frag}"
+        fi
+      fi
+      last_id="$mid"
+      sqlite3 -bail "$DB" "UPDATE messages SET read_at=strftime('%s','now') WHERE id=${mid};" 2>/dev/null
+    done <<< "$rows"
+
+    if [[ -n "$last_id" ]]; then
+      sqlite3 -bail "$DB" "UPDATE monitor_cursors SET last_message_id=${last_id}, updated_at=strftime('%s','now') WHERE consumer='${consumer_sql}';" 2>/dev/null
+    fi
+  fi
+
+  # Debounced emit: at most one digest per DEBOUNCE window.
+  if (( PENDING_COUNT > 0 )); then
+    local now
+    now=$(date +%s)
+    if (( now - LAST_EMIT >= DEBOUNCE )); then
+      emit_digest
+    fi
+  fi
+}
+
+main() {
+  while ! require_db; do
+    sleep "$RETRY_SLEEP"
+  done
+  bootstrap_cursor
+  LAST_EMIT=$(date +%s)   # suppress an immediate burst right at startup
+
+  while true; do
+    if require_db; then
+      poll_once
+      sleep "$POLL"
+    else
+      sleep "$RETRY_SLEEP"
+    fi
+  done
+}
+
+main "$@"

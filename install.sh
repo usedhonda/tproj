@@ -364,21 +364,25 @@ if ! $CORE_ONLY; then
 
   # --- messaging ---
   if [[ -d "$SCRIPT_DIR/extensions/messaging" ]]; then
-    echo "  messaging (tproj-msg, tproj-task, tproj-task-cache)"
+    echo "  messaging (tproj-msg, tproj-task, tproj-task-cache, tproj-msg-db)"
     if ! $DRY_RUN; then
       cp "$SCRIPT_DIR/extensions/messaging/tproj-msg" ~/bin/
       cp "$SCRIPT_DIR/extensions/messaging/tproj-task" ~/bin/
       cp "$SCRIPT_DIR/extensions/messaging/tproj-task-cache.sh" ~/bin/
+      cp "$SCRIPT_DIR/extensions/messaging/tproj-msg-db.sh" ~/bin/
+      cp "$SCRIPT_DIR/extensions/messaging/tproj-inbox-monitor" ~/bin/
       chmod +x ~/bin/tproj-msg
       chmod +x ~/bin/tproj-task
       chmod +x ~/bin/tproj-task-cache.sh
+      chmod +x ~/bin/tproj-msg-db.sh
+      chmod +x ~/bin/tproj-inbox-monitor
       # Install msg skill for Claude Code and Codex
       mkdir -p "$HOME/.claude/skills/msg" "$HOME/.codex/skills/msg"
       cp "$SCRIPT_DIR/extensions/messaging/skill-msg/SKILL.md" "$HOME/.claude/skills/msg/"
       cp "$SCRIPT_DIR/extensions/messaging/skill-msg/SKILL.md" "$HOME/.codex/skills/msg/"
     else
       echo "    [DRY-RUN] tproj-msg -> ~/bin/"
-      echo "    [DRY-RUN] tproj-task, tproj-task-cache.sh -> ~/bin/"
+      echo "    [DRY-RUN] tproj-task, tproj-task-cache.sh, tproj-msg-db.sh, tproj-inbox-monitor -> ~/bin/"
       echo "    [DRY-RUN] msg skill -> ~/.claude/skills/ + ~/.codex/skills/"
     fi
   fi
@@ -393,6 +397,19 @@ if ! $CORE_ONLY; then
     else
       echo "    [DRY-RUN] tproj-inbox-record, tproj-inbox-check -> ~/bin/"
     fi
+  fi
+
+  # --- tproj-msg DB init (R1' Stage 5) ---
+  echo "  tproj-msg DB (SQLite WAL at ~/.local/share/tproj-msg/messages.db)"
+  if ! $DRY_RUN; then
+    mkdir -p ~/.local/share/tproj-msg
+    if command -v sqlite3 >/dev/null 2>&1; then
+      ~/bin/tproj-msg-db.sh init 2>/dev/null || echo "    [warn] DB init failed (fail-open, shadow writes disabled)"
+    else
+      echo "    [skip] sqlite3 not found, DB shadow writes disabled (fail-open)"
+    fi
+  else
+    echo "    [DRY-RUN] mkdir -p ~/.local/share/tproj-msg + tproj-msg-db.sh init"
   fi
 
   # --- persona ---

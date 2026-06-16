@@ -25,6 +25,19 @@
 : "${TT_CACHE_DIR:="${HOME}/.cache/tproj-expect-reply"}"
 : "${TT_CACHE_LOCK_DIR:="/tmp"}"
 
+# Best-effort shadow-write to SQLite WAL (R1' Stage 2).
+# Mirrors task state into ~/.local/share/tproj-msg/messages.db.
+# JSON path + mkdir lock remain primary; DB ops are fail-open (always return 0).
+# Sourced lazily so absence of the file does not break contract callers.
+__TT_CACHE_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+if [[ -n "$__TT_CACHE_SELF_DIR" && -f "${__TT_CACHE_SELF_DIR}/tproj-msg-db.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "${__TT_CACHE_SELF_DIR}/tproj-msg-db.sh" 2>/dev/null || true
+elif [[ -f "${HOME}/bin/tproj-msg-db.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "${HOME}/bin/tproj-msg-db.sh" 2>/dev/null || true
+fi
+
 tt_cache_require_jq() {
   command -v jq >/dev/null 2>&1 || {
     printf 'tproj-task-cache: jq is required but not found in PATH\n' >&2
@@ -136,6 +149,10 @@ tt_cache_add() {
     fi
   }
   tt_cache_release_lock "$lock"
+  # R1' Stage 2 shadow write — best-effort, never affects rc.
+  if [[ $rc -eq 0 ]] && declare -F tt_db_upsert_task >/dev/null 2>&1; then
+    tt_db_upsert_task "$task_id" "$target" "$sent_at" "$ttl_sec" "$msg_hash" || true
+  fi
   return $rc
 }
 
@@ -162,6 +179,9 @@ tt_cache_remove_task() {
     fi
   fi
   tt_cache_release_lock "$lock"
+  # No DB shadow write here: state transitions (acked/done/blocked) are recorded
+  # at the call site (tproj-msg --read with tag detection, tproj-task close, etc.)
+  # so this generic remove path stays state-agnostic.
   return $rc
 }
 
@@ -229,6 +249,10 @@ tt_cache_gc_expired() {
         "$path" | while IFS=$'\t' read -r tid until_at; do
           [[ -z "$tid" ]] && continue
           printf '%s\t%s\t%s\ttimeout\n' "$target" "$tid" "$until_at"
+          # R1' Stage 2 shadow write — record expired transition. Fail-open.
+          if declare -F tt_db_transition_task >/dev/null 2>&1; then
+            tt_db_transition_task "$tid" "expired" || true
+          fi
         done
       local remaining
       remaining=$(jq -c --argjson now "$now_copy" \

@@ -40,4 +40,9 @@ task_sent_at="$(printf '%s\n' "$meta_line" | sed -nE 's/.*TASK_SENT_AT=([0-9]+).
 # shellcheck source=/dev/null
 source "$CACHE_HELPER"
 tt_cache_add "$task_target" "$task_id" "$task_sent_at" "$task_ttl_sec" ""
+# R1' Stage 4: redundant DB shadow write so hook-only path stays self-sufficient
+# even if tt_cache_add internals change. INSERT OR REPLACE -> idempotent.
+if declare -F tt_db_upsert_task >/dev/null 2>&1; then
+  tt_db_upsert_task "$task_id" "$task_target" "$task_sent_at" "$task_ttl_sec" "" 2>/dev/null || true
+fi
 exit 0
