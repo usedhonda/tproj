@@ -139,7 +139,7 @@ Examples:
   tproj                   # Auto-detect mode (workspace or single)
   tproj --add             # Add one column in running tproj-workspace
   tproj -s                # Force single mode
-  tproj -r macmini        # SSH remote connection (single mode only)
+  tproj -r my-mac         # SSH remote connection (single mode only)
 
 For more information, see: README.md
 EOF
