@@ -13,14 +13,21 @@ CC_PERSONA_BIN="$HOME/bin/project-bootstrap"
 [[ -x "$CC_PERSONA_BIN" ]] || CC_PERSONA_BIN="$HOME/bin/cc-persona"
 # Final fallback: resolve from PATH (covers non-standard install locations)
 [[ -x "$CC_PERSONA_BIN" ]] || CC_PERSONA_BIN="$(command -v project-bootstrap || command -v cc-persona || echo "$CC_PERSONA_BIN")"
-FLASH_PROMPT_VERSION="2026-03-09.ghibli.era-action.v15"
+FLASH_PROMPT_VERSION="2026-03-09.cel-anime.era-action.v16"
 PRO_PROMPT_VERSION="2026-03-09.nanobanana-pro-prose.v15"
 PERSONA_SOURCE_VERSION="2026-03-07.role-fixed-gender.v1"
 FLASH_PROMPT_SCHEMA="legacy-prose-v1"
 PRO_PROMPT_SCHEMA="nanobanana-pro-self-contained-v2"
 STYLE_MODE_NAMED="named"
 STYLE_MODE_FALLBACK="descriptor"
-STYLE_REFERENCE="Studio Ghibli"
+# Style vocabulary — generic by default so the public repo carries no specific
+# studio/author names. Override locally (not distributed, not committed) via env
+# vars or ~/.config/tproj/pane-bg.local to dial in a particular house style.
+[[ -f "$HOME/.config/tproj/pane-bg.local" ]] && source "$HOME/.config/tproj/pane-bg.local"
+STYLE_REF_EN="${TPROJ_PANE_BG_STYLE_REF_EN:-classic Japanese hand-drawn theatrical anime}"
+STYLE_REF_JP="${TPROJ_PANE_BG_STYLE_REF_JP:-日本の名作劇場アニメ}"
+STYLE_AUTHOR_JP="${TPROJ_PANE_BG_STYLE_AUTHOR_JP:-名作劇場アニメ映画}"
+STYLE_REFERENCE="$STYLE_REF_EN"
 STYLE_REFERENCE_FALLBACK="hand-painted theatrical anime"
 ASPECT_RATIO="9:16"
 TARGET_WIDTH="1024"
@@ -769,7 +776,7 @@ persona_prof_costume_prompt_jp() {
     "ナース") printf '看護服を時代に合わせてアレンジ。清潔感と献身的な雰囲気' ;;
     "メイド") printf '仕える者の清楚な制服。エプロンやヘッドドレスを時代感に馴染ませる' ;;
     "歌姫") printf '歌姫らしい華やかな衣装。声が似合う開いた胸元と優雅なシルエット' ;;
-    "バーチャルアイドル") printf 'スタジオジブリ風の手描きアニメタッチとやわらかな自然光はそのまま保ちつつ、衣装はバーチャルアイドルのステージ衣装にする。控えめに発光する装飾、透明感のあるステージジャケットやドレス、ヘッドセットマイク、ホログラム素材のアクセサリー。ネオンやサイバー表現は過度にせず、ジブリの落ち着いた色調と線で品良くまとめる。着物・白衣・袴・和装・伝統的な布は一切出さない' ;;
+    "バーチャルアイドル") printf '本来の手描きアニメタッチとやわらかな自然光はそのまま保ちつつ、衣装はバーチャルアイドルのステージ衣装にする。控えめに発光する装飾、透明感のあるステージジャケットやドレス、ヘッドセットマイク、ホログラム素材のアクセサリー。ネオンやサイバー表現は過度にせず、落ち着いた色調と線で品良くまとめる。着物・白衣・袴・和装・伝統的な布は一切出さない' ;;
     "占い師") printf '神秘的な装飾、ベールやショール、星や月のモチーフを纏う' ;;
     "花魁") printf '豪華な着物と髪飾り、格式の高い遊女らしい艶やかな装い' ;;
     "女騎士") printf '甲冑と布の組み合わせ、戦う女性の凛々しさと力強さ' ;;
@@ -782,12 +789,12 @@ persona_prof_costume_prompt_jp() {
     "諜報員") printf '目立たない仕立ての良い服、隠し道具の気配、鋭い印象' ;;
     "料理人") printf '料理人の実用衣装、清潔な前掛け、腕まくりの気さくさ' ;;
     "楽師") printf '楽器を携える衣装、音楽家らしい繊細さと自由な着こなし' ;;
-    "ヴァイオリニスト"|"バイオリニスト") printf 'ヴァイオリンと弓を胸元または肩に自然に携え、弦楽器奏者と一目で分かる佇まい。クラシカルな演奏家らしい端正な衣装、白シャツにベストやジャケットなど品のある弦楽器奏者の装い。ジブリの手描きセル画タッチと落ち着いた色調、やわらかな自然光はそのまま保つ' ;;
-    "ピアニスト") printf '演奏家らしい端正な衣装、長い指先と手元の所作を自然に見せる、コンサートホールを思わせる品のある佇まい。ジブリの手描きセル画タッチと落ち着いた色調はそのまま保つ' ;;
-    "チェリスト") printf 'チェロを携える姿または弓と弦楽器の気配、弦楽器奏者の端正で静かな佇まい。ジブリの手描きセル画タッチと落ち着いた色調はそのまま保つ' ;;
+    "ヴァイオリニスト"|"バイオリニスト") printf 'ヴァイオリンと弓を胸元または肩に自然に携え、弦楽器奏者と一目で分かる佇まい。クラシカルな演奏家らしい端正な衣装、白シャツにベストやジャケットなど品のある弦楽器奏者の装い。本来の手描きセル画タッチと落ち着いた色調、やわらかな自然光はそのまま保つ' ;;
+    "ピアニスト") printf '演奏家らしい端正な衣装、長い指先と手元の所作を自然に見せる、コンサートホールを思わせる品のある佇まい。本来の手描きセル画タッチと落ち着いた色調はそのまま保つ' ;;
+    "チェリスト") printf 'チェロを携える姿または弓と弦楽器の気配、弦楽器奏者の端正で静かな佇まい。本来の手描きセル画タッチと落ち着いた色調はそのまま保つ' ;;
     "商人") printf '商人らしい上質な仕立て、旅の経験が見える実用的な装い' ;;
     "錬金術師") printf '実験道具の気配がある衣装、知的で少し風変わりな研究者の装い' ;;
-    *) printf '%sの職業らしい衣装アイテムや小道具が上半身に自然に読み取れる、その職業固有のシルエット。スタジオジブリ風の手描きアニメタッチと落ち着いた色調はそのまま保つ' "$PERSONA_PROF" ;;
+    *) printf '%sの職業らしい衣装アイテムや小道具が上半身に自然に読み取れる、その職業固有のシルエット。本来の手描きアニメタッチと落ち着いた色調はそのまま保つ' "$PERSONA_PROF" ;;
   esac
 }
 
@@ -970,9 +977,9 @@ build_flash_named_prompt() {
 
  cat <<EOF
 create an image of a vertical terminal wallpaper.
-Studio Ghibli を強く思わせる、日本の手描き劇場アニメ映画の空気。セル画の人物と背景美術の組み合わせ。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
+${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。セル画の人物と背景美術の組み合わせ。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
 手順:
-1. 古典的な肖像画のような半身ポートレートにする。顔と上半身が自然に画面の主役として大きく見える、均整の取れた構図にする。頭上の余白を少なくし、胸から上、必要でも腰上までに留める。顔立ちはスタジオジブリの劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、宮崎駿監督作品の主人公のような端正で自然な顔立ちにする。
+1. 古典的な肖像画のような半身ポートレートにする。顔と上半身が自然に画面の主役として大きく見える、均整の取れた構図にする。頭上の余白を少なくし、胸から上、必要でも腰上までに留める。顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
 2. 人物像は既存の persona データを最優先にする。${subject_jp}として自然に見せる。$(role_character_prompt_jp "$role")
 3. $(role_costume_prompt_jp "$role")。$(persona_prof_costume_prompt_jp)
 4. $(role_scene_prompt_jp "$role")
@@ -990,9 +997,9 @@ build_flash_fallback_prompt() {
 
  cat <<EOF
 create an image of a vertical terminal wallpaper.
-Studio Ghibli を強く思わせる、日本の手描き劇場アニメ映画の空気。ただし説明的な模写ではなく、日本アニメ映画らしい顔立ちと線、セル画の人物と背景美術の組み合わせとして出す。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
+${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。ただし説明的な模写ではなく、日本アニメ映画らしい顔立ちと線、セル画の人物と背景美術の組み合わせとして出す。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
 手順:
-1. 古典的な肖像画のような半身ポートレートにする。顔と上半身が自然に画面の主役として大きく見える、均整の取れた構図にする。頭上の余白を少なくし、胸から上、必要でも腰上までに留める。顔立ちはスタジオジブリの劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、宮崎駿監督作品の主人公のような端正で自然な顔立ちにする。
+1. 古典的な肖像画のような半身ポートレートにする。顔と上半身が自然に画面の主役として大きく見える、均整の取れた構図にする。頭上の余白を少なくし、胸から上、必要でも腰上までに留める。顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
 2. 人物像は既存の persona データを最優先にする。${subject_jp}として自然に見せる。$(role_character_prompt_jp "$role")
 3. $(role_costume_prompt_jp "$role")。$(persona_prof_costume_prompt_jp)
 4. $(role_scene_prompt_jp "$role")
@@ -1010,7 +1017,7 @@ build_negative_prompt() {
     printf ' 女性人物が少年のように見える顔立ち、平坦すぎる子ども体型、男性的すぎる肩幅と直線シルエット、無表情で硬い直立姿勢、中性的すぎて女性と読めない上半身は禁止。 NO BOYISH FEMALE PRESENTATION. NO FLAT CHILDLIKE FEMALE BODY SHAPE. NO OVERLY MASCULINE SHOULDERS ON FEMALE SUBJECT. NO STIFF STRAIGHT POSE FOR FEMALE SUBJECT. NO ANDROGYNOUS FEMALE PRESENTATION.'
   fi
   if [[ "$PERSONA_PROF" == *"アイドル"* || "$PERSONA_PROF" == *"歌姫"* || "$PERSONA_PROF" == *"シンガー"* ]]; then
-    printf ' 着物、白衣、袴、和装、緋袴、神職、巫女衣装、伝統的な日本衣装、寺社風の衣装は一切禁止。 NO KIMONO. NO WHITE JINJA ROBE. NO MIKO. NO HAKAMA. NO TRADITIONAL JAPANESE OUTFIT. 過度なネオン演出、サイバーパンクに振り切った派手な彩色、フォトリアル寄りのメタリック光沢、写実的なCG風仕上げは禁止。ジブリ/宮崎駿らしいやわらかな自然光と落ち着いた色調、手描きセル画タッチを崩さない。 NO OVERSATURATED NEON. NO CYBERPUNK STYLE. NO METALLIC CGI GLOSS. KEEP STUDIO GHIBLI HAND-DRAWN CEL ANIMATION STYLE.'
+    printf ' 着物、白衣、袴、和装、緋袴、神職、巫女衣装、伝統的な日本衣装、寺社風の衣装は一切禁止。 NO KIMONO. NO WHITE JINJA ROBE. NO MIKO. NO HAKAMA. NO TRADITIONAL JAPANESE OUTFIT. 過度なネオン演出、サイバーパンクに振り切った派手な彩色、フォトリアル寄りのメタリック光沢、写実的なCG風仕上げは禁止。本来のやわらかな自然光と落ち着いた色調、手描きセル画タッチを崩さない。 NO OVERSATURATED NEON. NO CYBERPUNK STYLE. NO METALLIC CGI GLOSS. KEEP THE HAND-DRAWN CEL ANIMATION STYLE.'
   fi
 )
 EOF
@@ -1107,9 +1114,9 @@ build_pro_finished_prompt_body() {
 
   subject_jp="$(persona_subject_jp "$PERSONA_GENDER_RAW" "$PERSONA_AGE_RAW")"
   if [[ "$style_mode" == "$STYLE_MODE_NAMED" ]]; then
-    style_intro="Studio Ghibli を強く思わせる、日本の手描き劇場アニメ映画の空気。日本アニメ映画らしい顔立ちと線、セル画の人物と背景美術の組み合わせ。水彩ファンタジー絵本風や西洋ファンタジー表紙絵にはしない。上品で非オタク的な人物造形。"
+    style_intro="${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。日本アニメ映画らしい顔立ちと線、セル画の人物と背景美術の組み合わせ。水彩ファンタジー絵本風や西洋ファンタジー表紙絵にはしない。上品で非オタク的な人物造形。"
   else
-    style_intro="Studio Ghibli を強く思わせる、日本の手描き劇場アニメ映画の空気。ただし説明的な模写ではなく、日本アニメ映画らしい顔立ちと線、セル画の人物と背景美術の組み合わせとして出す。水彩ファンタジー絵本風や西洋ファンタジー表紙絵にはしない。上品で非オタク的な人物造形。"
+    style_intro="${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。ただし説明的な模写ではなく、日本アニメ映画らしい顔立ちと線、セル画の人物と背景美術の組み合わせとして出す。水彩ファンタジー絵本風や西洋ファンタジー表紙絵にはしない。上品で非オタク的な人物造形。"
   fi
 
   cat <<EOF
@@ -1145,7 +1152,7 @@ build_pro_prompt_json() {
   identity_name="$(printf '%s %s portrait' "$(role_label "$role")" "$PERSONA_ERA")"
 
   if [[ "$style_mode" == "$STYLE_MODE_NAMED" ]]; then
-    aesthetic="Studio Ghibli inspired hand-painted theatrical anime portrait"
+    aesthetic="${STYLE_REF_EN} inspired hand-painted theatrical anime portrait"
     style_palette="muted cinematic palette, elegant and character-first"
   else
     aesthetic="hand-painted theatrical anime portrait with warm background art"
