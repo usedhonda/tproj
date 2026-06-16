@@ -110,10 +110,12 @@ check_command() {
   fi
 }
 
+BACKUP_TS="$(date +%Y%m%d_%H%M%S)"
+
 backup_if_exists() {
   local file=$1
   if [[ -f "$file" && ! -L "$file" ]]; then
-    local backup="${file}.bak.$(date +%Y%m%d_%H%M%S)"
+    local backup="${file}.bak.${BACKUP_TS}"
     if $DRY_RUN; then
       echo "[DRY-RUN] Backup: $file -> $backup"
     else
@@ -123,12 +125,26 @@ backup_if_exists() {
   fi
 }
 
+print_config_preflight() {
+  echo "Configuration preflight:"
+  echo "  Will write: $HOME/.tmux.conf"
+  [[ -f "$HOME/.tmux.conf" && ! -L "$HOME/.tmux.conf" ]] && echo "    Existing file will be backed up: $HOME/.tmux.conf.bak.${BACKUP_TS}"
+  echo "  Will write: $HOME/.config/yazi/yazi.toml"
+  [[ -f "$HOME/.config/yazi/yazi.toml" && ! -L "$HOME/.config/yazi/yazi.toml" ]] && echo "    Existing file will be backed up: $HOME/.config/yazi/yazi.toml.bak.${BACKUP_TS}"
+  echo "  Will write: $HOME/.config/yazi/keymap.toml"
+  [[ -f "$HOME/.config/yazi/keymap.toml" && ! -L "$HOME/.config/yazi/keymap.toml" ]] && echo "    Existing file will be backed up: $HOME/.config/yazi/keymap.toml.bak.${BACKUP_TS}"
+  echo "  Will write: $HOME/.config/yazi/package.toml"
+  [[ -f "$HOME/.config/yazi/package.toml" && ! -L "$HOME/.config/yazi/package.toml" ]] && echo "    Existing file will be backed up: $HOME/.config/yazi/package.toml.bak.${BACKUP_TS}"
+  echo "  Will write: $HOME/.config/yazi/plugins/"
+}
+
 # ========== 1. Dependency check ==========
 
 echo "Checking dependencies..."
 
-# Tools installable via brew
-BREW_DEPS=(npm:node git tmux yazi bat yq)
+# Tools installable via brew. Keep the required runtime set aligned with
+# `tproj init` and `tproj --check` (tmux jq yq bat yazi).
+BREW_DEPS=(npm:node git tmux yazi bat yq jq)
 # Tools installable via npm
 NPM_DEPS=(claude:@anthropic-ai/claude-code codex:@openai/codex)
 
@@ -281,6 +297,7 @@ else
 fi
 
 # 4.2 tmux config
+print_config_preflight
 backup_if_exists ~/.tmux.conf
 if $DRY_RUN; then
   echo "[DRY-RUN] tmux.conf -> ~/.tmux.conf"
@@ -428,7 +445,10 @@ if ! $CORE_ONLY; then
     fi
     # Check optional deps
     if ! command -v jq &>/dev/null; then
-      echo "    ⚠️  jq not found (required by project-bootstrap): brew install jq"
+      echo "    ⚠️  jq not found (required by project-bootstrap and tproj): brew install jq"
+    fi
+    if ! command -v sqlite3 &>/dev/null; then
+      echo "    ℹ️  sqlite3 not found (optional, for tproj-msg SQLite monitor): brew install sqlite3"
     fi
     if ! python3 -c "import genai" 2>/dev/null; then
       echo "    ℹ️  google-genai not found (optional, for AI image generation): pip3 install google-genai"

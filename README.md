@@ -7,10 +7,11 @@ Spin up a structured terminal layout with Claude Code and Codex side by side, wi
 ## Quick Start
 
 ```bash
-brew tap usedhonda/tproj
-brew install --cask tproj
-tproj init    # interactive setup wizard
-tproj         # launch workspace
+git clone https://github.com/usedhonda/tproj.git
+cd tproj
+./install.sh        # install CLI + extensions
+tproj init          # interactive setup wizard
+tproj               # launch workspace
 ```
 
 ## Features
@@ -34,22 +35,25 @@ tproj         # launch workspace
 
 Dependencies are checked and can be auto-installed during `tproj init`.
 
+## What needs what
+
+tproj's core (tmux layout + CLI) runs on the base dependencies alone. Optional
+features degrade gracefully ("fail open") when their component is missing:
+
+| Feature | Requires | If missing |
+|---------|----------|------------|
+| tmux layout + panes | tmux, yq, jq | core — required |
+| Inter-AI messaging (`tproj-msg`) | core only | — |
+| Real-time inbox monitor | `sqlite3` | monitor disabled, sending still works |
+| WebSocket idle detection | `websocat` + `timeout`/`gtimeout` | falls back to tmux prompt heuristic |
+| Native GUI app | built `tproj.app` | CLI workspace continues without it |
+| Pane backgrounds | `project-bootstrap` + Gemini API key | no background art |
+| Voice alerts | VOICEVOX / `say` | silent |
+| Gate / Chi bridge | ClawGate at `localhost:8765` | only the `gate` target is affected |
+
 ## Install
 
-### Homebrew (recommended)
-
-```bash
-brew tap usedhonda/tproj
-brew install --cask tproj
-```
-
-This installs:
-- `tproj.app` in `/Applications`
-- CLI tools in `~/bin/`
-- Config files (`~/.tmux.conf`, `~/.config/yazi/`)
-- Extensions (messaging, persona, agent-teams)
-
-### From source
+### From source (recommended)
 
 ```bash
 git clone https://github.com/usedhonda/tproj.git
@@ -61,6 +65,24 @@ cd tproj
 ```
 
 Run `./install.sh -h` for all options.
+
+This installs CLI tools in `~/bin/`, config files (`~/.tmux.conf`, `~/.config/yazi/`),
+and extensions (messaging, persona, agent-teams). The native GUI app is **not** built
+by `install.sh` — see [GUI App](#gui-app) to build it from source.
+
+### Homebrew (maintainer distribution)
+
+> **Note:** The Homebrew tap is currently a private maintainer channel and is **not**
+> available for public `brew install`. Use the from-source path above. The cask is
+> published only as part of the maintainer release pipeline; the commands below work
+> once (or if) the tap is made public.
+
+```bash
+brew tap usedhonda/tproj
+brew install --cask tproj
+```
+
+When installed this way, the cask also places `tproj.app` in `/Applications`.
 
 ## Setup
 
@@ -124,14 +146,18 @@ A native SwiftUI app for session control and monitoring. Features:
 - Ghostty window snap with resize control
 - Window size persistence across restarts
 
-The GUI auto-launches when `tproj` starts a session. Installed to `/Applications/tproj.app` via Homebrew.
+The GUI auto-launches when `tproj` starts a session **if the app is installed**.
+A from-source install does not build the app automatically — build it once from
+`apps/tproj`:
 
-For development:
 ```bash
 cd apps/tproj
 ./dev-app.sh           # debug build + launch
 ./dev-app.sh --release # release build (universal binary + app bundle)
 ```
+
+Without the built app, `tproj` still runs the full tmux/CLI workspace and prints a
+one-line notice that the GUI was not found — core functionality is unaffected.
 
 ## Extensions
 

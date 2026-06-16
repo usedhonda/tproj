@@ -1388,11 +1388,17 @@ is_target_idle() {
     target_tty=$(tmux display-message -t "$pane" -p '#{pane_tty}' 2>/dev/null || true)
 
     if [[ -n "$target_tty" ]]; then
-      local sessions_json status
+      local sessions_json status ws_to
+      # macOS ships no GNU `timeout`; prefer it, fall back to `gtimeout` (brew
+      # coreutils), else run unbounded (head -5 + websocat exit still cap the
+      # read against a live server; a dead :8080 fails fast on connect).
+      if command -v timeout >/dev/null 2>&1; then ws_to="timeout 1"
+      elif command -v gtimeout >/dev/null 2>&1; then ws_to="gtimeout 1"
+      else ws_to=""; fi
       # websocat 1.14+ needs --no-async-stdio (else EINVAL after handshake), and
       # -n (no-close) without --one-message so the 2nd frame (sessions.list, the
       # 1st is host_info) is received. </dev/null avoids consuming caller stdin.
-      sessions_json=$(timeout 1 websocat --no-async-stdio -n ws://localhost:8080/ws/sessions </dev/null 2>/dev/null \
+      sessions_json=$($ws_to websocat --no-async-stdio -n ws://localhost:8080/ws/sessions </dev/null 2>/dev/null \
         | head -5 \
         | jq -rc 'select(.type == "sessions.list")' 2>/dev/null \
         | head -1) || true   # -c: keep object on ONE line so head -1 gets it all

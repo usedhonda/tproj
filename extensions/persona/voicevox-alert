@@ -245,7 +245,7 @@ voice_letter_spoken() {
 
 voice_known_token_spoken() {
   case "$1" in
-    # --- abbreviations & project-specific ---
+    # --- abbreviations & user-editable project examples ---
     ai) printf 'エーアイ\n' ;;
     ana) printf 'アナ\n' ;;
     bb) printf 'ビービー\n' ;;
@@ -275,7 +275,7 @@ voice_known_token_spoken() {
     ui) printf 'ユーアイ\n' ;;
     url) printf 'ユーアールエル\n' ;;
     vdr) printf 'ブイディーアール\n' ;;
-    # --- compound project names ---
+    # --- compound project names (examples; users may tailor these) ---
     adlogger) printf 'アドロガー\n' ;;
     aillio) printf 'アイリオ\n' ;;
     artist) printf 'アーティスト\n' ;;
@@ -523,7 +523,7 @@ resolve_speaker_id_from_names() {
   fi
 
   if [ -z "$tmp_dir" ] || [ ! -d "$tmp_dir" ]; then
-    tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/ccsb-voicevox.XXXXXX")"
+    tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/tproj-voicevox.XXXXXX")"
   fi
 
   local speakers_json="$tmp_dir/speakers.json"
@@ -602,7 +602,7 @@ run_voicevox() {
   local speed_scale="${4:-}"
   local volume_scale="${5:-}"
 
-  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/ccsb-voicevox.XXXXXX")"
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/tproj-voicevox.XXXXXX")"
   local query_json="$tmp_dir/audio-query.json"
   local output_wav="$tmp_dir/output.wav"
 

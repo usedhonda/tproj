@@ -139,7 +139,7 @@ Examples:
   tproj                   # Auto-detect mode (workspace or single)
   tproj --add             # Add one column in running tproj-workspace
   tproj -s                # Force single mode
-  tproj -r macmini        # SSH remote connection (single mode only)
+  tproj -r my-mac         # SSH remote connection (single mode only)
 
 For more information, see: README.md
 EOF
@@ -276,10 +276,21 @@ WSEOF
         # Use jq to add hook to existing settings
         if command -v jq >/dev/null 2>&1; then
           NEW_HOOK='{"hooks":[{"type":"command","command":"$HOME/bin/project-bootstrap"}]}'
-          jq --argjson hook "$NEW_HOOK" '
-            .hooks.SessionStart = (.hooks.SessionStart // []) + [$hook]
-          ' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
-          echo "  Added SessionStart hook."
+          echo "  Will add this SessionStart hook entry:"
+          echo "    $NEW_HOOK"
+          # Build into a temp file, validate it parses, back up, then replace.
+          if jq --argjson hook "$NEW_HOOK" \
+               '.hooks.SessionStart = (.hooks.SessionStart // []) + [$hook]' \
+               "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" 2>/dev/null \
+             && jq empty "${SETTINGS_FILE}.tmp" 2>/dev/null; then
+            cp "$SETTINGS_FILE" "${SETTINGS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+            mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+            echo "  Added SessionStart hook (backup saved next to settings.json)."
+          else
+            rm -f "${SETTINGS_FILE}.tmp"
+            echo "  ERROR: could not produce valid settings.json; left unchanged."
+            echo "  Add manually: .hooks.SessionStart += $NEW_HOOK"
+          fi
         else
           echo "  jq not available, please add manually to $SETTINGS_FILE"
         fi

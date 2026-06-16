@@ -129,7 +129,7 @@ bash -c '
 rm -rf /tmp/rt-cache /tmp/rt-locks
 mkdir -p /tmp/rt-cache /tmp/rt-locks
 export TT_CACHE_DIR=/tmp/rt-cache TT_CACHE_LOCK_DIR=/tmp/rt-locks
-source /Users/usedhonda/projects/claude/tproj/extensions/messaging/tproj-task-cache.sh
+source ./extensions/messaging/tproj-task-cache.sh
 for i in $(seq 1 16); do
   ( tt_cache_add par.cdx "par-$(printf "%02d" $i)" $((1734500000+i)) 1800 "h$i" ) &
 done
@@ -148,7 +148,7 @@ bash -c '
 rm -rf /tmp/rt-cache /tmp/rt-locks
 mkdir -p /tmp/rt-cache /tmp/rt-locks
 export TT_CACHE_DIR=/tmp/rt-cache TT_CACHE_LOCK_DIR=/tmp/rt-locks
-source /Users/usedhonda/projects/claude/tproj/extensions/messaging/tproj-task-cache.sh
+source ./extensions/messaging/tproj-task-cache.sh
 t0=$(date +%s%N)
 for i in $(seq 1 8); do
   ( tt_cache_add "tgt-$i.cdx" "t-$i-01" $((1734500000+i)) 1800 "h$i" ) &
@@ -169,7 +169,7 @@ bash -c '
 rm -rf /tmp/rt-cache /tmp/rt-locks
 mkdir -p /tmp/rt-cache /tmp/rt-locks
 export TT_CACHE_DIR=/tmp/rt-cache TT_CACHE_LOCK_DIR=/tmp/rt-locks
-source /Users/usedhonda/projects/claude/tproj/extensions/messaging/tproj-task-cache.sh
+source ./extensions/messaging/tproj-task-cache.sh
 # Remove on empty cache -> return 0
 tt_cache_remove_task nope.cdx nothing && echo "PASS: remove on empty"
 # Add then remove same id twice
@@ -189,7 +189,7 @@ bash -c '
 rm -rf /tmp/rt-cache /tmp/rt-locks
 mkdir -p /tmp/rt-cache /tmp/rt-locks
 export TT_CACHE_DIR=/tmp/rt-cache TT_CACHE_LOCK_DIR=/tmp/rt-locks
-source /Users/usedhonda/projects/claude/tproj/extensions/messaging/tproj-task-cache.sh
+source ./extensions/messaging/tproj-task-cache.sh
 tt_cache_add x.cdx live-1 1734500000 3600 h1   # expect_until = 1734503600
 tt_cache_add x.cdx stale-1 1734500000 60 h2    # expect_until = 1734500060
 tt_cache_gc_expired 1734503500                 # stale-1 expired, live-1 survives
@@ -210,7 +210,7 @@ export TT_CACHE_DIR=/tmp/rt-cache TT_CACHE_LOCK_DIR=/tmp/rt-locks
 # Forge a stale lock dir with a non-existent pid
 mkdir -p /tmp/rt-locks/tproj-task-cache.x.cdx.lock
 echo 99999 > /tmp/rt-locks/tproj-task-cache.x.cdx.lock/pid
-source /Users/usedhonda/projects/claude/tproj/extensions/messaging/tproj-task-cache.sh
+source ./extensions/messaging/tproj-task-cache.sh
 # Next add should detect dead holder, recycle, succeed
 tt_cache_add x.cdx recovered-1 1734500000 600 h && echo "PASS: stale lock recovered"
 '
@@ -235,7 +235,7 @@ Expected: `PASS: stale lock recovered` within ~50–100 ms (not full 5 s timeout
 Authoritative references (for wording parity with Lane C1 / cc-general.cdx output):
 
 - `~/.claude/CLAUDE.md` §6 (tproj-msg safety), §8 (delegation), §6.3.1 (Task ID operation)
-- `/Users/usedhonda/projects/claude/tproj/extensions/messaging/tproj-msg` (D1 consumer — §3 single-writer rule binds this file)
-- `/Users/usedhonda/projects/claude/tproj/extensions/hooks/tproj-inbox-record` (D4 adder — exclusive `tt_cache_add` caller)
-- `/Users/usedhonda/projects/claude/tproj/extensions/hooks/tproj-inbox-check` (D5 remover via `tt_cache_gc_expired`)
-- `/Users/usedhonda/projects/claude/tproj/extensions/messaging/tproj-task` (D2 CLI)
+- `extensions/messaging/tproj-msg` (D1 consumer — §3 single-writer rule binds this file)
+- `extensions/hooks/tproj-inbox-record` (D4 adder — exclusive `tt_cache_add` caller)
+- `extensions/hooks/tproj-inbox-check` (D5 remover via `tt_cache_gc_expired`)
+- `extensions/messaging/tproj-task` (D2 CLI)

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # tproj Release Script
+# Maintainer-only packaging/publishing helper. End users installing from source
+# do not need this script or its signing/Homebrew tap settings.
 #
 # Usage:
 #   ./scripts/release.sh

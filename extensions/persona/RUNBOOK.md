@@ -12,7 +12,7 @@ tmux pane 背景画像を Gemini で生成する。各ペインの persona（職
 ~/bin/tproj-pane-bg generate --project <repo> --role <cc|cdx> [--refresh]
 ```
 
-- `--project`: 対象 persona を持つリポジトリ（例 `/Users/usedhonda/projects/ios/vibeterm`）
+- `--project`: 対象 persona を持つリポジトリ（例 `/Users/alice/projects/my-app`）
 - `--role`: `cc` / `cdx` のどちらのペイン画像を作るか
 - `--refresh`: 既存キャッシュ無視、強制再生成
 - 出力: `<repo>/.local/tproj-pane-bg/<role>.vertical.png` と `.json` sidecar
@@ -32,7 +32,7 @@ MEMORY.md を書き換えずに「画像だけ別職業に寄せたい」ケー�
 - `--prof` は persona_line の `prof:xxx` 部分だけを画像生成時に上書きする（`apply_prof_override` 関数 L942 で処理）
 - MEMORY.md は触らない。生成後は `--prof` 無しで再生成すれば元に戻る
 - sidecar JSON の `persona_line` に override 後の値が入る
-- 永続化したい場合は MEMORY.md の `CC/Cdx Persona` テーブルの prof 行を手編集する（ただし macmini auto-sync プロジェクトでは revert されるので注意、後述）
+- 永続化したい場合は MEMORY.md の `CC/Cdx Persona` テーブルの prof 行を手編集する（ただし外部同期で管理されているプロジェクトでは revert されるので注意、後述）
 
 ### prof の case 定義（重要）
 
@@ -95,15 +95,15 @@ $(persona_era_costume_prompt_jp)
 
 新 case 追加時は衣装文中に「ジブリの手描きセル画タッチと落ち着いた色調はそのまま保つ」相当の抑え文を必ず入れる。musician 系（アイドル / 歌姫 / シンガー）は `build_negative_prompt` にも「過度なネオン演出禁止」「サイバーパンク禁止」「メタリック CGI 光沢禁止」を条件追加する。
 
-### 3. oc-general は macmini auto-sync でローカル書換が revert される
+### 3. 外部同期プロジェクトではローカル書換が revert されることがある
 
-`~/projects/openclaw/oc-general/` は macmini 側の `~/.openclaw/workspace/` が正典で、launchd job `ai.openclaw.workspace-sync` が 30 分間隔でローカルを上書きする。ローカルの `~/.claude/projects/-Users-usedhonda-projects-openclaw-oc-general/memory/MEMORY.md` の `<!-- CC-PERSONA-START -->` sentinel 内を手動書換しても revert されるため、persona 変更依頼には `--prof` による image-only override で応える。
+リモートマシン、社内同期、launchd/cron などで workspace が自動同期されている場合、ローカルの `~/.claude/projects/.../memory/MEMORY.md` の `<!-- CC-PERSONA-START -->` sentinel 内を手動書換しても revert されることがある。その場合、persona 変更依頼にはまず `--prof` による image-only override で応える。
 
-永続変更が必要なら macmini 側 SSH で `~/.openclaw/workspace/.../MEMORY.md` を直接編集するか、oc-general.cc 本人に依頼する。
+永続変更が必要なら、そのプロジェクトの source of truth 側を編集するか、該当プロジェクトの担当 AI に依頼する。
 
 ### 4. 他プロジェクトで MEMORY.md 書換はしない
 
-今回の vibeterm 対応では、persona 変更ではなく **画像だけ override** の方針。MEMORY.md に手を入れると sync 機構や persona データとの齟齬が出る。画像 override が足りなければ AGENTS.md の user-owned section に override instruction を追加する、あるいは `--prof` 用の case を tproj-pane-bg 側で拡張する、のどちらかで対応する。
+一時的な職業変更依頼では、persona 変更ではなく **画像だけ override** を優先する。MEMORY.md に手を入れると sync 機構や persona データとの齟齬が出ることがある。画像 override が足りなければ AGENTS.md の user-owned section に override instruction を追加する、あるいは `--prof` 用の case を tproj-pane-bg 側で拡張する、のどちらかで対応する。
 
 ## 完了判定チェックリスト
 
