@@ -4,6 +4,10 @@ A tmux-based AI workspace orchestrator for [Claude Code](https://github.com/anth
 
 Spin up a structured terminal layout with Claude Code and Codex side by side, with AI-generated persona, pane backgrounds, inter-AI messaging, and a native macOS GUI — all managed from a single command.
 
+<p align="center">
+  <img src="docs/images/gui-screenshot.png" alt="tproj GUI" width="320" />
+</p>
+
 ## Quick Start
 
 ```bash
@@ -152,8 +156,6 @@ projects:
 See `config/workspace.yaml.example` for the full field reference.
 
 ## GUI App
-
-<img src="docs/images/gui-screenshot.png" alt="tproj GUI" width="280" align="right" />
 
 A native SwiftUI app for session control and monitoring. Features:
 - Workspace project list with drag-and-drop column reordering
