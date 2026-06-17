@@ -1266,10 +1266,16 @@ detect_prompt_draft_state() {
     return 0
   fi
 
-  # Stable non-empty, non-dim, non-hint text -> real user input
-  PROMPT_DRAFT_STATE="typing"
-  PROMPT_DRAFT_REASON="stable_non_empty_prompt"
-  PROMPT_DRAFT_SNIPPET=$(printf '%s' "$second_text" | cut -c1-120)
+  # Stable non-empty text, but no cursor and no change between the two samples:
+  # we cannot prove this is a live user draft. It is just as likely leftover
+  # render text or an autocomplete that omitted the dim SGR. Report "unknown"
+  # (not "typing") so the caller falls through to the prompt-marker idle check
+  # instead of forcing session_typing_busy. A genuinely active draft is already
+  # caught above via cursor visibility (cursor_detected*) or the text-delta
+  # recheck (dynamic_prompt_input).
+  PROMPT_DRAFT_STATE="unknown"
+  PROMPT_DRAFT_REASON="stable_non_empty_prompt_unproven"
+  PROMPT_DRAFT_SNIPPET=""
   return 0
 }
 
