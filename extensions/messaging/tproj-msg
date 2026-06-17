@@ -1461,10 +1461,10 @@ get_idle_status() {
       echo "suggestion"
       return 0
       ;;
-    unknown)
-      echo "busy"
-      return 0
-      ;;
+    # unknown: prompt state could not be resolved. Defer to is_target_idle
+    # (WS + prompt marker) instead of hard-reporting busy, so an idle pane with
+    # leftover/unparseable prompt text surfaces as idle. This matches the send
+    # path, which also falls through to is_target_idle on unknown.
   esac
 
   if is_target_idle "$pane"; then
