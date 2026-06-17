@@ -153,6 +153,8 @@ See `config/workspace.yaml.example` for the full field reference.
 
 ## GUI App
 
+<img src="docs/images/gui-screenshot.png" alt="tproj GUI" width="280" align="right" />
+
 A native SwiftUI app for session control and monitoring. Features:
 - Workspace project list with drag-and-drop column reordering
 - Memory usage monitoring with per-column breakdown
