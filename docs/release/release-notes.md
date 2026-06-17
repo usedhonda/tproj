@@ -1,16 +1,23 @@
-## What's New
+# Release Notes
 
-### Homebrew Distribution
+tproj is distributed **from source**. To install, see the [README](../../README.md):
+
 ```bash
-brew tap usedhonda/tproj
-brew install --cask tproj
+git clone https://github.com/usedhonda/tproj.git
+cd tproj
+./install.sh
+tproj init
 ```
 
-### Setup Wizard
-- `tproj init` — interactive setup: dependency check, workspace.yaml generation, Claude Code hooks configuration
+This file tracks notable changes per tagged version.
+
+## v0.1.0
+
+### Setup
+- `tproj init` — interactive setup: dependency check, `workspace.yaml` generation, Claude Code hooks configuration
 - `tproj --check` — comprehensive health check with version info
 
-### GUI Improvements
+### GUI
 - Individual collapsible sections (Memory / CC & Codex)
 - Window size persistence across restarts
 - Diagonal resize blocked when snapped to Ghostty
@@ -24,5 +31,5 @@ brew install --cask tproj
 - Expanded ERA pool with future variants (電脳都市, 蒸気未来, 深海都市, 軌道コロニー)
 
 ### Bug Fixes
-- Fix pane background images not appearing for newly added projects
-- Fix window size force-reverting on every SwiftUI redraw
+- Pane background images not appearing for newly added projects
+- Window size force-reverting on every SwiftUI redraw
