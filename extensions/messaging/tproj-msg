@@ -1419,6 +1419,16 @@ is_target_idle() {
 
         case "${status:-}" in
           running)
+            # The :8080 status server can lag, reporting 'running' for a beat
+            # after the pane has already returned to its prompt. Cross-check the
+            # pane's own @prompt_state signal: read_prompt_state_signal succeeds
+            # only when the signal is present AND fresh (<= PROMPT_SIGNAL_MAX_AGE_SEC),
+            # so a fresh 'idle' there means the pane really is at rest and the WS
+            # status is stale -> trust idle. Absent/stale/non-idle signal leaves
+            # the WS 'running' authoritative.
+            if read_prompt_state_signal "$pane" && [[ "$PROMPT_SIGNAL_STATE" == "idle" ]]; then
+              return 0  # Fresh local idle overrides a lagging WS 'running'
+            fi
             return 1  # Definitely BUSY
             ;;
           waiting_input)
