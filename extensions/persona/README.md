@@ -27,7 +27,7 @@ tproj-pane-bg generates character artwork using Google's Gemini image models, dr
 
 - `jq` (required by project-bootstrap)
 - `python3` + `google-genai` (optional, for image generation)
-- `GEMINI_API_KEY` in `~/.env` (optional, for image generation)
+- `GEMINI_API_KEY` exported in your shell profile (optional, for image generation; see the root README)
 - VOICEVOX (optional, for TTS voice synthesis via cc-status-bar)
 
 

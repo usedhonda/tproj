@@ -26,4 +26,4 @@ tproj-msg --fire <target> "message"   # urgent send
 ## Requirements
 
 - tmux (included with tproj core)
-- Optional: `websocat` for WebSocket-based idle detection
+- Optional: `websocat` plus `timeout`/`gtimeout` (GNU coreutils) for WebSocket-based idle detection; without them the tmux prompt heuristic is used

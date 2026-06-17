@@ -4,6 +4,8 @@ Native macOS app for controlling and monitoring `tproj` workspaces.
 
 ## Development Run
 
+For a quick smoke test only — **not** the normal launch (see Runtime Rule below; for day-to-day development use `./dev-app.sh`):
+
 ```bash
 cd apps/tproj
 swift run tproj
@@ -72,6 +74,8 @@ Output:
 
 ## Build Distribution DMG
 
+> **Maintainer-only.** Signing, notarization, and Homebrew tap publishing are part of the maintainer release pipeline. Regular users and contributors only need `./dev-app.sh` or `./build-app.sh` above.
+
 ```bash
 cd apps/tproj
 ./scripts/release.sh
@@ -95,7 +99,7 @@ Before running release, create `apps/tproj/.local/release.md` with signing and n
 - `tmux`
 - `tproj` CLI
 - `yq` (workspace config parsing)
-- `tproj-mem-json` (merged monitor JSON input)
+- `tproj-mem-json` (optional; Memory section only — installed via the memory extension with `./install.sh --with-memory` or `--all`)
 
 ## Shared Monitor Output
 
