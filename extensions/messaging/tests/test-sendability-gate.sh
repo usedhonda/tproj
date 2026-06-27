@@ -146,6 +146,10 @@ run_status() { # <target>
   "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --status "$1" 2>&1
 }
 
+run_force() { # <target> <message>
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --allow-relay gate-reverse-channel --force "$1" "$2" 2>&1
+}
+
 # assert_detail <name> <target> <expected-substring>
 assert_detail() {
   local name="$1" target="$2" want="$3" out
@@ -222,6 +226,48 @@ reset_fixtures
 set_ws "$CC_TTY" "running" ""
 set_capture "%1" $'\xe2\x9d\xaf \x1b[2mTry "explain this code"\x1b[0m'
 assert_detail "9_placeholder_not_blocked" "tproj.cc" "sendable"
+
+# 10. --force must still protect real selection screens. This is the Chi reverse
+#     delivery safety case: ClawGate uses --allow-relay ... --force, but it must
+#     not press a permission menu.
+reset_fixtures
+set_ws "$CC_TTY" "waiting_input" "permission_prompt"
+set_capture "%1" $'permission required\n> Allow\n  Deny'
+force_out=$(run_force "tproj.cc" "[from:OpenClaw Agent - Auto] reverse delivery safety test")
+force_rc=$?
+if [[ "$force_rc" -eq 18 ]] && grep -q "selection screen" <<<"$force_out" && [[ ! -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  10_force_selection_not_sent\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  10_force_selection_not_sent\n      want rc=18, selection stderr, no sendkeys\n      rc=%s\n      got: %s\n' "$force_rc" "$(printf '%s' "$force_out" | tr '\n' '|')"
+  [[ -f "$FAKE_DIR/sendkeys.log" ]] && sed 's/^/      sendkeys: /' "$FAKE_DIR/sendkeys.log"
+  FAIL=$((FAIL+1))
+fi
+
+# 11. --force still bypasses typing drafts (selection is the only force exception).
+reset_fixtures
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" $'previous output\n> live user draft\xe2\x96\x8c'
+force_out=$(run_force "tproj.cc" "force typing bypass test")
+force_rc=$?
+if [[ "$force_rc" -eq 0 ]] && [[ -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  11_force_typing_still_sent\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  11_force_typing_still_sent\n      want rc=0 and sendkeys\n      rc=%s\n      got: %s\n' "$force_rc" "$(printf '%s' "$force_out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# 12. --force still sends while running/generating.
+reset_fixtures
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" $'generating normal output\nmore output'
+force_out=$(run_force "tproj.cc" "force running bypass test")
+force_rc=$?
+if [[ "$force_rc" -eq 0 ]] && [[ -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  12_force_running_still_sent\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  12_force_running_still_sent\n      want rc=0 and sendkeys\n      rc=%s\n      got: %s\n' "$force_rc" "$(printf '%s' "$force_out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
 
 # 7. flush_queue must not flush while selection screen is up.
 #    (Verdict proxy: a permission_prompt target reads blocked_selection, which

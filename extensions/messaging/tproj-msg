@@ -534,6 +534,7 @@ BROADCAST_BLOCK_EXIT=14
 FANOUT_BLOCK_EXIT=15
 TYPING_BUSY_EXIT=16
 CHI_RETRY_BLOCK_EXIT=17
+SELECTION_BLOCK_EXIT=18
 
 # Ensure queue dir exists
 ensure_queue_dir() {
@@ -2681,8 +2682,17 @@ else
   exit "$rc"
 fi
 
-# === --force: no idle check, no auto-flush, pure immediate send ===
+# === --force: bypass typing/running, but never press selection screens ===
 if [[ "$FORCE_MODE" == "true" ]]; then
+  # Safety exception: ClawGate reverse delivery uses --force, and sending text
+  # into a permission/choice menu can approve the wrong action. Return a clear
+  # non-zero status so the caller can fall back instead of silently dropping.
+  if detect_selection_screen "$TARGET_PANE"; then
+    echo "Error: target '$TARGET' is showing a selection screen; --force delivery deferred to avoid accidental approval." >&2
+    echo "Detail: source=${SELECTION_SCREEN_SOURCE} reason=${SELECTION_SCREEN_REASON}" >&2
+    echo "Hint: retry after the menu is resolved, or use caller-side fallback handling." >&2
+    exit "$SELECTION_BLOCK_EXIT"
+  fi
   resolve_prompt_state "$TARGET_PANE"
   if [[ "$PROMPT_RESOLVED_STATE" == "typing" ]]; then
     echo "Warning: target '$TARGET' has unsent input (session_typing_busy); proceeding due to --force" >&2
