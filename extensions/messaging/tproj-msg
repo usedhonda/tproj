@@ -1660,6 +1660,13 @@ send_block_reason() {
   SEND_BLOCK_SOURCE="none"
   SEND_BLOCK_DETAIL="none"
 
+  if detect_selection_screen "$pane"; then
+    SEND_BLOCK_REASON="selection_screen"
+    SEND_BLOCK_SOURCE="$SELECTION_SCREEN_SOURCE"
+    SEND_BLOCK_DETAIL="$SELECTION_SCREEN_REASON"
+    return 0
+  fi
+
   resolve_prompt_state "$pane"
   case "$PROMPT_RESOLVED_STATE" in
     typing)
@@ -1670,13 +1677,6 @@ send_block_reason() {
       return 0
       ;;
   esac
-
-  if detect_selection_screen "$pane"; then
-    SEND_BLOCK_REASON="selection_screen"
-    SEND_BLOCK_SOURCE="$SELECTION_SCREEN_SOURCE"
-    SEND_BLOCK_DETAIL="$SELECTION_SCREEN_REASON"
-    return 0
-  fi
 
   return 0
 }
