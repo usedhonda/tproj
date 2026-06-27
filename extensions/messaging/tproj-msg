@@ -526,6 +526,7 @@ TMUX_TYPING_GUARD_SCAN_TAIL_LINES=48
 TMUX_TYPING_GUARD_MAX_PROMPT_DISTANCE_LINES=8
 TMUX_TYPING_GUARD_MAX_CONTINUATION_LINES=2
 TMUX_TYPING_GUARD_RECHECK_DELAY_SEC=0.12
+TMUX_TYPING_GUARD_STABLE_DRAFT_MIN_CHARS="${TPROJ_TYPING_GUARD_STABLE_DRAFT_MIN_CHARS:-4}"
 PROMPT_SIGNAL_MAX_AGE_SEC=5
 PROMPT_SIGNAL_FUTURE_TOLERANCE_SEC=2
 RELAY_BLOCK_EXIT=13
@@ -599,7 +600,7 @@ control_dedup_key() {
   printf '%s|%s|%s|%s' "$SESSION" "$target_name" "$token" "$hash"
 }
 
-control_dedup_check_and_mark() {
+control_dedup_check() {
   local target_name="$1" msg="$2"
 
   is_control_message "$msg" || return 0
@@ -616,9 +617,27 @@ control_dedup_check_and_mark() {
     return 12
   fi
 
+  return 0
+}
+
+control_dedup_mark() {
+  local target_name="$1" msg="$2"
+
+  is_control_message "$msg" || return 0
+  ensure_control_dedup_store
+
+  local token key now
+  token=$(extract_control_token "$msg") || return 0
+  key=$(control_dedup_key "$target_name" "$token" "$msg")
   now=$(date +%s)
   printf '%s\t%s\n' "$now" "$key" >> "$CONTROL_DEDUP_FILE"
   return 0
+}
+
+control_dedup_check_and_mark() {
+  local target_name="$1" msg="$2"
+  control_dedup_check "$target_name" "$msg" || return $?
+  control_dedup_mark "$target_name" "$msg"
 }
 
 # === Send policy guard ===
@@ -827,9 +846,21 @@ target_family_from_target() {
   esac
 }
 
-fanout_guard_check_and_mark() {
+fanout_guard_key() {
   local target_name="$1" msg="$2"
-  local family normalized hash key seen_target now sender_alias sender_role
+  local family normalized hash sender_alias sender_role
+
+  family=$(target_family_from_target "$target_name")
+  normalized=$(normalize_message_for_hash "$msg")
+  hash=$(sha1_hash "$normalized")
+  sender_alias="${MY_ALIAS:-unknown}"
+  sender_role="${MY_ROLE:-unknown}"
+  printf '%s|%s|%s|%s|%s' "$SESSION" "$sender_alias" "$sender_role" "$family" "$hash"
+}
+
+fanout_guard_check() {
+  local target_name="$1" msg="$2"
+  local family key seen_target
 
   family=$(target_family_from_target "$target_name")
   case "$family" in
@@ -843,11 +874,7 @@ fanout_guard_check_and_mark() {
   ensure_fanout_dedup_store
   cleanup_fanout_dedup_store
 
-  normalized=$(normalize_message_for_hash "$msg")
-  hash=$(sha1_hash "$normalized")
-  sender_alias="${MY_ALIAS:-unknown}"
-  sender_role="${MY_ROLE:-unknown}"
-  key="${SESSION}|${sender_alias}|${sender_role}|${family}|${hash}"
+  key=$(fanout_guard_key "$target_name" "$msg")
 
   seen_target=$(awk -F '\t' -v key="$key" -v target="$target_name" '$2 == key && $3 != target { print $3; exit }' "$FANOUT_DEDUP_FILE" || true)
   if [[ -n "$seen_target" && "$ALLOW_FANOUT" != "true" ]]; then
@@ -860,9 +887,33 @@ fanout_guard_check_and_mark() {
     echo "Policy override: allow fan-out send to '$target_name' (reason: ${ALLOW_FANOUT_REASON})" >&2
   fi
 
+  return 0
+}
+
+fanout_guard_mark() {
+  local target_name="$1" msg="$2"
+  local family key now
+
+  family=$(target_family_from_target "$target_name")
+  case "$family" in
+    cc|cdx)
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  ensure_fanout_dedup_store
+  key=$(fanout_guard_key "$target_name" "$msg")
   now=$(date +%s)
   printf '%s\t%s\t%s\n' "$now" "$key" "$target_name" >> "$FANOUT_DEDUP_FILE"
   return 0
+}
+
+fanout_guard_check_and_mark() {
+  local target_name="$1" msg="$2"
+  fanout_guard_check "$target_name" "$msg" || return $?
+  fanout_guard_mark "$target_name" "$msg"
 }
 
 # === Idle detection (rewritten) ===
@@ -919,6 +970,18 @@ strip_prompt_ui_tail() {
   cleaned=$(printf '%s' "$cleaned" \
     | sed -E 's/[[:space:]]+[0-9]+%[[:space:]]+context[[:space:]]+(left|window)$//')
   printf '%s' "$cleaned" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
+}
+
+is_prompt_placeholder_text() {
+  local text="$1"
+  local lower
+  lower=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+  [[ -z "$lower" ]] && return 0
+  [[ "$lower" == "? for shortcuts" ]] && return 0
+  [[ "$lower" =~ ^(type|enter)[[:space:]]+(a[[:space:]]+)?(message|prompt) ]] && return 0
+  [[ "$lower" =~ ^(esc|escape)[[:space:]]+to[[:space:]]+ ]] && return 0
+  [[ "$lower" =~ ^(shift|ctrl|control|tab)[+[:space:]-] ]] && return 0
+  return 1
 }
 
 # Check if raw (ANSI-containing) captured text has dim prompt-line text.
@@ -1047,10 +1110,12 @@ resolve_prompt_state() {
 #   PROMPT_PARSE_REASON        -> parser reason
 #   PROMPT_PARSE_TEXT          -> normalized prompt draft text
 #   PROMPT_PARSE_HAS_CURSOR    -> true | false
+#   PROMPT_PARSE_DISTANCE      -> prompt line distance from active bottom
 PROMPT_PARSE_OK="false"
 PROMPT_PARSE_REASON="uninitialized"
 PROMPT_PARSE_TEXT=""
 PROMPT_PARSE_HAS_CURSOR="false"
+PROMPT_PARSE_DISTANCE=999
 
 parse_prompt_snapshot() {
   local captured="$1"
@@ -1060,6 +1125,7 @@ parse_prompt_snapshot() {
   PROMPT_PARSE_REASON="capture_failed"
   PROMPT_PARSE_TEXT=""
   PROMPT_PARSE_HAS_CURSOR="false"
+  PROMPT_PARSE_DISTANCE=999
 
   if [[ -z "$captured" ]]; then
     PROMPT_PARSE_REASON="empty_capture"
@@ -1133,6 +1199,7 @@ parse_prompt_snapshot() {
     PROMPT_PARSE_REASON="prompt_too_far_from_bottom"
     return 0
   fi
+  PROMPT_PARSE_DISTANCE=$(( end - prompt_index ))
 
   local draft_parts=()
   local prompt_body first_draft
@@ -1266,13 +1333,19 @@ detect_prompt_draft_state() {
     return 0
   fi
 
-  # Stable non-empty text, but no cursor and no change between the two samples:
-  # we cannot prove this is a live user draft. It is just as likely leftover
-  # render text or an autocomplete that omitted the dim SGR. Report "unknown"
-  # (not "typing") so the caller falls through to the prompt-marker idle check
-  # instead of forcing session_typing_busy. A genuinely active draft is already
-  # caught above via cursor visibility (cursor_detected*) or the text-delta
-  # recheck (dynamic_prompt_input).
+  # Stable non-empty text can be a paused user draft, but only treat it as a
+  # block when it is on the active bottom prompt and looks like real input.
+  # This keeps the #9 false-busy fix: historical prompt text and placeholders
+  # remain unknown instead of becoming a hard typing block.
+  if (( PROMPT_PARSE_DISTANCE <= 1 )) \
+    && (( ${#second_text} >= TMUX_TYPING_GUARD_STABLE_DRAFT_MIN_CHARS )) \
+    && ! is_prompt_placeholder_text "$second_text"; then
+    PROMPT_DRAFT_STATE="typing"
+    PROMPT_DRAFT_REASON="draft_suspected"
+    PROMPT_DRAFT_SNIPPET=$(printf '%s' "$second_text" | cut -c1-120)
+    return 0
+  fi
+
   PROMPT_DRAFT_STATE="unknown"
   PROMPT_DRAFT_REASON="stable_non_empty_prompt_unproven"
   PROMPT_DRAFT_SNIPPET=""
@@ -1439,13 +1512,20 @@ get_ws_session_state_for_pane() {
 
   record=$(printf '%s' "$sessions_json" | jq -r \
     --arg tty "$target_tty" \
-    '[.sessions[]? | select(.tty == $tty)] | first
-      | if . == null then empty
+    'def epoch:
+        if type == "number" then .
+        elif type == "string" then
+          if test("^[0-9]+$") then tonumber
+          else (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // empty)
+          end
+        else empty end;
+      ([.sessions[]? | select(.tty == $tty)] | first) as $s
+      | if $s == null then empty
         else [
-          (.status // ""),
-          (.waiting_reason // "unknown"),
-          (.tty // ""),
-          (.updated_at // .last_seen_at // .timestamp // .ts // .last_update // "")
+          ($s.status // ""),
+          ($s.waiting_reason // "unknown"),
+          ($s.tty // ""),
+          (($s.updated_at // $s.last_seen_at // $s.timestamp // $s.ts // $s.last_update // "") | epoch)
         ] | @tsv
         end' 2>/dev/null) || true
   if [[ -z "$record" ]]; then
@@ -1539,6 +1619,9 @@ detect_selection_screen() {
   SELECTION_SCREEN_REASON="none"
 
   if get_ws_session_state_for_pane "$pane"; then
+    if [[ "${WS_SESSION_STATUS:-}" == "running" ]]; then
+      needs_capture="false"
+    fi
     if waiting_reason_is_selection "$WS_SESSION_WAITING_REASON"; then
       if [[ "$WS_SESSION_FRESHNESS" != "stale" ]]; then
         SELECTION_SCREEN_DETECTED="true"
@@ -1560,6 +1643,75 @@ detect_selection_screen() {
   SELECTION_SCREEN_SOURCE="none"
   SELECTION_SCREEN_REASON="${WS_SESSION_REASON:-capture_no_selection}"
   return 1
+}
+
+# Send block slots populated by send_block_reason:
+#   SEND_BLOCK_REASON -> none | typing_draft | selection_screen | unknown_prompt
+#   SEND_BLOCK_SOURCE -> prompt_state | ws_waiting_reason | capture | none
+#   SEND_BLOCK_DETAIL -> diagnostic detail
+SEND_BLOCK_REASON="none"
+SEND_BLOCK_SOURCE="none"
+SEND_BLOCK_DETAIL="none"
+
+send_block_reason() {
+  local pane="$1"
+
+  SEND_BLOCK_REASON="none"
+  SEND_BLOCK_SOURCE="none"
+  SEND_BLOCK_DETAIL="none"
+
+  resolve_prompt_state "$pane"
+  case "$PROMPT_RESOLVED_STATE" in
+    typing)
+      SEND_BLOCK_REASON="typing_draft"
+      SEND_BLOCK_SOURCE="$PROMPT_RESOLVED_SOURCE"
+      SEND_BLOCK_DETAIL="$PROMPT_RESOLVED_REASON"
+      [[ -n "$PROMPT_RESOLVED_SNIPPET" ]] && SEND_BLOCK_DETAIL+=",draft=${PROMPT_RESOLVED_SNIPPET}"
+      return 0
+      ;;
+  esac
+
+  if detect_selection_screen "$pane"; then
+    SEND_BLOCK_REASON="selection_screen"
+    SEND_BLOCK_SOURCE="$SELECTION_SCREEN_SOURCE"
+    SEND_BLOCK_DETAIL="$SELECTION_SCREEN_REASON"
+    return 0
+  fi
+
+  return 0
+}
+
+send_block_detail_for_status() {
+  local pane="$1"
+
+  send_block_reason "$pane"
+  case "$SEND_BLOCK_REASON" in
+    typing_draft)
+      echo "blocked_typing:${SEND_BLOCK_SOURCE}:${SEND_BLOCK_DETAIL}"
+      return 0
+      ;;
+    selection_screen)
+      echo "blocked_selection:${SEND_BLOCK_SOURCE}:${SEND_BLOCK_DETAIL}"
+      return 0
+      ;;
+    unknown_prompt)
+      echo "unknown_prompt:${SEND_BLOCK_SOURCE}:${SEND_BLOCK_DETAIL}"
+      return 0
+      ;;
+  esac
+
+  if [[ "${PROMPT_RESOLVED_STATE:-}" == "suggestion" ]]; then
+    echo "sendable_suggestion:${PROMPT_RESOLVED_SOURCE}:${PROMPT_RESOLVED_REASON}"
+    return 0
+  fi
+
+  if get_ws_session_state_for_pane "$pane" && [[ "${WS_SESSION_STATUS:-}" == "running" ]]; then
+    echo "sendable_running:ws_status:status=running,waiting_reason=${WS_SESSION_WAITING_REASON:-unknown},freshness=${WS_SESSION_FRESHNESS}"
+    return 0
+  fi
+
+  echo "sendable_prompt:${PROMPT_RESOLVED_SOURCE}:${PROMPT_RESOLVED_REASON}"
+  return 0
 }
 
 # Returns 0 if target pane is idle (safe to send text), 1 if busy
@@ -1619,12 +1771,19 @@ is_target_idle() {
 # Get idle status as string for display
 get_idle_status() {
   local pane="$1"
-  resolve_prompt_state "$pane"
-  case "$PROMPT_RESOLVED_STATE" in
-    typing)
+  send_block_reason "$pane"
+  case "$SEND_BLOCK_REASON" in
+    typing_draft)
       echo "typing"
       return 0
       ;;
+    selection_screen|unknown_prompt)
+      echo "busy"
+      return 0
+      ;;
+  esac
+
+  case "$PROMPT_RESOLVED_STATE" in
     suggestion)
       echo "suggestion"
       return 0
@@ -1635,11 +1794,7 @@ get_idle_status() {
     # path, which also falls through to is_target_idle on unknown.
   esac
 
-  if is_target_idle "$pane"; then
-    echo "idle"
-  else
-    echo "busy"
-  fi
+  echo "idle"
 }
 
 # === Queue functions ===
@@ -1711,14 +1866,18 @@ flush_queue() {
   local qfile="${QUEUE_DIR}/${target_name}.queue"
   [[ -f "$qfile" ]] || return 0
 
-  resolve_prompt_state "$pane"
-  case "$PROMPT_RESOLVED_STATE" in
-    typing)
-      echo "  Skipped flush for $target_name (session_typing_busy: ${PROMPT_RESOLVED_REASON})" >&2
+  send_block_reason "$pane"
+  case "$SEND_BLOCK_REASON" in
+    typing_draft)
+      echo "  Skipped flush for $target_name (blocked_typing: ${SEND_BLOCK_DETAIL})" >&2
       return 0
       ;;
-    unknown)
-      echo "  Skipped flush for $target_name (session_typing_busy fail-safe: ${PROMPT_RESOLVED_REASON})" >&2
+    selection_screen)
+      echo "  Skipped flush for $target_name (blocked_selection: ${SEND_BLOCK_DETAIL})" >&2
+      return 0
+      ;;
+    unknown_prompt)
+      echo "  Skipped flush for $target_name (unknown_prompt: ${SEND_BLOCK_DETAIL})" >&2
       return 0
       ;;
   esac
@@ -1760,7 +1919,7 @@ flush_queue() {
     fi
 
     # Control message dedup (drop duplicate control/ack entries)
-    if control_dedup_check_and_mark "$target_name" "$msg"; then
+    if control_dedup_check "$target_name" "$msg"; then
       :
     else
       local rc=$?
@@ -1777,6 +1936,7 @@ flush_queue() {
     sleep 0.5
     tmux send-keys -t "$pane" Enter
     sleep 0.3
+    control_dedup_mark "$target_name" "$msg" || true
     ((delivered++)) || true
     echo "  Delivered queued message to $target_name: ${header} ${msg}" >&2
     # R1' Stage 3 shadow write — flushed delivery, set delivered_at + inbound mirror.
@@ -2243,30 +2403,11 @@ if [[ "$STATUS_MODE" == "true" ]]; then
       exit 1
     fi
     local_live=$(get_liveness_status "$TARGET_PANE")
-    resolve_prompt_state "$TARGET_PANE"
-    local_detail_source="$PROMPT_RESOLVED_SOURCE"
-    local_detail_reason="$PROMPT_RESOLVED_REASON"
-    case "$PROMPT_RESOLVED_STATE" in
-      typing)
-        local_status="typing"
-        ;;
-      suggestion)
-        local_status="suggestion"
-        ;;
-      unknown)
-        local_status="busy"
-        ;;
-      *)
-        if is_target_idle "$TARGET_PANE"; then
-          local_status="idle"
-        else
-          local_status="busy"
-        fi
-        ;;
-    esac
+    local_status=$(get_idle_status "$TARGET_PANE")
+    local_detail_reason=$(send_block_detail_for_status "$TARGET_PANE")
     local_qcount=$(queue_count "$TARGET")
     printf "%-20s  %s/%s  (queued: %s)\n" "$TARGET" "$local_live" "$local_status" "$local_qcount"
-    printf "%-20s  detail: source=%s reason=%s\n" "" "$local_detail_source" "$local_detail_reason"
+    printf "%-20s  detail: %s\n" "" "$local_detail_reason"
   else
     if [[ "$IS_WORKSPACE" == "true" ]]; then
       tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null | \
@@ -2339,7 +2480,7 @@ if is_gate_target "$TARGET"; then
     HEADER+="]"
   fi
 
-  if control_dedup_check_and_mark "$TARGET" "$MESSAGE"; then
+  if control_dedup_check "$TARGET" "$MESSAGE"; then
     :
   else
     rc=$?
@@ -2382,6 +2523,7 @@ if is_gate_target "$TARGET"; then
         echo "Info: gate:tmux session_busy -> auto-fallback to gate:direct" >&2
         if send_via_gate "direct" "$gate_msg" "$gate_hint"; then
           gate_dedup_mark "direct" "$MESSAGE"
+          control_dedup_mark "$TARGET" "$MESSAGE" || true
           exit 0
         fi
         echo "Error: gate:direct fallback also failed." >&2
@@ -2393,10 +2535,12 @@ if is_gate_target "$TARGET"; then
     }
     echo "$tmux_err" >&2
     gate_dedup_mark "$gate_adpt" "$MESSAGE"
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
     exit 0
   fi
   if send_via_gate "$gate_adpt" "$gate_msg" "$gate_hint"; then
     gate_dedup_mark "$gate_adpt" "$MESSAGE"
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
     exit 0
   fi
   exit $?
@@ -2462,44 +2606,6 @@ if ! is_target_online "$TARGET_PANE"; then
   exit 1
 fi
 
-resolve_prompt_state "$TARGET_PANE"
-TARGET_TYPING_BLOCKED="false"
-case "$PROMPT_RESOLVED_STATE" in
-  typing)
-    if [[ "$FORCE_MODE" == "true" ]]; then
-      echo "Warning: target '$TARGET' has unsent input (session_typing_busy); proceeding due to --force" >&2
-      echo "Detail: source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}" >&2
-      [[ -n "$PROMPT_RESOLVED_SNIPPET" ]] && echo "Detail: draft='${PROMPT_RESOLVED_SNIPPET}'" >&2
-    else
-      TARGET_TYPING_BLOCKED="true"
-      echo "Info: target '$TARGET' has unsent input (session_typing_busy); queueing instead of immediate send." >&2
-      echo "Detail: source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}" >&2
-      [[ -n "$PROMPT_RESOLVED_SNIPPET" ]] && echo "Detail: draft='${PROMPT_RESOLVED_SNIPPET}'" >&2
-    fi
-    ;;
-  unknown)
-    if [[ "$FORCE_MODE" == "true" || "$FIRE_MODE" == "true" ]]; then
-      echo "Warning: target '$TARGET' prompt state is unknown; proceeding due to --force/--fire (source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON})" >&2
-    fi
-    ;;
-esac
-
-if fanout_guard_check_and_mark "$TARGET" "$MESSAGE"; then
-  :
-else
-  fanout_rc=$?
-  exit "$fanout_rc"
-fi
-
-if control_dedup_check_and_mark "$TARGET" "$MESSAGE"; then
-  :
-else
-  rc=$?
-  [[ $rc -eq 12 ]] && exit 12
-  echo "Error: control dedup check failed (rc=$rc)" >&2
-  exit "$rc"
-fi
-
 # === Build message header ===
 if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
   HEADER="[from:${MY_ALIAS}.${MY_ROLE}]"
@@ -2559,22 +2665,50 @@ if [[ "$NEW_TASK_MODE" == "true" ]]; then
   MESSAGE="[Task: ${TASK_ID}] ${MESSAGE}"
 fi
 
+if fanout_guard_check "$TARGET" "$MESSAGE"; then
+  :
+else
+  fanout_rc=$?
+  exit "$fanout_rc"
+fi
+
+if control_dedup_check "$TARGET" "$MESSAGE"; then
+  :
+else
+  rc=$?
+  [[ $rc -eq 12 ]] && exit 12
+  echo "Error: control dedup check failed (rc=$rc)" >&2
+  exit "$rc"
+fi
+
 # === --force: no idle check, no auto-flush, pure immediate send ===
 if [[ "$FORCE_MODE" == "true" ]]; then
+  resolve_prompt_state "$TARGET_PANE"
+  if [[ "$PROMPT_RESOLVED_STATE" == "typing" ]]; then
+    echo "Warning: target '$TARGET' has unsent input (session_typing_busy); proceeding due to --force" >&2
+    echo "Detail: source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}" >&2
+    [[ -n "$PROMPT_RESOLVED_SNIPPET" ]] && echo "Detail: draft='${PROMPT_RESOLVED_SNIPPET}'" >&2
+  fi
   raw_send
+  fanout_guard_mark "$TARGET" "$MESSAGE" || true
+  control_dedup_mark "$TARGET" "$MESSAGE" || true
   exit 0
 fi
 
-# === --fire: no idle check, auto-flush (max 3), then send ===
+# === --fire: send unless a concrete sendability block is detected ===
 if [[ "$FIRE_MODE" == "true" ]]; then
-  if [[ "$TARGET_TYPING_BLOCKED" == "true" ]]; then
+  send_block_reason "$TARGET_PANE"
+  if [[ "$SEND_BLOCK_REASON" != "none" ]]; then
     if [[ "$ALLOW_RELAY" == "true" ]] && is_relay_like_message "$MESSAGE"; then
-      echo "Error: relay override cannot enqueue when target is typing" >&2
+      echo "Error: relay override cannot enqueue when target is blocked (${SEND_BLOCK_REASON})" >&2
       echo "Hint: retry with --force if immediate delivery is intended." >&2
       exit "$RELAY_BLOCK_EXIT"
     fi
     enqueue "$TARGET" "$HEADER" "$MESSAGE"
-    echo "Queued for $TARGET (target typing)" >&2
+    fanout_guard_mark "$TARGET" "$MESSAGE" || true
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
+    echo "Queued for $TARGET (target blocked: ${SEND_BLOCK_REASON})" >&2
+    echo "Detail: source=${SEND_BLOCK_SOURCE} reason=${SEND_BLOCK_DETAIL}" >&2
     exit 0
   fi
   ensure_queue_dir
@@ -2584,11 +2718,14 @@ if [[ "$FIRE_MODE" == "true" ]]; then
     flush_queue "$TARGET" "$TARGET_PANE" "$AUTO_FLUSH_MAX"
   fi
   raw_send
+  fanout_guard_mark "$TARGET" "$MESSAGE" || true
+  control_dedup_mark "$TARGET" "$MESSAGE" || true
   exit 0
 fi
 
-# === Normal mode: idle check -> send or queue -> immediate return ===
-if is_target_idle "$TARGET_PANE"; then
+# === Normal mode: concrete block -> queue, otherwise send ===
+send_block_reason "$TARGET_PANE"
+if [[ "$SEND_BLOCK_REASON" == "none" ]]; then
   # Auto-flush queued messages first (max AUTO_FLUSH_MAX)
   ensure_queue_dir
   if [[ -f "${QUEUE_DIR}/${TARGET}.queue" ]]; then
@@ -2596,27 +2733,34 @@ if is_target_idle "$TARGET_PANE"; then
     flush_queue "$TARGET" "$TARGET_PANE" "$AUTO_FLUSH_MAX"
   fi
   raw_send
+  fanout_guard_mark "$TARGET" "$MESSAGE" || true
+  control_dedup_mark "$TARGET" "$MESSAGE" || true
 else
-  resolve_prompt_state "$TARGET_PANE"
-  case "$PROMPT_RESOLVED_STATE" in
-    typing)
+  case "$SEND_BLOCK_REASON" in
+    typing_draft)
       echo "Info: target '$TARGET' has unsent input (session_typing_busy); queueing instead of immediate send." >&2
-      echo "Detail: source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}" >&2
-      [[ -n "$PROMPT_RESOLVED_SNIPPET" ]] && echo "Detail: draft='${PROMPT_RESOLVED_SNIPPET}'" >&2
+      echo "Detail: source=${SEND_BLOCK_SOURCE} reason=${SEND_BLOCK_DETAIL}" >&2
       ;;
-    unknown)
-      echo "Info: target '$TARGET' prompt state is unknown (source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}); queueing instead of immediate send." >&2
+    selection_screen)
+      echo "Info: target '$TARGET' is showing a selection screen; queueing instead of immediate send." >&2
+      echo "Detail: source=${SEND_BLOCK_SOURCE} reason=${SEND_BLOCK_DETAIL}" >&2
+      ;;
+    unknown_prompt)
+      echo "Info: target '$TARGET' prompt state is unknown; queueing instead of immediate send." >&2
+      echo "Detail: source=${SEND_BLOCK_SOURCE} reason=${SEND_BLOCK_DETAIL}" >&2
       ;;
   esac
 
   # Keep override one-shot semantics strict: relay-like override cannot fall back to queue.
   if [[ "$ALLOW_RELAY" == "true" ]] && is_relay_like_message "$MESSAGE"; then
-    echo "Error: relay override cannot enqueue when target is busy" >&2
+    echo "Error: relay override cannot enqueue when target is blocked (${SEND_BLOCK_REASON})" >&2
     echo "Hint: retry with --fire or --force if immediate delivery is intended." >&2
     exit "$RELAY_BLOCK_EXIT"
   fi
   enqueue "$TARGET" "$HEADER" "$MESSAGE"
-  echo "Queued for $TARGET (target busy)" >&2
+  fanout_guard_mark "$TARGET" "$MESSAGE" || true
+  control_dedup_mark "$TARGET" "$MESSAGE" || true
+  echo "Queued for $TARGET (target blocked: ${SEND_BLOCK_REASON})" >&2
 fi
 
 exit 0
