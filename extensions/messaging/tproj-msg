@@ -1375,6 +1375,193 @@ get_liveness_status() {
   fi
 }
 
+# WebSocket session state slots populated by get_ws_session_state_for_pane:
+#   WS_SESSION_FOUND          -> true | false
+#   WS_SESSION_STATUS         -> running | waiting_input | stopped | ...
+#   WS_SESSION_WAITING_REASON -> permission_prompt | askUserQuestion | unknown | ...
+#   WS_SESSION_TTY            -> matched tty
+#   WS_SESSION_TTY_MATCH      -> true | false
+#   WS_SESSION_FRESHNESS      -> fresh | stale | unknown_ts
+#   WS_SESSION_REASON         -> diagnostic reason
+WS_SESSION_FOUND="false"
+WS_SESSION_STATUS=""
+WS_SESSION_WAITING_REASON=""
+WS_SESSION_TTY=""
+WS_SESSION_TTY_MATCH="false"
+WS_SESSION_FRESHNESS="unknown_ts"
+WS_SESSION_REASON="uninitialized"
+
+ws_timeout_cmd() {
+  if command -v timeout >/dev/null 2>&1; then
+    echo "timeout 1"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    echo "gtimeout 1"
+  else
+    echo ""
+  fi
+}
+
+get_ws_session_state_for_pane() {
+  local pane="$1"
+  local target_tty ws_to sessions_json record status reason tty ts now ts_sec age
+
+  WS_SESSION_FOUND="false"
+  WS_SESSION_STATUS=""
+  WS_SESSION_WAITING_REASON=""
+  WS_SESSION_TTY=""
+  WS_SESSION_TTY_MATCH="false"
+  WS_SESSION_FRESHNESS="unknown_ts"
+  WS_SESSION_REASON="uninitialized"
+
+  command -v websocat >/dev/null 2>&1 || { WS_SESSION_REASON="websocat_missing"; return 1; }
+  command -v jq >/dev/null 2>&1 || { WS_SESSION_REASON="jq_missing"; return 1; }
+
+  target_tty=$(tmux display-message -t "$pane" -p '#{pane_tty}' 2>/dev/null || true)
+  if [[ -z "$target_tty" ]]; then
+    WS_SESSION_REASON="pane_tty_missing"
+    return 1
+  fi
+
+  ws_to=$(ws_timeout_cmd)
+  if [[ -z "$ws_to" ]]; then
+    WS_SESSION_REASON="timeout_missing"
+    return 1
+  fi
+
+  sessions_json=$($ws_to websocat --no-async-stdio -n ws://localhost:8080/ws/sessions </dev/null 2>/dev/null \
+    | head -5 \
+    | jq -rc 'select(.type == "sessions.list")' 2>/dev/null \
+    | head -1) || true
+  if [[ -z "${sessions_json:-}" ]]; then
+    WS_SESSION_REASON="sessions_list_missing"
+    return 1
+  fi
+
+  record=$(printf '%s' "$sessions_json" | jq -r \
+    --arg tty "$target_tty" \
+    '[.sessions[]? | select(.tty == $tty)] | first
+      | if . == null then empty
+        else [
+          (.status // ""),
+          (.waiting_reason // "unknown"),
+          (.tty // ""),
+          (.updated_at // .last_seen_at // .timestamp // .ts // .last_update // "")
+        ] | @tsv
+        end' 2>/dev/null) || true
+  if [[ -z "$record" ]]; then
+    WS_SESSION_REASON="tty_not_found"
+    return 1
+  fi
+
+  IFS=$'\t' read -r status reason tty ts <<< "$record"
+  WS_SESSION_FOUND="true"
+  WS_SESSION_STATUS="${status:-}"
+  WS_SESSION_WAITING_REASON="${reason:-unknown}"
+  WS_SESSION_TTY="${tty:-}"
+  WS_SESSION_TTY_MATCH="true"
+  WS_SESSION_FRESHNESS="unknown_ts"
+  WS_SESSION_REASON="matched"
+
+  if [[ -n "${ts:-}" && "$ts" =~ ^[0-9]+$ ]]; then
+    ts_sec="$ts"
+    if (( ts_sec > 1000000000000 )); then
+      ts_sec=$(( ts_sec / 1000 ))
+    fi
+    now=$(date +%s)
+    if (( ts_sec > now + PROMPT_SIGNAL_FUTURE_TOLERANCE_SEC )); then
+      WS_SESSION_FRESHNESS="stale"
+      WS_SESSION_REASON="future_ts(ts=${ts_sec},now=${now})"
+    else
+      age=$(( now - ts_sec ))
+      if (( age > PROMPT_SIGNAL_MAX_AGE_SEC )); then
+        WS_SESSION_FRESHNESS="stale"
+        WS_SESSION_REASON="stale_age(${age}s>${PROMPT_SIGNAL_MAX_AGE_SEC}s)"
+      else
+        WS_SESSION_FRESHNESS="fresh"
+        WS_SESSION_REASON="fresh_age(${age}s)"
+      fi
+    fi
+  fi
+
+  return 0
+}
+
+waiting_reason_is_selection() {
+  local reason="$1"
+  local normalized
+  normalized=$(printf '%s' "$reason" | tr '[:upper:]' '[:lower:]' | sed -E 's/[-[:space:]]+/_/g')
+  case "$normalized" in
+    permission_prompt|askuserquestion|ask_user_question|choice|choice_prompt|approval|approval_prompt|confirmation|confirmation_prompt|tool_approval|tool_permission|permission)
+      return 0
+      ;;
+  esac
+  printf '%s\n' "$normalized" | grep -Eq '(permission|ask.*question|approval|confirmation|choice)' && return 0
+  return 1
+}
+
+# Selection screen slots populated by detect_selection_screen:
+#   SELECTION_SCREEN_DETECTED -> true | false
+#   SELECTION_SCREEN_SOURCE   -> ws_waiting_reason | capture | none
+#   SELECTION_SCREEN_REASON   -> diagnostic reason
+SELECTION_SCREEN_DETECTED="false"
+SELECTION_SCREEN_SOURCE="none"
+SELECTION_SCREEN_REASON="uninitialized"
+
+detect_selection_screen_capture() {
+  local pane="$1"
+  local captured cleaned bottom selector_hits context_hits
+
+  captured=$(tmux capture-pane -t "$pane" -p -S -30 2>/dev/null || true)
+  [[ -z "$captured" ]] && return 1
+
+  cleaned=$(printf '%s\n' "$captured" | strip_ansi)
+  bottom=$(printf '%s\n' "$cleaned" | tail -30 | tr '[:upper:]' '[:lower:]')
+
+  selector_hits=$(printf '%s\n' "$bottom" | grep -Eic '^[[:space:]]*([>›❯▶▷▸▹●○◉◯◆◇*+-]|[0-9]+[.)])[[:space:]]*(allow|deny|yes|no|approve|reject|continue|cancel|run|always allow|continue anyway|許可|拒否|承認|続行|キャンセル)' || true)
+  context_hits=$(printf '%s\n' "$bottom" | grep -Eic '(permission|approval|approve|allow[[:space:]]+.*command|do you want|continue[?？]|choose|select|askuserquestion|ask user question|proceed[?？]|許可|承認|選択)' || true)
+
+  if (( selector_hits > 0 && context_hits > 0 )); then
+    SELECTION_SCREEN_DETECTED="true"
+    SELECTION_SCREEN_SOURCE="capture"
+    SELECTION_SCREEN_REASON="selector=${selector_hits},context=${context_hits}"
+    return 0
+  fi
+
+  return 1
+}
+
+detect_selection_screen() {
+  local pane="$1"
+  local needs_capture="true"
+
+  SELECTION_SCREEN_DETECTED="false"
+  SELECTION_SCREEN_SOURCE="none"
+  SELECTION_SCREEN_REASON="none"
+
+  if get_ws_session_state_for_pane "$pane"; then
+    if waiting_reason_is_selection "$WS_SESSION_WAITING_REASON"; then
+      if [[ "$WS_SESSION_FRESHNESS" != "stale" ]]; then
+        SELECTION_SCREEN_DETECTED="true"
+        SELECTION_SCREEN_SOURCE="ws_waiting_reason"
+        SELECTION_SCREEN_REASON="status=${WS_SESSION_STATUS:-unknown},waiting_reason=${WS_SESSION_WAITING_REASON},freshness=${WS_SESSION_FRESHNESS}"
+        return 0
+      fi
+      needs_capture="true"
+    elif [[ -n "$WS_SESSION_WAITING_REASON" && "$WS_SESSION_WAITING_REASON" != "unknown" && "$WS_SESSION_WAITING_REASON" != "nil" && "$WS_SESSION_WAITING_REASON" != "null" ]]; then
+      needs_capture="false"
+    fi
+  fi
+
+  if [[ "$needs_capture" == "true" ]] && detect_selection_screen_capture "$pane"; then
+    return 0
+  fi
+
+  SELECTION_SCREEN_DETECTED="false"
+  SELECTION_SCREEN_SOURCE="none"
+  SELECTION_SCREEN_REASON="${WS_SESSION_REASON:-capture_no_selection}"
+  return 1
+}
+
 # Returns 0 if target pane is idle (safe to send text), 1 if busy
 # Flow:
 #   1. WebSocket (1s timeout): running -> BUSY, waiting_input -> IDLE, unreachable -> Step 2
@@ -1389,55 +1576,26 @@ is_target_idle() {
   # Codex panes as "running" even when idle, so trusting it would queue
   # cdx-bound messages indefinitely. Codex idle is read reliably from the
   # prompt marker (Step 2), matching pre-websocat-fix behavior.
-  if [[ "$target_type" != "cdx" ]] && command -v websocat >/dev/null 2>&1; then
-    local target_tty
-    target_tty=$(tmux display-message -t "$pane" -p '#{pane_tty}' 2>/dev/null || true)
-
-    if [[ -n "$target_tty" ]]; then
-      local sessions_json status ws_to
-      # macOS ships no GNU `timeout`; prefer it, fall back to `gtimeout` (brew
-      # coreutils). Without either, SKIP the WS probe entirely: an unbounded read
-      # on a connected-but-silent :8080 could hang the idle check, so fall
-      # straight through to the tmux prompt heuristic (README "falls back").
-      if command -v timeout >/dev/null 2>&1; then ws_to="timeout 1"
-      elif command -v gtimeout >/dev/null 2>&1; then ws_to="gtimeout 1"
-      else ws_to=""; fi
-      if [[ -n "$ws_to" ]]; then
-        # websocat 1.14+ needs --no-async-stdio (else EINVAL after handshake), and
-        # -n (no-close) without --one-message so the 2nd frame (sessions.list, the
-        # 1st is host_info) is received. </dev/null avoids consuming caller stdin.
-        sessions_json=$($ws_to websocat --no-async-stdio -n ws://localhost:8080/ws/sessions </dev/null 2>/dev/null \
-          | head -5 \
-          | jq -rc 'select(.type == "sessions.list")' 2>/dev/null \
-          | head -1) || true   # -c: keep object on ONE line so head -1 gets it all
-      fi
-
-      if [[ -n "${sessions_json:-}" ]]; then
-        status=$(echo "$sessions_json" | jq -r \
-          --arg tty "$target_tty" \
-          '[.sessions[] | select(.tty == $tty)] | first | .status // empty' 2>/dev/null) || true
-
-        case "${status:-}" in
-          running)
-            # The :8080 status server can lag, reporting 'running' for a beat
-            # after the pane has already returned to its prompt. Cross-check the
-            # pane's own @prompt_state signal: read_prompt_state_signal succeeds
-            # only when the signal is present AND fresh (<= PROMPT_SIGNAL_MAX_AGE_SEC),
-            # so a fresh 'idle' there means the pane really is at rest and the WS
-            # status is stale -> trust idle. Absent/stale/non-idle signal leaves
-            # the WS 'running' authoritative.
-            if read_prompt_state_signal "$pane" && [[ "$PROMPT_SIGNAL_STATE" == "idle" ]]; then
-              return 0  # Fresh local idle overrides a lagging WS 'running'
-            fi
-            return 1  # Definitely BUSY
-            ;;
-          waiting_input)
-            return 0  # Definitely IDLE (at prompt or AskUserQuestion)
-            ;;
-          # stopped/other -> fall through to tmux marker check
-        esac
-      fi
-    fi
+  if [[ "$target_type" != "cdx" ]] && get_ws_session_state_for_pane "$pane"; then
+    case "${WS_SESSION_STATUS:-}" in
+      running)
+        # The :8080 status server can lag, reporting 'running' for a beat
+        # after the pane has already returned to its prompt. Cross-check the
+        # pane's own @prompt_state signal: read_prompt_state_signal succeeds
+        # only when the signal is present AND fresh (<= PROMPT_SIGNAL_MAX_AGE_SEC),
+        # so a fresh 'idle' there means the pane really is at rest and the WS
+        # status is stale -> trust idle. Absent/stale/non-idle signal leaves
+        # the WS 'running' authoritative.
+        if read_prompt_state_signal "$pane" && [[ "$PROMPT_SIGNAL_STATE" == "idle" ]]; then
+          return 0  # Fresh local idle overrides a lagging WS 'running'
+        fi
+        return 1  # Definitely BUSY
+        ;;
+      waiting_input)
+        return 0  # Definitely IDLE (legacy behavior; send gate handles selections)
+        ;;
+      # stopped/other -> fall through to tmux marker check
+    esac
   fi
 
   # Step 2: tmux prompt marker check (instant, no sleep)
