@@ -2144,6 +2144,26 @@ format_line_private_notice() {
   printf '%sから私信（セッション非共有）: %s' "$sender" "$body"
 }
 
+strip_leading_tproj_msg_headers() {
+  local msg="$1" prev
+  while [[ "$msg" =~ ^[[:space:]]*\[tproj-msg:[^]]*\][[:space:]]* ]]; do
+    prev="$msg"
+    msg=$(printf '%s' "$msg" | sed -E 's/^[[:space:]]*\[tproj-msg:[^]]*\][[:space:]]*//')
+    [[ "$msg" == "$prev" ]] && break
+  done
+  printf '%s' "$msg"
+}
+
+gate_prepend_header_once() {
+  local header="$1" msg="$2" body
+  body=$(strip_leading_tproj_msg_headers "$msg")
+  if [[ -n "$body" ]]; then
+    printf '%s %s' "$header" "$body"
+  else
+    printf '%s' "$header"
+  fi
+}
+
 # Send message via ClawGate bridge
 # Routes:
 #   gate/session   -> /v1/send adapter=tmux (session lane)
@@ -2495,7 +2515,9 @@ if is_gate_target "$TARGET"; then
   if [[ "$gate_adpt" == "tmux" ]]; then
     gate_hint=$(gate_session_target)
   fi
-  gate_msg="${HEADER} ${MESSAGE}"
+  # Reverse-channel routing depends on exactly one current header. If a caller
+  # supplies an old [tproj-msg:...] prefix, replace it instead of nesting it.
+  gate_msg=$(gate_prepend_header_once "$HEADER" "$MESSAGE")
 
   # Explicit private lane:
   #   [line-private] ...  -> LINE only, no session share wording in payload.
