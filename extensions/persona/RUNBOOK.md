@@ -17,6 +17,32 @@ tmux pane 背景画像を Gemini で生成する。各ペインの persona（職
 - `--refresh`: 既存キャッシュ無視、強制再生成
 - 出力: `<repo>/.local/tproj-pane-bg/<role>.vertical.png` と `.json` sidecar
 
+## project-local prompt override
+
+公開 repo の prompt は generic なまま保ち、個人環境だけ画風や構図を強めたい場合は、対象 project に以下を置く:
+
+```
+<repo>/.local/tproj-pane-bg/prompt.local.json
+```
+
+`.local/` は gitignore 済みなので公開 repo には入らない。ファイルは JSON として読むため、shell code は実行されない。
+
+例:
+
+```json
+{
+  "style_ref_en": "classic Japanese hand-drawn theatrical anime",
+  "style_ref_jp": "日本の名作劇場アニメ",
+  "style_author_jp": "名作劇場アニメ映画",
+  "style_reference_fallback": "classic Japanese hand-drawn theatrical anime",
+  "style_guard_jp": "手描きセル画の人物と柔らかな背景美術を保ち、汎用的な現代アニメ塗りや西洋ファンタジー調に寄せない。",
+  "composition_extra_jp": "毎回同じ正面 bust にならないよう、手元、視線、肩の角度、小道具の置き方に自然な変化を入れる。",
+  "negative_extra_jp": "強いネオン、フォトリアル、厚塗りコンセプトアート、汎用ソシャゲ風の顔立ちは避ける。"
+}
+```
+
+この JSON の内容は prompt hash に含まれるため、変更すると既存 sidecar が stale になり、次回生成時に新 prompt として扱われる。sidecar には `prompt_override_path` と `prompt_override_fingerprint` が記録される。
+
 ## image-only override（`--prof`）
 
 MEMORY.md を書き換えずに「画像だけ別職業に寄せたい」ケース用。

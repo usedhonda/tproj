@@ -122,6 +122,8 @@ Without a key, tproj runs normally — panes just have no background art (fail-o
 The art style defaults to a generic hand-drawn anime look; to customize it, create
 `~/.config/tproj/pane-bg.local` and set `TPROJ_PANE_BG_STYLE_REF_EN` / `_REF_JP` /
 `_AUTHOR_JP` (machine-local, never committed).
+For per-project prompt tuning, create `<project>/.local/tproj-pane-bg/prompt.local.json`;
+`.local/` is ignored by git, and the generated sidecar records which override was used.
 
 ## Usage
 

@@ -13,8 +13,8 @@ CC_PERSONA_BIN="$HOME/bin/project-bootstrap"
 [[ -x "$CC_PERSONA_BIN" ]] || CC_PERSONA_BIN="$HOME/bin/cc-persona"
 # Final fallback: resolve from PATH (covers non-standard install locations)
 [[ -x "$CC_PERSONA_BIN" ]] || CC_PERSONA_BIN="$(command -v project-bootstrap || command -v cc-persona || echo "$CC_PERSONA_BIN")"
-FLASH_PROMPT_VERSION="2026-03-09.cel-anime.era-action.v16"
-PRO_PROMPT_VERSION="2026-03-09.nanobanana-pro-prose.v15"
+FLASH_PROMPT_VERSION="2026-03-09.cel-anime.local-override.v17"
+PRO_PROMPT_VERSION="2026-03-09.nanobanana-pro-local-override.v16"
 PERSONA_SOURCE_VERSION="2026-03-07.role-fixed-gender.v1"
 FLASH_PROMPT_SCHEMA="legacy-prose-v1"
 PRO_PROMPT_SCHEMA="nanobanana-pro-self-contained-v2"
@@ -28,7 +28,12 @@ STYLE_REF_EN="${TPROJ_PANE_BG_STYLE_REF_EN:-classic Japanese hand-drawn theatric
 STYLE_REF_JP="${TPROJ_PANE_BG_STYLE_REF_JP:-日本の名作劇場アニメ}"
 STYLE_AUTHOR_JP="${TPROJ_PANE_BG_STYLE_AUTHOR_JP:-名作劇場アニメ映画}"
 STYLE_REFERENCE="$STYLE_REF_EN"
-STYLE_REFERENCE_FALLBACK="hand-painted theatrical anime"
+STYLE_REFERENCE_FALLBACK="${TPROJ_PANE_BG_STYLE_FALLBACK_EN:-hand-painted theatrical anime}"
+PROMPT_OVERRIDE_PATH=""
+PROMPT_OVERRIDE_FINGERPRINT=""
+PROMPT_STYLE_GUARD_JP="${TPROJ_PANE_BG_STYLE_GUARD_JP:-}"
+PROMPT_COMPOSITION_EXTRA_JP="${TPROJ_PANE_BG_COMPOSITION_EXTRA_JP:-}"
+PROMPT_NEGATIVE_EXTRA_JP="${TPROJ_PANE_BG_NEGATIVE_EXTRA_JP:-}"
 ASPECT_RATIO="9:16"
 TARGET_WIDTH="1024"
 TARGET_HEIGHT="1536"
@@ -145,6 +150,11 @@ project_meta_path() {
   local project="$1"
   local role="$2"
   printf '%s/%s.vertical.json' "$(project_cache_dir "$project")" "$role"
+}
+
+project_prompt_override_path() {
+  local project="$1"
+  printf '%s/prompt.local.json' "$(project_cache_dir "$project")"
 }
 
 runtime_placeholder_path() {
@@ -978,6 +988,7 @@ build_flash_named_prompt() {
  cat <<EOF
 create an image of a vertical terminal wallpaper.
 ${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。セル画の人物と背景美術の組み合わせ。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
+$(prompt_style_guard_line_jp)
 手順:
 1. 古典的な肖像画のような半身ポートレートにする。顔と上半身が自然に画面の主役として大きく見える、均整の取れた構図にする。頭上の余白を少なくし、胸から上、必要でも腰上までに留める。顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
 2. 人物像は既存の persona データを最優先にする。${subject_jp}として自然に見せる。$(role_character_prompt_jp "$role")
@@ -985,6 +996,7 @@ ${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画�
 4. $(role_scene_prompt_jp "$role")
 5. 服装、姿勢、表情、視線、手元の所作で「このペインはこういう人物だ」と一目で分かるようにする。性別、年代、時代、性格、関係性が、文字に頼らず見えるようにする。
 6. 背景は人物の後ろで静かに支える。背景は personality の補助に徹し、人物が主役で、視線が自然に顔へ集まる構図にする。上端に頭が寄りすぎない。下端に肩が切れすぎない。上下の余白は釣り合いを取る。
+$(prompt_composition_extra_line_jp)
 7. 文字が生まれそうな物体は最初から置かない。壁、棚、布、道具、器具は無地にする。
 最終ルール: 画像の中に読める文字、数字、記号、タイトル、ロゴ、透かし、署名、字幕を一切入れない。もし文字が乗りそうなら、その物体を消すか、無地で blank にする。
 EOF
@@ -998,6 +1010,7 @@ build_flash_fallback_prompt() {
  cat <<EOF
 create an image of a vertical terminal wallpaper.
 ${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。ただし説明的な模写ではなく、日本アニメ映画らしい顔立ちと線、セル画の人物と背景美術の組み合わせとして出す。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
+$(prompt_style_guard_line_jp)
 手順:
 1. 古典的な肖像画のような半身ポートレートにする。顔と上半身が自然に画面の主役として大きく見える、均整の取れた構図にする。頭上の余白を少なくし、胸から上、必要でも腰上までに留める。顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
 2. 人物像は既存の persona データを最優先にする。${subject_jp}として自然に見せる。$(role_character_prompt_jp "$role")
@@ -1005,6 +1018,7 @@ ${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画�
 4. $(role_scene_prompt_jp "$role")
 5. 服装、姿勢、表情、視線、手元の所作で「このペインはこういう人物だ」と一目で分かるようにする。性別、年代、時代、性格、関係性が、文字に頼らず見えるようにする。
 6. 背景は人物の後ろで静かに支える。背景は personality の補助に徹し、人物が主役で、視線が自然に顔へ集まる構図にする。上端に頭が寄りすぎない。下端に肩が切れすぎない。上下の余白は釣り合いを取る。
+$(prompt_composition_extra_line_jp)
 7. 文字が生まれそうな物体は最初から置かない。壁、棚、布、道具、器具は無地にする。
 最終ルール: 画像の中に読める文字、数字、記号、タイトル、ロゴ、透かし、署名、字幕を一切入れない。もし文字が乗りそうなら、その物体を消すか、無地で blank にする。
 EOF
@@ -1019,6 +1033,7 @@ build_negative_prompt() {
   if [[ "$PERSONA_PROF" == *"アイドル"* || "$PERSONA_PROF" == *"歌姫"* || "$PERSONA_PROF" == *"シンガー"* ]]; then
     printf ' 着物、白衣、袴、和装、緋袴、神職、巫女衣装、伝統的な日本衣装、寺社風の衣装は一切禁止。 NO KIMONO. NO WHITE JINJA ROBE. NO MIKO. NO HAKAMA. NO TRADITIONAL JAPANESE OUTFIT. 過度なネオン演出、サイバーパンクに振り切った派手な彩色、フォトリアル寄りのメタリック光沢、写実的なCG風仕上げは禁止。本来のやわらかな自然光と落ち着いた色調、手描きセル画タッチを崩さない。 NO OVERSATURATED NEON. NO CYBERPUNK STYLE. NO METALLIC CGI GLOSS. KEEP THE HAND-DRAWN CEL ANIMATION STYLE.'
   fi
+  prompt_negative_extra_text_jp
 )
 EOF
 }
@@ -1049,6 +1064,61 @@ style_reference_for_mode() {
     "$STYLE_MODE_NAMED") printf '%s' "$STYLE_REFERENCE" ;;
     *) printf '%s' "$STYLE_REFERENCE_FALLBACK" ;;
   esac
+}
+
+json_string_or_empty() {
+  local file="$1"
+  local key="$2"
+  jq -er --arg key "$key" '.[$key] // empty | select(type == "string")' "$file" 2>/dev/null || true
+}
+
+apply_prompt_override_file() {
+  local file="$1"
+  local value=""
+
+  [[ -f "$file" ]] || return 0
+  jq -e 'type == "object"' "$file" >/dev/null 2>&1 || die "invalid pane-bg prompt override JSON: $file"
+
+  value="$(json_string_or_empty "$file" "style_ref_en")"
+  [[ -n "$value" ]] && STYLE_REF_EN="$value"
+  value="$(json_string_or_empty "$file" "style_ref_jp")"
+  [[ -n "$value" ]] && STYLE_REF_JP="$value"
+  value="$(json_string_or_empty "$file" "style_author_jp")"
+  [[ -n "$value" ]] && STYLE_AUTHOR_JP="$value"
+  value="$(json_string_or_empty "$file" "style_reference_fallback")"
+  [[ -n "$value" ]] && STYLE_REFERENCE_FALLBACK="$value"
+  value="$(json_string_or_empty "$file" "style_fallback_en")"
+  [[ -n "$value" ]] && STYLE_REFERENCE_FALLBACK="$value"
+  value="$(json_string_or_empty "$file" "style_guard_jp")"
+  [[ -n "$value" ]] && PROMPT_STYLE_GUARD_JP="$value"
+  value="$(json_string_or_empty "$file" "composition_extra_jp")"
+  [[ -n "$value" ]] && PROMPT_COMPOSITION_EXTRA_JP="$value"
+  value="$(json_string_or_empty "$file" "negative_extra_jp")"
+  [[ -n "$value" ]] && PROMPT_NEGATIVE_EXTRA_JP="$value"
+
+  STYLE_REFERENCE="$STYLE_REF_EN"
+  PROMPT_OVERRIDE_PATH="$file"
+  PROMPT_OVERRIDE_FINGERPRINT="$(jq -Sc . "$file" | shasum | awk '{print $1}')"
+}
+
+load_project_prompt_override() {
+  local project="$1"
+  apply_prompt_override_file "$(project_prompt_override_path "$project")"
+}
+
+prompt_style_guard_line_jp() {
+  [[ -n "$PROMPT_STYLE_GUARD_JP" ]] || return 0
+  printf '%s\n' "$PROMPT_STYLE_GUARD_JP"
+}
+
+prompt_composition_extra_line_jp() {
+  [[ -n "$PROMPT_COMPOSITION_EXTRA_JP" ]] || return 0
+  printf '%s\n' "$PROMPT_COMPOSITION_EXTRA_JP"
+}
+
+prompt_negative_extra_text_jp() {
+  [[ -n "$PROMPT_NEGATIVE_EXTRA_JP" ]] || return 0
+  printf ' %s' "$PROMPT_NEGATIVE_EXTRA_JP"
 }
 
 effective_gaze_jp() {
@@ -1119,10 +1189,12 @@ build_pro_finished_prompt_body() {
     style_intro="${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。ただし説明的な模写ではなく、日本アニメ映画らしい顔立ちと線、セル画の人物と背景美術の組み合わせとして出す。水彩ファンタジー絵本風や西洋ファンタジー表紙絵にはしない。上品で非オタク的な人物造形。"
   fi
 
-  cat <<EOF
+cat <<EOF
 縦長の terminal wallpaper。${style_intro}${PERSONA_ERA_HINT}。人物主役の半身肖像。
+$(prompt_style_guard_line_jp)
 
 顔と上半身が自然に画面の主役として大きく見える、均整の取れた半身肖像にする。頭頂を上へ逃がさない。頭上の余白は最小限にし、顔が上三分の一へ寄る構図にしない。腰上まで欲張らず、髪の上端から胸下から上腹部までの範囲でタイトに切り取る。顔と胸上部が画面の主役として安定して見えるようにし、人物の存在感を今より一段大きくする。背景の余白で小さく見せない。背景は人物を支える役に徹し、まず顔へ視線が行く構図にする。表情と肩と手の動きを必ず入れる。片手や指先は顔の近くか胸元に入れ、無表情な証明写真や静止 bust にしない。
+$(prompt_composition_extra_line_jp)
 
 ${subject_jp}。$(visual_age_prompt_jp)。$(gender_presentation_prompt_jp)。${PERSONA_MBTI} の気質、${PERSONA_TONE} の空気、${PERSONA_MASTER_REL} の関係性、${PERSONA_CHARA} のクセが同時に伝わるようにする。
 
@@ -1354,7 +1426,15 @@ ${PERSONA_SOURCE_VERSION}
 ${PERSONA_VISUAL_AGE}
 ${PERSONA_EXPRESSION_MODE}
 ${PERSONA_POSE_MODE}
-${PERSONA_PROP_MODE}"
+${PERSONA_PROP_MODE}
+${STYLE_REF_EN}
+${STYLE_REF_JP}
+${STYLE_AUTHOR_JP}
+${STYLE_REFERENCE_FALLBACK}
+${PROMPT_OVERRIDE_FINGERPRINT}
+${PROMPT_STYLE_GUARD_JP}
+${PROMPT_COMPOSITION_EXTRA_JP}
+${PROMPT_NEGATIVE_EXTRA_JP}"
 }
 
 extract_first_nonempty_json_string() {
@@ -2064,6 +2144,8 @@ write_sidecar() {
     --arg selection_reason "$selection_reason" \
     --arg style_mode "$style_mode" \
     --arg style_preference "$style_preference" \
+    --arg prompt_override_path "$PROMPT_OVERRIDE_PATH" \
+    --arg prompt_override_fingerprint "$PROMPT_OVERRIDE_FINGERPRINT" \
     --arg aspect_ratio "$ASPECT_RATIO" \
     --arg generated_at "$(now_utc)" \
     --arg image_path "$image_path" \
@@ -2109,6 +2191,8 @@ write_sidecar() {
       selection_reason: $selection_reason,
       style_mode: $style_mode,
       style_preference: $style_preference,
+      prompt_override_path: (if $prompt_override_path == "" then null else $prompt_override_path end),
+      prompt_override_fingerprint: (if $prompt_override_fingerprint == "" then null else $prompt_override_fingerprint end),
       aspect_ratio: $aspect_ratio,
       generated_at: $generated_at,
       image_path: $image_path,
@@ -2204,17 +2288,11 @@ generate_background() {
 
   require_cmd "$CC_PERSONA_BIN"
   require_cmd jq
-  require_cmd python3
-  require_cmd base64
   require_cmd shasum
-  python3 -c 'from google import genai' >/dev/null 2>&1 || die "python package google-genai is required"
+  load_project_prompt_override "$project"
 
   [[ -s "$image_path" ]] && has_image="true"
   [[ -s "$meta_path" ]] && has_meta="true"
-  if [[ "$refresh_flag" != "true" ]] && [[ "$has_image" == "true" && "$has_meta" == "true" ]]; then
-    printf '%s\n' "$image_path"
-    return 0
-  fi
 
   mkdir -p "$WORK_ROOT"
   generation_lock="$(generation_lock_dir "$project")"
@@ -2244,6 +2322,16 @@ generate_background() {
   gender_desc="$(translate_gender "$PERSONA_GENDER_RAW")"
   age_desc="$(translate_age "$PERSONA_AGE_RAW")"
   negative_prompt="$(build_negative_prompt)"
+
+  if [[ "$refresh_flag" != "true" ]] && cache_is_fresh "$meta_path" "$image_path" "$project" "$role" "$persona_line"; then
+    printf '%s\n' "$image_path"
+    rm -rf "$generation_lock"
+    return 0
+  fi
+
+  require_cmd python3
+  require_cmd base64
+  python3 -c 'from google import genai' >/dev/null 2>&1 || die "python package google-genai is required"
 
   if [[ "$refresh_flag" == "true" ]]; then
     generation_model="$PRO_MODEL_NAME"
