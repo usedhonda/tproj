@@ -119,6 +119,29 @@ exit 0
 WS
 chmod +x "$BIN_DIR/websocat"
 
+# --- fake curl ---------------------------------------------------------------
+# Captures ClawGate payloads for gate:direct tests.
+cat > "$BIN_DIR/curl" <<'CURL'
+#!/usr/bin/env bash
+set -uo pipefail
+body=""
+next_is_body=0
+for arg in "$@"; do
+  if [[ "$next_is_body" == "1" ]]; then
+    body="$arg"
+    next_is_body=0
+    continue
+  fi
+  case "$arg" in
+    -d|--data|--data-raw|--data-binary) next_is_body=1 ;;
+  esac
+done
+printf '%s' "$body" > "$FAKE_DIR_ENV/curl_body.json"
+printf '%s\n' "$*" > "$FAKE_DIR_ENV/curl_argv.txt"
+printf '{"ok":true}\n200\n'
+CURL
+chmod +x "$BIN_DIR/curl"
+
 export FAKE_DIR_ENV="$FAKE_DIR"
 export PATH="$BIN_DIR:$PATH"
 
@@ -148,6 +171,18 @@ run_status() { # <target>
 
 run_force() { # <target> <message>
   "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --allow-relay gate-reverse-channel --force "$1" "$2" 2>&1
+}
+
+run_gate_direct() { # <message>
+  mkdir -p "$WORK/home/.config/tproj"
+  cat > "$WORK/home/.config/tproj/workspace.yaml" <<'YAML'
+gui:
+  bridge:
+    url: http://bridge.test:8765
+    default_adapter: direct
+    reply_callback_url: http://reply.test:8765
+YAML
+  HOME="$WORK/home" "$TPROJ_MSG" --session tproj-workspace --as tproj.cc gate:direct "$1" 2>&1
 }
 
 # assert_detail <name> <target> <expected-substring>
@@ -266,6 +301,24 @@ if [[ "$force_rc" -eq 0 ]] && [[ -f "$FAKE_DIR/sendkeys.log" ]]; then
   printf 'PASS  12_force_running_still_sent\n'; PASS=$((PASS+1))
 else
   printf 'FAIL  12_force_running_still_sent\n      want rc=0 and sendkeys\n      rc=%s\n      got: %s\n' "$force_rc" "$(printf '%s' "$force_out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# 13. gate:direct must emit exactly one reverse-channel header even if the body
+#     already starts with an old [tproj-msg:...] header.
+reset_fixtures
+gate_out=$(run_gate_direct "[tproj-msg:sender=old.cc,project=old,workspace=old,reply=session,return_url=http://old.example] body after old header")
+gate_rc=$?
+gate_text=""
+gate_header_count=0
+if [[ -f "$FAKE_DIR/curl_body.json" ]] && command -v jq >/dev/null 2>&1; then
+  gate_text=$(jq -r '.text // ""' "$FAKE_DIR/curl_body.json" 2>/dev/null || true)
+  gate_header_count=$(printf '%s' "$gate_text" | grep -o '\[tproj-msg:[^]]*\]' | wc -l | tr -d ' ')
+fi
+if [[ "$gate_rc" -eq 0 && "$gate_header_count" -eq 1 && "$gate_text" == *"sender=tproj.cc"* && "$gate_text" != *"old.cc"* && "$gate_text" == *"body after old header"* ]]; then
+  printf 'PASS  13_gate_direct_single_header\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  13_gate_direct_single_header\n      want rc=0, header_count=1, current sender, no old header\n      rc=%s header_count=%s\n      out: %s\n      text: %s\n' "$gate_rc" "$gate_header_count" "$(printf '%s' "$gate_out" | tr '\n' '|')" "$gate_text"
   FAIL=$((FAIL+1))
 fi
 
