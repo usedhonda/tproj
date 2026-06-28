@@ -2009,6 +2009,8 @@ write_image_from_response() {
 
   write_center_cropped_image "$decoded_path" "$image_path"
 
+  # Face-crop checks are advisory after writing image_path; do not retry and
+  # overwrite a usable candidate just because Vision could not validate it.
   if ! command -v swift >/dev/null 2>&1; then
     set_face_crop_fallback_json "swift_unavailable" "none"
     return 0
@@ -2016,19 +2018,19 @@ write_image_from_response() {
 
   if ! current_face_crop_json="$(vision_face_crop_json "$image_path" 2>/dev/null)" || [[ -z "$current_face_crop_json" ]]; then
     set_face_crop_fallback_json "vision_detection_failed"
-    return 1
+    return 0
   fi
 
   if [[ "$(jq -r 'if has("fallback_used") then .fallback_used else true end' <<<"$current_face_crop_json")" == "true" ]]; then
     LAST_FACE_CROP_JSON="$(jq -cn --argjson final "$current_face_crop_json" --argjson pass_count "$applied_passes" '
       $final + { pass_count: $pass_count }')"
-    return 1
+    return 0
   fi
 
   if face_crop_is_sideways "$current_face_crop_json"; then
     LAST_FACE_CROP_JSON="$(jq -cn --argjson final "$current_face_crop_json" --argjson pass_count "$applied_passes" '
       $final + { fallback_used: true, reason: "sideways_face_roll", pass_count: $pass_count }')"
-    return 1
+    return 0
   fi
 
   apply_face_crop_from_json "$image_path" "$refined_output_path" "$current_face_crop_json"
@@ -2049,7 +2051,7 @@ write_image_from_response() {
   if face_crop_is_sideways "$current_face_crop_json"; then
     LAST_FACE_CROP_JSON="$(jq -cn --argjson final "$current_face_crop_json" --argjson pass_count "$applied_passes" '
       $final + { fallback_used: true, reason: "sideways_face_roll_after_refine", pass_count: $pass_count }')"
-    return 1
+    return 0
   fi
 
   needs_refine=0
@@ -2067,7 +2069,7 @@ write_image_from_response() {
     if [[ "$(jq -r 'if has("fallback_used") then .fallback_used else true end' <<<"$current_face_crop_json")" != "true" ]] && face_crop_is_sideways "$current_face_crop_json"; then
       LAST_FACE_CROP_JSON="$(jq -cn --argjson final "$current_face_crop_json" --argjson pass_count "$applied_passes" '
         $final + { fallback_used: true, reason: "sideways_face_roll_after_final_refine", pass_count: $pass_count }')"
-      return 1
+      return 0
     fi
     LAST_FACE_CROP_JSON="$(jq -cn --argjson final "$current_face_crop_json" --argjson pass_count "$applied_passes" '
       $final + { pass_count: $pass_count }')"
