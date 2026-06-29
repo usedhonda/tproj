@@ -62,13 +62,14 @@ usage() {
   cat <<'EOF'
 Usage:
   tproj-pane-bg --session <name> [--window <name>] [--mode <single|workspace>]
-  tproj-pane-bg generate --project <path> --role cc|cdx [--prof <value>] [--refresh]
+  tproj-pane-bg generate --project <path> --role cc|cdx [--prof <value>] [--era <value>] [--refresh]
   tproj-pane-bg sync --session <name>
 
 Commands:
   generate   Generate or reuse a cached vertical wallpaper for cc/cdx.
   sync       Collect tmux pane geometry, refresh the manifest, and install hooks.
   --prof     Override only the persona profession field for image generation.
+  --era      Override only the persona era field for image generation.
 EOF
 }
 
@@ -978,6 +979,36 @@ apply_prof_override() {
   else
     printf '%s / prof:%s' "$persona_line" "$trimmed_prof"
   fi
+}
+
+apply_era_override() {
+  local persona_line="$1"
+  local era_override="$2"
+  local trimmed_era=""
+  local prefix=""
+  local tail=""
+  local first=""
+  local second=""
+  local third=""
+  local rest=""
+
+  trimmed_era="$(trim "$era_override")"
+  [[ -n "$trimmed_era" ]] || {
+    printf '%s' "$persona_line"
+    return 0
+  }
+
+  prefix="${persona_line%%: *}: "
+  tail="${persona_line#*: }"
+  first="${tail%% / *}"
+  tail="${tail#* / }"
+  second="${tail%% / *}"
+  tail="${tail#* / }"
+  third="${tail%% / *}"
+  tail="${tail#* / }"
+  rest="${tail#* / }"
+
+  printf '%s%s / %s / %s / %s / %s' "$prefix" "$first" "$second" "$third" "$trimmed_era" "$rest"
 }
 
 build_flash_named_prompt() {
@@ -2253,6 +2284,7 @@ generate_background() {
   local role="$2"
   local refresh_flag="$3"
   local prof_override="${4:-}"
+  local era_override="${5:-}"
   local project=""
   local cache_dir=""
   local image_path=""
@@ -2320,6 +2352,7 @@ generate_background() {
     return 1
   fi
   persona_line="$(apply_prof_override "$persona_line" "$prof_override")"
+  persona_line="$(apply_era_override "$persona_line" "$era_override")"
   set_persona_from_line "$persona_line" "$role"
   gender_desc="$(translate_gender "$PERSONA_GENDER_RAW")"
   age_desc="$(translate_age "$PERSONA_AGE_RAW")"
@@ -2921,6 +2954,7 @@ cmd_generate() {
   local role=""
   local refresh="false"
   local prof_override=""
+  local era_override=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2939,6 +2973,11 @@ cmd_generate() {
         prof_override="$2"
         shift 2
         ;;
+      --era)
+        [[ $# -ge 2 ]] || die "missing value for --era"
+        era_override="$2"
+        shift 2
+        ;;
       --refresh)
         refresh="true"
         shift
@@ -2955,7 +2994,7 @@ cmd_generate() {
 
   [[ -n "$project" ]] || die "generate requires --project"
   [[ "$role" == "cc" || "$role" == "cdx" ]] || die "generate requires --role cc|cdx"
-  generate_background "$project" "$role" "$refresh" "$prof_override"
+  generate_background "$project" "$role" "$refresh" "$prof_override" "$era_override"
 }
 
 cmd_sync() {
