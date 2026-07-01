@@ -508,7 +508,7 @@ else
 fi
 
 # === Queue directory ===
-QUEUE_DIR="/tmp/tproj-msg-queue"
+QUEUE_DIR="${TPROJ_MSG_QUEUE_DIR:-/tmp/tproj-msg-queue}"
 STALE_SECONDS=600  # 10 minutes
 AUTO_FLUSH_MAX=3   # Max messages to auto-flush per send
 FLUSH_POLL_INTERVAL=3  # seconds between flush attempts

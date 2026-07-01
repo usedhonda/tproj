@@ -322,12 +322,47 @@ else
   FAIL=$((FAIL+1))
 fi
 
-# 7. flush_queue must not flush while selection screen is up.
-#    (Verdict proxy: a permission_prompt target reads blocked_selection, which
-#    the flush worker shares as its gate. A live flush_queue assertion is added
-#    once Step 3 wiring lands; recorded here as PENDING.)
-PENDING=$((PENDING+1))
-printf 'PEND  7_flush_skips_selection (live flush check added after Step 3 wiring)\n'
+# 7. flush must SKIP a selection screen but DELIVER to a sendable target.
+#    Live check via the real `--flush` path with a hermetic queue dir
+#    (TPROJ_MSG_QUEUE_DIR), asserting through the send-keys shim. This guards the
+#    Arc 1 regression hole: a queued message must not be flushed into a permission
+#    menu. If the selection gate is removed, 7a flushes and this case FAILs.
+export TPROJ_MSG_QUEUE_DIR="$WORK/queue"
+mkdir -p "$TPROJ_MSG_QUEUE_DIR"
+
+# 7a. selection (permission_prompt) -> NOT flushed, queue kept.
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+printf '%s\t%s\t%s\n' "$(date +%s)" "" "queued flush test A" > "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue"
+set_ws "$CC_TTY" "waiting_input" "permission_prompt"
+# Menu-style capture (same as case 2): detected as a selection screen by the real
+# gate, but reads as sendable once selection detection is disabled — so this case
+# isolates the SELECTION skip (a plain "> Allow/Deny" would also trip the draft
+# guard and mask a selection-gate regression).
+set_capture "%1" "Do you want to proceed? > 1. Yes  2. No"
+"$TPROJ_MSG" --session tproj-workspace --as tproj.cc --flush >/dev/null 2>&1
+sel_no_send=1; [[ -f "$FAKE_DIR/sendkeys.log" ]] && sel_no_send=0
+sel_kept=0;   [[ -f "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue" ]] && sel_kept=1
+
+# 7b. sendable (running) -> flushed, queue removed.
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+printf '%s\t%s\t%s\n' "$(date +%s)" "" "queued flush test B" > "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue"
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" "...generating output..."
+"$TPROJ_MSG" --session tproj-workspace --as tproj.cc --flush >/dev/null 2>&1
+snd_sent=0; [[ -f "$FAKE_DIR/sendkeys.log" ]] && snd_sent=1
+snd_gone=1; [[ -f "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue" ]] && snd_gone=0
+
+unset TPROJ_MSG_QUEUE_DIR
+
+if [[ "$sel_no_send" -eq 1 && "$sel_kept" -eq 1 && "$snd_sent" -eq 1 && "$snd_gone" -eq 1 ]]; then
+  printf 'PASS  7_flush_skips_selection\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  7_flush_skips_selection\n      selection[no_send=%s kept=%s] sendable[sent=%s gone=%s] (all want 1)\n' \
+    "$sel_no_send" "$sel_kept" "$snd_sent" "$snd_gone"
+  FAIL=$((FAIL+1))
+fi
 
 # =============================================================================
 echo "----"
