@@ -1543,6 +1543,8 @@ private final class MIDIPaneActivator {
     var onStatus: ((String) -> Void)?
     var onLearnStateChanged: ((Bool) -> Void)?
     var onSlotTriggered: ((Int) -> Void)?
+    // Jog wheel (relative CC): +1 = focus next pane, -1 = focus previous pane.
+    var onJogStep: ((Int) -> Void)?
 
     private var client = MIDIClientRef()
     private var inputPort = MIDIPortRef()
@@ -1555,6 +1557,24 @@ private final class MIDIPaneActivator {
     }
     private var lastLearnEventAt: Date = .distantPast
     private var lastLearnBinding: MIDIBinding?
+
+    // Jog wheel accumulator state (relative-CC quantization).
+    private var jogAccumulator = 0
+    private var jogLastDirection = 0
+    private var jogLastStepAt: Date = .distantPast
+
+    // Jog config (UserDefaults, standard suite). object(forKey:) != nil check so a
+    // missing key falls back to the documented default rather than 0.
+    private func intDefault(_ key: String, _ fallback: Int) -> Int {
+        UserDefaults.standard.object(forKey: key) == nil ? fallback : UserDefaults.standard.integer(forKey: key)
+    }
+    private func doubleDefault(_ key: String, _ fallback: Double) -> Double {
+        UserDefaults.standard.object(forKey: key) == nil ? fallback : UserDefaults.standard.double(forKey: key)
+    }
+    private var jogChannel: Int { intDefault("tproj.midi.jog.channel", 0) }
+    private var jogCC: Int { intDefault("tproj.midi.jog.cc", 6) }
+    private var jogTicksPerStep: Int { max(1, intDefault("tproj.midi.jog.ticksPerStep", 30)) }
+    private var jogMinStepInterval: Double { doubleDefault("tproj.midi.jog.minStepInterval", 0.15) }
 
     var isLearning: Bool { learning }
 
@@ -1684,6 +1704,14 @@ private final class MIDIPaneActivator {
         guard (nibble == 0x90 || nibble == 0xB0), data2 > 0 else { return }
 
         let channel = status & 0x0F
+
+        // Jog wheel: relative CC on a dedicated channel/CC. Consume it before learn
+        // and slot matching so rotation never contaminates bindings, even mid-learn.
+        if nibble == 0xB0 && Int(channel) == jogChannel && Int(data1) == jogCC {
+            handleJog(data2: data2)
+            return
+        }
+
         let incoming = MIDIBinding(statusNibble: nibble, data1: data1, channel: channel)
 
         if learning {
@@ -1711,6 +1739,29 @@ private final class MIDIPaneActivator {
 
         guard let slot = bindings.first(where: { $0.value == incoming })?.key else { return }
         onSlotTriggered?(slot)
+    }
+
+    private func handleJog(data2: UInt8) {
+        // Two's-complement relative encoding: 1..63 = clockwise (+), 65..127 = ccw (-).
+        let delta = data2 <= 63 ? Int(data2) : Int(data2) - 128
+        if delta == 0 { return }
+
+        let direction = delta > 0 ? 1 : -1
+        // Direction reversal: drop stale accumulation so a flick-back reacts promptly.
+        if direction != jogLastDirection {
+            jogAccumulator = 0
+            jogLastDirection = direction
+        }
+        jogAccumulator += delta
+
+        // Quantize: fire one focus step per ticksPerStep of accumulated rotation,
+        // rate-limited by minStepInterval. Reset the accumulator only when firing.
+        guard abs(jogAccumulator) >= jogTicksPerStep else { return }
+        let now = Date()
+        guard now.timeIntervalSince(jogLastStepAt) >= jogMinStepInterval else { return }
+        jogLastStepAt = now
+        jogAccumulator = 0
+        onJogStep?(direction)
     }
 
     private func displayName(for endpoint: MIDIEndpointRef) -> String? {
@@ -3168,6 +3219,11 @@ final class AppViewModel: ObservableObject {
                 await self?.activatePaneForMIDISlot(slot)
             }
         }
+        activator.onJogStep = { [weak self] direction in
+            Task { [weak self] in
+                await self?.focusPaneByJog(direction)
+            }
+        }
         activator.start()
         midiActivator = activator
     }
@@ -3198,6 +3254,19 @@ final class AppViewModel: ObservableObject {
             statusText = "MIDI: #\(slot) activated"
         } else {
             statusText = "MIDI activate failed: \(trimmedError(select))"
+        }
+    }
+
+    private func focusPaneByJog(_ direction: Int) async {
+        // Cycle focus within the dev window. tmux {next}/{previous} wrap at the ends;
+        // no select-window here (jog stays inside the current dev window).
+        let sessionTarget = "tproj-workspace:dev"
+        let target = direction > 0 ? "\(sessionTarget).{next}" : "\(sessionTarget).{previous}"
+        let select = await runCommandAsync("/usr/bin/env", ["tmux", "select-pane", "-t", target])
+        if select.exitCode == 0 {
+            statusText = direction > 0 ? "MIDI jog: next" : "MIDI jog: prev"
+        } else {
+            statusText = "MIDI jog failed: \(trimmedError(select))"
         }
     }
 
