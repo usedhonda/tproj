@@ -1551,12 +1551,13 @@ private final class MIDIPaneActivator {
     private var connectedSources: [MIDIEndpointRef] = []
     private var bindings: [Int: MIDIBinding] = MIDILearnStore.load()
     private var isRunning = false
-    private var learnStep = 1
     private var learning = false {
         didSet { onLearnStateChanged?(learning) }
     }
-    private var lastLearnEventAt: Date = .distantPast
-    private var lastLearnBinding: MIDIBinding?
+    // Jog-learn state: count consecutive identical CCs while learning.
+    private var learnJogChannel: Int?
+    private var learnJogCC: Int?
+    private var learnJogCount = 0
 
     // Jog wheel accumulator state (relative-CC quantization).
     private var jogAccumulator = 0
@@ -1636,15 +1637,14 @@ private final class MIDIPaneActivator {
     func toggleLearn() -> Bool {
         if learning {
             learning = false
-            learnStep = 1
             onStatus?("MIDI Learn canceled")
             return false
         }
         learning = true
-        learnStep = 1
-        lastLearnBinding = nil
-        lastLearnEventAt = .distantPast
-        onStatus?("MIDI Learn 1/16: press button")
+        learnJogChannel = nil
+        learnJogCC = nil
+        learnJogCount = 0
+        onStatus?("MIDI Learn: rotate the jog")
         return true
     }
 
@@ -1705,38 +1705,37 @@ private final class MIDIPaneActivator {
 
         let channel = status & 0x0F
 
-        // Jog wheel: relative CC on a dedicated channel/CC. Consume it before learn
-        // and slot matching so rotation never contaminates bindings, even mid-learn.
-        if nibble == 0xB0 && Int(channel) == jogChannel && Int(data1) == jogCC {
+        // Jog wheel: relative CC on a dedicated channel/CC. Consume it for focus
+        // stepping only when not learning; during learn the matching CC must fall
+        // through so the jog can be re-learned.
+        if !learning && nibble == 0xB0 && Int(channel) == jogChannel && Int(data1) == jogCC {
             handleJog(data2: data2)
             return
         }
 
-        let incoming = MIDIBinding(statusNibble: nibble, data1: data1, channel: channel)
-
         if learning {
-            let now = Date()
-            if incoming == lastLearnBinding, now.timeIntervalSince(lastLearnEventAt) < 0.12 {
-                return
-            }
-            lastLearnBinding = incoming
-            lastLearnEventAt = now
-
-            bindings[learnStep] = incoming
-            let kind = nibble == 0xB0 ? "CC" : "Note"
-            onStatus?("Learned \(kind) data1=\(data1) ch=\(Int(channel) + 1) -> slot \(learnStep)")
-            if learnStep >= 16 {
-                MIDILearnStore.save(bindings)
-                learning = false
-                learnStep = 1
-                onStatus?("MIDI learn saved (16)")
+            // Learn the jog wheel: rotation fires the same CC repeatedly, so require
+            // the same (channel, data1) CC 8 times in a row before committing. Notes
+            // (jog top-touch) and stray one-off knob CCs are thereby ignored.
+            guard nibble == 0xB0 else { return }
+            let ch = Int(channel)
+            let cc = Int(data1)
+            if ch == learnJogChannel && cc == learnJogCC {
+                learnJogCount += 1
             } else {
-                learnStep += 1
-                onStatus?("MIDI Learn \(learnStep)/16: press button")
+                learnJogChannel = ch
+                learnJogCC = cc
+                learnJogCount = 1
             }
+            guard learnJogCount >= 8 else { return }
+            UserDefaults.standard.set(ch, forKey: "tproj.midi.jog.channel")
+            UserDefaults.standard.set(cc, forKey: "tproj.midi.jog.cc")
+            learning = false
+            onStatus?("Jog learned: ch\(ch + 1) cc\(cc)")
             return
         }
 
+        let incoming = MIDIBinding(statusNibble: nibble, data1: data1, channel: channel)
         guard let slot = bindings.first(where: { $0.value == incoming })?.key else { return }
         onSlotTriggered?(slot)
     }
