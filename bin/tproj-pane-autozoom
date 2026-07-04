@@ -112,7 +112,8 @@ tmux has-session -t "$SESSION" 2>/dev/null || exit 0
 # Active pane and its column tag
 ACTIVE=""
 ACTIVE_COL=""
-read -r ACTIVE ACTIVE_COL < <(tmux display-message -t "$SESSION" -p '#{pane_id} #{@column}' 2>/dev/null) || true
+ACTIVE_ROLE=""
+read -r ACTIVE ACTIVE_COL ACTIVE_ROLE < <(tmux display-message -t "$SESSION" -p '#{pane_id} #{@column} #{@role}' 2>/dev/null) || true
 [ -z "$ACTIVE" ] && exit 0
 [ -z "$ACTIVE_COL" ] && exit 0   # @column tag missing => non-multi-project mode
 
@@ -201,10 +202,19 @@ done <<EOF_COLS
 $COLS
 EOF_COLS
 
-CURRENT_ACTIVE_H=$(tmux display-message -t "$ACTIVE" -p '#{pane_height}' 2>/dev/null || echo 0)
-case "$CURRENT_ACTIVE_H" in (*[!0-9]*|"") CURRENT_ACTIVE_H=0 ;; esac
-if [ "$CURRENT_ACTIVE_H" -lt "$TARGET_H" ]; then
-  tmux resize-pane -t "$ACTIVE" -y "$TARGET_H" 2>/dev/null || true
-fi
+# Vertical grow: only for the column's dominant (Claude) pane. Growing a Codex
+# pane to TARGET_H see-saws its column-mate h40<->h16 on every focus change, and
+# each resize fires SIGWINCH at the Codex TUI, which wedges into a 99% spin it
+# cannot recover from. Skip the grow when the active pane is a Codex pane.
+case "$ACTIVE_ROLE" in
+  codex*) : ;;  # no vertical grow for codex-role panes (avoids see-saw SIGWINCH)
+  *)
+    CURRENT_ACTIVE_H=$(tmux display-message -t "$ACTIVE" -p '#{pane_height}' 2>/dev/null || echo 0)
+    case "$CURRENT_ACTIVE_H" in (*[!0-9]*|"") CURRENT_ACTIVE_H=0 ;; esac
+    if [ "$CURRENT_ACTIVE_H" -lt "$TARGET_H" ]; then
+      tmux resize-pane -t "$ACTIVE" -y "$TARGET_H" 2>/dev/null || true
+    fi
+    ;;
+esac
 
 exit 0
