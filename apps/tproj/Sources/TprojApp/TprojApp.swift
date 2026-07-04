@@ -3258,11 +3258,46 @@ final class AppViewModel: ObservableObject {
     }
 
     private func focusPaneByJog(_ direction: Int) async {
-        // Cycle focus within the dev window. tmux {next}/{previous} wrap at the ends;
-        // no select-window here (jog stays inside the current dev window).
+        // Cycle focus in role-major order: codex panes left->right, then claude
+        // panes left->right (not tmux pane_index order). jog stays in the dev window.
         let sessionTarget = "tproj-workspace:dev"
-        let target = direction > 0 ? "\(sessionTarget).{next}" : "\(sessionTarget).{previous}"
-        let select = await runCommandAsync("/usr/bin/env", ["tmux", "select-pane", "-t", target])
+        let list = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", sessionTarget, "-F", "#{pane_id}|#{@role}|#{pane_left}|#{pane_active}"])
+        guard list.exitCode == 0 else {
+            statusText = "MIDI jog failed: \(trimmedError(list))"
+            return
+        }
+
+        var codex: [(left: Int, paneId: String)] = []
+        var claude: [(left: Int, paneId: String)] = []
+        var activePaneId: String?
+        for line in list.stdout.split(separator: "\n", omittingEmptySubsequences: true) {
+            let fields = line.split(separator: "|", omittingEmptySubsequences: false)
+            guard fields.count >= 4 else { continue }
+            let paneId = String(fields[0])
+            let role = String(fields[1])
+            guard let left = Int(fields[2].trimmingCharacters(in: .whitespaces)) else { continue }
+            if fields[3] == "1" { activePaneId = paneId }
+            if role.hasPrefix("codex") {
+                codex.append((left, paneId))
+            } else if role.hasPrefix("claude") {
+                claude.append((left, paneId))
+            }
+        }
+
+        let order = (codex.sorted { $0.left < $1.left } + claude.sorted { $0.left < $1.left }).map { $0.paneId }
+        guard !order.isEmpty else {
+            statusText = "MIDI jog: no codex/claude panes"
+            return
+        }
+
+        let nextPaneId: String
+        if let active = activePaneId, let idx = order.firstIndex(of: active) {
+            nextPaneId = order[(idx + direction + order.count) % order.count]
+        } else {
+            nextPaneId = order[0]
+        }
+
+        let select = await runCommandAsync("/usr/bin/env", ["tmux", "select-pane", "-t", nextPaneId])
         if select.exitCode == 0 {
             statusText = direction > 0 ? "MIDI jog: next" : "MIDI jog: prev"
         } else {
