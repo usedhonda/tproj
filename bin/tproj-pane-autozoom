@@ -191,7 +191,11 @@ while IFS=' ' read -r col rep; do
   if [ "$col" = "$ACTIVE_COL" ]; then
     [ "$NEW_ACTIVE_W" != "$CURRENT_COL_W" ] && tmux resize-pane -t "$rep" -x "$NEW_ACTIVE_W" 2>/dev/null || true
   else
-    tmux resize-pane -t "$rep" -x "$OTHER_W" 2>/dev/null || true
+    # Idempotent: only resize when this column is not already at OTHER_W, so a
+    # re-run on an already-settled layout issues zero resize-pane (no SIGWINCH).
+    cur_w=$(tmux display-message -t "$rep" -p '#{pane_width}' 2>/dev/null || echo 0)
+    case "$cur_w" in (*[!0-9]*|"") cur_w=0 ;; esac
+    [ "$OTHER_W" != "$cur_w" ] && tmux resize-pane -t "$rep" -x "$OTHER_W" 2>/dev/null || true
   fi
 done <<EOF_COLS
 $COLS
