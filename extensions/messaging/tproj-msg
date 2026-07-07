@@ -2535,6 +2535,46 @@ raw_send() {
   fi
 }
 
+do_read() {
+  CAPTURED_OUTPUT="$(tmux capture-pane -t "$TARGET_PANE" -p -S "-${READ_LINES}")"
+  printf '%s\n' "$CAPTURED_OUTPUT"
+
+  if [[ ! -f "$TASK_CACHE_HELPER" ]]; then
+    exit 0
+  fi
+
+  # shellcheck source=/dev/null
+  source "$TASK_CACHE_HELPER"
+  FOUND_REPLY=1
+  while IFS= read -r reply_id; do
+    [[ -n "$reply_id" ]] || continue
+    # R1' Stage 3: determine tag (ACK/DONE/BLOCK/BLOCKED) for this reply_id and
+    # shadow-write the state transition before cache removal. Fail-open.
+    if declare -F tt_db_transition_task >/dev/null 2>&1; then
+      # Pick the highest-precedence tag for this reply_id: terminal tags
+      # (DONE/BLOCK) win over ACK regardless of buffer order, so an ACK still
+      # visible in scrollback cannot block the done/blocked transition.
+      _tags=$(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo "\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*${reply_id}[[:space:]]*\]" | sed -E 's/^\[([A-Z]+):.*$/\1/')
+      if printf '%s\n' "$_tags" | grep -q '^DONE$'; then _tag=DONE
+      elif printf '%s\n' "$_tags" | grep -qE '^BLOCK(ED)?$'; then _tag=BLOCK
+      elif printf '%s\n' "$_tags" | grep -q '^ACK$'; then _tag=ACK
+      else _tag=""; fi
+      case "$_tag" in
+        ACK) _state="acked" ;;
+        DONE) _state="done" ;;
+        BLOCK|BLOCKED) _state="blocked" ;;
+        *) _state="" ;;
+      esac
+      [[ -n "$_state" ]] && tt_db_transition_task "$reply_id" "$_state" 2>/dev/null
+    fi
+    tt_cache_remove_task "$TARGET" "$reply_id" >/dev/null 2>&1 || true
+    echo "TASK_REPLIED=${reply_id}" >&2
+    FOUND_REPLY=0
+  done < <(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo '\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*[^]]+\]' | sed -E 's/^\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*//; s/\]$//' | awk 'NF {print $0}' | sort -u)
+
+  exit "$FOUND_REPLY"
+}
+
 # === --list mode ===
 if [[ "$LIST_MODE" == "true" ]]; then
   echo "Available targets ($SESSION):"
@@ -2752,43 +2792,7 @@ fi
 
 # === --read mode ===
 if [[ "$READ_MODE" == "true" ]]; then
-  CAPTURED_OUTPUT="$(tmux capture-pane -t "$TARGET_PANE" -p -S "-${READ_LINES}")"
-  printf '%s\n' "$CAPTURED_OUTPUT"
-
-  if [[ ! -f "$TASK_CACHE_HELPER" ]]; then
-    exit 0
-  fi
-
-  # shellcheck source=/dev/null
-  source "$TASK_CACHE_HELPER"
-  FOUND_REPLY=1
-  while IFS= read -r reply_id; do
-    [[ -n "$reply_id" ]] || continue
-    # R1' Stage 3: determine tag (ACK/DONE/BLOCK/BLOCKED) for this reply_id and
-    # shadow-write the state transition before cache removal. Fail-open.
-    if declare -F tt_db_transition_task >/dev/null 2>&1; then
-      # Pick the highest-precedence tag for this reply_id: terminal tags
-      # (DONE/BLOCK) win over ACK regardless of buffer order, so an ACK still
-      # visible in scrollback cannot block the done/blocked transition.
-      _tags=$(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo "\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*${reply_id}[[:space:]]*\]" | sed -E 's/^\[([A-Z]+):.*$/\1/')
-      if printf '%s\n' "$_tags" | grep -q '^DONE$'; then _tag=DONE
-      elif printf '%s\n' "$_tags" | grep -qE '^BLOCK(ED)?$'; then _tag=BLOCK
-      elif printf '%s\n' "$_tags" | grep -q '^ACK$'; then _tag=ACK
-      else _tag=""; fi
-      case "$_tag" in
-        ACK) _state="acked" ;;
-        DONE) _state="done" ;;
-        BLOCK|BLOCKED) _state="blocked" ;;
-        *) _state="" ;;
-      esac
-      [[ -n "$_state" ]] && tt_db_transition_task "$reply_id" "$_state" 2>/dev/null
-    fi
-    tt_cache_remove_task "$TARGET" "$reply_id" >/dev/null 2>&1 || true
-    echo "TASK_REPLIED=${reply_id}" >&2
-    FOUND_REPLY=0
-  done < <(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo '\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*[^]]+\]' | sed -E 's/^\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*//; s/\]$//' | awk 'NF {print $0}' | sort -u)
-
-  exit "$FOUND_REPLY"
+  do_read
 fi
 
 # For send modes, refuse to send if pane exists but AI is not running.
