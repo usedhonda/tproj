@@ -1367,10 +1367,9 @@ private final class MIDIPaneActivator {
     private var learnJogCC: Int?
     private var learnJogCount = 0
 
-    // Jog wheel accumulator state (relative-CC quantization).
-    private var jogAccumulator = 0
-    private var jogLastDirection = 0
-    private var jogLastStepAt: Date = .distantPast
+    // Jog wheel quantizer (relative-CC accumulation + rate limit). Its config is
+    // refreshed from the live computed vars before each feed (see handleJog).
+    private var jogQuantizer = JogQuantizer(ticksPerStep: 30, minStepInterval: 0.15)
 
     // Jog config (UserDefaults, standard suite). object(forKey:) != nil check so a
     // missing key falls back to the documented default rather than 0.
@@ -1545,26 +1544,13 @@ private final class MIDIPaneActivator {
     }
 
     private func handleJog(data2: UInt8) {
-        // Two's-complement relative encoding: 1..63 = clockwise (+), 65..127 = ccw (-).
-        let delta = data2 <= 63 ? Int(data2) : Int(data2) - 128
-        if delta == 0 { return }
-
-        let direction = delta > 0 ? 1 : -1
-        // Direction reversal: drop stale accumulation so a flick-back reacts promptly.
-        if direction != jogLastDirection {
-            jogAccumulator = 0
-            jogLastDirection = direction
+        // Refresh config from live defaults so a mid-session change is honored,
+        // exactly as the former inline computed-var reads did.
+        jogQuantizer.ticksPerStep = jogTicksPerStep
+        jogQuantizer.minStepInterval = jogMinStepInterval
+        if let direction = jogQuantizer.feed(data2: data2, now: Date()) {
+            onJogStep?(direction)
         }
-        jogAccumulator += delta
-
-        // Quantize: fire one focus step per ticksPerStep of accumulated rotation,
-        // rate-limited by minStepInterval. Reset the accumulator only when firing.
-        guard abs(jogAccumulator) >= jogTicksPerStep else { return }
-        let now = Date()
-        guard now.timeIntervalSince(jogLastStepAt) >= jogMinStepInterval else { return }
-        jogLastStepAt = now
-        jogAccumulator = 0
-        onJogStep?(direction)
     }
 
     private func displayName(for endpoint: MIDIEndpointRef) -> String? {
