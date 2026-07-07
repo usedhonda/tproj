@@ -510,6 +510,10 @@ fi
 # === Queue directory ===
 QUEUE_DIR="${TPROJ_MSG_QUEUE_DIR:-/tmp/tproj-msg-queue}"
 STALE_SECONDS=600  # 10 minutes
+# resolve_target failure classification (M-D6): distinguish a permanently-gone
+# target from a transient tmux hiccup so flush_all_queues can react differently.
+RT_NOT_FOUND=3   # pane list obtained but target absent (likely gone)
+RT_TRANSIENT=4   # tmux list-panes failed/empty (transient, retry next poll)
 AUTO_FLUSH_MAX=3   # Max messages to auto-flush per send
 FLUSH_POLL_INTERVAL=3  # seconds between flush attempts
 CONTROL_DEDUP_DIR="${TPROJ_MSG_CONTROL_DEDUP_DIR:-/tmp/tproj-msg-control-dedup}"
@@ -2296,8 +2300,19 @@ resolve_target() {
     target_role="cc"
   fi
 
-  local pane_list
+  local pane_list list_status
   pane_list=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null)
+  list_status=$?
+
+  # Classify a lookup miss (M-D6): a populated list means the target is genuinely
+  # absent (likely gone); a failed/empty list means tmux was transiently
+  # unavailable. Every "not found" return below yields this code so callers that
+  # care (flush_all_queues) can tell gone from retry; callers that only test for
+  # non-zero keep their existing behaviour.
+  local rt_fail=$RT_NOT_FOUND
+  if [[ $list_status -ne 0 || -z "$pane_list" ]]; then
+    rt_fail=$RT_TRANSIENT
+  fi
 
   if [[ "$target" == agent-* ]]; then
     echo "$pane_list" | while IFS=: read -r pid prole palias pcol; do
@@ -2306,7 +2321,7 @@ resolve_target() {
         return 0
       fi
     done
-    return 1
+    return $rt_fail
   fi
 
   if [[ "$IS_WORKSPACE" == "true" ]]; then
@@ -2322,7 +2337,7 @@ resolve_target() {
 
       if [[ -z "$found_col" ]]; then
         echo "Error: alias '$target_alias' not found" >&2
-        return 1
+        return $rt_fail
       fi
 
       role_pattern=$(short_to_role_pattern "$target_role" "$found_col")
@@ -2353,7 +2368,7 @@ resolve_target() {
     done <<< "$pane_list"
   fi
 
-  return 1
+  return $rt_fail
 }
 
 # === --list mode ===
