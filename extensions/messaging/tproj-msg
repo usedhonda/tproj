@@ -2904,6 +2904,7 @@ if [[ "$STATUS_MODE" == "true" ]]; then
   exit 0
 fi
 
+dispatch_mode() {
 # === Send policy precheck (send modes only) ===
 if [[ "$READ_MODE" != "true" ]]; then
   if enforce_send_policy "$TARGET" "$MESSAGE"; then
@@ -2940,3 +2941,6 @@ if [[ "$READ_MODE" == "true" ]]; then
 fi
 
 do_send_tmux
+}
+
+dispatch_mode
