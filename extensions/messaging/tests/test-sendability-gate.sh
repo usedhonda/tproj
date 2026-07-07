@@ -99,7 +99,12 @@ case "$sub" in
     esac
     ;;
   capture-pane) readf "capture_${pane}";;
-  send-keys)    printf 'SENDKEYS %s\n' "$*" >> "$FAKE_DIR/sendkeys.log";;
+  send-keys)
+    # Fault injection for the raw_send hardening test: when the sendkeys_fail
+    # fixture is present, simulate a failed tmux send-keys (non-zero, nothing
+    # logged). Absent (all other cases) -> unchanged: log and succeed.
+    [[ -f "$FAKE_DIR/sendkeys_fail" ]] && exit 1
+    printf 'SENDKEYS %s\n' "$*" >> "$FAKE_DIR/sendkeys.log";;
   has-session)  exit 0;;
   set-option|set|setenv) exit 0;;
   *) : ;;
@@ -478,6 +483,24 @@ if [[ "$rc" -eq 0 && -f "$FAKE_DIR/sendkeys.log" ]]; then
   printf 'PASS  21_fanout_allow_fanout_sends\n'; PASS=$((PASS+1))
 else
   printf 'FAIL  21_fanout_allow_fanout_sends\n      want rc=0 and sendkeys\n      rc=%s got: %s\n' "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# --- raw_send hardening (M-D1) -------------------------------------------------
+# 22. When tmux send-keys fails, raw_send must NOT print "Sent to", must exit
+#     non-zero, and must not log a delivered send. Target is sendable (running)
+#     so the send path is reached; the shim then fails send-keys.
+reset_fixtures
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" "...generating output..."
+touch "$FAKE_DIR/sendkeys_fail"
+out=$(run_send "tproj.cc" "raw_send failure probe $$-$RANDOM"); rc=$?
+rm -f "$FAKE_DIR/sendkeys_fail"
+if [[ "$rc" -ne 0 ]] && ! grep -q "Sent to" <<<"$out" && [[ ! -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  22_raw_send_failure_not_sent\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  22_raw_send_failure_not_sent\n      want rc!=0, no "Sent to", no sendkeys\n      rc=%s got: %s\n' "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  [[ -f "$FAKE_DIR/sendkeys.log" ]] && sed 's/^/      sendkeys: /' "$FAKE_DIR/sendkeys.log"
   FAIL=$((FAIL+1))
 fi
 

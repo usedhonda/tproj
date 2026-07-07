@@ -2655,10 +2655,37 @@ TASK_SENT_AT=""
 # === Send helpers ===
 
 # Raw send: push text into target pane via tmux send-keys
+# Record a failed send in the DB shadow store as a delivery error (not delivered),
+# mirroring send_via_gate's error path. Best-effort; no-op if the DB layer is absent.
+_raw_send_record_error() {
+  local _reason="$1"
+  if declare -F tt_db_log_message >/dev/null 2>&1; then
+    local _hash _from _outid
+    _hash=$(sha1_hash "$MESSAGE" 2>/dev/null)
+    _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
+    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "error" "${MY_ROLE:-cc}" "tmux" "" 2>/dev/null)
+    if [[ -n "$_outid" ]] && declare -F tt_db_set_delivery_error >/dev/null 2>&1; then
+      tt_db_set_delivery_error "$_outid" "$_reason" 2>/dev/null
+    fi
+  fi
+}
+
 raw_send() {
-  tmux send-keys -l -t "$TARGET_PANE" "${HEADER} ${MESSAGE}"
+  # Verify each tmux send-keys actually succeeded. On failure: emit no "Sent to"
+  # line, report the error on stderr, record the attempt in the DB as a delivery
+  # error (not delivered), and return non-zero so callers skip the dedup/fanout
+  # marks and propagate the failure. The success path below is unchanged.
+  if ! tmux send-keys -l -t "$TARGET_PANE" "${HEADER} ${MESSAGE}"; then
+    echo "Error: failed to deliver to $TARGET (tmux send-keys failed on message body)" >&2
+    _raw_send_record_error "send-keys body failed"
+    return 1
+  fi
   sleep 0.5
-  tmux send-keys -t "$TARGET_PANE" Enter
+  if ! tmux send-keys -t "$TARGET_PANE" Enter; then
+    echo "Error: failed to deliver to $TARGET (tmux send-keys failed on Enter)" >&2
+    _raw_send_record_error "send-keys Enter failed"
+    return 1
+  fi
   echo "Sent to $TARGET: ${HEADER} ${MESSAGE}" >&2
   if [[ "$NEW_TASK_MODE" == "true" ]]; then
     TASK_SENT_AT=$(date +%s)
@@ -2713,10 +2740,13 @@ if [[ "$FORCE_MODE" == "true" ]]; then
     echo "Detail: source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}" >&2
     [[ -n "$PROMPT_RESOLVED_SNIPPET" ]] && echo "Detail: draft='${PROMPT_RESOLVED_SNIPPET}'" >&2
   fi
-  raw_send
-  fanout_guard_mark "$TARGET" "$MESSAGE" || true
-  control_dedup_mark "$TARGET" "$MESSAGE" || true
-  exit 0
+  if raw_send; then
+    fanout_guard_mark "$TARGET" "$MESSAGE" || true
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
+    exit 0
+  else
+    exit 1
+  fi
 fi
 
 # === --fire: send unless a concrete sendability block is detected ===
@@ -2741,10 +2771,13 @@ if [[ "$FIRE_MODE" == "true" ]]; then
     echo "Delivering queued messages first (max $AUTO_FLUSH_MAX)..." >&2
     flush_queue "$TARGET" "$TARGET_PANE" "$AUTO_FLUSH_MAX"
   fi
-  raw_send
-  fanout_guard_mark "$TARGET" "$MESSAGE" || true
-  control_dedup_mark "$TARGET" "$MESSAGE" || true
-  exit 0
+  if raw_send; then
+    fanout_guard_mark "$TARGET" "$MESSAGE" || true
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
+    exit 0
+  else
+    exit 1
+  fi
 fi
 
 # === Normal mode: concrete block -> queue, otherwise send ===
@@ -2756,9 +2789,12 @@ if [[ "$SEND_BLOCK_REASON" == "none" ]]; then
     echo "Delivering queued messages first (max $AUTO_FLUSH_MAX)..." >&2
     flush_queue "$TARGET" "$TARGET_PANE" "$AUTO_FLUSH_MAX"
   fi
-  raw_send
-  fanout_guard_mark "$TARGET" "$MESSAGE" || true
-  control_dedup_mark "$TARGET" "$MESSAGE" || true
+  if raw_send; then
+    fanout_guard_mark "$TARGET" "$MESSAGE" || true
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
+  else
+    exit 1
+  fi
 else
   case "$SEND_BLOCK_REASON" in
     typing_draft)
