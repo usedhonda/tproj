@@ -16,7 +16,7 @@ ALL_EXTENSIONS=false
 CHECK_ONLY=false
 
 # Core scripts copied to ~/bin (single source of truth for install + --check).
-CORE_BINS=(tproj tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-focus-hook tproj-pane-clear-rank tproj-pane-watchdog tproj-pane-autozoom tproj-tmux-state-notify tproj-mru-tracker tproj-respawn-guard tproj-postmortem tproj-mem-trace rebalance-workspace-columns sign-codex wait-for-pane-text)
+CORE_BINS=(tproj tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-focus-hook tproj-pane-clear-rank tproj-pane-autozoom tproj-tmux-state-notify tproj-mru-tracker tproj-respawn-guard tproj-postmortem tproj-mem-trace rebalance-workspace-columns sign-codex wait-for-pane-text)
 
 usage() {
   cat << 'EOF'
@@ -321,7 +321,7 @@ else
   fi
 
   # Legacy cleanup: remove stale binaries
-  for legacy_bin in tproj-gui tproj-mcp-init; do
+  for legacy_bin in tproj-gui tproj-mcp-init tproj-pane-watchdog; do
     if [[ -f "$HOME/bin/$legacy_bin" ]]; then
       rm -f "$HOME/bin/$legacy_bin"
       echo "  Removed legacy ~/bin/$legacy_bin"
