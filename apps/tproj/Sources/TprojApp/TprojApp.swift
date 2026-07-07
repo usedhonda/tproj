@@ -1654,6 +1654,11 @@ final class AppViewModel: ObservableObject {
     }
 
     private let fileManager = FileManager.default
+    // tmux verb wrapper over the shared runner (S-D2b). Bundles the TmuxTargets
+    // constants so routed call sites read as verbs.
+    private let tmux = TmuxService(runner: AppViewModel.processRunner,
+                                   session: TmuxTargets.session,
+                                   devWindow: TmuxTargets.devWindow)
     private let monitorStatusPath = "/tmp/tproj-monitor-status.json"
     private let layoutLogPath = "/tmp/tproj-layout-actions.log"
     private var memoryPollTask: Task<Void, Never>?
