@@ -38,11 +38,34 @@ iteration 上限 12 / no-progress 3
     STALE_SECONDS 破棄 / max_count 保持 / policy・dedup ガード / kept_lines 書戻し は verbatim 抽出で不変
     （既存 flush テスト 7/23/24/25 全緑で担保）。
 
+- m-d3 (top-level dispatch extraction) — 提案書 commit 計画どおり 5 commit で実装完了（iteration 3, 2026-07-08）:
+  - `beee46d` M-D3a: raw_send / _raw_send_record_error / generate_task_id の inline 定義を
+    resolve_target 直後の関数定義ブロックへ verbatim hoist（定義位置移動のみ、呼び出し到達順不変）。
+  - `ed2b905` M-D3b: `--read` mode body を do_read() へ verbatim 抽出、`if READ_MODE; then do_read; fi` に。
+  - `3585c50` M-D3c: tmux 送信経路（online guard→header→task id→fanout/dedup guards→force/fire/normal→exit 0、
+    137 行）を do_send_tmux() へ verbatim 抽出。dedup/fanout mark の send/queue 成功後配置は 1 行も動かさず。
+  - `8f6e3d4` M-D3d: gate early-exit body（88 行）を do_send_gate() へ verbatim 抽出、`if is_gate_target; then do_send_gate; fi` に。
+  - `13f39f9` M-D3e: policy precheck→do_send_tmux の dispatch tail を dispatch_mode() で in-place wrap（再インデントなし）、
+    スクリプト末尾を `dispatch_mode` 1 行に。LIST/FLUSH/STATUS の top-level early-exit は wrap 対象外で温存。
+  - 検証: 各 commit 後 post-gate 全緑（sendability-gate PASS=26 FAIL=0 PENDING=0 / smoke-bin PASS=17 FAIL=0 /
+    inbox 3 passed）。bash -n OK、shellcheck -S error clean、`cp` で ~/bin/tproj-msg 反映（NO_DRIFT）。
+  - 挙動不変の証明: pre-M-D3 baseline (d8f5f65) との sorted 多重集合 diff で削除行ゼロ（原本の全ロジック行が
+    verbatim 保存）、追加は do_read/do_send_gate/do_send_tmux/dispatch_mode の 4 定義 + 4 closing brace + 4 call のみ。
+  - verbatim 移動で許可した変換規則: (1) 関数化に伴う `foo() { ... }` ラッパ行の追加、(2) 抽出元 body を
+    `foo` 呼び出し 1 行へ置換。body 本文・indent・exit/return・出力文言は一切改変せず。exit の意味保存 =
+    do_* / dispatch_mode を全て「plain 呼び出し（if/$()/||/&& の外）」にしたため set -euo pipefail の活性状態と
+    exit のスクリプト全体終了セマンティクスが top-level と同一。command-substitution 化はしていない。
+  - 提案書との一致: 完全一致。逸脱なし。提案書の「最初は local を付けず既存グローバル変数をそのまま参照」も遵守
+    （do_* に local 追加なし）。dispatch_mode の定義位置のみ提案の「関数定義群」ではなく in-place wrap を採用したが、
+    これは surgical（再インデント回避で verbatim 維持）のためで、定義は top-level・呼び出し前・非ネストを満たし
+    testability（source して do_* 個別呼び出し可）を損なわない。
+
 ## Failed / blocked
 （まだなし）
 
 ## Next step
-docs/proposals/m-d3-dispatch-extraction.md を読み、その commit 計画の最初の 1 commit を実装する。
+docs/proposals/s-d2-tmux-service.md を読み、その commit 計画の最初の 1 commit を実装する。
+Swift を触る提案の可能性が高いので post-gate に `cd apps/tproj && swift test && ./dev-app.sh` が加わる点に注意。
 pre-gate（smoke-bin + sendability-gate）を先に回して緑を確認してから着手。
 
 ## ベースライン（2026-07-07 実測、リファクタ完遂直後）
