@@ -44,6 +44,19 @@ dlog() {
   { echo "[$(date '+%H:%M:%S')]   $*"; } >> "$DEBUG_LOG" 2>/dev/null || true
 }
 
+# Shared tmux layout lock (same name as tproj-drop-column / add-column /
+# rebalance) so autozoom's resize burst cannot interleave with other layout
+# mutations. Release is trap-guaranteed so an early exit never leaves it held.
+LAYOUT_LOCK_NAME="tproj-layout"
+AZ_LOCK_HELD=false
+az_release_lock() {
+  if [ "$AZ_LOCK_HELD" = "true" ]; then
+    tmux wait-for -U "$LAYOUT_LOCK_NAME" 2>/dev/null || true
+    AZ_LOCK_HELD=false
+  fi
+}
+trap az_release_lock EXIT INT TERM
+
 # Default session: arg1 if non-flag, else env, else tproj-workspace
 default_session() {
   if [ -n "${TMUX_SESSION:-}" ]; then echo "$TMUX_SESSION"; return; fi
@@ -183,6 +196,14 @@ if [ "$NEW_ACTIVE_W" -lt 5 ] || [ "$OTHER_W" -lt 5 ]; then
   exit 0
 fi
 
+# Acquire the shared layout lock only now, around the resize burst itself. All
+# the cheap gates above (flag, session, column count, degenerate math) ran
+# lock-free, so on every after-select-pane focus event we grab the lock for the
+# minimum possible window. The per-column idempotent skips inside the loop stay
+# intact — the lock is an ADDITIONAL safety layer, not a replacement for the
+# no-op-when-settled behavior that keeps SIGWINCH quiet.
+tmux wait-for -L "$LAYOUT_LOCK_NAME" 2>/dev/null && AZ_LOCK_HELD=true || AZ_LOCK_HELD=false
+
 # Resize every column except the rightmost (LAST_COL). The last column
 # absorbs the rounding remainder so we get a deterministic layout.
 # With NEW_ACTIVE_W and OTHER_W computed against (BUDGET - borders), the
@@ -219,4 +240,5 @@ case "$ACTIVE_ROLE" in
     ;;
 esac
 
+az_release_lock
 exit 0
