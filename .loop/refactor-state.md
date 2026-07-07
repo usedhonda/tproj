@@ -110,3 +110,67 @@ the intentional watchdog deletion, not a lost test; +13 new swift tests). Jog di
 across S-D4 + S-D3: zero jog-function lines removed/altered — extractions are
 call-through only. **Physical jog hardware confirmation is pending user** (agent
 verified code-level: build green + tests green + zero jog diff).
+
+## Phase 4 — boundary clarification (B-D2 / B-D3/D4/D5 / M-D1) — 2026-07-07
+
+All 3 §9 Phase 4 items landed. bin/ deployed via `cp` to ~/bin; tproj-msg via `cp`;
+Swift untouched (no dev-app rebuild needed for correctness, but run for baseline).
+
+| # | Debt | Commit(s) | What changed |
+|---|---|---|---|
+| 1 | B-D2 | `a7dad6b` | drop-column passes `TPROJ_LAYOUT_LOCK_INHERITED=1` to its rebalance call (reentrancy prep; no-op until rebalance reads it). |
+| 1 | B-D2 | `80cf01c` | rebalance: 4-pass resize burst wrapped in `tproj-layout` tmux lock, trap-guaranteed `-U`, honors the inherited guard. |
+| 1 | B-D2 | `4714602` | autozoom: resize group (width loop + vertical grow) wrapped in the same lock; idempotent per-column skips kept INSIDE (SIGWINCH discipline intact). |
+| 1 | B-D2 | `178254a` | tproj add_workspace_column: **dual-lock** = existing PID lock (kept for GUI coord — see note) + tmux `tproj-layout` lock; rebalance sub-call env-guarded. |
+| 2 | B-D3 | `6d5c16a` | Shared `collect_descendant_pids` (positional-param BFS, bash/zsh-safe, leak-free) replaces tproj / drop-column / kill-pane inline copies. |
+| 2 | B-D3 | `944d466` | respawn-guard reaps FULL descendant tree (was 2-level) — behavior change, own commit. |
+| 2 | B-D4 | `2ec2a67` | Shared `exit_cmd_for_role` (3 sites) + `graceful_signal_for_role` (drop-column). tproj graceful block left inline (terminal-p* divergence). |
+| 2 | B-D5 | `c18ecee` | Shared `avail_mem_mb` / `phys_mem_mb` across respawn-guard / mem-trace / postmortem. |
+| lib | scaffold | `fd4c98a` | New `bin/lib/tproj-common.sh` + install.sh distribution (`~/bin/lib/`) + `--check`/`--dry-run` coverage. |
+| 3 | M-D1 | `6419272` | raw_send checks both send-keys exit codes; on failure no "Sent to", DB delivery_error (not delivered), non-zero return; callers mark+exit0 on success only. Regression test case 22 (fake tmux send-keys exit 1). |
+
+### Deadlock self-review (B-D2)
+
+Empirically verified in throwaway tmux servers (isolated socket):
+- Non-background `run-shell` hooks BLOCK the triggering command (deadlock risk if a
+  lock holder triggers a hook that takes the same lock).
+- BUT: `split-window`, `select-window`, `select-pane -T` (title-only), and
+  `select-pane` on the already-active pane do NOT fire `after-select-pane`; killing
+  a pane (even the active one) does NOT fire it either. Tracing add_workspace_column
+  and drop-column, **neither fires the autozoom hook** during its locked
+  transaction, so there is no hook-reentry deadlock.
+- Only real nesting: direct child `rebalance` calls from lock holders
+  (drop-column:348, add:1117) — solved by `TPROJ_LAYOUT_LOCK_INHERITED=1` (inherited
+  by the child process; rebalance skips re-acquiring the non-reentrant lock).
+- Concurrent reproduction test (scratchpad): 3-column fixture, rebalance standalone
+  (no hang), drop-column holding the lock + calling rebalance internally
+  (`rebalance=1`, completes ~1.2s, no self-deadlock), a lock holder + concurrent
+  rebalance (blocked ~1.5s then ran), structure intact — all < 5s.
+
+### Note — GUI PID lock (B-D2 analysis gap)
+
+The B-D2 debt map framed `/tmp/tproj-layout.lock` as tproj-only, but the Swift GUI
+(`TprojApp.acquireLayoutLockAsync`) uses the same PID file and relies on its
+timeout + stale-detection, which tmux `wait-for` cannot provide. So tproj's PID
+lock was **kept** (removing it would drop GUI↔add-column mutual exclusion) and the
+tmux lock **added alongside** (dual-lock), bridging the two lock domains that
+previously could not coordinate. Deadlock-free: add-column is the only multi-lock
+holder; no tmux holder wants the PID lock and the GUI never wants the tmux lock.
+
+### Post-Phase-4 baseline re-run (compare vs Phase 0 / Phase 3)
+
+| Baseline command | Phase 0 | Post-Phase-4 |
+|---|---|---|
+| `git status -s` | clean | **clean** (all committed) |
+| `test-sendability-gate.sh` | PASS=13 | **PASS=22 FAIL=0 PENDING=0** (+1 M-D1 case) |
+| `test-inbox-check.sh` | 3 passed | **3 passed, 0 failed** |
+| `tests/smoke-bin.sh` | (P1) green | **PASS=17 FAIL=0** |
+| `swift test` | (P3) 13 | **13 passed, 0 failures** |
+| `dev-app.sh` | build+launch rc0 | **Build complete + launched** (pid 15335) |
+| repo↔~/bin drift | zero | **zero** (bin + lib + tproj-msg, `install.sh --check` clean) |
+
+Regression: **none**. Test counts monotonic up (gate 21→22). Behavior changes are
+scoped to §7-approved (B-D2 dual-lock, M-D1) plus the explicitly-committed
+respawn-guard full-tree change. **Physical layout/focus hardware confirmation is
+pending user** (agent verified: no deadlock via reproduction tests, focus path
+unchanged — autozoom lock held only during resize execution).
