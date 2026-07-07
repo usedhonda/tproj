@@ -10,6 +10,15 @@ extension Notification.Name {
     static let flipSnapSide = Notification.Name("flipSnapSide")
 }
 
+// MARK: - tmux target constants
+
+// Session name and dev-window target used across tmux/Process calls (S-D2).
+// Values unchanged from the former inline string literals.
+enum TmuxTargets {
+    static let session = "tproj-workspace"
+    static let devWindow = "tproj-workspace:dev"
+}
+
 // MARK: - Ghostty Theme
 
 private extension Color {
@@ -2066,7 +2075,7 @@ final class AppViewModel: ObservableObject {
         // Check tmux session existence
         var sessionExists = false
         if deps.contains(where: { $0.name == "tmux" && $0.found }) {
-            let sesResult = runCommand("/usr/bin/env", ["tmux", "has-session", "-t", "tproj-workspace"])
+            let sesResult = runCommand("/usr/bin/env", ["tmux", "has-session", "-t", TmuxTargets.session])
             sessionExists = sesResult.exitCode == 0
         }
 
@@ -2357,7 +2366,7 @@ final class AppViewModel: ObservableObject {
 
     private func workspacePaneCountSync() -> Int {
         let result = runCommand("/usr/bin/env", [
-            "tmux", "list-panes", "-t", "tproj-workspace:dev", "-F", "#{pane_id}"
+            "tmux", "list-panes", "-t", TmuxTargets.devWindow, "-F", "#{pane_id}"
         ])
         guard result.exitCode == 0 else { return -1 }
         return result.stdout
@@ -2367,7 +2376,7 @@ final class AppViewModel: ObservableObject {
 
     private func workspacePaneCountAsync() async -> Int {
         let result = await runCommandAsync("/usr/bin/env", [
-            "tmux", "list-panes", "-t", "tproj-workspace:dev", "-F", "#{pane_id}"
+            "tmux", "list-panes", "-t", TmuxTargets.devWindow, "-F", "#{pane_id}"
         ])
         guard result.exitCode == 0 else { return -1 }
         return result.stdout
@@ -2604,8 +2613,8 @@ final class AppViewModel: ObservableObject {
         isBusy = true
         defer { isBusy = false }
 
-        guard let launch = runtimeLaunchCommand(commandName: "tproj-toggle-yazi", arguments: ["tproj-workspace", pane])
-                ?? fallbackLaunchCommand(commandName: "tproj-toggle-yazi", arguments: ["tproj-workspace", pane]) else {
+        guard let launch = runtimeLaunchCommand(commandName: "tproj-toggle-yazi", arguments: [TmuxTargets.session, pane])
+                ?? fallbackLaunchCommand(commandName: "tproj-toggle-yazi", arguments: [TmuxTargets.session, pane]) else {
             statusText = "Bundled runtime unavailable"
             return
         }
@@ -2674,7 +2683,7 @@ final class AppViewModel: ObservableObject {
         }
 
         // Toggle on: find sibling pane, split, configure, launch
-        let sessionTarget = "tproj-workspace:dev"
+        let sessionTarget = TmuxTargets.devWindow
         let listResult = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", sessionTarget, "-F", "#{pane_id}:#{@role}"])
         guard listResult.exitCode == 0 else {
             resultTag = "error"
@@ -2810,7 +2819,7 @@ final class AppViewModel: ObservableObject {
         }
         lockHeld = true
 
-        let sessionTarget = "tproj-workspace:dev"
+        let sessionTarget = TmuxTargets.devWindow
         let listResult = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", sessionTarget, "-F", "#{pane_id}:#{@role}"])
         guard listResult.exitCode == 0 else {
             resultTag = "error"
@@ -2930,7 +2939,7 @@ final class AppViewModel: ObservableObject {
 
             let dropResult = await self.runCommandAsync(
                 dropCommand.launchPath,
-                dropCommand.arguments + ["--grace-ms", "200", "--max-ms", "1200", "tproj-workspace", "\(columnNumber)"]
+                dropCommand.arguments + ["--grace-ms", "200", "--max-ms", "1200", TmuxTargets.session, "\(columnNumber)"]
             )
 
             if dropResult.exitCode != 0 {
@@ -3000,7 +3009,7 @@ final class AppViewModel: ObservableObject {
         }
         lockHeld = true
 
-        let agentsActive = await runCommandAsync("/usr/bin/env", ["tmux", "show-environment", "-t", "tproj-workspace", "TPROJ_AGENTS_ACTIVE"])
+        let agentsActive = await runCommandAsync("/usr/bin/env", ["tmux", "show-environment", "-t", TmuxTargets.session, "TPROJ_AGENTS_ACTIVE"])
         if agentsActive.exitCode == 0 {
             resultTag = "blocked"
             note += " reason=agents_active"
@@ -3072,7 +3081,7 @@ final class AppViewModel: ObservableObject {
         }
         note += " swaps=\(swapCount)"
 
-        if let rebalance = runtimeLaunchCommand(commandName: "rebalance-workspace-columns", arguments: ["tproj-workspace"]) {
+        if let rebalance = runtimeLaunchCommand(commandName: "rebalance-workspace-columns", arguments: [TmuxTargets.session]) {
             _ = await runCommandAsync(rebalance.launchPath, rebalance.arguments)
         }
         let normalized = await normalizeColumnsByVisualOrderAsync()
@@ -3230,7 +3239,7 @@ final class AppViewModel: ObservableObject {
     private func activatePaneForMIDISlot(_ slot: Int) async {
         guard (1...16).contains(slot) else { return }
 
-        let sessionTarget = "tproj-workspace:dev"
+        let sessionTarget = TmuxTargets.devWindow
         let list = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", sessionTarget, "-F", "#{pane_index}"])
         guard list.exitCode == 0 else {
             statusText = "MIDI activate failed: \(trimmedError(list))"
@@ -3259,7 +3268,7 @@ final class AppViewModel: ObservableObject {
     private func focusPaneByJog(_ direction: Int) async {
         // Cycle focus in role-major order: codex panes left->right, then claude
         // panes left->right (not tmux pane_index order). jog stays in the dev window.
-        let sessionTarget = "tproj-workspace:dev"
+        let sessionTarget = TmuxTargets.devWindow
         let list = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", sessionTarget, "-F", "#{pane_id}|#{@role}|#{pane_left}|#{pane_active}"])
         guard list.exitCode == 0 else {
             statusText = "MIDI jog failed: \(trimmedError(list))"
@@ -3338,7 +3347,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let workspaceSessionWasPresent = sessions.contains("tproj-workspace")
+        let workspaceSessionWasPresent = sessions.contains(TmuxTargets.session)
         let orderedActivePaths = liveColumns
             .sorted { $0.column < $1.column }
             .map { $0.projectPath.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -3654,13 +3663,13 @@ final class AppViewModel: ObservableObject {
 
     private func loadLiveColumns() {
         let format = "#{@column}|#{@role}|#{@project}|#{@remote_host}|#{@remote_path}|#{pane_width}|#{pane_left}|#{pane_id}"
-        let result = runCommand("/usr/bin/env", ["tmux", "list-panes", "-t", "tproj-workspace:dev", "-F", format])
+        let result = runCommand("/usr/bin/env", ["tmux", "list-panes", "-t", TmuxTargets.devWindow, "-F", format])
         applyLiveColumnsResult(result)
     }
 
     private func loadLiveColumnsAsync() async {
         let format = "#{@column}|#{@role}|#{@project}|#{@remote_host}|#{@remote_path}|#{pane_width}|#{pane_left}|#{pane_id}"
-        let result = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", "tproj-workspace:dev", "-F", format])
+        let result = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", TmuxTargets.devWindow, "-F", format])
         applyLiveColumnsResult(result)
     }
 
@@ -3798,7 +3807,7 @@ final class AppViewModel: ObservableObject {
     private func normalizeColumnsByVisualOrderAsync() async -> Bool {
         let result = await runCommandAsync(
             "/usr/bin/env",
-            ["tmux", "list-panes", "-t", "tproj-workspace:dev", "-F", "#{pane_id}|#{pane_left}|#{@column}|#{@role}"]
+            ["tmux", "list-panes", "-t", TmuxTargets.devWindow, "-F", "#{pane_id}|#{pane_left}|#{@column}|#{@role}"]
         )
         guard result.exitCode == 0 else { return false }
 
@@ -3884,7 +3893,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func listWorkspacePanesAsync() async -> [PaneInfo] {
-        let result = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", "tproj-workspace:dev", "-F", "#{pane_id}|#{@role}|#{@column}"])
+        let result = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", TmuxTargets.devWindow, "-F", "#{pane_id}|#{@role}|#{@column}"])
         guard result.exitCode == 0 else { return [] }
         return result.stdout
             .split(separator: "\n", omittingEmptySubsequences: true)
