@@ -365,6 +365,123 @@ else
 fi
 
 # =============================================================================
+# Phase 1 additions (refactor-instructions.md M-T): relay / broadcast / fanout
+# guard cases. Same hermetic style as above (fake tmux/websocat/curl on PATH,
+# real tproj-msg driven via --session/--as). Existing cases 1-13 are untouched.
+# =============================================================================
+
+# run_send: plain normal send (no --force / no --allow-*).
+run_send() { # <target> <message>
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc "$1" "$2" 2>&1
+}
+
+# --- relay guard: relay-like bodies are blocked on a normal send (exit 13) ---
+# 14. [from:] prefix -> blocked, no send-keys.
+reset_fixtures
+out=$(run_send "tproj.cc" "[from:evil.cc] relayed body"); rc=$?
+if [[ "$rc" -eq 13 && ! -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  14_relay_from_blocked\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  14_relay_from_blocked\n      want rc=13, no sendkeys\n      rc=%s got: %s\n' "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# 15. [Control:] tag -> blocked.
+reset_fixtures
+out=$(run_send "tproj.cc" "[Control:PSYNC-STOP] please halt"); rc=$?
+if [[ "$rc" -eq 13 && ! -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  15_relay_control_blocked\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  15_relay_control_blocked\n      want rc=13, no sendkeys\n      rc=%s got: %s\n' "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# 16. [ACK:] tag -> blocked.
+reset_fixtures
+out=$(run_send "tproj.cc" "[ACK:tp-1-01] received"); rc=$?
+if [[ "$rc" -eq 13 && ! -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  16_relay_ack_blocked\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  16_relay_ack_blocked\n      want rc=13, no sendkeys\n      rc=%s got: %s\n' "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# 17. --allow-relay <reason> --force lets a relay body through to a running pane.
+reset_fixtures
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" "...generating output..."
+out=$(run_force "tproj.cc" "[from:OpenClaw Agent - Auto] allowed relay body $$-$RANDOM"); rc=$?
+if [[ "$rc" -eq 0 && -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  17_relay_allow_relay_sends\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  17_relay_allow_relay_sends\n      want rc=0 and sendkeys\n      rc=%s got: %s\n' "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# --- broadcast guard: broadcast-like targets are forbidden (exit 14) ---
+# 18. target "all" -> blocked, no send-keys.
+reset_fixtures
+out=$(run_send "all" "hello everyone"); rc=$?
+if [[ "$rc" -eq 14 && ! -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  18_broadcast_all_blocked\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  18_broadcast_all_blocked\n      want rc=14, no sendkeys\n      rc=%s got: %s\n' "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# 19. target "broadcast" -> blocked.
+reset_fixtures
+out=$(run_send "broadcast" "hello everyone"); rc=$?
+if [[ "$rc" -eq 14 && ! -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  19_broadcast_word_blocked\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  19_broadcast_word_blocked\n      want rc=14, no sendkeys\n      rc=%s got: %s\n' "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# --- fanout guard --------------------------------------------------------------
+# Add a second same-family (cc) pane in another column so the SAME message can go
+# to two different target names ("tproj.cc" -> %1, "other.cc" -> %3). This block
+# runs after every existing case, so the extra pane never perturbs cases 1-13.
+# FANOUT_DEDUP_DIR is hardcoded /tmp (Debt M-D4, fixed in Phase 2), so we drive
+# the real dedup store with a unique nonce message per run: no collision with
+# live traffic, and the two entries expire via the 600s TTL.
+printf '%s\n' "%3:claude-p2:other:2" >> "$FAKE_DIR/panes"
+printf '%s' "/dev/ttys003" > "$FAKE_DIR/tty_%3"
+printf '%s' "claude-p2"    > "$FAKE_DIR/role_%3"
+OTHER_TTY="/dev/ttys003"
+FANOUT_MSG="fanout probe nonce $$-$RANDOM-$(date +%s)"
+
+# 20. same message to a second same-family target is blocked as fan-out (exit 15).
+reset_fixtures
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" "...generating output..."
+run_send "tproj.cc" "$FANOUT_MSG" >/dev/null 2>&1   # first send marks the dedup store
+first_sent=0; [[ -f "$FAKE_DIR/sendkeys.log" ]] && first_sent=1
+reset_fixtures
+set_ws "$OTHER_TTY" "running" ""
+set_capture "%3" "...generating output..."
+out=$(run_send "other.cc" "$FANOUT_MSG"); rc=$?
+if [[ "$first_sent" -eq 1 && "$rc" -eq 15 && ! -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  20_fanout_second_target_blocked\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  20_fanout_second_target_blocked\n      want first_sent=1 rc=15 no sendkeys\n      first_sent=%s rc=%s got: %s\n' "$first_sent" "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# 21. --allow-fanout <reason> overrides the fan-out block (delivers to 2nd target).
+reset_fixtures
+set_ws "$OTHER_TTY" "running" ""
+set_capture "%3" "...generating output..."
+out=$("$TPROJ_MSG" --session tproj-workspace --as tproj.cc --allow-fanout intentional-second-target "other.cc" "$FANOUT_MSG" 2>&1); rc=$?
+if [[ "$rc" -eq 0 && -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  21_fanout_allow_fanout_sends\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  21_fanout_allow_fanout_sends\n      want rc=0 and sendkeys\n      rc=%s got: %s\n' "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# =============================================================================
 echo "----"
 printf 'PASS=%d FAIL=%d PENDING=%d\n' "$PASS" "$FAIL" "$PENDING"
 [[ "$FAIL" -eq 0 ]]
