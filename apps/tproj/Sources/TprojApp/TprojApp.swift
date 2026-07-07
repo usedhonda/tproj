@@ -20,6 +20,82 @@ enum TmuxTargets {
     static let devWindow = "tproj-workspace:dev"
 }
 
+// MARK: - Command execution (S-D2a)
+
+// Real command runner backing the GUI. Executes `launchPath` directly via
+// Process. It must NEVER route through `zsh -lc`: a login shell spawned from a
+// GUI process without a controlling terminal hangs (project rule §3-9), so this
+// runner only ever runs the given launchPath. Body relocated verbatim from the
+// former AppViewModel.executeCommand; the only change is reading PATH through
+// the injected resolvePATH closure instead of AppViewModel.resolvedPATH.
+struct ProcessCommandRunner: CommandRunning, Sendable {
+    // GUI apps don't inherit the user's shell PATH; supplies the resolved PATH.
+    let resolvePATH: @Sendable () -> String
+
+    func run(_ launchPath: String, _ args: [String], env extraEnvironment: [String: String]) -> CommandResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: launchPath)
+        process.arguments = args
+
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = resolvePATH()
+        for (key, value) in extraEnvironment {
+            env[key] = value
+        }
+        process.environment = env
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+
+        do {
+            try process.run()
+
+            // Read both pipes concurrently to avoid deadlock when pipe buffer (64KB) fills.
+            // If we read sequentially or after waitUntilExit, the child can block on write.
+            let maxBuffer = 65536
+            var outData = Data()
+            var errData = Data()
+
+            let group = DispatchGroup()
+
+            group.enter()
+            DispatchQueue.global(qos: .utility).async {
+                let d = outPipe.fileHandleForReading.readDataToEndOfFile()
+                outData = d.count > maxBuffer ? d.prefix(maxBuffer) : d
+                group.leave()
+            }
+
+            group.enter()
+            DispatchQueue.global(qos: .utility).async {
+                let d = errPipe.fileHandleForReading.readDataToEndOfFile()
+                errData = d.count > maxBuffer ? d.prefix(maxBuffer) : d
+                group.leave()
+            }
+
+            process.waitUntilExit()
+            group.wait()
+
+            let out = String(data: outData, encoding: .utf8) ?? ""
+            let err = String(data: errData, encoding: .utf8) ?? ""
+
+            return CommandResult(exitCode: process.terminationStatus, stdout: out, stderr: err)
+        } catch {
+            return CommandResult(exitCode: 1, stdout: "", stderr: error.localizedDescription)
+        }
+    }
+
+    func runAsync(_ launchPath: String, _ args: [String], env: [String: String]) async -> CommandResult {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = run(launchPath, args, env: env)
+                continuation.resume(returning: result)
+            }
+        }
+    }
+}
+
 // MARK: - Ghostty Window Tracker
 
 private struct GhosttyWindowInfo {
@@ -1114,12 +1190,6 @@ struct LiveColumn: Identifiable {
 }
 
 
-struct CommandResult {
-    var exitCode: Int32
-    var stdout: String
-    var stderr: String
-}
-
 struct MonitorSystem: Codable {
     var totalMB: Int
     var usedMB: Int
@@ -1603,6 +1673,10 @@ final class AppViewModel: ObservableObject {
     }()
 
     nonisolated(unsafe) private static var resolvedPATH: String = buildPATH(extraPaths: [])
+
+    // Shared process runner (S-D2a). Reads the current resolvedPATH at call
+    // time, so PATH updates (buildPATH after project discovery) still apply.
+    nonisolated static let processRunner = ProcessCommandRunner(resolvePATH: { AppViewModel.resolvedPATH })
 
     nonisolated private static func buildPATH(extraPaths: [String]) -> String {
         let all = builtinExtraPaths + extraPaths
@@ -3787,58 +3861,7 @@ final class AppViewModel: ObservableObject {
         _ arguments: [String],
         environment extraEnvironment: [String: String] = [:]
     ) -> CommandResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: launchPath)
-        process.arguments = arguments
-
-        // GUI apps don't inherit the user's shell PATH; use resolved PATH
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = Self.resolvedPATH
-        for (key, value) in extraEnvironment {
-            env[key] = value
-        }
-        process.environment = env
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-
-        do {
-            try process.run()
-
-            // Read both pipes concurrently to avoid deadlock when pipe buffer (64KB) fills.
-            // If we read sequentially or after waitUntilExit, the child can block on write.
-            let maxBuffer = 65536
-            var outData = Data()
-            var errData = Data()
-
-            let group = DispatchGroup()
-
-            group.enter()
-            DispatchQueue.global(qos: .utility).async {
-                let d = outPipe.fileHandleForReading.readDataToEndOfFile()
-                outData = d.count > maxBuffer ? d.prefix(maxBuffer) : d
-                group.leave()
-            }
-
-            group.enter()
-            DispatchQueue.global(qos: .utility).async {
-                let d = errPipe.fileHandleForReading.readDataToEndOfFile()
-                errData = d.count > maxBuffer ? d.prefix(maxBuffer) : d
-                group.leave()
-            }
-
-            process.waitUntilExit()
-            group.wait()
-
-            let out = String(data: outData, encoding: .utf8) ?? ""
-            let err = String(data: errData, encoding: .utf8) ?? ""
-
-            return CommandResult(exitCode: process.terminationStatus, stdout: out, stderr: err)
-        } catch {
-            return CommandResult(exitCode: 1, stdout: "", stderr: error.localizedDescription)
-        }
+        processRunner.run(launchPath, arguments, env: extraEnvironment)
     }
 
     private func trimmedError(_ result: CommandResult) -> String {
