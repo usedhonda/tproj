@@ -514,6 +514,11 @@ STALE_SECONDS=600  # 10 minutes
 # target from a transient tmux hiccup so flush_all_queues can react differently.
 RT_NOT_FOUND=3   # pane list obtained but target absent (likely gone)
 RT_TRANSIENT=4   # tmux list-panes failed/empty (transient, retry next poll)
+# M-D6c: opt-in early discard for permanently-gone targets. Default equals
+# STALE_SECONDS so no deliverable message is lost vs the per-message stale drop
+# (a queue is discarded only once even its newest entry is older than the grace).
+# Shorten via TPROJ_MSG_TARGET_GONE_GRACE to reclaim gone-target queues sooner.
+TARGET_GONE_GRACE="${TPROJ_MSG_TARGET_GONE_GRACE:-$STALE_SECONDS}"
 AUTO_FLUSH_MAX=3   # Max messages to auto-flush per send
 FLUSH_POLL_INTERVAL=3  # seconds between flush attempts
 CONTROL_DEDUP_DIR="${TPROJ_MSG_CONTROL_DEDUP_DIR:-/tmp/tproj-msg-control-dedup}"
@@ -1858,6 +1863,25 @@ queue_count() {
   fi
 }
 
+# Age (seconds) of a queue's NEWEST valid message, or empty if none/no file.
+# Used by flush_all_queues (M-D6c) to decide gone-target early discard: taking
+# the newest entry keeps the whole-queue drop conservative (no message younger
+# than the grace is ever lost).
+queue_newest_age() {
+  local target_name="$1"
+  local qfile="${QUEUE_DIR}/${target_name}.queue"
+  [[ -f "$qfile" ]] || return 0
+  local now newest="" epoch _rest
+  now=$(date +%s)
+  while IFS=$'\t' read -r epoch _rest; do
+    [[ "$epoch" =~ ^[0-9]+$ ]] || continue
+    if [[ -z "$newest" || $epoch -gt $newest ]]; then
+      newest=$epoch
+    fi
+  done < "$qfile"
+  [[ -n "$newest" ]] && echo $(( now - newest ))
+}
+
 # Flush queue for a specific target (deliver messages, discard stale)
 # Usage: flush_queue <target_name> <pane_id> [max_count]
 # max_count: 0 = unlimited (default for --flush), N = deliver at most N
@@ -1972,7 +1996,17 @@ flush_all_queues() {
       # target is absent from a populated pane list (likely gone); anything else
       # (TRANSIENT) is a tmux hiccup to retry next poll.
       if [[ $rc_resolve -eq $RT_NOT_FOUND ]]; then
-        echo "Warning: target '$target_name' appears gone (not in pane list), keeping queue" >&2
+        # M-D6c: gone target. Discard the whole queue once even its newest message
+        # is older than TARGET_GONE_GRACE (default = STALE_SECONDS: end-state
+        # equivalent, since those messages would be dropped as stale anyway).
+        local newest_age
+        newest_age=$(queue_newest_age "$target_name")
+        if [[ -n "$newest_age" && "$newest_age" -gt "$TARGET_GONE_GRACE" ]]; then
+          echo "Discarding queue for gone target '$target_name' (newest ${newest_age}s > grace ${TARGET_GONE_GRACE}s)" >&2
+          rm -f "$qfile"
+        else
+          echo "Warning: target '$target_name' appears gone (not in pane list), keeping queue" >&2
+        fi
       else
         echo "Warning: target '$target_name' unresolved (transient tmux error), keeping queue" >&2
       fi

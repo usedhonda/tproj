@@ -544,6 +544,21 @@ else
   printf 'FAIL  24_flush_transient_diag\n      want "transient tmux error" log + queue kept\n      kept=%s got: %s\n' "$trans_kept" "$(printf '%s' "$flush_out" | tr '\n' '|')"
   FAIL=$((FAIL+1))
 fi
+
+# 25. gone target + short grace + stale message -> early discard (M-D6c opt-in).
+#     Default grace (= STALE_SECONDS) keeps it (case 23); a shortened grace with
+#     a message older than the grace triggers the whole-queue discard.
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+printf '%s\t%s\t%s\n' "$(( $(date +%s) - 300 ))" "" "old ghost message" > "$TPROJ_MSG_QUEUE_DIR/ghost.cc.queue"
+flush_out=$(TPROJ_MSG_TARGET_GONE_GRACE=60 "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --flush 2>&1)
+disc_removed=1; [[ -f "$TPROJ_MSG_QUEUE_DIR/ghost.cc.queue" ]] && disc_removed=0
+if grep -q "Discarding queue for gone target" <<<"$flush_out" && [[ "$disc_removed" -eq 1 ]]; then
+  printf 'PASS  25_flush_gone_early_discard\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  25_flush_gone_early_discard\n      want discard log + queue removed\n      removed=%s got: %s\n' "$disc_removed" "$(printf '%s' "$flush_out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
 unset TPROJ_MSG_QUEUE_DIR
 
 # =============================================================================
