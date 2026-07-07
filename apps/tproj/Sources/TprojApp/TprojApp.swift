@@ -3690,18 +3690,6 @@ final class AppViewModel: ObservableObject {
         return nil
     }
 
-    private func shellSingleQuote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
-    }
-
-    private func shellDoubleQuote(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "$", with: "\\$")
-            .replacingOccurrences(of: "`", with: "\\`")
-    }
-
     private func persistWorkspaceProjects(_ projects: [WorkspaceProject], createIfMissing: Bool) -> String? {
         do {
             let parent = URL(fileURLWithPath: workspacePath).deletingLastPathComponent()
@@ -3770,11 +3758,6 @@ final class AppViewModel: ObservableObject {
         }
 
         return lines.joined(separator: "\n") + "\n"
-    }
-
-    private func yamlQuote(_ value: String) -> String {
-        let escaped = value.replacingOccurrences(of: "'", with: "''")
-        return "'\(escaped)'"
     }
 
     private func runCommand(_ launchPath: String, _ arguments: [String], environment: [String: String] = [:]) -> CommandResult {
