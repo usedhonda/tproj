@@ -1965,11 +1965,19 @@ flush_all_queues() {
     [[ -f "$qfile" ]] || continue
     local target_name
     target_name=$(basename "$qfile" .queue)
-    local pane
-    pane=$(resolve_target "$target_name" 2>/dev/null) || {
-      echo "Warning: target '$target_name' not found, keeping queue" >&2
+    local pane rc_resolve=0
+    pane=$(resolve_target "$target_name" 2>/dev/null) || rc_resolve=$?
+    if [[ $rc_resolve -ne 0 ]]; then
+      # M-D6b: same keep-queue behaviour, clearer diagnostic. NOT_FOUND means the
+      # target is absent from a populated pane list (likely gone); anything else
+      # (TRANSIENT) is a tmux hiccup to retry next poll.
+      if [[ $rc_resolve -eq $RT_NOT_FOUND ]]; then
+        echo "Warning: target '$target_name' appears gone (not in pane list), keeping queue" >&2
+      else
+        echo "Warning: target '$target_name' unresolved (transient tmux error), keeping queue" >&2
+      fi
       continue
-    }
+    fi
     local idle_status
     idle_status=$(get_idle_status "$pane")
     if [[ "$idle_status" == "idle" ]]; then

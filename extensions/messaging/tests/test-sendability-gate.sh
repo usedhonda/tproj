@@ -89,7 +89,12 @@ case "$sub" in
       *)           : ;;
     esac
     ;;
-  list-panes)  readf "panes";;
+  list-panes)
+    # Fault injection for the M-D6 transient-classification test: when the
+    # list_panes_fail fixture is present, simulate tmux list-panes failing
+    # (non-zero, empty). Absent (all other cases) -> unchanged.
+    [[ -f "$FAKE_DIR/list_panes_fail" ]] && exit 1
+    readf "panes";;
   show-options)
     case "$optname" in
       @prompt_state)     readf "promptstate_${pane}";;
@@ -503,6 +508,43 @@ else
   [[ -f "$FAKE_DIR/sendkeys.log" ]] && sed 's/^/      sendkeys: /' "$FAKE_DIR/sendkeys.log"
   FAIL=$((FAIL+1))
 fi
+
+# --- M-D6 resolve_target failure classification (via --flush diagnostics) ------
+# resolve_target now returns RT_NOT_FOUND (populated pane list, no match) vs
+# RT_TRANSIENT (list-panes failed/empty). flush_all_queues surfaces the class in
+# its keep-queue warning. Both classes keep the queue (behaviour unchanged); the
+# tests assert the distinct diagnostic AND that the queue is retained.
+export TPROJ_MSG_QUEUE_DIR="$WORK/queue"
+mkdir -p "$TPROJ_MSG_QUEUE_DIR"
+
+# 23. genuinely-absent target (populated pane list, no match) -> "appears gone".
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+printf '%s\t%s\t%s\n' "$(date +%s)" "" "queued for a ghost" > "$TPROJ_MSG_QUEUE_DIR/ghost.cc.queue"
+flush_out=$("$TPROJ_MSG" --session tproj-workspace --as tproj.cc --flush 2>&1)
+gone_kept=0; [[ -f "$TPROJ_MSG_QUEUE_DIR/ghost.cc.queue" ]] && gone_kept=1
+if grep -q "appears gone" <<<"$flush_out" && [[ "$gone_kept" -eq 1 ]]; then
+  printf 'PASS  23_flush_gone_target_diag\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  23_flush_gone_target_diag\n      want "appears gone" log + queue kept\n      kept=%s got: %s\n' "$gone_kept" "$(printf '%s' "$flush_out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# 24. real target but tmux list-panes fails -> "transient tmux error", kept.
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+printf '%s\t%s\t%s\n' "$(date +%s)" "" "queued during tmux hiccup" > "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue"
+touch "$FAKE_DIR/list_panes_fail"
+flush_out=$("$TPROJ_MSG" --session tproj-workspace --as tproj.cc --flush 2>&1)
+rm -f "$FAKE_DIR/list_panes_fail"
+trans_kept=0; [[ -f "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue" ]] && trans_kept=1
+if grep -q "transient tmux error" <<<"$flush_out" && [[ "$trans_kept" -eq 1 ]]; then
+  printf 'PASS  24_flush_transient_diag\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  24_flush_transient_diag\n      want "transient tmux error" log + queue kept\n      kept=%s got: %s\n' "$trans_kept" "$(printf '%s' "$flush_out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+unset TPROJ_MSG_QUEUE_DIR
 
 # =============================================================================
 echo "----"
