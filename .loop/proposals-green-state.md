@@ -17,11 +17,32 @@ iteration 上限 12 / no-progress 3
     discard により no deliverable loss で担保）。実装中に set -euo の command-substitution abort を 1 度踏み、
     `pane=$(...) || rc_resolve=$?` で回避（挙動不変）。
 
+- m-d5 (flush/enqueue flock mutual-exclusion) — 提案書 commit 計画どおり 3 commit で実装完了（iteration 2, 2026-07-08）:
+  - `86d7802` M-D5b: with_queue_lock ヘルパ + config（QUEUE_LOCK_WAIT_MS/POLL_MS）追加。未使用、挙動不変。
+    macOS に flock(1) 無し（`command -v flock` MISSING）のため提案書の代替 = mkdir アトミック lock
+    （generate_task_id の seq_dir 流儀）を採用。timeout 到達で fail-open（未ロックで従来動作）。
+  - `58af65c` M-D5c: enqueue の `printf >>` を `_queue_append` 経由で with_queue_lock 配下へ直列化。
+  - `bed3ecf` M-D5d: flush の read->truncate を `_flush_drain_queue`（既存 body を verbatim 抽出）に
+    切出し with_queue_lock で包む + 回帰テスト 26 を同一 commit で追加。
+  - 検証: sendability-gate PASS=26 FAIL=0 PENDING=0 / smoke-bin PASS=17 FAIL=0 / inbox 3 passed。
+    各 commit 後 post-gate 全緑、`cp` で ~/bin/tproj-msg へ反映（diff -q IDENTICAL 確認）。
+  - 提案書との一致: flock -> mkdir lock は提案書§macOS 前提の明記済み代替（環境調査の上で決定）。
+    テスト戦略のみ意図的逸脱を報告済み: 提案の M-D5a「並行 enqueue 中 flush で 1 行消える再現」は
+    真の loss 窓（read-EOF→truncate 間）がほぼゼロ + bash read が open fd 上の追記を拾うため
+    決定的な race 再現が不安定。タスク承認の代替（「ロックが取られている/解放されている」の決定的
+    検証）に落とし、test 26 を「外部保持中は locked flush が block（drain しない）→ 解放後に drain +
+    lockdir 自己解放」の相互排他プロパティ検証に。M-D5c 状態（flush 未ロック）で test 26 が RED
+    (blocked=0)、M-D5d で GREEN を確認済み。standalone red test の commit はループの
+    gate-green-at-every-commit 不変条件に反するため M-D5d 内へ green で同梱（4 commit→3 commit）。
+  - 挙動微変の承認範囲遵守: flock 導入は enqueue 追記と flush read+truncate の相互排他のみ。
+    STALE_SECONDS 破棄 / max_count 保持 / policy・dedup ガード / kept_lines 書戻し は verbatim 抽出で不変
+    （既存 flush テスト 7/23/24/25 全緑で担保）。
+
 ## Failed / blocked
 （まだなし）
 
 ## Next step
-docs/proposals/m-d5-flush-flock.md を読み、その commit 計画の最初の 1 commit を実装する。
+docs/proposals/m-d3-dispatch-extraction.md を読み、その commit 計画の最初の 1 commit を実装する。
 pre-gate（smoke-bin + sendability-gate）を先に回して緑を確認してから着手。
 
 ## ベースライン（2026-07-07 実測、リファクタ完遂直後）
