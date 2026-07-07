@@ -1647,7 +1647,7 @@ detect_selection_screen() {
 }
 
 # Send block slots populated by send_block_reason:
-#   SEND_BLOCK_REASON -> none | typing_draft | selection_screen | unknown_prompt
+#   SEND_BLOCK_REASON -> none | typing_draft | selection_screen
 #   SEND_BLOCK_SOURCE -> prompt_state | ws_waiting_reason | capture | none
 #   SEND_BLOCK_DETAIL -> diagnostic detail
 SEND_BLOCK_REASON="none"
@@ -1693,10 +1693,6 @@ send_block_detail_for_status() {
       ;;
     selection_screen)
       echo "blocked_selection:${SEND_BLOCK_SOURCE}:${SEND_BLOCK_DETAIL}"
-      return 0
-      ;;
-    unknown_prompt)
-      echo "unknown_prompt:${SEND_BLOCK_SOURCE}:${SEND_BLOCK_DETAIL}"
       return 0
       ;;
   esac
@@ -1778,7 +1774,7 @@ get_idle_status() {
       echo "typing"
       return 0
       ;;
-    selection_screen|unknown_prompt)
+    selection_screen)
       echo "busy"
       return 0
       ;;
@@ -1875,10 +1871,6 @@ flush_queue() {
       ;;
     selection_screen)
       echo "  Skipped flush for $target_name (blocked_selection: ${SEND_BLOCK_DETAIL})" >&2
-      return 0
-      ;;
-    unknown_prompt)
-      echo "  Skipped flush for $target_name (unknown_prompt: ${SEND_BLOCK_DETAIL})" >&2
       return 0
       ;;
   esac
@@ -2775,10 +2767,6 @@ else
       ;;
     selection_screen)
       echo "Info: target '$TARGET' is showing a selection screen; queueing instead of immediate send." >&2
-      echo "Detail: source=${SEND_BLOCK_SOURCE} reason=${SEND_BLOCK_DETAIL}" >&2
-      ;;
-    unknown_prompt)
-      echo "Info: target '$TARGET' prompt state is unknown; queueing instead of immediate send." >&2
       echo "Detail: source=${SEND_BLOCK_SOURCE} reason=${SEND_BLOCK_DETAIL}" >&2
       ;;
   esac
