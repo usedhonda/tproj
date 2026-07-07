@@ -13,6 +13,10 @@ AUTO_YES=false
 CORE_ONLY=false
 WITH_MEMORY=false
 ALL_EXTENSIONS=false
+CHECK_ONLY=false
+
+# Core scripts copied to ~/bin (single source of truth for install + --check).
+CORE_BINS=(tproj tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-focus-hook tproj-pane-clear-rank tproj-pane-watchdog tproj-pane-autozoom tproj-tmux-state-notify tproj-mru-tracker tproj-respawn-guard tproj-postmortem tproj-mem-trace rebalance-workspace-columns sign-codex wait-for-pane-text)
 
 usage() {
   cat << 'EOF'
@@ -27,6 +31,7 @@ Options:
   --core-only         Install core only (no extensions)
   --with-memory       Include memory extension (cc-mem, memory-guard)
   --all               Install all extensions including memory
+  --check             Report repo bin/ <-> ~/bin drift and exit (no install)
 
 By default, messaging + persona + agent-teams extensions are installed.
 Memory extension requires --with-memory or --all (runs a launchd daemon).
@@ -65,6 +70,10 @@ while [[ $# -gt 0 ]]; do
       WITH_MEMORY=true
       shift
       ;;
+    --check)
+      CHECK_ONLY=true
+      shift
+      ;;
     *)
       echo "Unknown option: $1"
       echo "   Help: ./install.sh -h"
@@ -72,6 +81,31 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# ========== --check: repo<->~/bin drift detection (read-only) ==========
+# Self-contained: diffs each CORE_BINS file against ~/bin and exits before any
+# install processing runs. Never copies or touches launchctl.
+if $CHECK_ONLY; then
+  drift=()
+  for bin_name in "${CORE_BINS[@]}"; do
+    repo_file="$SCRIPT_DIR/bin/$bin_name"
+    installed="$HOME/bin/$bin_name"
+    if [[ ! -f "$installed" ]]; then
+      drift+=("$bin_name (missing in ~/bin)")
+    elif ! diff -q "$repo_file" "$installed" >/dev/null 2>&1; then
+      drift+=("$bin_name (differs)")
+    fi
+  done
+  if [[ ${#drift[@]} -gt 0 ]]; then
+    echo "drift detected between repo bin/ and ~/bin:"
+    for d in "${drift[@]}"; do
+      echo "  - $d"
+    done
+    exit 1
+  fi
+  echo "no drift: repo bin/ matches ~/bin for all ${#CORE_BINS[@]} core scripts"
+  exit 0
+fi
 
 # ========== Helper functions ==========
 
@@ -260,8 +294,7 @@ fi
 
 # ========== 4. Backup & copy ==========
 
-# 4.1 Core scripts
-CORE_BINS=(tproj tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-focus-hook tproj-pane-clear-rank tproj-pane-watchdog tproj-pane-autozoom tproj-tmux-state-notify tproj-mru-tracker tproj-respawn-guard tproj-postmortem tproj-mem-trace rebalance-workspace-columns sign-codex wait-for-pane-text)
+# 4.1 Core scripts (CORE_BINS defined near the top; shared with --check)
 
 if $DRY_RUN; then
   for bin_name in "${CORE_BINS[@]}"; do
