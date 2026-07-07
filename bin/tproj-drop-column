@@ -82,30 +82,17 @@ cleanup() {
 send_graceful_signal() {
   local pane_id="$1"
   local role="$2"
-  case "$role" in
-    claude-p*|claude|codex-p*|codex|agent-p*|agent-*)
-      tmux send-keys -t "$pane_id" C-c >/dev/null 2>&1 || true
-      ;;
-    yazi-p*|yazi)
-      tmux send-keys -t "$pane_id" q >/dev/null 2>&1 || true
-      ;;
-    terminal-p*)
-      tmux send-keys -t "$pane_id" C-c >/dev/null 2>&1 || true
-      ;;
-  esac
+  local sig
+  sig="$(graceful_signal_for_role "$role")"
+  [[ -n "$sig" ]] && tmux send-keys -t "$pane_id" "$sig" >/dev/null 2>&1 || true
 }
 
 send_exit_signal() {
   local pane_id="$1"
   local role="$2"
-  case "$role" in
-    claude-p*|claude|terminal-p*)
-      tmux send-keys -t "$pane_id" "exit" C-m >/dev/null 2>&1 || true
-      ;;
-    codex-p*|codex|agent-p*|agent-*)
-      tmux send-keys -t "$pane_id" "/exit" C-m >/dev/null 2>&1 || true
-      ;;
-  esac
+  local cmd
+  cmd="$(exit_cmd_for_role "$role")"
+  [[ -n "$cmd" ]] && tmux send-keys -t "$pane_id" "$cmd" C-m >/dev/null 2>&1 || true
 }
 
 pane_pid_for_id() {

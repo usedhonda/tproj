@@ -33,11 +33,10 @@ fi
 # Check pane exists
 tmux display-message -t "$PANE_ID" -p '#{pane_id}' >/dev/null 2>&1 || exit 0
 
-# Determine exit command by role
-case "$ROLE" in
-  codex-p*|codex|agent-p*|agent-*) EXIT_CMD="/exit" ;;
-  *) EXIT_CMD="exit" ;;
-esac
+# Determine exit command by role (shared table). Unknown/yazi fall back to
+# "exit" to preserve tproj-kill-pane's historical catch-all.
+EXIT_CMD="$(exit_cmd_for_role "$ROLE")"
+[[ -z "$EXIT_CMD" ]] && EXIT_CMD="exit"
 
 # Phase 1: Graceful exit
 tmux send-keys -t "$PANE_ID" C-c 2>/dev/null || exit 0

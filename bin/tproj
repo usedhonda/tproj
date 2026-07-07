@@ -957,14 +957,8 @@ stop_session() {
       pane_id="${pane_info%%:*}"
       role="${pane_info#*:}"
 
-      case "$role" in
-        claude|claude-p*|terminal-p*)
-          tmux send-keys -t "$pane_id" "exit" C-m 2>/dev/null || true
-          ;;
-        codex|codex-p*|agent-*)
-          tmux send-keys -t "$pane_id" "/exit" C-m 2>/dev/null || true
-          ;;
-      esac
+      exit_cmd="$(exit_cmd_for_role "$role")"
+      [[ -n "$exit_cmd" ]] && tmux send-keys -t "$pane_id" "$exit_cmd" C-m 2>/dev/null || true
     done <<< "$panes"
 
     # Phase 2: グレースフル終了待機（最大3秒）
