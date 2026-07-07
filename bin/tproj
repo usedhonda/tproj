@@ -498,19 +498,30 @@ find_tproj_sessions() {
     | grep ':true$' | cut -d: -f1
 }
 
-# tmux レイアウト変更を直列化する共有ロック (PID-based lockfile)
+# tmux レイアウト変更を直列化する共有ロック (2 ドメイン橋渡し)
+#  (1) tmux wait-for tproj-layout : tproj-drop-column / rebalance-workspace-columns
+#      / tproj-pane-autozoom と相互排他 (これらは tmux wait-for のみ使う)。
+#  (2) PID ファイル /tmp/tproj-layout.lock : GUI (TprojApp.acquireLayoutLockAsync)
+#      と相互排他。GUI は timeout + stale 検出が要るため PID ロックのみ使う
+#      (tmux wait-for は timeout/stale 検出を持たない)。
+# add-column は両方を握って 2 つのロックドメインを橋渡しする。add は唯一の多重
+# ロック保持者で、tmux 保持者は誰も PID を欲さず GUI は tmux を欲さないため、
+# 循環待ちは発生せずデッドロックしない。
+TPROJ_LAYOUT_LOCK_NAME="tproj-layout"
 TPROJ_LAYOUT_LOCKFILE="/tmp/tproj-layout.lock"
 TPROJ_LAYOUT_LOCK_HELD=false
+TPROJ_LAYOUT_TMUX_HELD=false
 
 acquire_layout_lock() {
   local timeout="${TPROJ_LOCK_TIMEOUT:-10}"
   local lockfile="$TPROJ_LAYOUT_LOCKFILE"
   local i=0
+  # (1) PID ロック優先取得 (GUI と共有; timeout + stale 検出付き)。
   while true; do
     # Try atomic create (noclobber = O_EXCL)
     if (set -C; echo $$ > "$lockfile") 2>/dev/null; then
       TPROJ_LAYOUT_LOCK_HELD=true
-      return 0
+      break
     fi
     # Lock exists - check if holder is still alive
     local holder_pid
@@ -526,12 +537,22 @@ acquire_layout_lock() {
       return 1
     fi
   done
+  # (2) tmux ロック取得 (drop-column / rebalance / autozoom と共有)。空くまで
+  #     ブロックする。PID を既に握っているので、tmux 保持者が解放し次第取得。
+  if tmux wait-for -L "$TPROJ_LAYOUT_LOCK_NAME" 2>/dev/null; then
+    TPROJ_LAYOUT_TMUX_HELD=true
+  fi
+  return 0
 }
 
 release_layout_lock() {
   if [[ "$TPROJ_LAYOUT_LOCK_HELD" == "true" ]]; then
     rm -f "$TPROJ_LAYOUT_LOCKFILE"
     TPROJ_LAYOUT_LOCK_HELD=false
+  fi
+  if [[ "$TPROJ_LAYOUT_TMUX_HELD" == "true" ]]; then
+    tmux wait-for -U "$TPROJ_LAYOUT_LOCK_NAME" 2>/dev/null || true
+    TPROJ_LAYOUT_TMUX_HELD=false
   fi
 }
 
@@ -1114,7 +1135,11 @@ add_workspace_column() {
   apply_tmux_ui_to_window "$session:dev"
 
   # 先にレイアウトを確定してから重いプロセスを起動し、Add直後の横揺れを抑える
+  # We hold the tmux layout lock here; tell rebalance to skip re-acquiring the
+  # (non-reentrant) tmux lock so it does not deadlock against us.
+  export TPROJ_LAYOUT_LOCK_INHERITED=1
   run_rebalance_workspace "$session"
+  unset TPROJ_LAYOUT_LOCK_INHERITED
   sleep 0.15
 
   # Add 時は npm update をスキップ（既存セッションで CC/Cdx は更新済み前提）
