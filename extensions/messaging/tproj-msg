@@ -521,6 +521,14 @@ RT_TRANSIENT=4   # tmux list-panes failed/empty (transient, retry next poll)
 TARGET_GONE_GRACE="${TPROJ_MSG_TARGET_GONE_GRACE:-$STALE_SECONDS}"
 AUTO_FLUSH_MAX=3   # Max messages to auto-flush per send
 FLUSH_POLL_INTERVAL=3  # seconds between flush attempts
+# M-D5: mutual exclusion between enqueue's append and flush's read->truncate.
+# macOS ships no flock(1), so we use an mkdir atomic lock (same idiom as
+# generate_task_id's seq_dir). Fail-open: if the lock can't be acquired within
+# the wait budget (stale lock / long contention), the section runs unlocked
+# rather than stalling delivery -- losing the race is strictly better than
+# blocking a send.
+QUEUE_LOCK_WAIT_MS="${TPROJ_MSG_QUEUE_LOCK_WAIT_MS:-2000}"
+QUEUE_LOCK_POLL_MS=25  # poll interval while waiting for the lock
 CONTROL_DEDUP_DIR="${TPROJ_MSG_CONTROL_DEDUP_DIR:-/tmp/tproj-msg-control-dedup}"
 CONTROL_DEDUP_FILE="${CONTROL_DEDUP_DIR}/seen.tsv"
 CONTROL_DEDUP_TTL="$STALE_SECONDS"
@@ -1804,6 +1812,28 @@ get_idle_status() {
 }
 
 # === Queue functions ===
+
+# M-D5: run a queue-mutating section under a per-target mkdir lock so enqueue's
+# append and flush's read->truncate cannot interleave (silent message loss).
+# Usage: with_queue_lock <target_name> <cmd> [args...]. Fail-open on timeout:
+# never block delivery on an unavailable lock.
+with_queue_lock() {
+  local target_name="$1"; shift
+  local lockdir="${QUEUE_DIR}/${target_name}.queue.lock"
+  local waited=0
+  while (( waited < QUEUE_LOCK_WAIT_MS )); do
+    if mkdir "$lockdir" 2>/dev/null; then
+      "$@"
+      local rc=$?
+      rmdir "$lockdir" 2>/dev/null || true
+      return $rc
+    fi
+    sleep 0.025
+    waited=$(( waited + QUEUE_LOCK_POLL_MS ))
+  done
+  # fail-open: proceed unlocked (former behaviour) rather than stall the send.
+  "$@"
+}
 
 # Enqueue a message for later delivery
 enqueue() {
