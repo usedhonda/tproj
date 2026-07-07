@@ -1,6 +1,21 @@
 #!/bin/bash
 set -euo pipefail
 
+# Shared tmux layout lock (same name used by tproj-drop-column, tproj add-column,
+# and tproj-pane-autozoom) so concurrent layout mutations are serialized instead
+# of interleaving and corrupting the pane tree.
+LAYOUT_LOCK_NAME="tproj-layout"
+RB_LOCK_HELD=false
+rb_release_lock() {
+  if [[ "$RB_LOCK_HELD" == "true" ]]; then
+    tmux wait-for -U "$LAYOUT_LOCK_NAME" 2>/dev/null || true
+    RB_LOCK_HELD=false
+  fi
+}
+# trap guarantees the lock is released even on an early/interrupted exit, so a
+# stale lock never permanently blocks all layout operations.
+trap rb_release_lock EXIT INT TERM
+
 SESSION="${1:-}"
 if [[ -z "$SESSION" ]]; then
   SESSION=$(tmux display-message -p '#S' 2>/dev/null || true)
@@ -40,6 +55,15 @@ if (( TARGET < 20 )); then
   TARGET=20
 fi
 
+# Acquire the shared layout lock around the resize burst only (all the cheap
+# preconditions above stay outside the lock to keep hold time minimal). Skip
+# acquiring when an ancestor already holds it (e.g. drop-column / add-column
+# invoke us mid-transaction and pass TPROJ_LAYOUT_LOCK_INHERITED=1) so we do not
+# deadlock against that holder — tmux wait-for locks are not reentrant.
+if [[ "${TPROJ_LAYOUT_LOCK_INHERITED:-0}" != "1" ]]; then
+  tmux wait-for -L "$LAYOUT_LOCK_NAME" 2>/dev/null && RB_LOCK_HELD=true || RB_LOCK_HELD=false
+fi
+
 # 右端は残差を吸収させる。tmuxの木構造都合で1回で収束しないため複数回実行。
 for _ in 1 2 3 4; do
   LAST_INDEX=$((NUM_COLS - 1))
@@ -52,3 +76,5 @@ for _ in 1 2 3 4; do
     fi
   done
 done
+
+rb_release_lock
