@@ -10,8 +10,13 @@ let package = Package(
         .executable(name: "tproj", targets: ["TprojApp"])
     ],
     targets: [
+        .target(
+            name: "TprojLogic",
+            path: "Sources/TprojLogic"
+        ),
         .executableTarget(
             name: "TprojApp",
+            dependencies: ["TprojLogic"],
             path: "Sources/TprojApp"
         )
     ]

@@ -1,4 +1,5 @@
 import SwiftUI
+import TprojLogic
 
 // Reusable generic View components physically split out of TprojApp.swift (S-D7).
 // Moved verbatim; no logic or access-modifier changes.
