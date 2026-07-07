@@ -2715,6 +2715,97 @@ fi
 exit 0
 }
 
+do_send_gate() {
+  if [[ "$READ_MODE" == "true" ]]; then
+    echo "Error: --read is not supported for gate targets" >&2
+    exit 1
+  fi
+
+  sender_label=""
+  gate_msg=""
+  gate_adpt=""
+  gate_hint=""
+  sender_label=$(gate_sender_label)
+  # Structured header includes reply lane hint + workspace for reverse routing.
+  reply_url=$(gate_reply_callback_url)
+  if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
+    HEADER="[tproj-msg:sender=${sender_label},project=${MY_ALIAS},workspace=${SESSION},reply=session"
+    [[ -n "$reply_url" ]] && HEADER+=",return_url=${reply_url}"
+    HEADER+="]"
+  else
+    HEADER="[tproj-msg:sender=${sender_label},reply=session"
+    [[ -n "$reply_url" ]] && HEADER+=",return_url=${reply_url}"
+    HEADER+="]"
+  fi
+
+  if control_dedup_check "$TARGET" "$MESSAGE"; then
+    :
+  else
+    rc=$?
+    [[ $rc -eq 12 ]] && exit 12
+    echo "Error: control dedup check failed (rc=$rc)" >&2
+    exit "$rc"
+  fi
+
+  gate_adpt=$(gate_adapter "$TARGET")
+  gate_hint="${MY_ALIAS:-tproj}"
+  if [[ "$gate_adpt" == "tmux" ]]; then
+    gate_hint=$(gate_session_target)
+  fi
+  # Reverse-channel routing depends on exactly one current header. If a caller
+  # supplies an old [tproj-msg:...] prefix, replace it instead of nesting it.
+  gate_msg=$(gate_prepend_header_once "$HEADER" "$MESSAGE")
+
+  # Explicit private lane:
+  #   [line-private] ...  -> LINE only, no session share wording in payload.
+  if is_line_private_message "$MESSAGE"; then
+    private_body=""
+    private_body=$(strip_line_private_tag "$MESSAGE")
+    private_body=$(trim_spaces "$private_body")
+    if [[ -z "$private_body" ]]; then
+      echo "Error: [line-private] requires non-empty message body" >&2
+      exit 1
+    fi
+    gate_adpt="line"
+    gate_hint="${MY_ALIAS:-tproj}"
+    gate_msg=$(format_line_private_notice "$sender_label" "$private_body")
+  fi
+
+  # Gate cross-adapter dedup check
+  if ! gate_dedup_check "$gate_adpt" "$MESSAGE"; then
+    exit 1
+  fi
+
+  if [[ "$gate_adpt" == "tmux" ]]; then
+    tmux_err=""
+    tmux_err=$(send_via_gate "$gate_adpt" "$gate_msg" "$gate_hint" 2>&1) || {
+      if echo "$tmux_err" | grep -q "session_busy"; then
+        echo "Info: gate:tmux session_busy -> auto-fallback to gate:direct" >&2
+        if send_via_gate "direct" "$gate_msg" "$gate_hint"; then
+          gate_dedup_mark "direct" "$MESSAGE"
+          control_dedup_mark "$TARGET" "$MESSAGE" || true
+          exit 0
+        fi
+        echo "Error: gate:direct fallback also failed." >&2
+        exit 1
+      fi
+      echo "$tmux_err" >&2
+      echo "Error: gate:tmux failed. Use 'gate:direct' to bypass tmux." >&2
+      exit 1
+    }
+    echo "$tmux_err" >&2
+    gate_dedup_mark "$gate_adpt" "$MESSAGE"
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
+    exit 0
+  fi
+  if send_via_gate "$gate_adpt" "$gate_msg" "$gate_hint"; then
+    gate_dedup_mark "$gate_adpt" "$MESSAGE"
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
+    exit 0
+  fi
+  exit $?
+}
+
 # === --list mode ===
 if [[ "$LIST_MODE" == "true" ]]; then
   echo "Available targets ($SESSION):"
@@ -2830,94 +2921,7 @@ fi
 
 # === Gate target early-exit (bypasses tmux pane resolution) ===
 if is_gate_target "$TARGET"; then
-  if [[ "$READ_MODE" == "true" ]]; then
-    echo "Error: --read is not supported for gate targets" >&2
-    exit 1
-  fi
-
-  sender_label=""
-  gate_msg=""
-  gate_adpt=""
-  gate_hint=""
-  sender_label=$(gate_sender_label)
-  # Structured header includes reply lane hint + workspace for reverse routing.
-  reply_url=$(gate_reply_callback_url)
-  if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
-    HEADER="[tproj-msg:sender=${sender_label},project=${MY_ALIAS},workspace=${SESSION},reply=session"
-    [[ -n "$reply_url" ]] && HEADER+=",return_url=${reply_url}"
-    HEADER+="]"
-  else
-    HEADER="[tproj-msg:sender=${sender_label},reply=session"
-    [[ -n "$reply_url" ]] && HEADER+=",return_url=${reply_url}"
-    HEADER+="]"
-  fi
-
-  if control_dedup_check "$TARGET" "$MESSAGE"; then
-    :
-  else
-    rc=$?
-    [[ $rc -eq 12 ]] && exit 12
-    echo "Error: control dedup check failed (rc=$rc)" >&2
-    exit "$rc"
-  fi
-
-  gate_adpt=$(gate_adapter "$TARGET")
-  gate_hint="${MY_ALIAS:-tproj}"
-  if [[ "$gate_adpt" == "tmux" ]]; then
-    gate_hint=$(gate_session_target)
-  fi
-  # Reverse-channel routing depends on exactly one current header. If a caller
-  # supplies an old [tproj-msg:...] prefix, replace it instead of nesting it.
-  gate_msg=$(gate_prepend_header_once "$HEADER" "$MESSAGE")
-
-  # Explicit private lane:
-  #   [line-private] ...  -> LINE only, no session share wording in payload.
-  if is_line_private_message "$MESSAGE"; then
-    private_body=""
-    private_body=$(strip_line_private_tag "$MESSAGE")
-    private_body=$(trim_spaces "$private_body")
-    if [[ -z "$private_body" ]]; then
-      echo "Error: [line-private] requires non-empty message body" >&2
-      exit 1
-    fi
-    gate_adpt="line"
-    gate_hint="${MY_ALIAS:-tproj}"
-    gate_msg=$(format_line_private_notice "$sender_label" "$private_body")
-  fi
-
-  # Gate cross-adapter dedup check
-  if ! gate_dedup_check "$gate_adpt" "$MESSAGE"; then
-    exit 1
-  fi
-
-  if [[ "$gate_adpt" == "tmux" ]]; then
-    tmux_err=""
-    tmux_err=$(send_via_gate "$gate_adpt" "$gate_msg" "$gate_hint" 2>&1) || {
-      if echo "$tmux_err" | grep -q "session_busy"; then
-        echo "Info: gate:tmux session_busy -> auto-fallback to gate:direct" >&2
-        if send_via_gate "direct" "$gate_msg" "$gate_hint"; then
-          gate_dedup_mark "direct" "$MESSAGE"
-          control_dedup_mark "$TARGET" "$MESSAGE" || true
-          exit 0
-        fi
-        echo "Error: gate:direct fallback also failed." >&2
-        exit 1
-      fi
-      echo "$tmux_err" >&2
-      echo "Error: gate:tmux failed. Use 'gate:direct' to bypass tmux." >&2
-      exit 1
-    }
-    echo "$tmux_err" >&2
-    gate_dedup_mark "$gate_adpt" "$MESSAGE"
-    control_dedup_mark "$TARGET" "$MESSAGE" || true
-    exit 0
-  fi
-  if send_via_gate "$gate_adpt" "$gate_msg" "$gate_hint"; then
-    gate_dedup_mark "$gate_adpt" "$MESSAGE"
-    control_dedup_mark "$TARGET" "$MESSAGE" || true
-    exit 0
-  fi
-  exit $?
+  do_send_gate
 fi
 
 # === Resolve target (required for send and read modes) ===
