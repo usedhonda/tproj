@@ -2575,6 +2575,146 @@ do_read() {
   exit "$FOUND_REPLY"
 }
 
+do_send_tmux() {
+# For send modes, refuse to send if pane exists but AI is not running.
+if ! is_target_online "$TARGET_PANE"; then
+  target_role=$(tmux display-message -t "$TARGET_PANE" -p '#{@role}' 2>/dev/null || true)
+  target_cmd=$(tmux display-message -t "$TARGET_PANE" -p '#{pane_current_command}' 2>/dev/null || true)
+  echo "Error: target '$TARGET' is offline (role=${target_role}, cmd=${target_cmd})" >&2
+  echo "Hint: start the target AI first, then retry." >&2
+  exit 1
+fi
+
+# === Build message header ===
+if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
+  HEADER="[from:${MY_ALIAS}.${MY_ROLE}]"
+else
+  HEADER="[from:${MY_ROLE}]"
+fi
+
+TASK_ID=""
+TASK_SENT_AT=""
+
+if [[ "$NEW_TASK_MODE" == "true" ]]; then
+  TASK_ID=$(generate_task_id)
+  MESSAGE="[Task: ${TASK_ID}] ${MESSAGE}"
+fi
+
+if fanout_guard_check "$TARGET" "$MESSAGE"; then
+  :
+else
+  fanout_rc=$?
+  exit "$fanout_rc"
+fi
+
+if control_dedup_check "$TARGET" "$MESSAGE"; then
+  :
+else
+  rc=$?
+  [[ $rc -eq 12 ]] && exit 12
+  echo "Error: control dedup check failed (rc=$rc)" >&2
+  exit "$rc"
+fi
+
+# === --force: bypass typing/running, but never press selection screens ===
+if [[ "$FORCE_MODE" == "true" ]]; then
+  # Safety exception: ClawGate reverse delivery uses --force, and sending text
+  # into a permission/choice menu can approve the wrong action. Return a clear
+  # non-zero status so the caller can fall back instead of silently dropping.
+  if detect_selection_screen "$TARGET_PANE"; then
+    echo "Error: target '$TARGET' is showing a selection screen; --force delivery deferred to avoid accidental approval." >&2
+    echo "Detail: source=${SELECTION_SCREEN_SOURCE} reason=${SELECTION_SCREEN_REASON}" >&2
+    echo "Hint: retry after the menu is resolved, or use caller-side fallback handling." >&2
+    exit "$SELECTION_BLOCK_EXIT"
+  fi
+  resolve_prompt_state "$TARGET_PANE"
+  if [[ "$PROMPT_RESOLVED_STATE" == "typing" ]]; then
+    echo "Warning: target '$TARGET' has unsent input (session_typing_busy); proceeding due to --force" >&2
+    echo "Detail: source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}" >&2
+    [[ -n "$PROMPT_RESOLVED_SNIPPET" ]] && echo "Detail: draft='${PROMPT_RESOLVED_SNIPPET}'" >&2
+  fi
+  if raw_send; then
+    fanout_guard_mark "$TARGET" "$MESSAGE" || true
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
+    exit 0
+  else
+    exit 1
+  fi
+fi
+
+# === --fire: send unless a concrete sendability block is detected ===
+if [[ "$FIRE_MODE" == "true" ]]; then
+  send_block_reason "$TARGET_PANE"
+  if [[ "$SEND_BLOCK_REASON" != "none" ]]; then
+    if [[ "$ALLOW_RELAY" == "true" ]] && is_relay_like_message "$MESSAGE"; then
+      echo "Error: relay override cannot enqueue when target is blocked (${SEND_BLOCK_REASON})" >&2
+      echo "Hint: retry with --force if immediate delivery is intended." >&2
+      exit "$RELAY_BLOCK_EXIT"
+    fi
+    enqueue "$TARGET" "$HEADER" "$MESSAGE"
+    fanout_guard_mark "$TARGET" "$MESSAGE" || true
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
+    echo "Queued for $TARGET (target blocked: ${SEND_BLOCK_REASON})" >&2
+    echo "Detail: source=${SEND_BLOCK_SOURCE} reason=${SEND_BLOCK_DETAIL}" >&2
+    exit 0
+  fi
+  ensure_queue_dir
+  # Auto-flush queued messages first (max AUTO_FLUSH_MAX)
+  if [[ -f "${QUEUE_DIR}/${TARGET}.queue" ]]; then
+    echo "Delivering queued messages first (max $AUTO_FLUSH_MAX)..." >&2
+    flush_queue "$TARGET" "$TARGET_PANE" "$AUTO_FLUSH_MAX"
+  fi
+  if raw_send; then
+    fanout_guard_mark "$TARGET" "$MESSAGE" || true
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
+    exit 0
+  else
+    exit 1
+  fi
+fi
+
+# === Normal mode: concrete block -> queue, otherwise send ===
+send_block_reason "$TARGET_PANE"
+if [[ "$SEND_BLOCK_REASON" == "none" ]]; then
+  # Auto-flush queued messages first (max AUTO_FLUSH_MAX)
+  ensure_queue_dir
+  if [[ -f "${QUEUE_DIR}/${TARGET}.queue" ]]; then
+    echo "Delivering queued messages first (max $AUTO_FLUSH_MAX)..." >&2
+    flush_queue "$TARGET" "$TARGET_PANE" "$AUTO_FLUSH_MAX"
+  fi
+  if raw_send; then
+    fanout_guard_mark "$TARGET" "$MESSAGE" || true
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
+  else
+    exit 1
+  fi
+else
+  case "$SEND_BLOCK_REASON" in
+    typing_draft)
+      echo "Info: target '$TARGET' has unsent input (session_typing_busy); queueing instead of immediate send." >&2
+      echo "Detail: source=${SEND_BLOCK_SOURCE} reason=${SEND_BLOCK_DETAIL}" >&2
+      ;;
+    selection_screen)
+      echo "Info: target '$TARGET' is showing a selection screen; queueing instead of immediate send." >&2
+      echo "Detail: source=${SEND_BLOCK_SOURCE} reason=${SEND_BLOCK_DETAIL}" >&2
+      ;;
+  esac
+
+  # Keep override one-shot semantics strict: relay-like override cannot fall back to queue.
+  if [[ "$ALLOW_RELAY" == "true" ]] && is_relay_like_message "$MESSAGE"; then
+    echo "Error: relay override cannot enqueue when target is blocked (${SEND_BLOCK_REASON})" >&2
+    echo "Hint: retry with --fire or --force if immediate delivery is intended." >&2
+    exit "$RELAY_BLOCK_EXIT"
+  fi
+  enqueue "$TARGET" "$HEADER" "$MESSAGE"
+  fanout_guard_mark "$TARGET" "$MESSAGE" || true
+  control_dedup_mark "$TARGET" "$MESSAGE" || true
+  echo "Queued for $TARGET (target blocked: ${SEND_BLOCK_REASON})" >&2
+fi
+
+exit 0
+}
+
 # === --list mode ===
 if [[ "$LIST_MODE" == "true" ]]; then
   echo "Available targets ($SESSION):"
@@ -2795,140 +2935,4 @@ if [[ "$READ_MODE" == "true" ]]; then
   do_read
 fi
 
-# For send modes, refuse to send if pane exists but AI is not running.
-if ! is_target_online "$TARGET_PANE"; then
-  target_role=$(tmux display-message -t "$TARGET_PANE" -p '#{@role}' 2>/dev/null || true)
-  target_cmd=$(tmux display-message -t "$TARGET_PANE" -p '#{pane_current_command}' 2>/dev/null || true)
-  echo "Error: target '$TARGET' is offline (role=${target_role}, cmd=${target_cmd})" >&2
-  echo "Hint: start the target AI first, then retry." >&2
-  exit 1
-fi
-
-# === Build message header ===
-if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
-  HEADER="[from:${MY_ALIAS}.${MY_ROLE}]"
-else
-  HEADER="[from:${MY_ROLE}]"
-fi
-
-TASK_ID=""
-TASK_SENT_AT=""
-
-if [[ "$NEW_TASK_MODE" == "true" ]]; then
-  TASK_ID=$(generate_task_id)
-  MESSAGE="[Task: ${TASK_ID}] ${MESSAGE}"
-fi
-
-if fanout_guard_check "$TARGET" "$MESSAGE"; then
-  :
-else
-  fanout_rc=$?
-  exit "$fanout_rc"
-fi
-
-if control_dedup_check "$TARGET" "$MESSAGE"; then
-  :
-else
-  rc=$?
-  [[ $rc -eq 12 ]] && exit 12
-  echo "Error: control dedup check failed (rc=$rc)" >&2
-  exit "$rc"
-fi
-
-# === --force: bypass typing/running, but never press selection screens ===
-if [[ "$FORCE_MODE" == "true" ]]; then
-  # Safety exception: ClawGate reverse delivery uses --force, and sending text
-  # into a permission/choice menu can approve the wrong action. Return a clear
-  # non-zero status so the caller can fall back instead of silently dropping.
-  if detect_selection_screen "$TARGET_PANE"; then
-    echo "Error: target '$TARGET' is showing a selection screen; --force delivery deferred to avoid accidental approval." >&2
-    echo "Detail: source=${SELECTION_SCREEN_SOURCE} reason=${SELECTION_SCREEN_REASON}" >&2
-    echo "Hint: retry after the menu is resolved, or use caller-side fallback handling." >&2
-    exit "$SELECTION_BLOCK_EXIT"
-  fi
-  resolve_prompt_state "$TARGET_PANE"
-  if [[ "$PROMPT_RESOLVED_STATE" == "typing" ]]; then
-    echo "Warning: target '$TARGET' has unsent input (session_typing_busy); proceeding due to --force" >&2
-    echo "Detail: source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}" >&2
-    [[ -n "$PROMPT_RESOLVED_SNIPPET" ]] && echo "Detail: draft='${PROMPT_RESOLVED_SNIPPET}'" >&2
-  fi
-  if raw_send; then
-    fanout_guard_mark "$TARGET" "$MESSAGE" || true
-    control_dedup_mark "$TARGET" "$MESSAGE" || true
-    exit 0
-  else
-    exit 1
-  fi
-fi
-
-# === --fire: send unless a concrete sendability block is detected ===
-if [[ "$FIRE_MODE" == "true" ]]; then
-  send_block_reason "$TARGET_PANE"
-  if [[ "$SEND_BLOCK_REASON" != "none" ]]; then
-    if [[ "$ALLOW_RELAY" == "true" ]] && is_relay_like_message "$MESSAGE"; then
-      echo "Error: relay override cannot enqueue when target is blocked (${SEND_BLOCK_REASON})" >&2
-      echo "Hint: retry with --force if immediate delivery is intended." >&2
-      exit "$RELAY_BLOCK_EXIT"
-    fi
-    enqueue "$TARGET" "$HEADER" "$MESSAGE"
-    fanout_guard_mark "$TARGET" "$MESSAGE" || true
-    control_dedup_mark "$TARGET" "$MESSAGE" || true
-    echo "Queued for $TARGET (target blocked: ${SEND_BLOCK_REASON})" >&2
-    echo "Detail: source=${SEND_BLOCK_SOURCE} reason=${SEND_BLOCK_DETAIL}" >&2
-    exit 0
-  fi
-  ensure_queue_dir
-  # Auto-flush queued messages first (max AUTO_FLUSH_MAX)
-  if [[ -f "${QUEUE_DIR}/${TARGET}.queue" ]]; then
-    echo "Delivering queued messages first (max $AUTO_FLUSH_MAX)..." >&2
-    flush_queue "$TARGET" "$TARGET_PANE" "$AUTO_FLUSH_MAX"
-  fi
-  if raw_send; then
-    fanout_guard_mark "$TARGET" "$MESSAGE" || true
-    control_dedup_mark "$TARGET" "$MESSAGE" || true
-    exit 0
-  else
-    exit 1
-  fi
-fi
-
-# === Normal mode: concrete block -> queue, otherwise send ===
-send_block_reason "$TARGET_PANE"
-if [[ "$SEND_BLOCK_REASON" == "none" ]]; then
-  # Auto-flush queued messages first (max AUTO_FLUSH_MAX)
-  ensure_queue_dir
-  if [[ -f "${QUEUE_DIR}/${TARGET}.queue" ]]; then
-    echo "Delivering queued messages first (max $AUTO_FLUSH_MAX)..." >&2
-    flush_queue "$TARGET" "$TARGET_PANE" "$AUTO_FLUSH_MAX"
-  fi
-  if raw_send; then
-    fanout_guard_mark "$TARGET" "$MESSAGE" || true
-    control_dedup_mark "$TARGET" "$MESSAGE" || true
-  else
-    exit 1
-  fi
-else
-  case "$SEND_BLOCK_REASON" in
-    typing_draft)
-      echo "Info: target '$TARGET' has unsent input (session_typing_busy); queueing instead of immediate send." >&2
-      echo "Detail: source=${SEND_BLOCK_SOURCE} reason=${SEND_BLOCK_DETAIL}" >&2
-      ;;
-    selection_screen)
-      echo "Info: target '$TARGET' is showing a selection screen; queueing instead of immediate send." >&2
-      echo "Detail: source=${SEND_BLOCK_SOURCE} reason=${SEND_BLOCK_DETAIL}" >&2
-      ;;
-  esac
-
-  # Keep override one-shot semantics strict: relay-like override cannot fall back to queue.
-  if [[ "$ALLOW_RELAY" == "true" ]] && is_relay_like_message "$MESSAGE"; then
-    echo "Error: relay override cannot enqueue when target is blocked (${SEND_BLOCK_REASON})" >&2
-    echo "Hint: retry with --fire or --force if immediate delivery is intended." >&2
-    exit "$RELAY_BLOCK_EXIT"
-  fi
-  enqueue "$TARGET" "$HEADER" "$MESSAGE"
-  fanout_guard_mark "$TARGET" "$MESSAGE" || true
-  control_dedup_mark "$TARGET" "$MESSAGE" || true
-  echo "Queued for $TARGET (target blocked: ${SEND_BLOCK_REASON})" >&2
-fi
-
-exit 0
+do_send_tmux
