@@ -6,6 +6,14 @@
 # 3. Respawns pane only if circuit breaker allows
 set -euo pipefail
 
+# Load shared helpers (bin/lib/tproj-common.sh), resolving our own location so it
+# works both from the repo (bin/) and the deployed ~/bin/.
+__tc_self="$0"
+case "$__tc_self" in */*) :;; *) __tc_self="$(command -v "$__tc_self" 2>/dev/null || echo "$__tc_self")";; esac
+__tc_dir="$(cd "$(dirname "$__tc_self")" 2>/dev/null && pwd)"
+[[ -r "$__tc_dir/lib/tproj-common.sh" ]] && source "$__tc_dir/lib/tproj-common.sh"
+unset __tc_self __tc_dir
+
 SESSION="${1:-}"
 PANE_ID="${2:-}"
 ROLE="${3:-}"
@@ -31,27 +39,22 @@ find "$DEATH_DIR" -type f -mmin +60 -delete 2>/dev/null || true
 # --- Step 1: Kill orphaned child processes from the dead pane ---
 pane_pid=$(tmux display-message -t "$PANE_ID" -p '#{pane_pid}' 2>/dev/null || true)
 if [[ -n "$pane_pid" ]]; then
-  # Kill all children of the pane shell (claude, node, mcp, etc.)
-  children=$(pgrep -P "$pane_pid" 2>/dev/null || true)
-  if [[ -n "$children" ]]; then
-    log "Killing children of pane_pid $pane_pid: $children"
-    for child in $children; do
-      # Kill grandchildren first (node/mcp spawned by claude)
-      grandchildren=$(pgrep -P "$child" 2>/dev/null || true)
-      for gc in $grandchildren; do
-        kill -TERM "$gc" 2>/dev/null || true
-      done
-      kill -TERM "$child" 2>/dev/null || true
-    done
+  # Kill the FULL descendant tree of the dead pane shell (claude, node, mcp, and
+  # anything deeper). BEHAVIOR CHANGE: the previous inline reaper only walked two
+  # levels (children + grandchildren); collect_descendant_pids walks the whole
+  # tree, so deeper descendants are now also SIGTERM'd then SIGKILL'd. This makes
+  # respawn-guard symmetric with drop-column / kill-pane orphan cleanup.
+  descendants=$(collect_descendant_pids "$pane_pid")
+  if [[ -n "$descendants" ]]; then
+    log "Killing descendant tree of pane_pid $pane_pid: $(echo "$descendants" | tr '\n' ' ')"
+    while IFS= read -r d; do
+      [[ -n "$d" ]] && kill -TERM "$d" 2>/dev/null || true
+    done <<< "$descendants"
     sleep 1
     # SIGKILL survivors
-    for child in $children; do
-      grandchildren=$(pgrep -P "$child" 2>/dev/null || true)
-      for gc in $grandchildren; do
-        kill -0 "$gc" 2>/dev/null && kill -9 "$gc" 2>/dev/null || true
-      done
-      kill -0 "$child" 2>/dev/null && kill -9 "$child" 2>/dev/null || true
-    done
+    while IFS= read -r d; do
+      [[ -n "$d" ]] && kill -0 "$d" 2>/dev/null && kill -9 "$d" 2>/dev/null || true
+    done <<< "$descendants"
   fi
 fi
 
