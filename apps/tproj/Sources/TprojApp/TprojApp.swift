@@ -1756,12 +1756,6 @@ final class AppViewModel: ObservableObject {
             }
     }
 
-    private struct PaneInfo {
-        var paneID: String
-        var role: String
-        var column: Int?
-    }
-
     // MARK: - GUI Config & Dependency Check
 
     private func bundledRuntimeSeedURL() -> URL? {
@@ -3708,17 +3702,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func listWorkspacePanesAsync() async -> [PaneInfo] {
-        let result = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", TmuxTargets.devWindow, "-F", "#{pane_id}|#{@role}|#{@column}"])
-        guard result.exitCode == 0 else { return [] }
-        return result.stdout
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map(String.init)
-            .compactMap { line in
-                let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-                guard parts.count >= 3 else { return nil }
-                let col = Int(parts[2])
-                return PaneInfo(paneID: parts[0], role: parts[1], column: col)
-            }
+        await tmux.listPanes()
     }
 
     private func paneID(forRole role: String, panes: [PaneInfo]) -> String? {
