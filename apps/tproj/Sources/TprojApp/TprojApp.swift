@@ -3022,8 +3022,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        var codex: [(left: Int, paneId: String)] = []
-        var claude: [(left: Int, paneId: String)] = []
+        var panes: [(paneId: String, role: String, left: Int)] = []
         var activePaneId: String?
         for line in list.stdout.split(separator: "\n", omittingEmptySubsequences: true) {
             let fields = line.split(separator: "|", omittingEmptySubsequences: false)
@@ -3032,25 +3031,15 @@ final class AppViewModel: ObservableObject {
             let role = String(fields[1])
             guard let left = Int(fields[2].trimmingCharacters(in: .whitespaces)) else { continue }
             if fields[3] == "1" { activePaneId = paneId }
-            if role.hasPrefix("codex") {
-                codex.append((left, paneId))
-            } else if role.hasPrefix("claude") {
-                claude.append((left, paneId))
-            }
+            panes.append((paneId, role, left))
         }
 
-        let order = (codex.sorted { $0.left < $1.left } + claude.sorted { $0.left < $1.left }).map { $0.paneId }
+        let order = jogCycleOrder(panes: panes)
         guard !order.isEmpty else {
             statusText = "MIDI jog: no codex/claude panes"
             return
         }
-
-        let nextPaneId: String
-        if let active = activePaneId, let idx = order.firstIndex(of: active) {
-            nextPaneId = order[(idx + direction + order.count) % order.count]
-        } else {
-            nextPaneId = order[0]
-        }
+        let nextPaneId = nextPaneInCycle(order: order, active: activePaneId, direction: direction) ?? order[0]
 
         let select = await runCommandAsync("/usr/bin/env", ["tmux", "select-pane", "-t", nextPaneId])
         if select.exitCode == 0 {
