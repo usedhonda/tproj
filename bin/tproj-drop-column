@@ -345,7 +345,9 @@ fi
 
 rebalance_count=0
 if [[ -x "$HOME/bin/rebalance-workspace-columns" ]]; then
-  if "$HOME/bin/rebalance-workspace-columns" "$SESSION" >/dev/null 2>&1; then
+  # We already hold the tproj-layout lock (acquired above); tell rebalance to
+  # skip re-acquiring it so it does not deadlock against us (reentrancy guard).
+  if TPROJ_LAYOUT_LOCK_INHERITED=1 "$HOME/bin/rebalance-workspace-columns" "$SESSION" >/dev/null 2>&1; then
     rebalance_count=1
   fi
 fi
