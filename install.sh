@@ -96,6 +96,12 @@ if $CHECK_ONLY; then
       drift+=("$bin_name (differs)")
     fi
   done
+  # shared library sourced by the core scripts
+  if [[ ! -f "$HOME/bin/lib/tproj-common.sh" ]]; then
+    drift+=("lib/tproj-common.sh (missing in ~/bin)")
+  elif ! diff -q "$SCRIPT_DIR/bin/lib/tproj-common.sh" "$HOME/bin/lib/tproj-common.sh" >/dev/null 2>&1; then
+    drift+=("lib/tproj-common.sh (differs)")
+  fi
   if [[ ${#drift[@]} -gt 0 ]]; then
     echo "drift detected between repo bin/ and ~/bin:"
     for d in "${drift[@]}"; do
@@ -300,6 +306,7 @@ if $DRY_RUN; then
   for bin_name in "${CORE_BINS[@]}"; do
     echo "[DRY-RUN] $bin_name -> ~/bin/"
   done
+  echo "[DRY-RUN] lib/tproj-common.sh -> ~/bin/lib/"
 else
   echo "  Core scripts -> ~/bin/"
   mkdir -p ~/bin
@@ -310,6 +317,9 @@ else
     cp "$SCRIPT_DIR/bin/$bin_name" ~/bin/"$bin_name"
     chmod +x ~/bin/"$bin_name"
   done
+  # Shared library sourced by the core scripts (bin/lib -> ~/bin/lib)
+  mkdir -p ~/bin/lib
+  cp "$SCRIPT_DIR/bin/lib/tproj-common.sh" ~/bin/lib/tproj-common.sh
 
   # Legacy cleanup: remove old launchd plist
   OLD_PLIST="$HOME/Library/LaunchAgents/com.memory-guard.plist"
