@@ -561,6 +561,46 @@ else
 fi
 unset TPROJ_MSG_QUEUE_DIR
 
+# 26. M-D5: flush's read->truncate is mutually exclusive with an enqueue append
+#     via a per-target mkdir lock, closing the silent-loss window. Reproducing
+#     the exact truncate-window race is timing-fragile, so we verify the lock
+#     PROPERTY deterministically: while an external holder holds the queue lock,
+#     a locked flush must BLOCK (not drain A) until released; an unlocked flush
+#     ignores the lock and drains A immediately. After release, flush drains A
+#     and releases its own lock (lockdir gone). This is RED without the flush
+#     lock (A drained at the checkpoint) and GREEN with it.
+export TPROJ_MSG_QUEUE_DIR="$WORK/queue"
+mkdir -p "$TPROJ_MSG_QUEUE_DIR"
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" "...generating output..."
+mdx5_qf="$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue"
+mdx5_lock="$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue.lock"
+printf '%s\t%s\t%s\n' "$(date +%s)" "" "mdx5 message A" > "$mdx5_qf"
+mkdir "$mdx5_lock"   # external holder occupies the queue lock
+TPROJ_MSG_QUEUE_LOCK_WAIT_MS=15000 "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --flush >/dev/null 2>&1 &
+mdx5_pid=$!
+sleep 1.0            # checkpoint: a locked flush is now blocked on the held lock
+# Blocked == A neither delivered (no send-keys) nor drained (queue file kept).
+mdx5_blocked=0
+if [[ -f "$mdx5_qf" ]] && ! grep -q "mdx5 message A" "$FAKE_DIR/sendkeys.log" 2>/dev/null; then
+  mdx5_blocked=1
+fi
+rmdir "$mdx5_lock"   # release: flush now acquires, drains A, releases its lock
+wait "$mdx5_pid"
+mdx5_delivered=0; grep -q "mdx5 message A" "$FAKE_DIR/sendkeys.log" 2>/dev/null && mdx5_delivered=1
+mdx5_qgone=1; [[ -f "$mdx5_qf" ]] && mdx5_qgone=0
+mdx5_lock_gone=1; [[ -d "$mdx5_lock" ]] && mdx5_lock_gone=0
+unset TPROJ_MSG_QUEUE_DIR
+if [[ "$mdx5_blocked" -eq 1 && "$mdx5_delivered" -eq 1 && "$mdx5_qgone" -eq 1 && "$mdx5_lock_gone" -eq 1 ]]; then
+  printf 'PASS  26_flush_queue_lock_mutex\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  26_flush_queue_lock_mutex\n      want blocked-while-held + delivered + queue gone + lock released\n      blocked=%s delivered=%s qgone=%s lock_gone=%s\n' \
+    "$mdx5_blocked" "$mdx5_delivered" "$mdx5_qgone" "$mdx5_lock_gone"
+  FAIL=$((FAIL+1))
+fi
+
 # =============================================================================
 echo "----"
 printf 'PASS=%d FAIL=%d PENDING=%d\n' "$PASS" "$FAIL" "$PENDING"

@@ -1921,27 +1921,13 @@ queue_newest_age() {
   [[ -n "$newest" ]] && echo $(( now - newest ))
 }
 
-# Flush queue for a specific target (deliver messages, discard stale)
-# Usage: flush_queue <target_name> <pane_id> [max_count]
-# max_count: 0 = unlimited (default for --flush), N = deliver at most N
-# Returns: number of messages delivered
-flush_queue() {
-  local target_name="$1" pane="$2" max_count="${3:-0}"
-  local qfile="${QUEUE_DIR}/${target_name}.queue"
-  [[ -f "$qfile" ]] || return 0
-
-  send_block_reason "$pane"
-  case "$SEND_BLOCK_REASON" in
-    typing_draft)
-      echo "  Skipped flush for $target_name (blocked_typing: ${SEND_BLOCK_DETAIL})" >&2
-      return 0
-      ;;
-    selection_screen)
-      echo "  Skipped flush for $target_name (blocked_selection: ${SEND_BLOCK_DETAIL})" >&2
-      return 0
-      ;;
-  esac
-
+# M-D5d: the read->truncate critical section of flush_queue, extracted verbatim
+# so with_queue_lock can serialize it against enqueue's append. Args:
+# <target_name> <pane> <max_count> <qfile>. Behaviour unchanged from the inline
+# version (STALE_SECONDS drop, max_count keep, policy/dedup guards, kept_lines
+# write-back vs rm).
+_flush_drain_queue() {
+  local target_name="$1" pane="$2" max_count="$3" qfile="$4"
   local now delivered=0 kept_lines=""
   now=$(date +%s)
 
@@ -2015,6 +2001,32 @@ flush_queue() {
   else
     rm -f "$qfile"
   fi
+}
+
+# Flush queue for a specific target (deliver messages, discard stale)
+# Usage: flush_queue <target_name> <pane_id> [max_count]
+# max_count: 0 = unlimited (default for --flush), N = deliver at most N
+# Returns: number of messages delivered
+flush_queue() {
+  local target_name="$1" pane="$2" max_count="${3:-0}"
+  local qfile="${QUEUE_DIR}/${target_name}.queue"
+  [[ -f "$qfile" ]] || return 0
+
+  send_block_reason "$pane"
+  case "$SEND_BLOCK_REASON" in
+    typing_draft)
+      echo "  Skipped flush for $target_name (blocked_typing: ${SEND_BLOCK_DETAIL})" >&2
+      return 0
+      ;;
+    selection_screen)
+      echo "  Skipped flush for $target_name (blocked_selection: ${SEND_BLOCK_DETAIL})" >&2
+      return 0
+      ;;
+  esac
+
+  # M-D5d: run the read->truncate as one critical section under the per-target
+  # queue lock so a concurrent enqueue append can't be swallowed by the truncate.
+  with_queue_lock "$target_name" _flush_drain_queue "$target_name" "$pane" "$max_count" "$qfile"
 
   return 0
 }
