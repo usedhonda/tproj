@@ -77,3 +77,36 @@ and `dev-app.sh` (Swift); `install.sh` main path never run (tmux live).
 
 Regression: **none**. Test counts unchanged (no tests added/removed in Phase 2);
 all previously-green baselines remain green.
+
+## Phase 3 — approved deletions + logic separation — 2026-07-07
+
+All 4 §9 Phase 3 items landed. Swift deploys via `dev-app.sh`; bin/ via `cp` to
+~/bin (install.sh main path never run — tmux live).
+
+| # | Debt | Commit(s) | What changed |
+|---|---|---|---|
+| 1 | B-D1 | `bdda1e1` | `git rm bin/tproj-pane-watchdog` (inert dead code: never launched, needs bash4 declare -A on a bash3.2 host). Removed from install.sh CORE_BINS + added to the legacy-cleanup loop (deletes stale ~/bin copies). Removed the 2 orphaned pkill sites; reworded every watchdog-crediting comment to name tproj-respawn-guard + the pane-died hook. `grep -rn watchdog bin/ install.sh` now shows only the intended legacy-cleanup line. |
+| 2 | S-D4 | `991be4a` | Deleted the retired MIDI pad-slot path: MIDIBinding / StoredMIDIBinding / MIDILearnStore, MIDIPaneActivator bindings lookup + onSlotTriggered, AppViewModel onSlotTriggered wiring + activatePaneForMIDISlot. MIDIBinding had no jog users so it went too. 76 deletions / 0 additions / **no jog lines in the diff**. Stale `tproj.midi.learn.bindings.v1` UserDefaults value left as harmless residue (no removeObject, per contract). |
+| 3a | S-D3 | `329c846` | New `Sources/TprojLogic` library target (TprojApp depends on it). Moved GhosttyTheme (public) + GhosttyConfigParser (internal; parseHex relaxed private->internal for @testable) + Color.brighten verbatim. GhosttyWindowInfo + window tracker stay. TprojApp + CommonViews `import TprojLogic`. |
+| 3b | S-D3 | `ec5a288` | Extracted `JogQuantizer.feed(data2:now:)` (pure) from handleJog; activator refreshes ticksPerStep/minStepInterval before each feed. Algorithm byte-identical; `now` injected for tests. |
+| 3c | S-D3 | `4342601` | Extracted `jogCycleOrder(panes:)` (contract signature) + companion `nextPaneInCycle(order:active:direction:)` from focusPaneByJog; the func is now a thin tmux wrapper. Same role filter / left sort / modulo wrap / order[0] fallback. |
+| 3d | S-D3 | `a14d38a` | Moved shellSingleQuote / shellDoubleQuote / yamlQuote to TprojLogic as pure public free funcs (call sites resolve unchanged). renderWorkspaceYAML stayed (coupled to WorkspaceProject model — out of scope per "無理はしない"). |
+| 4 | tests | `9f07bb2` | New `Tests/TprojLogicTests` (13 tests, green): JogQuantizer, jogCycleOrder + nextPaneInCycle, GhosttyConfigParser.parseHex. `swift test` added to Baseline. |
+
+### Post-Phase-3 baseline re-run (compare vs Phase 0 / Phase 2)
+
+| Baseline command | Phase 0 | Post-Phase-3 |
+|---|---|---|
+| `git status -s` | clean | **clean** (all committed) |
+| `test-sendability-gate.sh` | PASS=13 | **PASS=21 FAIL=0 PENDING=0** |
+| `test-inbox-check.sh` | 3 passed | **3 passed, 0 failed** |
+| `tests/smoke-bin.sh` | (P1) green | **PASS=17 FAIL=0** (16->15 bin files: watchdog removed) |
+| `dev-app.sh` | build+launch rc0 | **Build complete + launched** rc0 |
+| `swift test` | (new) | **13 passed, 0 failures** |
+| repo↔~/bin drift | zero | **zero** (watchdog gone from repo AND ~/bin) |
+
+Regression: **none**. Test counts monotonic up (gate 21 held; smoke 18->17 tracks
+the intentional watchdog deletion, not a lost test; +13 new swift tests). Jog diff
+across S-D4 + S-D3: zero jog-function lines removed/altered — extractions are
+call-through only. **Physical jog hardware confirmation is pending user** (agent
+verified code-level: build green + tests green + zero jog diff).
