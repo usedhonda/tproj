@@ -2464,6 +2464,77 @@ resolve_target() {
   return $rt_fail
 }
 
+generate_task_id() {
+  local alias_part epoch_min seq_root epoch_root seq=0 next=0 seq_dir
+  alias_part=$(printf '%s' "${MY_ALIAS:-}" | tr -cd '[:alnum:]-')
+  [[ -n "$alias_part" ]] || alias_part="tp"
+  epoch_min=$(( $(date +%s) / 60 ))
+  seq_root="/tmp/tproj-task-seq/${TARGET}"
+  epoch_root="${seq_root}/${epoch_min}"
+  mkdir -p "$epoch_root"
+  while [[ $seq -lt 100 ]]; do
+    next=$((seq + 1))
+    seq_dir=$(printf '%s/%02d' "$epoch_root" "$next")
+    if mkdir "$seq_dir" 2>/dev/null; then
+      printf '%s-%s-%02d\n' "$alias_part" "$epoch_min" "$next"
+      return 0
+    fi
+    seq=$next
+  done
+  echo "Error: failed to allocate task id sequence for $TARGET" >&2
+  exit 1
+}
+
+# === Send helpers ===
+
+# Raw send: push text into target pane via tmux send-keys
+# Record a failed send in the DB shadow store as a delivery error (not delivered),
+# mirroring send_via_gate's error path. Best-effort; no-op if the DB layer is absent.
+_raw_send_record_error() {
+  local _reason="$1"
+  if declare -F tt_db_log_message >/dev/null 2>&1; then
+    local _hash _from _outid
+    _hash=$(sha1_hash "$MESSAGE" 2>/dev/null)
+    _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
+    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "error" "${MY_ROLE:-cc}" "tmux" "" 2>/dev/null)
+    if [[ -n "$_outid" ]] && declare -F tt_db_set_delivery_error >/dev/null 2>&1; then
+      tt_db_set_delivery_error "$_outid" "$_reason" 2>/dev/null
+    fi
+  fi
+}
+
+raw_send() {
+  # Verify each tmux send-keys actually succeeded. On failure: emit no "Sent to"
+  # line, report the error on stderr, record the attempt in the DB as a delivery
+  # error (not delivered), and return non-zero so callers skip the dedup/fanout
+  # marks and propagate the failure. The success path below is unchanged.
+  if ! tmux send-keys -l -t "$TARGET_PANE" "${HEADER} ${MESSAGE}"; then
+    echo "Error: failed to deliver to $TARGET (tmux send-keys failed on message body)" >&2
+    _raw_send_record_error "send-keys body failed"
+    return 1
+  fi
+  sleep 0.5
+  if ! tmux send-keys -t "$TARGET_PANE" Enter; then
+    echo "Error: failed to deliver to $TARGET (tmux send-keys failed on Enter)" >&2
+    _raw_send_record_error "send-keys Enter failed"
+    return 1
+  fi
+  echo "Sent to $TARGET: ${HEADER} ${MESSAGE}" >&2
+  if [[ "$NEW_TASK_MODE" == "true" ]]; then
+    TASK_SENT_AT=$(date +%s)
+    echo "TASK_ID=${TASK_ID} TASK_TARGET=${TARGET} TASK_TTL_SEC=${TTL_SEC} TASK_SENT_AT=${TASK_SENT_AT}" >&2
+  fi
+  # R1' Stage 3 shadow write — best-effort. outbound + inbound mirror in DB.
+  if declare -F tt_db_log_message >/dev/null 2>&1; then
+    local _hash _from _outid
+    _hash=$(sha1_hash "$MESSAGE" 2>/dev/null)
+    _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
+    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "send-keys" "${MY_ROLE:-cc}" "tmux" "" 2>/dev/null)
+    [[ -n "$_outid" ]] && tt_db_set_delivered "$_outid" 2>/dev/null
+    tt_db_mirror_inbound "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "send-keys" "${MY_ROLE:-cc}" "tmux" "" >/dev/null 2>&1 || true
+  fi
+}
+
 # === --list mode ===
 if [[ "$LIST_MODE" == "true" ]]; then
   echo "Available targets ($SESSION):"
@@ -2736,79 +2807,8 @@ else
   HEADER="[from:${MY_ROLE}]"
 fi
 
-generate_task_id() {
-  local alias_part epoch_min seq_root epoch_root seq=0 next=0 seq_dir
-  alias_part=$(printf '%s' "${MY_ALIAS:-}" | tr -cd '[:alnum:]-')
-  [[ -n "$alias_part" ]] || alias_part="tp"
-  epoch_min=$(( $(date +%s) / 60 ))
-  seq_root="/tmp/tproj-task-seq/${TARGET}"
-  epoch_root="${seq_root}/${epoch_min}"
-  mkdir -p "$epoch_root"
-  while [[ $seq -lt 100 ]]; do
-    next=$((seq + 1))
-    seq_dir=$(printf '%s/%02d' "$epoch_root" "$next")
-    if mkdir "$seq_dir" 2>/dev/null; then
-      printf '%s-%s-%02d\n' "$alias_part" "$epoch_min" "$next"
-      return 0
-    fi
-    seq=$next
-  done
-  echo "Error: failed to allocate task id sequence for $TARGET" >&2
-  exit 1
-}
-
 TASK_ID=""
 TASK_SENT_AT=""
-
-# === Send helpers ===
-
-# Raw send: push text into target pane via tmux send-keys
-# Record a failed send in the DB shadow store as a delivery error (not delivered),
-# mirroring send_via_gate's error path. Best-effort; no-op if the DB layer is absent.
-_raw_send_record_error() {
-  local _reason="$1"
-  if declare -F tt_db_log_message >/dev/null 2>&1; then
-    local _hash _from _outid
-    _hash=$(sha1_hash "$MESSAGE" 2>/dev/null)
-    _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
-    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "error" "${MY_ROLE:-cc}" "tmux" "" 2>/dev/null)
-    if [[ -n "$_outid" ]] && declare -F tt_db_set_delivery_error >/dev/null 2>&1; then
-      tt_db_set_delivery_error "$_outid" "$_reason" 2>/dev/null
-    fi
-  fi
-}
-
-raw_send() {
-  # Verify each tmux send-keys actually succeeded. On failure: emit no "Sent to"
-  # line, report the error on stderr, record the attempt in the DB as a delivery
-  # error (not delivered), and return non-zero so callers skip the dedup/fanout
-  # marks and propagate the failure. The success path below is unchanged.
-  if ! tmux send-keys -l -t "$TARGET_PANE" "${HEADER} ${MESSAGE}"; then
-    echo "Error: failed to deliver to $TARGET (tmux send-keys failed on message body)" >&2
-    _raw_send_record_error "send-keys body failed"
-    return 1
-  fi
-  sleep 0.5
-  if ! tmux send-keys -t "$TARGET_PANE" Enter; then
-    echo "Error: failed to deliver to $TARGET (tmux send-keys failed on Enter)" >&2
-    _raw_send_record_error "send-keys Enter failed"
-    return 1
-  fi
-  echo "Sent to $TARGET: ${HEADER} ${MESSAGE}" >&2
-  if [[ "$NEW_TASK_MODE" == "true" ]]; then
-    TASK_SENT_AT=$(date +%s)
-    echo "TASK_ID=${TASK_ID} TASK_TARGET=${TARGET} TASK_TTL_SEC=${TTL_SEC} TASK_SENT_AT=${TASK_SENT_AT}" >&2
-  fi
-  # R1' Stage 3 shadow write — best-effort. outbound + inbound mirror in DB.
-  if declare -F tt_db_log_message >/dev/null 2>&1; then
-    local _hash _from _outid
-    _hash=$(sha1_hash "$MESSAGE" 2>/dev/null)
-    _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
-    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "send-keys" "${MY_ROLE:-cc}" "tmux" "" 2>/dev/null)
-    [[ -n "$_outid" ]] && tt_db_set_delivered "$_outid" 2>/dev/null
-    tt_db_mirror_inbound "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "send-keys" "${MY_ROLE:-cc}" "tmux" "" >/dev/null 2>&1 || true
-  fi
-}
 
 if [[ "$NEW_TASK_MODE" == "true" ]]; then
   TASK_ID=$(generate_task_id)
