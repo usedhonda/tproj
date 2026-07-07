@@ -1512,53 +1512,15 @@ struct MonitorStatus: Codable {
     }
 }
 
-private struct MIDIBinding: Codable, Equatable {
-    var statusNibble: UInt8
-    var data1: UInt8
-    var channel: UInt8
-}
-
-private struct StoredMIDIBinding: Codable {
-    var slot: Int
-    var binding: MIDIBinding
-}
-
-private enum MIDILearnStore {
-    private static let key = "tproj.midi.learn.bindings.v1"
-
-    static func load() -> [Int: MIDIBinding] {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let items = try? JSONDecoder().decode([StoredMIDIBinding].self, from: data) else {
-            return [:]
-        }
-        var result: [Int: MIDIBinding] = [:]
-        for item in items where (1...16).contains(item.slot) {
-            result[item.slot] = item.binding
-        }
-        return result
-    }
-
-    static func save(_ bindings: [Int: MIDIBinding]) {
-        let items = bindings.keys.sorted().compactMap { slot -> StoredMIDIBinding? in
-            guard let binding = bindings[slot] else { return nil }
-            return StoredMIDIBinding(slot: slot, binding: binding)
-        }
-        guard let data = try? JSONEncoder().encode(items) else { return }
-        UserDefaults.standard.set(data, forKey: key)
-    }
-}
-
 private final class MIDIPaneActivator {
     var onStatus: ((String) -> Void)?
     var onLearnStateChanged: ((Bool) -> Void)?
-    var onSlotTriggered: ((Int) -> Void)?
     // Jog wheel (relative CC): +1 = focus next pane, -1 = focus previous pane.
     var onJogStep: ((Int) -> Void)?
 
     private var client = MIDIClientRef()
     private var inputPort = MIDIPortRef()
     private var connectedSources: [MIDIEndpointRef] = []
-    private var bindings: [Int: MIDIBinding] = MIDILearnStore.load()
     private var isRunning = false
     private var learning = false {
         didSet { onLearnStateChanged?(learning) }
@@ -1743,10 +1705,6 @@ private final class MIDIPaneActivator {
             onStatus?("Jog learned: ch\(ch + 1) cc\(cc)")
             return
         }
-
-        let incoming = MIDIBinding(statusNibble: nibble, data1: data1, channel: channel)
-        guard let slot = bindings.first(where: { $0.value == incoming })?.key else { return }
-        onSlotTriggered?(slot)
     }
 
     private func handleJog(data2: UInt8) {
@@ -3222,11 +3180,6 @@ final class AppViewModel: ObservableObject {
                 self?.isMIDILearning = isLearning
             }
         }
-        activator.onSlotTriggered = { [weak self] slot in
-            Task { [weak self] in
-                await self?.activatePaneForMIDISlot(slot)
-            }
-        }
         activator.onJogStep = { [weak self] direction in
             Task { [weak self] in
                 await self?.focusPaneByJog(direction)
@@ -3234,35 +3187,6 @@ final class AppViewModel: ObservableObject {
         }
         activator.start()
         midiActivator = activator
-    }
-
-    private func activatePaneForMIDISlot(_ slot: Int) async {
-        guard (1...16).contains(slot) else { return }
-
-        let sessionTarget = TmuxTargets.devWindow
-        let list = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", sessionTarget, "-F", "#{pane_index}"])
-        guard list.exitCode == 0 else {
-            statusText = "MIDI activate failed: \(trimmedError(list))"
-            return
-        }
-
-        let available = Set(
-            list.stdout
-                .split(separator: "\n", omittingEmptySubsequences: true)
-                .compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        )
-        guard available.contains(slot) else {
-            statusText = "MIDI: pane #\(slot) not found"
-            return
-        }
-
-        _ = await runCommandAsync("/usr/bin/env", ["tmux", "select-window", "-t", sessionTarget])
-        let select = await runCommandAsync("/usr/bin/env", ["tmux", "select-pane", "-t", "\(sessionTarget).\(slot)"])
-        if select.exitCode == 0 {
-            statusText = "MIDI: #\(slot) activated"
-        } else {
-            statusText = "MIDI activate failed: \(trimmedError(select))"
-        }
     }
 
     private func focusPaneByJog(_ direction: Int) async {
