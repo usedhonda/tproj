@@ -87,16 +87,11 @@ if [[ "$recent_deaths" -gt "$CIRCUIT_MAX" ]]; then
 fi
 
 # --- Step 2.5: Memory check before respawn ---
-# Use free + inactive + purgeable (macOS keeps "free" artificially low due to caching)
-vm_out=$(vm_stat 2>/dev/null)
-page_size=$(sysctl -n vm.pagesize 2>/dev/null || echo 16384)
-free_p=$(echo "$vm_out" | awk '/Pages free/ {gsub(/\./,"",$3); print $3}')
-inactive_p=$(echo "$vm_out" | awk '/Pages inactive/ {gsub(/\./,"",$3); print $3}')
-purgeable_p=$(echo "$vm_out" | awk '/Pages purgeable/ {gsub(/\./,"",$3); print $3}')
-avail_mb=$(( (${free_p:-0} + ${inactive_p:-0} + ${purgeable_p:-0}) * page_size / 1048576 ))
+# Available memory (free + inactive + purgeable) via shared helper.
+avail_mb=$(avail_mem_mb)
 
 # Dynamic threshold: 2% of physical RAM (48GB -> ~983MB)
-total_phys_mb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 25769803776) / 1024 / 1024 ))
+total_phys_mb=$(phys_mem_mb)
 respawn_block_mb=$(( total_phys_mb * 2 / 100 ))
 
 if [[ "$avail_mb" -lt "$respawn_block_mb" ]]; then

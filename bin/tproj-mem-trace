@@ -9,6 +9,14 @@
 #         /tmp/tproj-mem-trace.csv (machine-parseable)
 set -uo pipefail
 
+# Load shared helpers (bin/lib/tproj-common.sh), resolving our own location so it
+# works both from the repo (bin/) and the deployed ~/bin/.
+__tc_self="$0"
+case "$__tc_self" in */*) :;; *) __tc_self="$(command -v "$__tc_self" 2>/dev/null || echo "$__tc_self")";; esac
+__tc_dir="$(cd "$(dirname "$__tc_self")" 2>/dev/null && pwd)"
+[[ -r "$__tc_dir/lib/tproj-common.sh" ]] && source "$__tc_dir/lib/tproj-common.sh"
+unset __tc_self __tc_dir
+
 INTERVAL="${1:-5}"
 DURATION="${2:-300}"
 LOG="/tmp/tproj-mem-trace.log"
@@ -41,16 +49,14 @@ take_snapshot() {
   elapsed=$(( $(date +%s) - start_time ))
   snap_file="$SNAPSHOT_DIR/snap_$(printf '%04d' $tick).txt"
 
-  # System-level memory
-  local vm_out page_size free_p inactive_p purgeable_p wired_p active_p avail_mb
+  # System-level memory. avail via shared helper; active+wired still parsed here
+  # for used_mb (the helper only exposes available memory).
+  local vm_out page_size wired_p active_p avail_mb
   vm_out=$(vm_stat 2>/dev/null)
   page_size=$(sysctl -n vm.pagesize 2>/dev/null || echo 16384)
-  free_p=$(echo "$vm_out" | awk '/Pages free/ {gsub(/\./,"",$3); print $3}')
-  inactive_p=$(echo "$vm_out" | awk '/Pages inactive/ {gsub(/\./,"",$3); print $3}')
-  purgeable_p=$(echo "$vm_out" | awk '/Pages purgeable/ {gsub(/\./,"",$3); print $3}')
   wired_p=$(echo "$vm_out" | awk '/Pages wired/ {gsub(/\./,"",$3); print $3}')
   active_p=$(echo "$vm_out" | awk '/Pages active/ {gsub(/\./,"",$3); print $3}')
-  avail_mb=$(( (${free_p:-0} + ${inactive_p:-0} + ${purgeable_p:-0}) * page_size / 1048576 ))
+  avail_mb=$(avail_mem_mb)
   local used_mb=$(( (${active_p:-0} + ${wired_p:-0}) * page_size / 1048576 ))
   local swap_used
   swap_used=$(sysctl vm.swapusage 2>/dev/null | grep -o 'used = [0-9.]*M' | grep -o '[0-9.]*' || echo "0")
@@ -116,7 +122,7 @@ take_snapshot() {
 }
 
 # Alert thresholds (dynamic: scale with physical RAM)
-TOTAL_PHYS_MB=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 25769803776) / 1024 / 1024 ))
+TOTAL_PHYS_MB=$(phys_mem_mb)
 WARN_AVAIL_MB=$(( TOTAL_PHYS_MB * 5 / 100 ))   # 5% of RAM (48GB -> ~2457MB)
 CRIT_AVAIL_MB=$(( TOTAL_PHYS_MB * 2 / 100 ))   # 2% of RAM (48GB -> ~983MB)
 
@@ -130,12 +136,7 @@ while [[ $(date +%s) -lt $end_time ]]; do
   take_snapshot
 
   # Check for critical memory
-  local_avail=$(vm_stat 2>/dev/null | awk -v ps="$(sysctl -n vm.pagesize 2>/dev/null || echo 16384)" '
-    /Pages free/ {gsub(/\./,"",$3); f=$3}
-    /Pages inactive/ {gsub(/\./,"",$3); i=$3}
-    /Pages purgeable/ {gsub(/\./,"",$3); p=$3}
-    END {printf "%.0f", (f+i+p)*ps/1048576}
-  ')
+  local_avail=$(avail_mem_mb)
 
   if [[ "${local_avail:-9999}" -lt "$CRIT_AVAIL_MB" ]]; then
     log "!! CRITICAL: Available memory ${local_avail}MB < ${CRIT_AVAIL_MB}MB !!"
