@@ -34,8 +34,10 @@ TARGET_W_CAP="${TPROJ_AUTOZOOM_W_MAX:-${TPROJ_AUTOZOOM_W_MIN:-120}}"
 TARGET_H="${TPROJ_AUTOZOOM_H_MIN:-${TPROJ_AUTOZOOM_H_MAX:-40}}"
 DEBUG_LOG="/tmp/tproj-pane-autozoom.log"
 
-# Always log entry (cheap, helps diagnose hook firing).
-{ echo "[$(date '+%H:%M:%S')] enter args=[$*] pid=$$"; } >> "$DEBUG_LOG" 2>/dev/null || true
+# Log entry only under DEBUG gate (same condition as dlog), helps diagnose hook firing.
+if [ "${TPROJ_AUTOZOOM_DEBUG:-0}" = "1" ]; then
+  { echo "[$(date '+%H:%M:%S')] enter args=[$*] pid=$$"; } >> "$DEBUG_LOG" 2>/dev/null || true
+fi
 
 dlog() {
   [ "${TPROJ_AUTOZOOM_DEBUG:-0}" = "1" ] || return 0
