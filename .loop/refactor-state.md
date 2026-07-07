@@ -48,3 +48,32 @@ harness defect; it tightens once M-D4 lands.
 | repo↔~/bin drift | zero (no bin/* or tproj-msg body changed) |
 
 Test count monotonic increase (13 → 21); no regression.
+
+## Phase 2 — obviously-safe cleanup (behavior-preserving, 1 commit = 1 item) — 2026-07-07
+
+All 7 §9 Phase 2 items landed, one commit each. Deploys used `cp` (messaging/bin)
+and `dev-app.sh` (Swift); `install.sh` main path never run (tmux live).
+
+| # | Debt | Commit | What changed |
+|---|---|---|---|
+| 1 | M-D2 | `67bcc79` | Removed 4 dead `unknown_prompt` case branches (SEND_BLOCK_REASON never set to it) + slot comment. Behavior unchanged. |
+| 2 | M-D4 | `6969732` | Added `TPROJ_MSG_{CONTROL,FANOUT,GATE}_DEDUP_DIR` env fallbacks (`${VAR:-default}`, /tmp defaults unchanged). |
+| 3 | B-D6 | `1baa685` | Gated autozoom entry-log append behind `TPROJ_AUTOZOOM_DEBUG=1` (same gate as dlog). |
+| 4 | B-D8 | `502d258` | New `docs/reference/env-vars.md` enumerating TPROJ_* vars (force-added; dir is gitignored). |
+| 5 | B-D9 | `844dc4a` | `install.sh --check` drift detector (CORE_BINS hoisted as single source of truth; copy/launchctl path byte-identical). |
+| 6 | S-D2 | `7465ffb` | `enum TmuxTargets` for `tproj-workspace` / `:dev`; replaced all 17 tmux-target literals (values unchanged; UI prose left as-is). |
+| 7 | S-D7 | `225798d` | Moved Card/SectionHeader/ActionButtonTone/ActionButtonStyle/ActionButton verbatim to `CommonViews.swift` (all internal; no modifier change). |
+
+### Post-Phase-2 baseline re-run (compare vs Phase 0 / Phase 1)
+
+| Baseline command | Phase 0 | Post-Phase-2 |
+|---|---|---|
+| `git status -s` | clean | **clean** (all committed) |
+| `test-sendability-gate.sh` | PASS=13 | **PASS=21 FAIL=0 PENDING=0** |
+| `test-inbox-check.sh` | 3 passed | **3 passed, 0 failed** |
+| `tests/smoke-bin.sh` | (Phase 1) green | **PASS=18 FAIL=0** |
+| `dev-app.sh` | build+launch rc0 | **Build complete + launched** (S-D7 build) |
+| repo↔~/bin drift | zero | **zero** (loop + `install.sh --check`: no drift, 16/16) |
+
+Regression: **none**. Test counts unchanged (no tests added/removed in Phase 2);
+all previously-green baselines remain green.
