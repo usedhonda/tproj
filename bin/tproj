@@ -22,6 +22,14 @@ resolve_tproj_runtime_root() {
 
 TPROJ_RUNTIME_ROOT="${TPROJ_RUNTIME_ROOT:-$(resolve_tproj_runtime_root 2>/dev/null || true)}"
 
+# Shared helpers (collect_descendant_pids, exit_cmd_for_role, ...). Resolve from
+# the runtime root when known, else next to this script (repo bin/ or ~/bin).
+if [[ -r "${TPROJ_RUNTIME_ROOT:-}/bin/lib/tproj-common.sh" ]]; then
+  source "${TPROJ_RUNTIME_ROOT}/bin/lib/tproj-common.sh"
+elif [[ -r "$SCRIPT_DIR/lib/tproj-common.sh" ]]; then
+  source "$SCRIPT_DIR/lib/tproj-common.sh"
+fi
+
 runtime_bin_path() {
   local name="$1"
   local candidate=""
@@ -558,21 +566,7 @@ release_layout_lock() {
 
 trap 'release_layout_lock' EXIT INT TERM
 
-# Collect all descendant PIDs of given PIDs (BFS via pgrep -P)
-collect_descendant_pids() {
-  local queue=("$@")
-  local all=()
-  while [[ ${#queue[@]} -gt 0 ]]; do
-    local cur="${queue[0]}"
-    queue=("${queue[@]:1}")
-    local ch
-    ch=$(pgrep -P "$cur" 2>/dev/null) || true
-    while IFS= read -r c; do
-      [[ -n "$c" ]] && all+=("$c") && queue+=("$c")
-    done <<< "$ch"
-  done
-  printf '%s\n' "${all[@]}"
-}
+# collect_descendant_pids is provided by bin/lib/tproj-common.sh (sourced above).
 
 # Collect descendant PIDs from all panes of given tproj sessions
 collect_session_descendants() {

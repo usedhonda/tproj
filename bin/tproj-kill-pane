@@ -1,5 +1,14 @@
 #!/bin/bash
 set -euo pipefail
+
+# Load shared helpers (bin/lib/tproj-common.sh), resolving our own location so it
+# works both from the repo (bin/) and the deployed ~/bin/.
+__tc_self="$0"
+case "$__tc_self" in */*) :;; *) __tc_self="$(command -v "$__tc_self" 2>/dev/null || echo "$__tc_self")";; esac
+__tc_dir="$(cd "$(dirname "$__tc_self")" 2>/dev/null && pwd)"
+[[ -r "$__tc_dir/lib/tproj-common.sh" ]] && source "$__tc_dir/lib/tproj-common.sh"
+unset __tc_self __tc_dir
+
 # tproj-kill-pane - Graceful pane shutdown with descendant cleanup
 # Usage: tproj-kill-pane <pane_id> [<role>]
 #
@@ -40,16 +49,8 @@ sleep 1.5
 pane_pid=$(tmux display-message -t "$PANE_ID" -p '#{pane_pid}' 2>/dev/null) || exit 0
 [[ -z "$pane_pid" ]] && exit 0
 
-# Collect descendants recursively (always returns 0)
-collect() {
-  local p=$1 kids
-  kids=$(pgrep -P "$p" 2>/dev/null || true)
-  [[ -z "$kids" ]] && return 0
-  local k
-  for k in $kids; do collect "$k"; echo "$k"; done
-  return 0
-}
-descs=$(collect "$pane_pid")
+# Collect the full descendant tree via bin/lib/tproj-common.sh (sourced above).
+descs=$(collect_descendant_pids "$pane_pid")
 
 if [[ -n "$descs" ]]; then
   # SIGTERM all descendants

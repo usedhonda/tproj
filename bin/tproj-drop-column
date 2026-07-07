@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Load shared helpers (bin/lib/tproj-common.sh), resolving our own location so it
+# works both from the repo (bin/) and the deployed ~/bin/.
+__tc_self="$0"
+case "$__tc_self" in */*) :;; *) __tc_self="$(command -v "$__tc_self" 2>/dev/null || echo "$__tc_self")";; esac
+__tc_dir="$(cd "$(dirname "$__tc_self")" 2>/dev/null && pwd)"
+[[ -r "$__tc_dir/lib/tproj-common.sh" ]] && source "$__tc_dir/lib/tproj-common.sh"
+unset __tc_self __tc_dir
+
 SESSION=""
 COLUMN=""
 GRACE_MS=3000
@@ -29,25 +37,7 @@ now_ms() {
   echo $(( $(date +%s) * 1000 ))
 }
 
-collect_descendant_pids() {
-  local queue=("$@")
-  local all=()
-  local cur children child
-  while [[ ${#queue[@]} -gt 0 ]]; do
-    cur="${queue[0]}"
-    queue=("${queue[@]:1}")
-    children=$(pgrep -P "$cur" 2>/dev/null || true)
-    while IFS= read -r child; do
-      [[ -z "$child" ]] && continue
-      all+=("$child")
-      queue+=("$child")
-    done <<< "$children"
-  done
-  if [[ ${#all[@]} -eq 0 ]]; then
-    return 0
-  fi
-  printf '%s\n' "${all[@]}"
-}
+# collect_descendant_pids is provided by bin/lib/tproj-common.sh (sourced above).
 
 log_line() {
   local message="$1"
