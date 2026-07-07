@@ -3,6 +3,33 @@
 Contract: `refactor-instructions.md` (§9). This file records the Phase 0 baseline
 (§6 Baseline Commands) so later phases can compare against it and detect regression.
 
+## ALL PHASES COMPLETE — Phase 0-5 summary (2026-07-07)
+
+All six phases (0 fixation, 1 safety-net, 2 safe-cleanup, 3 deletions+separation,
+4 boundaries, 5 proposals-only) landed. Every §7-approved Debt ID is either fixed or
+has a `docs/proposals/` design doc; no unapproved behavior change shipped.
+
+- **Commits**: 31 across Phase 1-4 (from `405a664`) + 2 in Phase 5 = **33 total**
+  (implementation-code commits are all §7-approved; Phase 5 is docs/state only).
+- **Fixed (implemented)**: M-D2, M-D4, B-D6, B-D8, B-D9, S-D2 (literals), S-D7, B-D1,
+  S-D4, S-D3, B-D2, B-D3/D4/D5, M-D1.
+- **Proposed only (Phase 5)**: S-D1, S-D2 (Service), S-D5, M-D3, M-D5, M-D6, B-D7.
+- **Metric progression** (Phase 0 → final):
+  - sendability gate: **13 → 22** (Phase 1 +8 relay/fanout/broadcast, Phase 4 +1 M-D1).
+  - smoke-bin: **0 → 17** (new in Phase 1 at 18; 18→17 tracks the intended watchdog delete).
+  - swift test: **0 → 13** (new TprojLogic target in Phase 3).
+  - inbox-check: 3 → 3 (held green throughout).
+  - repo↔~/bin drift: **zero throughout** (all bin deploys via `cp`; `install.sh --check` clean).
+- **Deletions (2)**: `bin/tproj-pane-watchdog` (B-D1, dead code) + retired MIDI pad-slot
+  path (S-D4). Jog system untouched (zero jog-function diff).
+- **Shared-lib consolidations (3)** into `bin/lib/tproj-common.sh`: descendant-PID
+  collection (4 copies → 1), role→exit table (3 → 1), vm_stat parse (3 → 1).
+- **Docs added**: `docs/reference/env-vars.md` (B-D8) + 7 Phase 5 proposals.
+- **Pending user (hardware)**: physical MIDI jog / layout-focus confirmation (agent
+  verified at code level: builds + tests green, zero jog diff, no lock deadlock).
+
+---
+
 ## Phase 0 baseline — 2026-07-07 15:25 JST
 
 | Baseline command | Result |
@@ -174,3 +201,38 @@ scoped to §7-approved (B-D2 dual-lock, M-D1) plus the explicitly-committed
 respawn-guard full-tree change. **Physical layout/focus hardware confirmation is
 pending user** (agent verified: no deadlock via reproduction tests, focus path
 unchanged — autozoom lock held only during resize execution).
+
+## Phase 5 — design proposals only (no implementation code) — 2026-07-07
+
+Per §9 Phase 5, the seven large design changes are written as `docs/proposals/*.md`
+and NOT implemented. Zero implementation-code lines changed this phase. Each proposal
+follows the required shape (background w/ Debt ID + file:line evidence / design /
+staged commit plan / risks + verification / cost of not doing).
+
+| Debt | Proposal file | Scope |
+|---|---|---|
+| S-D1 | `s-d1-appviewmodel-split.md` | AppViewModel (TprojApp.swift:1566-~3848) staged split; extraction order CommandRunner→TmuxService→MonitorPoller→RuntimeStager→MIDICoordinator; MainActor boundary notes |
+| S-D2 (rest) | `s-d2-tmux-service.md` | TmuxService/CommandRunning protocol over the Phase-2 `TmuxTargets`; 77 Process/tmux call sites |
+| S-D5 | `s-d5-statustext-result.md` | 72 `statusText =` swallows → Result/throws boundary; verbatim-message golden tests for wording compat |
+| M-D3 | `m-d3-dispatch-extraction.md` | tproj-msg tail dispatch → do_read()/do_send_tmux()/do_send_gate()/dispatch_mode() (1 func = 1 commit, gate 22 green each step) |
+| M-D5 | `m-d5-flush-flock.md` | enqueue(append) vs flush(read+truncate) race → per-target flock; repro-test-first plan |
+| M-D6 | `m-d6-queue-error-classes.md` | resolve_target exit-code split (NOT_FOUND vs TRANSIENT) so flush distinguishes gone target from transient tmux error |
+| B-D7 | `b-d7-set-e-policy.md` | shell set -e policy (CLI=-euo / sourced-lib=none / hook+postmortem=best-effort) + current-deviation table |
+
+Note: `docs/proposals/` is NOT gitignored (only `docs/reference|log|ask/` are), so a
+normal `git add` sufficed — no `-f` needed (unlike the B-D8 env-vars.md case).
+
+### Final baseline re-run (§6, compare vs Phase 0 / Phase 4)
+
+| Baseline command | Phase 0 | Final (Phase 5) |
+|---|---|---|
+| `git status -s` | clean | **clean** (all committed) |
+| `test-sendability-gate.sh` | PASS=13 | **PASS=22 FAIL=0 PENDING=0** |
+| `test-inbox-check.sh` | 3 passed | **3 passed, 0 failed** |
+| `tests/smoke-bin.sh` | (P1) 18 | **PASS=17 FAIL=0** |
+| `swift test` | (P3) 13 | **13 passed, 0 failures** |
+| `dev-app.sh` | build+launch rc0 | **Build complete + launched** (debug binary pid 94088, `.build/arm64-apple-macosx/debug/tproj`) |
+| repo↔~/bin drift | zero | **zero** (bin loop + `install.sh --check`: no drift, 15/15 core scripts) |
+
+Regression: **none**. No test count moved (Phase 5 is proposals-only). All baselines
+green and identical to Phase 4. Refactor complete.
