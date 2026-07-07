@@ -1835,13 +1835,22 @@ with_queue_lock() {
   "$@"
 }
 
+# M-D5c: locked append target for with_queue_lock. Args: <target> <epoch>
+# <header> <msg>. Kept as a named helper because with_queue_lock runs a command,
+# and the append needs a redirection that can't be passed as an argument.
+_queue_append() {
+  printf '%s\t%s\t%s\n' "$2" "$3" "$4" >> "${QUEUE_DIR}/$1.queue"
+}
+
 # Enqueue a message for later delivery
 enqueue() {
   local target_name="$1" header="$2" msg="$3"
   ensure_queue_dir
   local epoch
   epoch=$(date +%s)
-  printf '%s\t%s\t%s\n' "$epoch" "$header" "$msg" >> "${QUEUE_DIR}/${target_name}.queue"
+  # M-D5c: append under the per-target queue lock so a concurrent flush's
+  # read->truncate cannot swallow this line.
+  with_queue_lock "$target_name" _queue_append "$target_name" "$epoch" "$header" "$msg"
   start_flush_worker
   # R1' Stage 3 shadow write — record queued state, no delivered_at yet.
   if declare -F tt_db_log_message >/dev/null 2>&1; then
