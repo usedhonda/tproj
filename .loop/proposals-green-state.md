@@ -60,13 +60,36 @@ iteration 上限 12 / no-progress 3
     これは surgical（再インデント回避で verbatim 維持）のためで、定義は top-level・呼び出し前・非ネストを満たし
     testability（source して do_* 個別呼び出し可）を損なわない。
 
+- s-d2 (TmuxService / CommandRunner protocol 化) — 提案書 commit 計画どおり 4 commit で実装完了（iteration 4, 2026-07-08）:
+  - `99be390` S-D2a: CommandResult を TprojLogic(public) へ移設 + protocol CommandRunning 追加 + struct ProcessCommandRunner
+    追加（旧 executeCommand の Process 本体を verbatim 収容、PATH は resolvePATH クロージャ注入）。executeCommand は
+    processRunner.run へ委譲。runCommand/runCommandAsync/toggleAutoZoom + 全呼び出し側は argv/env/timing 完全不変。
+  - `c90e08f` S-D2b: 空の struct TmuxService（runner + session + devWindow を保持、TmuxTargets を束ねる）を TprojLogic に追加。
+    AppViewModel が 1 インスタンス保持。呼び出し差し替えなし。
+  - `4e49800` S-D2c: PaneInfo を TprojLogic(public,Equatable) へ移設 + TmuxService.listPanes（argv/parse は旧
+    listWorkspacePanesAsync から verbatim）追加、listWorkspacePanesAsync を経由化。RecordingRunner fake で argv snapshot /
+    parse / non-zero exit の 3 テスト追加（TmuxServiceTests）。
+  - `709646d` S-D2d: TmuxService.setOption（argv verbatim）追加、swapProjectTagsAsync の 6 set-option 呼びを経由化。
+    setOption argv-snapshot テスト 1 本追加。レイアウトロック配下 / jog 呼びは未変更。
+  - 検証: swift test 13 -> 17 passed 0 failures（+4 TmuxServiceTests）/ dev-app.sh 各 commit で GUI 再起動成功 /
+    smoke-bin PASS=17 FAIL=0 / sendability-gate PASS=26 FAIL=0 PENDING=0 / inbox-check 3 passed。各 commit 後 post-gate 全緑。
+  - ジョグ経路不変証明: focusPaneByJog / onJogStep / runCommandAsync / runCommand は diff で 1 行も変更なし
+    （grep 確認: NO jog/runCommandAsync signature lines changed）。executeCommand の本体移設は verbatim（PATH 取得のみ
+    Self.resolvedPATH -> resolvePATH() で等価）なので jog の list-panes(3019)/select-pane(3044) の argv・timing は byte-identical。
+  - 提案書との一致: commit 計画 4 段どおり。逸脱 2 点を明記:
+    (1) TmuxService.listPanes は sketch の `listPanes(window:)` ではなく引数なし + 内部 devWindow 参照に簡素化。S-D2b の
+    「TmuxTargets を束ねる」意図（service が window を保持）により忠実で、唯一の呼び出し側 listWorkspacePanesAsync は
+    常に devWindow 固定のため機能等価。(2) proposal sketch の TmuxService は selectPane/swapRoleTags も列挙するが、
+    今回は「低リスク先行 / レイアウトロック配下は最後」の段階方針に従い routing した動詞のみ実装（listPanes + setOption）。
+    残る tmux 直呼び（layout-lock 配下 set-option, split/swap/kill, jog の list/select 等 ~34 箇所）は提案書の
+    「順に差し替え」staged plan に沿う後続増分として意図的に未変換（scope 内の段階的完了）。ProcessCommandRunner/TmuxService/
+    PaneInfo の library 分離はテスト可能性という提案書の明示目的に必要な範囲のみ（大工事なし）。
+
 ## Failed / blocked
 （まだなし）
 
 ## Next step
-docs/proposals/s-d2-tmux-service.md を読み、その commit 計画の最初の 1 commit を実装する。
-Swift を触る提案の可能性が高いので post-gate に `cd apps/tproj && swift test && ./dev-app.sh` が加わる点に注意。
-pre-gate（smoke-bin + sendability-gate）を先に回して緑を確認してから着手。
+全 4 提案完了（m-d6 / m-d5 / m-d3 / s-d2）。独立確認（maker != checker）を経て FINAL 判定へ。
 
 ## ベースライン（2026-07-07 実測、リファクタ完遂直後）
 - sendability-gate: PASS=22 FAIL=0 PENDING=0
