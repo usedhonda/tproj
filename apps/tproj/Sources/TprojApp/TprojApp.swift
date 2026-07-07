@@ -3729,14 +3729,14 @@ final class AppViewModel: ObservableObject {
             guard let col = pane.column, col == sourceColumn || col == targetColumn else { continue }
             if col == sourceColumn {
                 // Pane at source position -> should now reflect target's project data
-                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@project", targetProject])
-                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@remote_host", targetRemoteHost])
-                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@remote_path", targetRemotePath])
+                _ = await tmux.setOption("@project", targetProject, pane: pane.paneID)
+                _ = await tmux.setOption("@remote_host", targetRemoteHost, pane: pane.paneID)
+                _ = await tmux.setOption("@remote_path", targetRemotePath, pane: pane.paneID)
             } else {
                 // Pane at target position -> should now reflect source's project data
-                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@project", sourceProject])
-                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@remote_host", sourceRemoteHost])
-                _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", pane.paneID, "@remote_path", sourceRemotePath])
+                _ = await tmux.setOption("@project", sourceProject, pane: pane.paneID)
+                _ = await tmux.setOption("@remote_host", sourceRemoteHost, pane: pane.paneID)
+                _ = await tmux.setOption("@remote_path", sourceRemotePath, pane: pane.paneID)
             }
         }
     }

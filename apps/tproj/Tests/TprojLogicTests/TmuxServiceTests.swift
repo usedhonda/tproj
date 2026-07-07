@@ -60,4 +60,14 @@ final class TmuxServiceTests: XCTestCase {
         let panes = await service.listPanes()
         XCTAssertTrue(panes.isEmpty)
     }
+
+    func testSetOptionSendsExpectedArgv() async {
+        let runner = RecordingRunner(response: CommandResult(exitCode: 0, stdout: "", stderr: ""))
+        let service = makeService(runner)
+        _ = await service.setOption("@project", "/path/to/proj", pane: "%5")
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertEqual(runner.calls.first?.launchPath, "/usr/bin/env")
+        XCTAssertEqual(runner.calls.first?.args,
+                       ["tmux", "set-option", "-pt", "%5", "@project", "/path/to/proj"])
+    }
 }

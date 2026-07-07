@@ -47,4 +47,11 @@ public struct TmuxService {
                 return PaneInfo(paneID: parts[0], role: parts[1], column: col)
             }
     }
+
+    // set-option -pt <target> <key> <value>. argv verbatim from the former
+    // inline `tmux set-option -pt ...` calls (S-D2d). Returns the runner result
+    // so call sites keep their existing `_ = await ...` discard.
+    public func setOption(_ key: String, _ value: String, pane target: String) async -> CommandResult {
+        await runner.runAsync("/usr/bin/env", ["tmux", "set-option", "-pt", target, key, value], env: [:])
+    }
 }
