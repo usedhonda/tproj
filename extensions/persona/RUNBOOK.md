@@ -17,6 +17,25 @@ tmux pane 背景画像を Gemini で生成する。各ペインの persona（職
 - `--refresh`: 既存キャッシュ無視、強制再生成
 - 出力: `<repo>/.local/tproj-pane-bg/<role>.vertical.png` と `.json` sidecar
 
+## instruction 二層契約
+
+`project-bootstrap` は shared instruction と local runtime artifact を別の
+操作として扱う。
+
+- shared 層: tracked `AGENTS.md` / `CLAUDE.md`。作成は
+  `project-bootstrap --init-shared <repo>`、legacy block や instruction
+  symlink の移行は `--migrate-shared <repo>`（dry-run）と `--apply` でのみ行う。
+- local 層: `MEMORY.md` persona block、`.codex/config.toml` persona block、
+  `.cc-status-bar.voice.json`。SessionStart、`tproj` startup の `--prime`、
+  `voice-identity-sync --ensure` が扱うのはこの層だけ。
+- runtime 経路は tracked `AGENTS.md` / `CLAUDE.md` / `.gitignore` を作成・
+  変更しない。shared 層の初期化や移行を startup の副作用にしない。
+
+実装の版は general の canonical 実体 ->
+`extensions/persona/project-bootstrap` の tracked symlink ->
+`~/bin/project-bootstrap` の install copy の順に流れる。
+`./install.sh --check` で三段の同一性を確認できる。
+
 ## project-local prompt override
 
 公開 repo の prompt は generic なまま保ち、個人環境だけ画風や構図を強めたい場合は、対象 project に以下を置く:
@@ -129,7 +148,7 @@ style は変数で制御される（`STYLE_REF_EN` / `STYLE_REF_JP` / `STYLE_AUT
 
 ### 4. 他プロジェクトで MEMORY.md 書換はしない
 
-一時的な職業変更依頼では、persona 変更ではなく **画像だけ override** を優先する。MEMORY.md に手を入れると sync 機構や persona データとの齟齬が出ることがある。画像 override が足りなければ AGENTS.md の user-owned section に override instruction を追加する、あるいは `--prof` 用の case を tproj-pane-bg 側で拡張する、のどちらかで対応する。
+一時的な職業変更依頼では、persona 変更ではなく **画像だけ override** を優先する。MEMORY.md に手を入れると sync 機構や persona データとの齟齬が出ることがある。画像 override が足りなければ tracked AGENTS.md の public-safe な user-owned section に override instruction を追加する、あるいは `--prof` 用の case を tproj-pane-bg 側で拡張する、のどちらかで対応する。
 
 ## 完了判定チェックリスト
 

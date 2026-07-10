@@ -770,7 +770,9 @@ prime_and_swap() {
 
   [[ ${#pane_entries[@]} -eq 0 ]] && return 0
 
-  # 1. Run project-bootstrap --prime for each unique project (parallel)
+  # 1. Generate local persona/voice artifacts for each unique project (parallel).
+  # --prime is intentionally local-only; shared AGENTS.md/CLAUDE.md are never
+  # initialized or migrated by workspace startup.
   local -a primed_list prime_pids
   local entry
   for entry in "${pane_entries[@]}"; do

@@ -9,7 +9,8 @@
 #   voice-identity-sync <project_path> --alias <name> --ensure
 #
 # Exits 0 if voice.json missing (defer to project-bootstrap), no diff, or success.
-# With --ensure, runs project-bootstrap --prime first when voice.json is missing.
+# With --ensure, requests only local persona/voice artifacts through the
+# local-only project-bootstrap --prime mode when voice.json is missing.
 
 set -eo pipefail
 
@@ -41,9 +42,11 @@ done
 VOICE_FILE="$PROJECT_PATH/.cc-status-bar.voice.json"
 command -v jq >/dev/null || { echo "voice-identity-sync: jq required" >&2; exit 2; }
 
-# --ensure mode: if voice.json doesn't exist, invoke project-bootstrap --prime
-# to create it before patching. Used by the GUI Add hook so newly added
-# projects get bootstrapped immediately without waiting for SessionStart.
+# --ensure mode: if voice.json doesn't exist, invoke the local-only
+# project-bootstrap --prime mode to create persona/voice artifacts before
+# patching. It never initializes or migrates shared AGENTS.md/CLAUDE.md. Used by
+# the GUI Add hook so newly added projects are ready without waiting for
+# SessionStart.
 if [ ! -f "$VOICE_FILE" ]; then
   if [ "$ENSURE" = "1" ]; then
     pb=""

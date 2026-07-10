@@ -17,6 +17,25 @@ CHECK_ONLY=false
 
 # Core scripts copied to ~/bin (single source of truth for install + --check).
 CORE_BINS=(tproj tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-focus-hook tproj-pane-clear-rank tproj-pane-autozoom tproj-tmux-state-notify tproj-mru-tracker tproj-respawn-guard tproj-postmortem tproj-mem-trace rebalance-workspace-columns sign-codex wait-for-pane-text)
+PERSONA_BOOTSTRAP_LINK="$SCRIPT_DIR/extensions/persona/project-bootstrap"
+PERSONA_BOOTSTRAP_TARGET="../../../general/system/project-bootstrap/project-bootstrap"
+PERSONA_BOOTSTRAP_ERROR=""
+
+validate_persona_bootstrap_source() {
+  PERSONA_BOOTSTRAP_ERROR=""
+  if [[ ! -L "$PERSONA_BOOTSTRAP_LINK" ]]; then
+    PERSONA_BOOTSTRAP_ERROR="project-bootstrap (tracked source is not a symlink)"
+    return 1
+  fi
+  if [[ "$(readlink "$PERSONA_BOOTSTRAP_LINK")" != "$PERSONA_BOOTSTRAP_TARGET" ]]; then
+    PERSONA_BOOTSTRAP_ERROR="project-bootstrap (tracked symlink target differs)"
+    return 1
+  fi
+  if [[ ! -f "$PERSONA_BOOTSTRAP_LINK" ]]; then
+    PERSONA_BOOTSTRAP_ERROR="project-bootstrap (canonical general source is missing)"
+    return 1
+  fi
+}
 
 usage() {
   cat << 'EOF'
@@ -31,7 +50,7 @@ Options:
   --core-only         Install core only (no extensions)
   --with-memory       Include memory extension (cc-mem, memory-guard)
   --all               Install all extensions including memory
-  --check             Report repo bin/ <-> ~/bin drift and exit (no install)
+  --check             Report repo bin/ and persona bootstrap drift (no install)
 
 By default, messaging + persona + agent-teams extensions are installed.
 Memory extension requires --with-memory or --all (runs a launchd daemon).
@@ -83,7 +102,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ========== --check: repo<->~/bin drift detection (read-only) ==========
-# Self-contained: diffs each CORE_BINS file against ~/bin and exits before any
+# Self-contained: diffs each CORE_BINS file and the canonical general source ->
+# tracked tproj symlink -> ~/bin/project-bootstrap chain. Exits before any
 # install processing runs. Never copies or touches launchctl.
 if $CHECK_ONLY; then
   drift=()
@@ -102,14 +122,27 @@ if $CHECK_ONLY; then
   elif ! diff -q "$SCRIPT_DIR/bin/lib/tproj-common.sh" "$HOME/bin/lib/tproj-common.sh" >/dev/null 2>&1; then
     drift+=("lib/tproj-common.sh (differs)")
   fi
+  if ! $CORE_ONLY; then
+    if ! validate_persona_bootstrap_source; then
+      drift+=("$PERSONA_BOOTSTRAP_ERROR")
+    elif [[ ! -f "$HOME/bin/project-bootstrap" ]]; then
+      drift+=("project-bootstrap (missing installed copy in ~/bin)")
+    elif ! cmp -s "$PERSONA_BOOTSTRAP_LINK" "$HOME/bin/project-bootstrap"; then
+      drift+=("project-bootstrap (installed copy differs from canonical source)")
+    fi
+  fi
   if [[ ${#drift[@]} -gt 0 ]]; then
-    echo "drift detected between repo bin/ and ~/bin:"
+    echo "drift detected in repo/install chain:"
     for d in "${drift[@]}"; do
       echo "  - $d"
     done
     exit 1
   fi
-  echo "no drift: repo bin/ matches ~/bin for all ${#CORE_BINS[@]} core scripts"
+  if $CORE_ONLY; then
+    echo "no drift: repo bin/ matches ~/bin for all ${#CORE_BINS[@]} core scripts"
+  else
+    echo "no drift: core scripts and canonical project-bootstrap chain match ~/bin"
+  fi
   exit 0
 fi
 
@@ -475,9 +508,13 @@ if ! $CORE_ONLY; then
   # --- persona ---
   if [[ -d "$SCRIPT_DIR/extensions/persona" ]]; then
     echo "  persona (project-bootstrap, cc-persona compat, tproj-pane-bg, voicevox-alert, voice-identity-sync)"
+    if ! validate_persona_bootstrap_source; then
+      echo "    [error] $PERSONA_BOOTSTRAP_ERROR" >&2
+      exit 1
+    fi
     if ! $DRY_RUN; then
       rm -f ~/bin/project-bootstrap ~/bin/cc-persona ~/bin/tproj-pane-bg ~/bin/voicevox-alert ~/bin/voice-identity-sync  # remove stale symlinks
-      cp "$SCRIPT_DIR/extensions/persona/project-bootstrap" ~/bin/
+      cp -L "$PERSONA_BOOTSTRAP_LINK" ~/bin/project-bootstrap
       cp "$SCRIPT_DIR/extensions/persona/cc-persona" ~/bin/
       cp "$SCRIPT_DIR/extensions/persona/tproj-pane-bg" ~/bin/
       cp "$SCRIPT_DIR/extensions/persona/voicevox-alert" ~/bin/
