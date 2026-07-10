@@ -30,6 +30,12 @@ elif [[ -r "$SCRIPT_DIR/lib/tproj-common.sh" ]]; then
   source "$SCRIPT_DIR/lib/tproj-common.sh"
 fi
 
+if [[ -r "${TPROJ_RUNTIME_ROOT:-}/bin/lib/tproj-model-role.sh" ]]; then
+  source "${TPROJ_RUNTIME_ROOT}/bin/lib/tproj-model-role.sh"
+elif [[ -r "$SCRIPT_DIR/lib/tproj-model-role.sh" ]]; then
+  source "$SCRIPT_DIR/lib/tproj-model-role.sh"
+fi
+
 runtime_bin_path() {
   local name="$1"
   local candidate=""
@@ -58,6 +64,13 @@ run_rebalance_workspace() {
   rebalance_path="$(runtime_bin_path "rebalance-workspace-columns" 2>/dev/null || true)"
   [[ -z "$rebalance_path" ]] && return 0
   "$rebalance_path" "$session" 2>/dev/null || true
+}
+
+initialize_model_role_runtime() {
+  local session="$1" router=""
+  declare -f tproj_model_role_initialize >/dev/null 2>&1 || return 0
+  router="$(runtime_bin_path "model-role-router" 2>/dev/null || true)"
+  tproj_model_role_initialize "$session" "$router" "dev" || true
 }
 
 mark_session_runtime() {
@@ -1121,6 +1134,8 @@ add_workspace_column() {
     tmux set-option -pt "$new_claude" @project "$src_path"
     tmux set-option -pt "$new_codex" @project "$src_path"
   fi
+
+  initialize_model_role_runtime "$session"
 
   apply_tmux_ui_to_window "$session:dev"
 
@@ -2209,6 +2224,7 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
     # --- マルチプロジェクトモード ---
     echo "tproj: creating workspace layout..." >&2
     create_workspace_layout "$session" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}" -- "${PROJECT_ALIASES[@]}"
+    initialize_model_role_runtime "$session"
     prime_after_layout_manifest "$session"
     start_workspace_tools "$session" "$NO_UPDATE" "${PROJECT_PATHS[@]}" -- "${PROJECT_TYPES[@]}" -- "${PROJECT_HOSTS[@]}" -- "${PROJECT_ALIASES[@]}" -- "${PROJECT_CC_LAUNCH[@]}" -- "${PROJECT_CDX_LAUNCH[@]}"
 
@@ -2240,6 +2256,8 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
     tmux set-option -pt "$session:dev.1" @alias "$name"
     tmux set-option -pt "$session:dev.2" @alias "$name"
     tmux set-option -pt "$session:dev.3" @alias "$name"
+
+    initialize_model_role_runtime "$session"
 
     # Keep CC/Cdx panes alive if shell dies (tproj-respawn-guard respawns them via the pane-died hook)
     tmux set-option -pt "$session:dev.1" remain-on-exit on 2>/dev/null || true

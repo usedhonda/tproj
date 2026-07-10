@@ -2,7 +2,7 @@
 
 Lane D3 deliverable. This document pins down the public contract of the Task ID cache helper used by `tproj-msg --new-task`, `tproj-task` CLI, `tproj-inbox-record` (D4 PostToolUse hook), and `tproj-inbox-check` (D5 UserPromptSubmit hook).
 
-Scope: implementation guidance for Lane D consumers, and the regression surface that tproj.cc checks during the §8.2 independent verification step.
+Scope: implementation guidance for cache consumers and the regression surface checked by the current orchestrator during independent verification.
 
 ---
 
@@ -83,8 +83,8 @@ This is the invariant that keeps the system race-free without a heavier lock man
 - `tt_cache_remove_task` has **three callers**: `tproj-msg --read`, D5 hook (`tproj-inbox-check` via `tt_cache_gc_expired`), and `tproj-task close`.
 - `tproj-msg --new-task` itself **MUST NOT** touch the cache. It only:
   1. generates a Task ID,
-  2. prepends `[Task: <id>] ` to the outgoing message,
-  3. emits `TASK_ID=<id> TASK_TARGET=<t> TASK_TTL_SEC=<n> TASK_SENT_AT=<epoch>` on stderr,
+  2. prepends `[Task: <id>] `, or a role-handoff envelope containing that tag, to the outgoing message,
+  3. emits `TASK_ID=<id> TASK_TARGET=<t> TASK_TTL_SEC=<n> TASK_SENT_AT=<epoch>` on stderr when the send is delivered or accepted into the deferred queue,
   4. invokes the normal send path.
 
 Rationale: adds are rare (one per delegation, at the moment of send) and pass through a single hook; removes are many (per `--read`, per hook tick, per manual close) but idempotent. Funneling adds through one writer removes the "two tproj-msg processes both opening + rewriting the same file" race.
@@ -93,6 +93,7 @@ Rationale: adds are rare (one per delegation, at the moment of send) and pass th
 
 - `TPROJ_HOOK_ENABLED != "1"` → D4/D5 hooks exit 0 immediately. In that mode, `tproj-msg --new-task` still generates IDs and sends, but no cache file is ever written.
 - `tproj-msg` calls with no `--new-task` flag behave byte-identically to pre-Lane-D.
+- `tproj-msg --role-handoff --new-task` uses the same cache record and accepts the same `[ACK:]` / `[DONE:]` / `[BLOCK:]` terminal compatibility as a normal tracked task.
 - `tproj-msg --read` still returns the capture output on stdout; the only behavioural additions are (a) idempotent cache removal as a side effect, and (b) exit code `0` if any `[ACK:]` / `[DONE:]` / `[BLOCK:]` was detected, else `1` (pre-Lane-D always exited 0).
 
 Consumers that depend on `--read` exit code being 0 unconditionally must be audited; none are known inside the tproj workspace at Lane D implementation time (regression floor).
@@ -228,13 +229,14 @@ Expected: `PASS: stale lock recovered` within ~50–100 ms (not full 5 s timeout
 
 ## 7. Revision log
 
-- **2026-04-17 — v1.0 (tproj.cc, D3 deliverable)**: initial contract. 8-parallel race test green. mkdir lock accepted in place of flock due to macOS default.
+- **2026-04-17 — v1.0**: initial contract. 8-parallel race test green. mkdir lock accepted in place of flock due to macOS default.
+- **2026-07-10 — v1.1**: role-neutral orchestrator wording and queued role-handoff tracking contract.
 
 ---
 
-Authoritative references (for wording parity with Lane C1 / cc-general.cdx output):
+Authoritative references:
 
-- `~/.claude/CLAUDE.md` §6 (tproj-msg safety), §8 (delegation), §6.3.1 (Task ID operation)
+- `AGENTS.md` (public messaging and runtime contribution rules)
 - `extensions/messaging/tproj-msg` (D1 consumer — §3 single-writer rule binds this file)
 - `extensions/hooks/tproj-inbox-record` (D4 adder — exclusive `tt_cache_add` caller)
 - `extensions/hooks/tproj-inbox-check` (D5 remover via `tt_cache_gc_expired`)

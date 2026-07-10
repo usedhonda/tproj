@@ -14,17 +14,20 @@ CACHE_LIB="$REPO/extensions/messaging/tproj-task-cache.sh"
 PASS=0
 FAIL=0
 TARGET_NAME="testcdx"
+ORIGINAL_HOME="$HOME"
 
 setup_tmp() {
   TMP="$(mktemp -d)"
   cp "$HOOK_SRC" "$TMP/tproj-inbox-check"
   cp "$CACHE_LIB" "$TMP/tproj-task-cache.sh"
-  mkdir -p "$TMP/cache"
+  mkdir -p "$TMP/cache" "$TMP/home"
+  export HOME="$TMP/home"
   export TT_CACHE_DIR="$TMP/cache"
 }
 
 teardown_tmp() {
   [[ -n "${TMP:-}" && -d "$TMP" ]] && rm -rf "$TMP"
+  export HOME="$ORIGINAL_HOME"
   unset TMP TT_CACHE_DIR
 }
 
@@ -86,6 +89,7 @@ seed_cache "task-b1" 1
 sleep 2
 out_b="$(TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
 assert_contains "$out_b" "[inbox-notice] timeout on $TARGET_NAME task=task-b1" "timeout notice emitted"
+assert_contains "$out_b" "current orchestrator should follow up, reassign, or take over" "timeout ownership wording is role-neutral"
 teardown_tmp
 
 # Case C: false-positive prevention — pane stdout contains TASK_REPLIED must be ignored

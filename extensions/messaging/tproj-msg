@@ -17,6 +17,8 @@ set -euo pipefail
 #                                      One-time override for repeated Chi recovery dispatch
 #   tproj-msg --new-task [--ttl <spec>] <target> <message>
 #                                      Send message with Task ID tracking metadata
+#   tproj-msg --role-handoff --new-task [--role-epoch <n>] [--orchestrator <id>] ...
+#                                      Send a symmetric, typing-safe role handoff
 #   tproj-msg --list                     List available targets
 #   tproj-msg --read <target> [lines]    Read target's recent output
 #   tproj-msg --status [target]          Show target idle/busy state + queue info
@@ -67,6 +69,8 @@ Usage:
                                       One-time override for repeated Chi recovery dispatch
   tproj-msg --new-task [--ttl <spec>] <target> <message>
                                        Send message with Task ID tracking metadata
+  tproj-msg --role-handoff --new-task [--role-epoch <n>] [--orchestrator <id>] ...
+                                       Send a symmetric, typing-safe role handoff
   tproj-msg --list                     List available targets
   tproj-msg --read <target> [lines]    Read target's recent output
   tproj-msg --status [target]          Show idle/busy state + queue info
@@ -75,6 +79,7 @@ Usage:
   Note: relay-like message body is blocked by default ([from:], [Control:], [ACK:], [Persona Sync/Check])
   Note: accidental fan-out is blocked by default for cc/cdx family (same message to many targets)
   Note: active typing is protected by queueing (session_typing_busy); use --force to bypass
+  Note: --role-handoff always queues when blocked and cannot be combined with --force
   Note: pane @prompt_state (idle/suggestion/typing/unknown) is used first when available
   Note: broadcast-like targets are forbidden (all, *, broadcast, everyone)
   Note: gate uses session-first tmux lane by default; prefix message with [line-private] for LINE-only lane
@@ -96,6 +101,7 @@ Examples:
   tproj-msg --allow-fanout sync-1 tproj.cc "Please review this design"
   tproj-msg --allow-chi-retry current-user-approved-retry gate "Recover missed LINE id 11"
   tproj-msg --new-task --ttl 45m tproj.cc "Please take Lane D"
+  tproj-msg --role-handoff --new-task --role-epoch 7 --orchestrator tproj.cc tproj.cdx "Take orchestration"
   tproj-msg gate "Send via session-first tmux lane"
   tproj-msg gate:session "Send via session tmux lane (explicit)"
   tproj-msg gate:line "Send via LINE adapter"
@@ -207,6 +213,9 @@ FLUSH_MODE=false
 STATUS_MODE=false
 VERSION_MODE=false
 NEW_TASK_MODE=false
+ROLE_HANDOFF_MODE=false
+ROLE_HANDOFF_EPOCH=""
+ROLE_HANDOFF_ORCHESTRATOR=""
 TTL_SPEC=""
 ALLOW_RELAY=false
 ALLOW_RELAY_REASON=""
@@ -261,6 +270,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --new-task)
       NEW_TASK_MODE=true
+      shift
+      ;;
+    --role-handoff)
+      ROLE_HANDOFF_MODE=true
+      shift
+      ;;
+    --role-epoch)
+      shift
+      [[ $# -lt 1 ]] && { echo "Error: --role-epoch requires <n>" >&2; exit 1; }
+      ROLE_HANDOFF_EPOCH="$1"
+      shift
+      ;;
+    --orchestrator)
+      shift
+      [[ $# -lt 1 ]] && { echo "Error: --orchestrator requires <id>" >&2; exit 1; }
+      ROLE_HANDOFF_ORCHESTRATOR="$1"
       shift
       ;;
     --ttl)
@@ -355,6 +380,36 @@ fi
 
 if [[ -n "$TTL_SPEC" && "$NEW_TASK_MODE" != "true" ]]; then
   echo "Error: --ttl requires --new-task" >&2
+  exit 1
+fi
+
+if [[ "$ROLE_HANDOFF_MODE" == "true" && "$SEND_MODE" != "true" ]]; then
+  echo "Error: --role-handoff is only valid for send modes" >&2
+  exit 1
+fi
+
+if [[ "$ROLE_HANDOFF_MODE" == "true" && "$NEW_TASK_MODE" != "true" ]]; then
+  echo "Error: --role-handoff requires --new-task" >&2
+  exit 1
+fi
+
+if [[ "$ROLE_HANDOFF_MODE" == "true" && "$FORCE_MODE" == "true" ]]; then
+  echo "Error: --role-handoff cannot be combined with --force; blocked targets are deferred automatically" >&2
+  exit 1
+fi
+
+if [[ ( -n "$ROLE_HANDOFF_EPOCH" || -n "$ROLE_HANDOFF_ORCHESTRATOR" ) && "$ROLE_HANDOFF_MODE" != "true" ]]; then
+  echo "Error: --role-epoch and --orchestrator require --role-handoff" >&2
+  exit 1
+fi
+
+if [[ -n "$ROLE_HANDOFF_EPOCH" && ! "$ROLE_HANDOFF_EPOCH" =~ ^[0-9]+$ ]]; then
+  echo "Error: --role-epoch must be a non-negative integer" >&2
+  exit 1
+fi
+
+if [[ -n "$ROLE_HANDOFF_ORCHESTRATOR" && ! "$ROLE_HANDOFF_ORCHESTRATOR" =~ ^[[:alnum:]_.:-]+$ ]]; then
+  echo "Error: --orchestrator contains unsupported characters" >&2
   exit 1
 fi
 
@@ -1839,7 +1894,17 @@ with_queue_lock() {
 # <header> <msg>. Kept as a named helper because with_queue_lock runs a command,
 # and the append needs a redirection that can't be passed as an argument.
 _queue_append() {
-  printf '%s\t%s\t%s\n' "$2" "$3" "$4" >> "${QUEUE_DIR}/$1.queue"
+  local encoded
+  encoded=$(printf '%s' "$4" | base64 | tr -d '\n')
+  printf '%s\t%s\tTPROJ-B64:%s\n' "$2" "$3" "$encoded" >> "${QUEUE_DIR}/$1.queue"
+}
+
+queue_decode_message() {
+  local encoded="$1"
+  if printf '%s' "$encoded" | base64 --decode 2>/dev/null; then
+    return 0
+  fi
+  printf '%s' "$encoded" | base64 -D 2>/dev/null
 }
 
 # Enqueue a message for later delivery
@@ -1857,8 +1922,9 @@ enqueue() {
     local _hash _from
     _hash=$(sha1_hash "$msg" 2>/dev/null)
     _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
-    tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "" "outbound" "queued" "${MY_ROLE:-cc}" "tmux" "" >/dev/null 2>&1 || true
+    tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "${TASK_ID:-}" "outbound" "queued" "${MY_ROLE:-cc}" "tmux" "" >/dev/null 2>&1 || true
   fi
+  emit_task_tracking_metadata
 }
 
 # Start background flush worker (idempotent, one per queue dir)
@@ -1931,11 +1997,19 @@ _flush_drain_queue() {
   local now delivered=0 kept_lines=""
   now=$(date +%s)
 
-  while IFS=$'\t' read -r epoch header msg; do
+  while IFS=$'\t' read -r epoch header stored_msg; do
     # Validate epoch (skip corrupt entries)
     if [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
       echo "  Skipped corrupt entry" >&2
       continue
+    fi
+
+    local msg="$stored_msg"
+    if [[ "$stored_msg" == TPROJ-B64:* ]]; then
+      if ! msg=$(queue_decode_message "${stored_msg#TPROJ-B64:}"); then
+        echo "  Skipped corrupt encoded entry" >&2
+        continue
+      fi
     fi
 
     local age=$(( now - epoch ))
@@ -1947,7 +2021,7 @@ _flush_drain_queue() {
     # Check max_count limit
     if [[ $max_count -gt 0 && $delivered -ge $max_count ]]; then
       # Keep remaining messages in queue
-      kept_lines+="${epoch}"$'\t'"${header}"$'\t'"${msg}"$'\n'
+      kept_lines+="${epoch}"$'\t'"${header}"$'\t'"${stored_msg}"$'\n'
       continue
     fi
 
@@ -2485,6 +2559,48 @@ generate_task_id() {
   exit 1
 }
 
+emit_task_tracking_metadata() {
+  [[ "${NEW_TASK_MODE:-false}" == "true" ]] || return 0
+  [[ -n "${TASK_ID:-}" ]] || return 0
+  [[ -z "${TASK_SENT_AT:-}" ]] || return 0
+  TASK_SENT_AT=$(date +%s)
+  echo "TASK_ID=${TASK_ID} TASK_TARGET=${TARGET} TASK_TTL_SEC=${TTL_SEC} TASK_SENT_AT=${TASK_SENT_AT}" >&2
+}
+
+current_pane_metadata() {
+  local key="$1" pane="${MY_PANE:-${TMUX_PANE:-}}"
+  [[ -n "$pane" ]] || return 1
+  tmux show-options -pv -t "$pane" "$key" 2>/dev/null || true
+}
+
+resolve_role_handoff_metadata() {
+  local pane_epoch pane_role sender_identity
+  [[ "$ROLE_HANDOFF_MODE" == "true" ]] || return 0
+
+  if [[ -z "$ROLE_HANDOFF_EPOCH" ]]; then
+    pane_epoch=$(current_pane_metadata '@role_epoch')
+    ROLE_HANDOFF_EPOCH="${pane_epoch:-0}"
+  fi
+  if [[ -z "$ROLE_HANDOFF_ORCHESTRATOR" ]]; then
+    pane_role=$(current_pane_metadata '@orchestration_role')
+    sender_identity="${MY_ALIAS:+${MY_ALIAS}.}${MY_ROLE:-unknown}"
+    case "$pane_role" in
+      worker) ROLE_HANDOFF_ORCHESTRATOR="$TARGET" ;;
+      orchestrator|solo-fallback) ROLE_HANDOFF_ORCHESTRATOR="$sender_identity" ;;
+      *) ROLE_HANDOFF_ORCHESTRATOR="$TARGET" ;;
+    esac
+  fi
+
+  if [[ ! "$ROLE_HANDOFF_EPOCH" =~ ^[0-9]+$ ]]; then
+    echo "Error: current pane @role_epoch must be a non-negative integer" >&2
+    exit 1
+  fi
+  if [[ ! "$ROLE_HANDOFF_ORCHESTRATOR" =~ ^[[:alnum:]_.:-]+$ ]]; then
+    echo "Error: resolved orchestrator identity contains unsupported characters" >&2
+    exit 1
+  fi
+}
+
 # === Send helpers ===
 
 # Raw send: push text into target pane via tmux send-keys
@@ -2520,10 +2636,7 @@ raw_send() {
     return 1
   fi
   echo "Sent to $TARGET: ${HEADER} ${MESSAGE}" >&2
-  if [[ "$NEW_TASK_MODE" == "true" ]]; then
-    TASK_SENT_AT=$(date +%s)
-    echo "TASK_ID=${TASK_ID} TASK_TARGET=${TARGET} TASK_TTL_SEC=${TTL_SEC} TASK_SENT_AT=${TASK_SENT_AT}" >&2
-  fi
+  emit_task_tracking_metadata
   # R1' Stage 3 shadow write — best-effort. outbound + inbound mirror in DB.
   if declare -F tt_db_log_message >/dev/null 2>&1; then
     local _hash _from _outid
@@ -2597,7 +2710,15 @@ TASK_SENT_AT=""
 
 if [[ "$NEW_TASK_MODE" == "true" ]]; then
   TASK_ID=$(generate_task_id)
-  MESSAGE="[Task: ${TASK_ID}] ${MESSAGE}"
+  if [[ "$ROLE_HANDOFF_MODE" == "true" ]]; then
+    resolve_role_handoff_metadata
+    MESSAGE="[Role-Handoff: ${TASK_ID}]
+Role-Epoch: ${ROLE_HANDOFF_EPOCH}
+Orchestrator: ${ROLE_HANDOFF_ORCHESTRATOR}
+[Task: ${TASK_ID}] ${MESSAGE}"
+  else
+    MESSAGE="[Task: ${TASK_ID}] ${MESSAGE}"
+  fi
 fi
 
 if fanout_guard_check "$TARGET" "$MESSAGE"; then

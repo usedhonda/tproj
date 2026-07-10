@@ -49,7 +49,7 @@ while IFS=$'\t' read -r target task_id expect_until _timeout_marker; do
   overdue_sec=$((now_epoch - expect_until))
   overdue_min=$(( (overdue_sec + 59) / 60 ))
   [[ "$overdue_min" -lt 0 ]] && overdue_min=0
-  echo "[inbox-notice] timeout on ${target} task=${task_id} (${overdue_min}m overdue) — follow-up or take-over"
+  echo "[inbox-notice] timeout on ${target} task=${task_id} (${overdue_min}m overdue) — current orchestrator should follow up, reassign, or take over"
 done < <(tt_cache_gc_expired)
 
 exit 0

@@ -6,6 +6,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BOOTSTRAP_LINK="$SCRIPT_DIR/project-bootstrap"
 EXPECTED_TARGET="../../../general/system/project-bootstrap/project-bootstrap"
 CANONICAL_BOOTSTRAP="$REPO_ROOT/../general/system/project-bootstrap/project-bootstrap"
+MODEL_ROLE_ROUTER_LINK="$REPO_ROOT/extensions/model-role-router/model-role-router"
+MODEL_ROLE_ROUTER_TARGET="../../../general/system/model-role-router/model-role-router"
+CANONICAL_MODEL_ROLE_ROUTER="$REPO_ROOT/../general/system/model-role-router/model-role-router"
 VOICE_SYNC="$SCRIPT_DIR/voice-identity-sync"
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/tproj-persona-contract.XXXXXX")
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -37,6 +40,12 @@ make_shared_fixture() {
 [[ -f "$CANONICAL_BOOTSTRAP" ]] || fail "canonical general project-bootstrap is missing"
 cmp -s "$BOOTSTRAP_LINK" "$CANONICAL_BOOTSTRAP" || \
   fail "tracked symlink does not resolve to the canonical general implementation"
+[[ -L "$MODEL_ROLE_ROUTER_LINK" ]] || fail "tracked model-role-router is not a symlink"
+[[ "$(readlink "$MODEL_ROLE_ROUTER_LINK")" == "$MODEL_ROLE_ROUTER_TARGET" ]] || \
+  fail "tracked model-role-router target differs from $MODEL_ROLE_ROUTER_TARGET"
+[[ -f "$CANONICAL_MODEL_ROLE_ROUTER" ]] || fail "canonical general model-role-router is missing"
+cmp -s "$MODEL_ROLE_ROUTER_LINK" "$CANONICAL_MODEL_ROLE_ROUTER" || \
+  fail "tracked model-role-router symlink does not resolve to canonical bytes"
 
 grep -qF 'local -a prime_args=("$persona_bin" --prime "$project")' "$REPO_ROOT/bin/tproj" || \
   fail "tproj startup does not call the local-only --prime mode"
@@ -48,11 +57,13 @@ for source in "$REPO_ROOT"/bin/*; do
   cp "$source" "$TEST_HOME/bin/"
 done
 cp "$REPO_ROOT/bin/lib/tproj-common.sh" "$TEST_HOME/bin/lib/tproj-common.sh"
+cp "$REPO_ROOT/bin/lib/tproj-model-role.sh" "$TEST_HOME/bin/lib/tproj-model-role.sh"
 cp -L "$BOOTSTRAP_LINK" "$TEST_HOME/bin/project-bootstrap"
+cp -L "$MODEL_ROLE_ROUTER_LINK" "$TEST_HOME/bin/model-role-router"
 
 check_output=$(HOME="$TEST_HOME" "$REPO_ROOT/install.sh" --check)
-[[ "$check_output" == *"canonical project-bootstrap chain match"* ]] || \
-  fail "install --check did not validate the canonical/symlink/copy chain"
+[[ "$check_output" == *"canonical extension chains match"* ]] || \
+  fail "install --check did not validate both canonical/symlink/copy chains"
 
 printf '\n# test drift\n' >> "$TEST_HOME/bin/project-bootstrap"
 if drift_output=$(HOME="$TEST_HOME" "$REPO_ROOT/install.sh" --check 2>&1); then
@@ -61,6 +72,14 @@ fi
 [[ "$drift_output" == *"installed copy differs from canonical source"* ]] || \
   fail "install --check did not report project-bootstrap copy drift"
 cp -L "$BOOTSTRAP_LINK" "$TEST_HOME/bin/project-bootstrap"
+
+printf '\n# test drift\n' >> "$TEST_HOME/bin/model-role-router"
+if drift_output=$(HOME="$TEST_HOME" "$REPO_ROOT/install.sh" --check 2>&1); then
+  fail "install --check accepted a stale model-role-router copy"
+fi
+[[ "$drift_output" == *"model-role-router (installed copy differs from canonical source)"* ]] || \
+  fail "install --check did not report model-role-router copy drift"
+cp -L "$MODEL_ROLE_ROUTER_LINK" "$TEST_HOME/bin/model-role-router"
 
 prime_repo="$TMP_ROOT/prime-repo"
 make_shared_fixture "$prime_repo"

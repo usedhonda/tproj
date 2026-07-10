@@ -1,7 +1,7 @@
 #!/bin/bash
-# tproj-inbox-monitor - CC-side SQLite tail for tproj-msg inbound notifications.
+# tproj-inbox-monitor - current-orchestrator SQLite tail for inbound notifications.
 #
-# Invoked by Claude Code's Monitor tool:
+# May be invoked by the active orchestration pane's monitor facility:
 #   Monitor(command="tproj-inbox-monitor", persistent=true)
 #
 # Emits a LOW-FREQUENCY "arrival bell" digest, NOT message bodies. Each emitted
@@ -22,7 +22,13 @@ set -u
 DB="${TPROJ_MSG_DB_PATH:-$HOME/.local/share/tproj-msg/messages.db}"
 SESSION="${TMUX_SESSION:-$(tmux display-message -p '#S' 2>/dev/null || echo unknown)}"
 MY_ALIAS="${TPROJ_MONITOR_ALIAS:-$(tmux display-message -p '#{@alias}' 2>/dev/null || echo unknown)}"
-MY_ROLE="${TPROJ_MONITOR_ROLE:-cc}"
+PANE_ROLE="$(tmux display-message -p '#{@role}' 2>/dev/null || echo unknown)"
+case "$PANE_ROLE" in
+  claude|claude-p*) DEFAULT_PLATFORM_ROLE="cc" ;;
+  codex|codex-p*) DEFAULT_PLATFORM_ROLE="cdx" ;;
+  *) DEFAULT_PLATFORM_ROLE="unknown" ;;
+esac
+MY_ROLE="${TPROJ_MONITOR_ROLE:-$DEFAULT_PLATFORM_ROLE}"
 CONSUMER="${SESSION}:${MY_ALIAS}.${MY_ROLE}"
 TO_ALIAS="${MY_ALIAS}.${MY_ROLE}"
 POLL="${TPROJ_MONITOR_POLL_SEC:-5}"

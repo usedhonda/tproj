@@ -20,6 +20,9 @@ CORE_BINS=(tproj tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-
 PERSONA_BOOTSTRAP_LINK="$SCRIPT_DIR/extensions/persona/project-bootstrap"
 PERSONA_BOOTSTRAP_TARGET="../../../general/system/project-bootstrap/project-bootstrap"
 PERSONA_BOOTSTRAP_ERROR=""
+MODEL_ROLE_ROUTER_LINK="$SCRIPT_DIR/extensions/model-role-router/model-role-router"
+MODEL_ROLE_ROUTER_TARGET="../../../general/system/model-role-router/model-role-router"
+MODEL_ROLE_ROUTER_ERROR=""
 
 validate_persona_bootstrap_source() {
   PERSONA_BOOTSTRAP_ERROR=""
@@ -37,6 +40,22 @@ validate_persona_bootstrap_source() {
   fi
 }
 
+validate_model_role_router_source() {
+  MODEL_ROLE_ROUTER_ERROR=""
+  if [[ ! -L "$MODEL_ROLE_ROUTER_LINK" ]]; then
+    MODEL_ROLE_ROUTER_ERROR="model-role-router (tracked source is not a symlink)"
+    return 1
+  fi
+  if [[ "$(readlink "$MODEL_ROLE_ROUTER_LINK")" != "$MODEL_ROLE_ROUTER_TARGET" ]]; then
+    MODEL_ROLE_ROUTER_ERROR="model-role-router (tracked symlink target differs)"
+    return 1
+  fi
+  if [[ ! -f "$MODEL_ROLE_ROUTER_LINK" ]]; then
+    MODEL_ROLE_ROUTER_ERROR="model-role-router (canonical general source is missing)"
+    return 1
+  fi
+}
+
 usage() {
   cat << 'EOF'
 tproj installer
@@ -50,9 +69,9 @@ Options:
   --core-only         Install core only (no extensions)
   --with-memory       Include memory extension (cc-mem, memory-guard)
   --all               Install all extensions including memory
-  --check             Report repo bin/ and persona bootstrap drift (no install)
+  --check             Report repo bin/ and canonical extension drift (no install)
 
-By default, messaging + persona + agent-teams extensions are installed.
+By default, messaging + persona + model-role-router + agent-teams extensions are installed.
 Memory extension requires --with-memory or --all (runs a launchd daemon).
 
 Examples:
@@ -102,8 +121,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ========== --check: repo<->~/bin drift detection (read-only) ==========
-# Self-contained: diffs each CORE_BINS file and the canonical general source ->
-# tracked tproj symlink -> ~/bin/project-bootstrap chain. Exits before any
+# Self-contained: diffs each CORE_BINS file and each canonical general source ->
+# tracked tproj symlink -> ~/bin copy chain. Exits before any
 # install processing runs. Never copies or touches launchctl.
 if $CHECK_ONLY; then
   drift=()
@@ -122,6 +141,11 @@ if $CHECK_ONLY; then
   elif ! diff -q "$SCRIPT_DIR/bin/lib/tproj-common.sh" "$HOME/bin/lib/tproj-common.sh" >/dev/null 2>&1; then
     drift+=("lib/tproj-common.sh (differs)")
   fi
+  if [[ ! -f "$HOME/bin/lib/tproj-model-role.sh" ]]; then
+    drift+=("lib/tproj-model-role.sh (missing in ~/bin)")
+  elif ! diff -q "$SCRIPT_DIR/bin/lib/tproj-model-role.sh" "$HOME/bin/lib/tproj-model-role.sh" >/dev/null 2>&1; then
+    drift+=("lib/tproj-model-role.sh (differs)")
+  fi
   if ! $CORE_ONLY; then
     if ! validate_persona_bootstrap_source; then
       drift+=("$PERSONA_BOOTSTRAP_ERROR")
@@ -129,6 +153,13 @@ if $CHECK_ONLY; then
       drift+=("project-bootstrap (missing installed copy in ~/bin)")
     elif ! cmp -s "$PERSONA_BOOTSTRAP_LINK" "$HOME/bin/project-bootstrap"; then
       drift+=("project-bootstrap (installed copy differs from canonical source)")
+    fi
+    if ! validate_model_role_router_source; then
+      drift+=("$MODEL_ROLE_ROUTER_ERROR")
+    elif [[ ! -f "$HOME/bin/model-role-router" ]]; then
+      drift+=("model-role-router (missing installed copy in ~/bin)")
+    elif ! cmp -s "$MODEL_ROLE_ROUTER_LINK" "$HOME/bin/model-role-router"; then
+      drift+=("model-role-router (installed copy differs from canonical source)")
     fi
   fi
   if [[ ${#drift[@]} -gt 0 ]]; then
@@ -141,7 +172,7 @@ if $CHECK_ONLY; then
   if $CORE_ONLY; then
     echo "no drift: repo bin/ matches ~/bin for all ${#CORE_BINS[@]} core scripts"
   else
-    echo "no drift: core scripts and canonical project-bootstrap chain match ~/bin"
+    echo "no drift: core scripts and canonical extension chains match ~/bin"
   fi
   exit 0
 fi
@@ -339,7 +370,7 @@ if $DRY_RUN; then
   for bin_name in "${CORE_BINS[@]}"; do
     echo "[DRY-RUN] $bin_name -> ~/bin/"
   done
-  echo "[DRY-RUN] lib/tproj-common.sh -> ~/bin/lib/"
+  echo "[DRY-RUN] lib/tproj-common.sh, lib/tproj-model-role.sh -> ~/bin/lib/"
 else
   echo "  Core scripts -> ~/bin/"
   mkdir -p ~/bin
@@ -353,6 +384,7 @@ else
   # Shared library sourced by the core scripts (bin/lib -> ~/bin/lib)
   mkdir -p ~/bin/lib
   cp "$SCRIPT_DIR/bin/lib/tproj-common.sh" ~/bin/lib/tproj-common.sh
+  cp "$SCRIPT_DIR/bin/lib/tproj-model-role.sh" ~/bin/lib/tproj-model-role.sh
 
   # Legacy cleanup: remove old launchd plist
   OLD_PLIST="$HOME/Library/LaunchAgents/com.memory-guard.plist"
@@ -535,6 +567,22 @@ if ! $CORE_ONLY; then
     fi
   fi
 
+  # --- active-model role router ---
+  if [[ -d "$SCRIPT_DIR/extensions/model-role-router" ]]; then
+    echo "  model-role-router (canonical active-model hierarchy router)"
+    if ! validate_model_role_router_source; then
+      echo "    [error] $MODEL_ROLE_ROUTER_ERROR" >&2
+      exit 1
+    fi
+    if ! $DRY_RUN; then
+      rm -f ~/bin/model-role-router
+      cp -L "$MODEL_ROLE_ROUTER_LINK" ~/bin/model-role-router
+      chmod +x ~/bin/model-role-router
+    else
+      echo "    [DRY-RUN] model-role-router -> ~/bin/"
+    fi
+  fi
+
   # --- agent-teams ---
   if [[ -d "$SCRIPT_DIR/extensions/agent-teams" ]]; then
     echo "  agent-teams (team-watcher, reflow-agent-pane, agent-monitor)"
@@ -593,7 +641,7 @@ echo "   ~/bin/            core scripts"
 echo "   ~/.tmux.conf      tmux config (previous backed up)"
 echo "   ~/.config/yazi/   yazi config (previous backed up)"
 if ! $CORE_ONLY; then
-  echo "   ~/bin/            extensions (messaging, persona, agent-teams)"
+  echo "   ~/bin/            extensions (messaging, persona, model-role-router, agent-teams)"
   $WITH_MEMORY && echo "   ~/bin/            memory extension (cc-mem, memory-guard)"
 fi
 echo ""

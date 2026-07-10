@@ -128,6 +128,13 @@ tmux ワークスペース内の他 AI ペイン（CC, Cdx, Agent）と通信す
 4. ユーザー許可なし: 送信しない（中止を報告）
 5. prompt 判定が不明な場合は fail-safe で即送信せず中止する
 
+### Role-Handoff 例外（active-model router 専用）
+
+- `--role-handoff --new-task` は入力中でもユーザー確認を求めず、通常の deferred queue に積む
+- `--force` は使用禁止（CLI 自体も組み合わせを拒否する）
+- `--role-epoch` / `--orchestrator` が省略された場合は現在ペインの role metadata から解決する
+- この例外は router による対称な orchestration handoff だけに適用し、通常メッセージの Typing Safety は変更しない
+
 ## Plan Mode 互換ルール（Cdx/CC 共通）
 
 - Plan mode 中でも `msg` スキルの実送信は許可する
@@ -157,6 +164,7 @@ tmux ワークスペース内の他 AI ペイン（CC, Cdx, Agent）と通信す
 | relay-like 文面を単発で許可（理由必須） | `tproj-msg --allow-relay <reason> --force <target> "msg"` |
 | 同一文面の多重配信を単発で許可（理由必須） | `tproj-msg --allow-fanout <reason> <target> "msg"` |
 | 別セッション/ペイン外からの送信（CC/Cdx 共通） | `tproj-msg --session <sess> [--as <alias.role>] <target> "msg"` |
+| orchestration role handoff | `tproj-msg --role-handoff --new-task [--role-epoch <n>] [--orchestrator <id>] <target> "msg"` |
 | queue 内メッセージを全配信 | `tproj-msg --flush` |
 
 **運用ルール（更新）**:
@@ -180,6 +188,7 @@ tproj-msg --fire <target> "message" # 緊急送信（typing中はqueue化）
 tproj-msg --force <target> "message"# 例外即送信（typing guardをバイパス）
 tproj-msg --allow-relay <reason> --force <target> "message" # relay-like 単発例外
 tproj-msg --allow-fanout <reason> <target> "message" # 同文面 fan-out の単発例外
+tproj-msg --role-handoff --new-task --role-epoch 7 --orchestrator tproj.cdx tproj.cdx "message"
 tproj-msg --session <session> [--as <alias.role>] <target> "message" # 別セッション（tmux内ならas省略可）
 tproj-msg --list                    # アクティブなターゲット一覧
 tproj-msg --read <target> [lines]   # ターミナル出力の読取（目視確認用）

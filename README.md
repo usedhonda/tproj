@@ -186,6 +186,7 @@ one-line notice that the GUI was not found — core functionality is unaffected.
 |-----------|-------------|---------|
 | **messaging** | Inter-pane AI messaging (`tproj-msg`) + `msg` skill for Claude Code/Codex | yes |
 | **persona** | Deterministic AI persona generation (personality, profession, era) + pane background art | yes |
+| **model-role-router** | Active-model hierarchy metadata and symmetric orchestration handoff | yes |
 | **agent-teams** | Claude Code Agent Teams pane management with auto-reflow | yes |
 | **memory** | Memory monitoring + watchdog daemon (macOS launchd) | opt-in |
 
