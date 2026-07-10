@@ -54,4 +54,15 @@ public struct TmuxService {
     public func setOption(_ key: String, _ value: String, pane target: String) async -> CommandResult {
         await runner.runAsync("/usr/bin/env", ["tmux", "set-option", "-pt", target, key, value], env: [:])
     }
+
+    public func getOption(_ key: String, pane target: String) async -> String? {
+        let result = await runner.runAsync(
+            "/usr/bin/env",
+            ["tmux", "show-options", "-pv", "-t", target, key],
+            env: [:]
+        )
+        guard result.exitCode == 0 else { return nil }
+        let value = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
 }

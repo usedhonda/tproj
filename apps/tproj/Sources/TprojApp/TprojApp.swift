@@ -2601,9 +2601,16 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        let siblingAlias = await tmux.getOption("@alias", pane: targetPaneID)
+        let configuredAlias = workspaceProjects.first(where: {
+            $0.path.trimmingCharacters(in: .whitespacesAndNewlines) == column.projectPath
+        })?.effectiveAlias
+        let paneAlias = siblingAlias ?? configuredAlias ?? column.projectName
+
         // Set tags
         _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@role", roleName])
         _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@column", "\(column.column)"])
+        _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@alias", paneAlias])
         _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@project", column.projectPath])
 
         if let host = hostForColumn(column) {

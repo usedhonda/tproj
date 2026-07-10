@@ -70,4 +70,22 @@ final class TmuxServiceTests: XCTestCase {
         XCTAssertEqual(runner.calls.first?.args,
                        ["tmux", "set-option", "-pt", "%5", "@project", "/path/to/proj"])
     }
+
+    func testGetOptionSendsExpectedArgvAndTrimsValue() async {
+        let runner = RecordingRunner(response: CommandResult(exitCode: 0, stdout: "cc-general\n", stderr: ""))
+        let service = makeService(runner)
+        let value = await service.getOption("@alias", pane: "%5")
+        XCTAssertEqual(value, "cc-general")
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertEqual(runner.calls.first?.launchPath, "/usr/bin/env")
+        XCTAssertEqual(runner.calls.first?.args,
+                       ["tmux", "show-options", "-pv", "-t", "%5", "@alias"])
+    }
+
+    func testGetOptionReturnsNilForMissingValue() async {
+        let runner = RecordingRunner(response: CommandResult(exitCode: 1, stdout: "", stderr: "missing"))
+        let service = makeService(runner)
+        let value = await service.getOption("@alias", pane: "%5")
+        XCTAssertNil(value)
+    }
 }
