@@ -1,46 +1,35 @@
-# >>> project-bootstrap managed >>>
-.cc-status-bar.voice.json
-# <<< project-bootstrap managed <<<
-
-# Local runtime data
-.local/
-
 # Logs
 *.log
 firebase-debug.log
 
-# Plans (temporary)
+# Plans and local notes
 plans/
-
-# OS
-.DS_Store
-
-# Editor
-*.swp
-*~
-
-# CC persona (auto-generated)
-.persona.md
-*.voice.json
-
-# Cdx persona / config (user-specific)
-.codex/
-
-# Claude Code project config (user-specific)
-.claude/
-CLAUDE.md
-AGENTS.md
-
-# Personal/extension config (not part of core)
-config/claude/
-config/codex/
-
-# Developer logs and notes
 docs/log/
 docs/ask/
 docs/reference/
+
+# OS and editor files
+.DS_Store
+*.swp
+*~
+
+# Machine-local tool configuration
+.claude/
+config/claude/
+config/codex/
+
+# Nested instruction files remain private until migrated in their own scope
+apps/tproj/AGENTS.md
+apps/tproj/CLAUDE.md
 
 # Swift build artifacts
 .build/
 apps/tproj/.build/
 apps/tproj/dist/
+
+# >>> project-bootstrap local-only >>>
+CLAUDE.local.md
+.codex/config.toml
+.local/
+.cc-status-bar.voice.json
+# <<< project-bootstrap local-only <<<
