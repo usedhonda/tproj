@@ -296,3 +296,116 @@ Scope: 契約プラン fizzy-floating-bee.md Phase C（C1..C5）を完了。1 co
   `task <id> expired (no ACK ...)` は同一 gc_expired 行から**2 行目**として併存する。
   文言不変制約（Case B が timeout 文言を固定）と exact-string 要求の両立のための設計。
   重複というより orchestrator-follow-up 系 / delegation-closure 系の別フレーミング。
+
+---
+
+# Phase D — P1 修正（実装済み・2026-07-17）
+
+Scope: 契約プラン fizzy-floating-bee.md Phase D（D1..D5）。1 サブステップ = 1 commit。
+既存ガード群・"Sent to X" 文言・dedup mark タイミング（send/queue 成功後）不変。
+
+## D1 — relay 漏れ 76(現 85)件の根治 → **根治対象なし（tproj 側バイパス不在を実証）**
+
+messages.db を SELECT 監査した結論：**tproj の send/flush 経路に relay ガードのバイパスは存在しない**。
+- `direction=outbound` かつ body が `[from:` 始まりの行 = **85**（プラン記載の 76 から増加）。
+  内訳: **40** = sendability-gate テスト case 17 の `[from:OpenClaw Agent - Auto] allowed relay body …`
+  （`--allow-relay --force` の正規テスト注入。E4 の DB 隔離が入る前に実 DB を汚染したもの）。
+  **45** = oc-general 列を中心とした実トラフィック（oc-general.cc→cdx の ACK/DONE/BLOCK 応答等）。
+- 45 件はすべて **caller-audit 列が空**（`verified=0`, `claimed_alias` NULL, `caller_pid` NULL）=
+  `--as` 検証経路を通っていない = in-pane 送信。かつ 46/46 が relay ガード導入 commit
+  (`3c9d1da`, 2026-03-31) より**後**。つまり「ガード導入後に、ガードを持つ検証経路を通らずに」着地。
+- 現行 binary で再現テスト: relay-like body を通常/`--fire`/`--force`/gate 経路へ流すと
+  `enforce_send_policy`（dispatch precheck 3508）が **rc=13 で block**。queue へは
+  `--allow-relay` でも「blocked target には enqueue 不可」(3261/3316) で入れられない。
+  → **queue/flush 経路は構造的に relay body を運べない**。
+- したがって 85 件は「ガードを抜けた漏れ」ではなく、(a) 正規 `--allow-relay`（reverse-channel /
+  Chi relay）と (b) テストハーネスの実 DB 汚染。**tproj 側に塞ぐバグは無い**（塞ごうとすると
+  `--allow-relay` 正規経路を壊す or §4.5 No-Impossible-Handling 違反の到達不能分岐を足すことになる）。
+  「再現が取れた経路だけを塞ぐ」に従い、**production コード変更は行わず**、seal を hermetic テストで固定。
+- D1 テスト（`test-sendability-gate.sh` に追加）: `D1_relay_never_enqueued` =
+  `--allow-relay` + relay body + **blocked target** → rc=13 / queue 生成なし / send-keys なし。
+  = queue/flush 漏れベクタが構造的に不可能であることを lock。
+- tproj commit: `1202c48`（test only）。
+
+## D2 — 空 body / 短時間重複の reject
+
+- **空 body**: dispatch precheck で `[[ -z "${MESSAGE//[[:space:]]/}" ]]` → 空・空白のみ
+  （`--stdin` 空入力含む）を **exit 20**（`EMPTY_BODY_EXIT`、既存 13-19 と非衝突）で reject。
+- **60s dedup**: `send_dedup_check`（gate_dedup を汎用化、key = sha1(from|to|body)）。
+  TTL = `TPROJ_MSG_SEND_DEDUP_SEC`（既定 60）、store = `TPROJ_MSG_SEND_DEDUP_DIR`。
+  precheck で **check のみ**（新規送信コマンド時、flush 経路では非適用）、**mark は配達/enqueue
+  成功時**（`raw_send` / `enqueue` の choke point）に `DEDUP_BODY`（precheck で捕捉した
+  mutation 前 body）で実施。→ downstream で reject された送信（fan-out 等）が後続の正規送信を
+  poison しない。重複は **exit 21**（`DUP_SEND_EXIT`）、`--force` は bypass、gate は gate_dedup 継続。
+- tproj commit: `7fb4c46`。hermetic: `D2a_empty_body_rejected` / `D2c_dup_resend_rejected`
+  （既存 case 20/21 fan-out を割らないため mark-on-success 設計が必須だった）。
+
+## D3 — queue 行の終端遷移
+
+- enqueue が queued 行を **先に** shadow-write し、その row id を queue TSV の**任意 4 列目**へ格納。
+  legacy 3 列行は空 dbid で後方互換 parse（`_queue_append` 4 列化、`_flush_drain_queue` は
+  `read -r epoch header stored_msg dbid`）。
+- flush 成功 → 元行を `delivery='flushed', delivered_at=now` に **in-place UPDATE**
+  （別 outbound INSERT を廃止、inbound mirror は維持）。dbid 無い legacy 行のみ旧 INSERT に fallback。
+- drop 時 → `dropped-stale`（STALE 超）/ `dropped-policy`（policy/control-dedup）/ `dropped-gone`
+  （gone target、qfile rm 前に dbid を走査してマーク）+ delivery_err を UPDATE。
+- 既存 260 件の孤児 queued 行 → `tt_db_init` 内の**冪等 one-shot sweep**
+  `tt_db_sweep_orphaned_queued`（`queued` かつ `delivered_at NULL` かつ `created_at < now-600`
+  → `orphaned-legacy`。stale 窓より古い行のみ = in-flight を絶対に触らない、再実行安全。E1 の
+  user_version 機構までの暫定）。
+- 新 helper: `tt_db_set_flushed` / `tt_db_set_dropped` / `tt_db_sweep_orphaned_queued`。
+- tproj commit: `35adc6b`。hermetic: `D3a`(in-place flush)/`D3b`(stale→dropped)/`D3c`(legacy 互換)/
+  `D3d`(orphaned-legacy sweep: 古い→orphaned-legacy、新しい→queued 維持)。
+
+## D4 — 背景 worker の可観測化
+
+- `start_flush_worker` の `&>/dev/null` を廃止。worker の stderr（起動/終了マーカー + flush の
+  delivered/stale/policy/gone 診断）を `~/.cache/tproj-msg/flush-worker.log`
+  （`TPROJ_MSG_FLUSH_WORKER_LOG` 上書き可）へ append。**1MB 超で `.1` にローテ**（respawn-guard の
+  `stat -f%z` 流儀）。内側 `--flush 2>/dev/null` の stderr 握り潰しも解除（診断が log へ届くように）。
+- tproj commit: `5cab2c6`。テストは sandbox で log を隔離。実機: rotate（>1MB→.1）+ 起動/配達/終了
+  行の書き込みを確認。
+
+## D5 — gate 返信の inbound ミラー → **tproj 管轄に受信点なし。実装せず（別レーン提案）**
+
+- 調査: tproj-msg は gate への **送信側のみ**（`do_send_gate`, `gate_reply_callback_url`,
+  `return_url=`, `reply=session` header の構築）。`tt_db_mirror_inbound` 呼び出しは
+  outbound 送信（raw_send / flush）由来のみ。**ClawGate 返信の受信点（reverse channel receiver /
+  EventBus / clawgate bridge の inbound ingestion）は tproj のコードベースに存在しない**
+  （`grep` で receiver/listener/ingestion 該当ゼロ）。memory `reference_chi_gate_reverse_channel.md` /
+  `gate-reply-routing-fix-plan.md` の通り、reverse channel の受け口は clawgate / general 列側にある。
+- 結論: 受信点が tproj 管轄外のため、**tt_db_mirror_inbound の追加は実装しない**（他列所有コードへの
+  越境禁止 §6.1）。**gate outbound の `delivered_at` 更新 = 別レーン提案**（clawgate/general 側の
+  reverse-channel receiver に、`return_url` の workspace/task を使って tproj DB の gate outbound 行へ
+  callback で `delivered_at`/inbound mirror を書く経路を新設する提案。tproj 単独では閉じない）。
+
+## Phase D 検証
+
+- `test-sendability-gate.sh` → **PASS=40 FAIL=0 PENDING=0**（33 + D1 + D2a/D2c + D3a-d = 7 追加）。
+- `test-registry-contract.sh` → **PASS=4 FAIL=0**。
+- `tests/smoke-bin.sh` → **PASS=17 FAIL=0**。
+- `test-inbox-check.sh` → **8 passed, 0 failed**。
+- 反映: `cp` で `~/bin/{tproj-msg,tproj-msg-db.sh}`（変更分のみ、install.sh は tmux 稼働中のため未実行）。
+  installed == repo（両者 byte 一致）。
+- 実機:
+  1. D2 空 body → rc=20 / 空白のみ → rc=20 / seed 済み dup → rc=21 / `--force` → rc=0
+     （dry-run 経路、実配達ゼロ。real binary + real registry）。
+  2. D3 temp DB: queued 行を flush → `flushed` + delivered_at set、outbound 重複 0、inbound mirror 1、
+     queue file 消滅。実 DB の孤児 260 行を `tt_db_init` sweep で `orphaned-legacy` 化
+     （before queued=260 → after still-queued-aged=0 / orphaned-legacy=260、2nd run も 260 = 冪等）。
+  3. D4 flush-worker.log に起動/配達/終了診断が書かれ、>1MB で `.1` へ rotate することを確認。
+
+## 逸脱・申し送り（Phase D）
+
+- **D1 はプラン前提と実測が食い違う**: プランは「76 件のガード漏れ経路を特定して塞ぐ」を想定したが、
+  監査の結果 tproj 側にバイパスは無く、行の実体は正規 `--allow-relay`（40 件テスト汚染 + 45 件
+  reverse/Chi relay）だった。タスク指示「再現が取れた経路だけを塞ぐ／--allow-relay 正規経路は壊さない」
+  に従い production 変更を見送り、seal を lock する回帰テストのみ追加。テスト汚染 40 件の恒久隔離は E4。
+- **事故報告**: Phase D 着手時の探査で `POLICY_DRY_RUN=1`（正しくは `TPROJ_MSG_POLICY_DRY_RUN`）
+  を誤用し short-circuit が効かず、live tproj.cdx pane へ検証メッセージ 2 通（`clean message` と
+  `[from:tproj.cc] [from:x.cc] relay body`）を実送信した。実 DB は temp path に隔離されており非汚染。
+  以後の送信検証は fake-tmux harness / dry-run（正しい env 名）に限定した。
+- **D2 mark-on-success が必須だった**: precheck-mark 案は fan-out で reject された送信が dedup store を
+  poison し既存 case 21 を割った。gate_dedup 同様「成功時に mark」へ変更し、mutation 前 body
+  (`DEDUP_BODY`) で check/mark を一致させた。
+- **D5 は tproj 単独で閉じない**: 受信点が他列所有のため、delivered_at 更新は別レーン提案止まり。
