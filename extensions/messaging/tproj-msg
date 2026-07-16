@@ -456,7 +456,6 @@ if [[ "$LIST_MODE" != "true" && "$READ_MODE" != "true" && "$FLUSH_MODE" != "true
     [[ ${#POSITIONAL_ARGS[@]} -ge 1 ]] || { echo "Error: --stdin requires <target>" >&2; show_usage; exit 1; }
     TARGET="${POSITIONAL_ARGS[0]}"
     MESSAGE=$(cat)
-    [[ -n "$MESSAGE" ]] || { echo "Error: --stdin provided but no message on stdin" >&2; exit 1; }
   else
     [[ ${#POSITIONAL_ARGS[@]} -ge 2 ]] || { echo "Error: requires <target> <message>" >&2; show_usage; exit 1; }
     TARGET="${POSITIONAL_ARGS[0]}"
@@ -954,6 +953,16 @@ TYPING_BUSY_EXIT=16
 CHI_RETRY_BLOCK_EXIT=17
 SELECTION_BLOCK_EXIT=18
 AMBIGUOUS_BARE_EXIT=19
+EMPTY_BODY_EXIT=20
+DUP_SEND_EXIT=21
+
+# D2 (msg-repair): generic short-window resend dedup. A new send command whose
+# (from|to|body) hash was already sent within TPROJ_MSG_SEND_DEDUP_SEC is
+# rejected unless --force. Applied only at new-send-command time (dispatch_mode
+# precheck), never inside flush_queue, so legitimate queue re-delivery is not
+# swallowed. Modeled on gate_dedup's file+TTL store.
+SEND_DEDUP_DIR="${TPROJ_MSG_SEND_DEDUP_DIR:-/tmp/tproj-msg-send-dedup}"
+SEND_DEDUP_TTL="${TPROJ_MSG_SEND_DEDUP_SEC:-60}"
 
 # Ensure queue dir exists
 ensure_queue_dir() {
@@ -2274,6 +2283,9 @@ enqueue() {
   # M-D5c: append under the per-target queue lock so a concurrent flush's
   # read->truncate cannot swallow this line.
   with_queue_lock "$target_name" _queue_append "$target_name" "$epoch" "$header" "$msg"
+  # D2 (msg-repair): mark the short-window dedup store on successful enqueue too,
+  # so a duplicate resend while the first is still queued is rejected.
+  [[ -n "${DEDUP_BODY:-}" ]] && send_dedup_mark "$target_name" "$DEDUP_BODY" || true
   start_flush_worker
   # R1' Stage 3 shadow write — record queued state, no delivered_at yet.
   if declare -F tt_db_log_message >/dev/null 2>&1; then
@@ -2795,6 +2807,41 @@ gate_dedup_mark() {
   printf '%s:%s' "$adapter" "$(date +%s)" > "${GATE_DEDUP_DIR}/${msg_hash}"
 }
 
+# D2 (msg-repair): short-window duplicate-resend guard, generalized from the
+# gate-dedup file+TTL store. Keyed on (from|to|body) so the same message to a
+# different target is not blocked. Marked at check time (new-send-command
+# semantics); --force skips both check and mark. Never invoked from flush_queue.
+send_dedup_key() {
+  printf '%s|%s|%s' "$1" "$2" "$3" | shasum -a 1 | cut -d' ' -f1
+}
+
+send_dedup_check() {
+  local to="$1" msg="$2"
+  local from key file prev_ts now age
+  from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
+  key=$(send_dedup_key "$from" "$to" "$msg")
+  file="${SEND_DEDUP_DIR}/${key}"
+  [[ -f "$file" ]] || return 0
+  prev_ts=$(cat "$file" 2>/dev/null)
+  [[ "$prev_ts" =~ ^[0-9]+$ ]] || return 0
+  now=$(date +%s)
+  age=$((now - prev_ts))
+  if [[ $age -lt $SEND_DEDUP_TTL ]]; then
+    echo "Error: identical message already sent to '$to' ${age}s ago (within ${SEND_DEDUP_TTL}s window). Duplicate blocked; use --force to override." >&2
+    return 1
+  fi
+  return 0
+}
+
+send_dedup_mark() {
+  local to="$1" msg="$2"
+  local from key
+  from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
+  key=$(send_dedup_key "$from" "$to" "$msg")
+  mkdir -p "$SEND_DEDUP_DIR" 2>/dev/null || true
+  printf '%s' "$(date +%s)" > "${SEND_DEDUP_DIR}/${key}" 2>/dev/null || true
+}
+
 # Check ClawGate health
 gate_health() {
   local bridge_url
@@ -3037,6 +3084,10 @@ raw_send() {
     [[ -n "$_outid" ]] && tt_db_set_delivered "$_outid" 2>/dev/null
     tt_db_mirror_inbound "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "send-keys" "${MY_ROLE:-cc}" "tmux" "" >/dev/null 2>&1 || true
   fi
+  # D2 (msg-repair): record this delivery in the short-window dedup store so a
+  # subsequent identical (from,to,body) send is rejected. Uses the pre-mutation
+  # body captured at precheck; no-op if unset (non-dispatch caller).
+  [[ -n "${DEDUP_BODY:-}" ]] && send_dedup_mark "$TARGET" "$DEDUP_BODY" || true
 }
 
 do_read() {
@@ -3505,6 +3556,12 @@ fi
 dispatch_mode() {
 # === Send policy precheck (send modes only) ===
 if [[ "$READ_MODE" != "true" ]]; then
+  # D2 (msg-repair): refuse empty / whitespace-only bodies (covers empty --stdin
+  # input too). Distinct exit code so callers can tell this from other failures.
+  if [[ -z "${MESSAGE//[[:space:]]/}" ]]; then
+    echo "Error: refusing to send empty / whitespace-only message" >&2
+    exit "$EMPTY_BODY_EXIT"
+  fi
   if enforce_send_policy "$TARGET" "$MESSAGE"; then
     :
   else
@@ -3514,6 +3571,19 @@ if [[ "$READ_MODE" != "true" ]]; then
   # C4 (P0-3): reject ambiguous bare cc/cdx targets in multi-column workspaces.
   if ! check_bare_target_unambiguous "$TARGET"; then
     exit "$AMBIGUOUS_BARE_EXIT"
+  fi
+  # D2 (msg-repair): short-window duplicate-resend guard for a NEW send command
+  # (this precheck never runs on the flush path). Check only here; the store is
+  # marked on delivery/enqueue success (raw_send / enqueue) so a send rejected
+  # downstream (e.g. fan-out) can't poison a later legitimate send. DEDUP_BODY
+  # captures the pre-mutation body so check and mark hash the same string even
+  # when --as/--role-handoff later prepend a [Task:]/[Role-Handoff:] header.
+  # --force bypasses the check; gate targets use their own gate_dedup.
+  DEDUP_BODY="$MESSAGE"
+  if [[ "$FORCE_MODE" != "true" ]] && ! is_gate_target "$TARGET"; then
+    if ! send_dedup_check "$TARGET" "$DEDUP_BODY"; then
+      exit "$DUP_SEND_EXIT"
+    fi
   fi
 fi
 

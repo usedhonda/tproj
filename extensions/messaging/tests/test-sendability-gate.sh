@@ -51,6 +51,8 @@ mkdir -p "$REGISTRY_ROOT/tproj-workspace/1"
 export MODEL_ROLE_CACHE="$REGISTRY_ROOT"
 export TPROJ_MSG_DB_PATH="$WORK/messages.db"
 export TPROJ_MSG_DB_ERROR_LOG="$WORK/db-errors.log"
+# Isolate the D2 send-dedup store so cross-run/global /tmp state can't block sends.
+export TPROJ_MSG_SEND_DEDUP_DIR="$WORK/send-dedup"
 
 TPROJ_MSG="$BIN_DIR/tproj-msg-verified"
 cat > "$TPROJ_MSG" <<WRAPPER
@@ -784,6 +786,48 @@ else
   printf 'FAIL  C4_bare_alias_ambiguity\n      compat_rc=%s compat=%s\n      amb_rc=%s amb=%s\n' \
     "$c4compat_rc" "$(tr '\n' '|' <<<"$c4compat_out")" "$c4amb_rc" "$(tr '\n' '|' <<<"$c4amb_out")"
   FAIL=$((FAIL+1))
+fi
+
+# =============================================================================
+# D2 (msg-repair Phase D) — empty-body reject (exit 20) and short-window
+# duplicate-resend reject (exit 21, --force bypass). New send commands only.
+# =============================================================================
+# D2a. empty message body -> reject (exit 20), no send-keys.
+reset_fixtures
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" "...generating..."
+d2a_out=$(run_send "tproj.cc" ""); d2a_rc=$?
+d2a_nosend=1; [[ -f "$FAKE_DIR/sendkeys.log" ]] && d2a_nosend=0
+# D2b. whitespace-only body -> reject (exit 20).
+reset_fixtures
+d2b_out=$(run_send "tproj.cc" "   "); d2b_rc=$?
+if [[ "$d2a_rc" -eq 20 && "$d2a_nosend" -eq 1 && "$d2b_rc" -eq 20 ]]; then
+  printf 'PASS  D2a_empty_body_rejected\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  D2a_empty_body_rejected (want rc 20/20 nosend=1, got %s/%s nosend=%s)\n' \
+    "$d2a_rc" "$d2b_rc" "$d2a_nosend"; FAIL=$((FAIL+1))
+fi
+
+# D2c. identical (from,to,body) within window -> second send rejected (exit 21),
+#      no extra send-keys; --force bypasses and delivers.
+reset_fixtures
+rm -rf "$TPROJ_MSG_SEND_DEDUP_DIR"
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" "...generating..."
+d2_msg="dup guard payload $$-$RANDOM"
+d2_first=$(run_send "tproj.cc" "$d2_msg"); d2_first_rc=$?
+d2_first_sent=0; [[ -f "$FAKE_DIR/sendkeys.log" ]] && d2_first_sent=1
+rm -f "$FAKE_DIR/sendkeys.log"
+d2_dup=$(run_send "tproj.cc" "$d2_msg"); d2_dup_rc=$?
+d2_dup_nosend=1; [[ -f "$FAKE_DIR/sendkeys.log" ]] && d2_dup_nosend=0
+d2_force=$("$TPROJ_MSG" --session tproj-workspace --as tproj.cc --force "tproj.cc" "$d2_msg" 2>&1); d2_force_rc=$?
+d2_force_sent=0; [[ -f "$FAKE_DIR/sendkeys.log" ]] && d2_force_sent=1
+if [[ "$d2_first_rc" -eq 0 && "$d2_first_sent" -eq 1 && "$d2_dup_rc" -eq 21 \
+      && "$d2_dup_nosend" -eq 1 && "$d2_force_rc" -eq 0 && "$d2_force_sent" -eq 1 ]]; then
+  printf 'PASS  D2c_dup_resend_rejected\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  D2c_dup_resend_rejected (first_rc=%s first_sent=%s dup_rc=%s dup_nosend=%s force_rc=%s force_sent=%s)\n' \
+    "$d2_first_rc" "$d2_first_sent" "$d2_dup_rc" "$d2_dup_nosend" "$d2_force_rc" "$d2_force_sent"; FAIL=$((FAIL+1))
 fi
 
 # =============================================================================
