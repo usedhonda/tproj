@@ -633,6 +633,89 @@ else
 fi
 
 # =============================================================================
+# B4 (msg-repair Phase B) — verify_as_caller_identity self-recompute regression.
+# The main $TPROJ_MSG wrapper above always records pid_start; these cases drive a
+# REG_MODE-selectable wrapper (same rename-to-claude / write-own-identity /
+# exec-real-tproj-msg pattern) to exercise the unrecorded / dead / multi paths
+# introduced by B2 + B3. Existing cases 1-26 are untouched.
+# =============================================================================
+B4_TPROJ_MSG="$BIN_DIR/tproj-msg-b4"
+cat > "$B4_TPROJ_MSG" <<WRAPPER
+#!/bin/bash
+if [[ "\${_VERIFIED_REINVOKED:-}" != "1" ]]; then
+  export _VERIFIED_REINVOKED=1
+  exec -a claude bash "\$0" "\$@"
+fi
+mypid=\$\$
+mystart=\$(date -j -f "%a %b %d %H:%M:%S %Y" "\$(ps -p \$mypid -o lstart=)" +%s 2>/dev/null || echo 0)
+obs=\$(date +%s)
+regdir="$REGISTRY_ROOT/tproj-workspace/1"
+regf="\$regdir/tproj.cc.json"
+mkdir -p "\$regdir"
+case "\${REG_MODE:-}" in
+  unrecorded_live)
+    printf '{"alias":"tproj.cc","pid":%s,"role_epoch":1,"role":"worker","orchestrator_alias":"tproj.cdx","observed_at":%s}\n' "\$mypid" "\$obs" > "\$regf" ;;
+  unrecorded_dead)
+    printf '{"alias":"tproj.cc","pid":999999,"role_epoch":1,"role":"worker","orchestrator_alias":"tproj.cdx","observed_at":%s}\n' "\$obs" > "\$regf" ;;
+  recorded_mismatch)
+    printf '{"alias":"tproj.cc","pid":%s,"pid_start":%s,"role_epoch":1,"role":"worker","orchestrator_alias":"tproj.cdx","observed_at":%s}\n' "\$mypid" "\$((mystart+9999))" "\$obs" > "\$regf" ;;
+  multi_live_plus_dead)
+    printf '{"alias":"tproj.cc","pid":%s,"pid_start":%s,"role_epoch":1,"role":"worker","orchestrator_alias":"tproj.cdx","observed_at":%s}\n' "\$mypid" "\$mystart" "\$obs" > "\$regf"
+    mkdir -p "$REGISTRY_ROOT/tproj-workspace/9"
+    printf '{"alias":"tproj.cc","pid":999999,"pid_start":111111,"role_epoch":1,"role":"worker","orchestrator_alias":"tproj.cdx","observed_at":%s}\n' "\$obs" > "$REGISTRY_ROOT/tproj-workspace/9/tproj.cc.json" ;;
+esac
+"$REAL_TPROJ_MSG" "\$@"
+WRAPPER
+chmod +x "$B4_TPROJ_MSG"
+
+run_verify_b4() { # <REG_MODE> -> "VERIFY none" | "REJECT <reason>"
+  local mode="$1" out
+  reset_fixtures
+  rm -f "$REGISTRY_ROOT"/tproj-workspace/*/tproj.cc.json 2>/dev/null
+  set_ws "$CC_TTY" "running" ""
+  set_capture "%1" "...generating output..."
+  out=$(REG_MODE="$mode" "$B4_TPROJ_MSG" --session tproj-workspace --as tproj.cc tproj.cc "b4 $mode $$-$RANDOM" 2>&1)
+  if grep -q "could not be verified" <<<"$out"; then
+    printf 'REJECT %s' "$(sed -n 's/.*reason: \([a-z_]*\).*/\1/p' <<<"$out" | head -1)"
+  else
+    printf 'VERIFY none'
+  fi
+}
+
+# B4a. unrecorded pid_start + live agent ancestor -> VERIFY (self-recompute, B2).
+res=$(run_verify_b4 unrecorded_live)
+if [[ "$res" == VERIFY* ]]; then
+  printf 'PASS  B4a_unrecorded_live_verifies\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  B4a_unrecorded_live_verifies (want VERIFY, got %s)\n' "$res"; FAIL=$((FAIL+1))
+fi
+
+# B4b. unrecorded pid_start + dead reg_pid (live recompute impossible) -> REJECT
+#      with the distinct pid_start_unrecorded reason (fail-closed preserved, B2).
+res=$(run_verify_b4 unrecorded_dead)
+if [[ "$res" == "REJECT pid_start_unrecorded" ]]; then
+  printf 'PASS  B4b_unrecorded_dead_rejects\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  B4b_unrecorded_dead_rejects (want REJECT pid_start_unrecorded, got %s)\n' "$res"; FAIL=$((FAIL+1))
+fi
+
+# B4c. recorded pid_start but WRONG -> REJECT pid_start_mismatch (unchanged guard).
+res=$(run_verify_b4 recorded_mismatch)
+if [[ "$res" == "REJECT pid_start_mismatch" ]]; then
+  printf 'PASS  B4c_recorded_mismatch_rejects\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  B4c_recorded_mismatch_rejects (want REJECT pid_start_mismatch, got %s)\n' "$res"; FAIL=$((FAIL+1))
+fi
+
+# B4d. live entry + dead-pid leftover across windows -> live entry adopted (B3) -> VERIFY.
+res=$(run_verify_b4 multi_live_plus_dead)
+if [[ "$res" == VERIFY* ]]; then
+  printf 'PASS  B4d_multi_live_adopted_verifies\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  B4d_multi_live_adopted_verifies (want VERIFY, got %s)\n' "$res"; FAIL=$((FAIL+1))
+fi
+
+# =============================================================================
 echo "----"
 printf 'PASS=%d FAIL=%d PENDING=%d\n' "$PASS" "$FAIL" "$PENDING"
 [[ "$FAIL" -eq 0 ]]
