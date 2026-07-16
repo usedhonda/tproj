@@ -29,7 +29,11 @@ case "$PANE_ROLE" in
   *) DEFAULT_PLATFORM_ROLE="unknown" ;;
 esac
 MY_ROLE="${TPROJ_MONITOR_ROLE:-$DEFAULT_PLATFORM_ROLE}"
-CONSUMER="${SESSION}:${MY_ALIAS}.${MY_ROLE}"
+# C1 (P0-2): the cursor consumer key is role-INDEPENDENT (${SESSION}:${MY_ALIAS}).
+# The prior ${SESSION}:${MY_ALIAS}.${MY_ROLE} form orphaned the cursor across role
+# churn and only CC panes run this monitor per column, so alias alone is a stable,
+# unique key. TO_ALIAS stays alias.role: that is the message recipient we match.
+CONSUMER="${SESSION}:${MY_ALIAS}"
 TO_ALIAS="${MY_ALIAS}.${MY_ROLE}"
 POLL="${TPROJ_MONITOR_POLL_SEC:-5}"
 RETRY_SLEEP="${TPROJ_MONITOR_RETRY_SEC:-60}"
@@ -52,6 +56,12 @@ require_db() {
 }
 
 bootstrap_cursor() {
+  # C1 (P0-2): cold-start a brand-new role-independent cursor at MAX(id).
+  # Any legacy role-inclusive row (${SESSION}:${MY_ALIAS}.*, e.g. the frozen
+  # tproj-workspace:tproj.cc=344) is intentionally NOT inherited: the plan's
+  # goal is for notifications to START flowing, not to replay tens of thousands
+  # of past messages as a notification flood. INSERT OR IGNORE keeps an existing
+  # new-key cursor untouched, so a running monitor's progress is preserved.
   local consumer_sql
   consumer_sql=$(sql_quote "$CONSUMER")
   sqlite3 -bail "$DB" <<SQL 2>/dev/null
@@ -155,4 +165,8 @@ main() {
   done
 }
 
-main "$@"
+# Run the poll loop only when executed directly. When sourced (hermetic tests),
+# expose bootstrap_cursor / poll_once without starting the infinite loop.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

@@ -101,6 +101,29 @@ out_c="$(TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
 assert_not_contains "$out_c" "[inbox-notice] reply arrived from $TARGET_NAME task=task-c1" "stdout leak does not trigger reply notice"
 teardown_tmp
 
+# Case D: monitor cursor bootstrap (C1) — role-independent key, cold-start to MAX(id),
+# legacy role-inclusive cursor left untouched (no backlog replay).
+echo "Case D: monitor cursor role-independent bootstrap + cold-start (C1)"
+if command -v sqlite3 >/dev/null 2>&1; then
+  D_TMP="$(mktemp -d)"
+  export TPROJ_MSG_DB_PATH="$D_TMP/messages.db"
+  export TPROJ_MSG_DB_ERROR_LOG="$D_TMP/db-errors.log"
+  ( source "$REPO/extensions/messaging/tproj-msg-db.sh"; tt_db_init ) >/dev/null 2>&1 || true
+  sqlite3 "$TPROJ_MSG_DB_PATH" \
+    "INSERT INTO messages (id, from_alias, to_alias, body, body_hash, direction, delivery, created_at) VALUES (100, 'x.cdx', 'mon.cc', 'b', 'h', 'inbound', 'send-keys', strftime('%s','now'));
+     INSERT INTO monitor_cursors (consumer, last_message_id, updated_at) VALUES ('unit-sess:mon.cc', 5, strftime('%s','now'));" >/dev/null 2>&1 || true
+  ( TMUX_SESSION="unit-sess" TPROJ_MONITOR_ALIAS="mon" TPROJ_MONITOR_ROLE="cc" \
+      source "$REPO/extensions/messaging/tproj-inbox-monitor"; bootstrap_cursor ) >/dev/null 2>&1 || true
+  new_val="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT last_message_id FROM monitor_cursors WHERE consumer='unit-sess:mon';" 2>/dev/null || true)"
+  old_val="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT last_message_id FROM monitor_cursors WHERE consumer='unit-sess:mon.cc';" 2>/dev/null || true)"
+  assert_contains "new=[$new_val]" "new=[100]" "C1 role-independent cursor cold-starts to MAX(id)"
+  assert_contains "legacy=[$old_val]" "legacy=[5]" "C1 legacy role-inclusive cursor untouched (no replay)"
+  rm -rf "$D_TMP"
+  unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
+else
+  echo "  SKIP: sqlite3 not available"
+fi
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] || exit 1
