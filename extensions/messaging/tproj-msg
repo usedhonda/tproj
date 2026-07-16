@@ -491,6 +491,23 @@ fi
 TPROJ_MSG_REGISTRY_STALE_SECONDS="${TPROJ_MSG_REGISTRY_STALE_SECONDS:-172800}"  # 48h
 TPROJ_MSG_VERIFIER_MAX_ANCESTOR_HOPS="${TPROJ_MSG_VERIFIER_MAX_ANCESTOR_HOPS:-32}"
 
+# E3 (msg-repair): lightweight debug tap. With TPROJ_MSG_DEBUG=1, append a
+# timestamped diagnostic line for the major paths (send decision, queue, dedup,
+# caller verification) to the debug log. Default off -> immediate return before
+# any work, so behavior and output are completely unchanged. Defined early so
+# every downstream path (including the pre-flight --as verification) can call it.
+TPROJ_MSG_DEBUG="${TPROJ_MSG_DEBUG:-0}"
+TPROJ_MSG_DEBUG_LOG="${TPROJ_MSG_DEBUG_LOG:-$HOME/.cache/tproj-msg/debug.log}"
+dlog() {
+  [[ "$TPROJ_MSG_DEBUG" == "1" ]] || return 0
+  mkdir -p "$(dirname "$TPROJ_MSG_DEBUG_LOG")" 2>/dev/null || true
+  printf '%s [%s->%s] %s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" \
+    "${MY_ALIAS:-?}.${MY_ROLE:-?}" "${TARGET:-?}" "$*" \
+    >> "$TPROJ_MSG_DEBUG_LOG" 2>/dev/null || true
+  return 0
+}
+
 # Walk process ancestry from this script's own pid upward, looking for a
 # claude/codex agent process. On success prints "<pid> <role>" to stdout
 # and returns 0; on failure (no such ancestor within 6 hops) returns 1.
@@ -835,6 +852,7 @@ if [[ -n "$EXPLICIT_SESSION" ]]; then
         AS_CALLER_VERIFIED=true
       fi
     fi
+    dlog "verify --as: claimed=${AS_CLAIMED_IDENTITY} verified=${AS_CALLER_VERIFIED}"
   else
     if [[ "$SEND_MODE" != "true" ]]; then
       MY_ALIAS=""
@@ -2304,6 +2322,7 @@ enqueue() {
   # M-D5c: append under the per-target queue lock so a concurrent flush's
   # read->truncate cannot swallow this line.
   with_queue_lock "$target_name" _queue_append "$target_name" "$epoch" "$header" "$msg" "$_dbid"
+  dlog "queue: enqueued to=${target_name} epoch=${epoch} dbid=${_dbid:-none}"
   # D2 (msg-repair): mark the short-window dedup store on successful enqueue too,
   # so a duplicate resend while the first is still queued is rejected.
   [[ -n "${DEDUP_BODY:-}" ]] && send_dedup_mark "$target_name" "$DEDUP_BODY" || true
@@ -2905,6 +2924,7 @@ send_dedup_check() {
   now=$(date +%s)
   age=$((now - prev_ts))
   if [[ $age -lt $SEND_DEDUP_TTL ]]; then
+    dlog "dedup: blocked duplicate to=${to} age=${age}s ttl=${SEND_DEDUP_TTL}s"
     echo "Error: identical message already sent to '$to' ${age}s ago (within ${SEND_DEDUP_TTL}s window). Duplicate blocked; use --force to override." >&2
     return 1
   fi
@@ -3197,6 +3217,7 @@ raw_send() {
     return 1
   fi
   echo "Sent to $TARGET: ${HEADER} ${MESSAGE}" >&2
+  dlog "deliver: send-keys ok to=${TARGET} pane=${TARGET_PANE:-?}"
   emit_task_tracking_metadata
   # R1' Stage 3 shadow write — best-effort. outbound + inbound mirror in DB.
   if declare -F tt_db_log_message >/dev/null 2>&1; then
@@ -3622,6 +3643,7 @@ print_monitor_diagnostic() {
 }
 
 if [[ "$STATUS_MODE" == "true" ]]; then
+  dlog "status: target=${TARGET:-<none>} session=${SESSION:-?}"
   if [[ -n "$TARGET" ]]; then
     # Gate target: show bridge health instead of pane status
     if is_gate_target "$TARGET"; then
@@ -3685,6 +3707,7 @@ if [[ "$READ_MODE" != "true" ]]; then
     echo "Error: refusing to send empty / whitespace-only message" >&2
     exit "$EMPTY_BODY_EXIT"
   fi
+  dlog "send precheck: target=${TARGET} force=${FORCE_MODE:-?} fire=${FIRE_MODE:-?} bytes=${#MESSAGE}"
   if enforce_send_policy "$TARGET" "$MESSAGE"; then
     :
   else
