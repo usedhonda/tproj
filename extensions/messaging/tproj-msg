@@ -550,17 +550,33 @@ pid_start_epoch_bash() {
 # given tmux session's registry cache. Prints the file path on success.
 find_registry_state_file() {
   local claimed_alias="$1" session="$2" cache_dir session_safe f
+  local f_pid f_live f_mtime
+  local best="" best_live=-1 best_mtime=-1
   cache_dir="${MODEL_ROLE_CACHE:-$HOME/.cache/tproj-model-role}"
   session_safe=$(printf '%s' "$session" | sed -E 's/[^A-Za-z0-9_.-]+/_/g')
   [[ -n "$session_safe" ]] || session_safe="unknown"
   [[ -d "$cache_dir/$session_safe" ]] || return 1
+  # Deterministic candidate pick: the raw find(1) traversal order is
+  # filesystem-dependent, so multiple same-alias windows (e.g. a live pane plus
+  # a stale/dead-pid leftover) could bind non-deterministically. Prefer a
+  # candidate whose reg_pid is still alive; among equal liveness prefer the
+  # newest mtime. A single candidate is returned unchanged.
   while IFS= read -r -d '' f; do
-    if [[ "$(jq -r '.alias // empty' "$f" 2>/dev/null)" == "$claimed_alias" ]]; then
-      printf '%s\n' "$f"
-      return 0
+    [[ "$(jq -r '.alias // empty' "$f" 2>/dev/null)" == "$claimed_alias" ]] || continue
+    f_pid=$(jq -r '.pid // 0' "$f" 2>/dev/null)
+    f_live=0
+    if [[ "$f_pid" =~ ^[0-9]+$ && "$f_pid" -gt 0 ]] && kill -0 "$f_pid" 2>/dev/null; then
+      f_live=1
+    fi
+    f_mtime=$(stat -f %m "$f" 2>/dev/null || printf '0')
+    [[ "$f_mtime" =~ ^[0-9]+$ ]] || f_mtime=0
+    if (( f_live > best_live )) || { (( f_live == best_live )) && (( f_mtime > best_mtime )); }; then
+      best="$f"; best_live="$f_live"; best_mtime="$f_mtime"
     fi
   done < <(find "$cache_dir/$session_safe" -type f -name '*.json' -print0 2>/dev/null)
-  return 1
+  [[ -n "$best" ]] || return 1
+  printf '%s\n' "$best"
+  return 0
 }
 
 # Verify a claimed alias.role for the --session external-caller path by
