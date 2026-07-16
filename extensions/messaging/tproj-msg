@@ -935,6 +935,14 @@ CONTROL_DEDUP_TTL="$STALE_SECONDS"
 FANOUT_DEDUP_DIR="${TPROJ_MSG_FANOUT_DEDUP_DIR:-/tmp/tproj-msg-fanout-dedup}"
 FANOUT_DEDUP_FILE="${FANOUT_DEDUP_DIR}/seen.tsv"
 FANOUT_DEDUP_TTL="$STALE_SECONDS"
+# E2 (msg-repair): task-id sequence bucket root + GC thresholds. generate_task_id
+# allocates collision-free ids under <root>/<target>/<epoch_min>/<seq>; stale
+# epoch_min buckets are pruned on the send path at a low frequency (once per
+# GC_INTERVAL). Only buckets older than STALE_SEC (>> one allocation minute) are
+# removed, so the current minute is never touched. All three are env-adjustable.
+TASK_SEQ_ROOT="${TPROJ_MSG_TASK_SEQ_DIR:-/tmp/tproj-task-seq}"
+TASK_SEQ_STALE_SEC="${TPROJ_MSG_TASK_SEQ_STALE_SEC:-3600}"
+TASK_SEQ_GC_INTERVAL="${TPROJ_MSG_TASK_SEQ_GC_INTERVAL:-3600}"
 CHI_DISPATCH_LEDGER="${TPROJ_MSG_CHI_DISPATCH_LEDGER:-$HOME/.cache/tproj-msg/chi-dispatch.tsv}"
 CHI_DISPATCH_TTL_SEC="${TPROJ_MSG_CHI_DISPATCH_TTL_SEC:-86400}"
 POLICY_DRY_RUN="${TPROJ_MSG_POLICY_DRY_RUN:-false}"
@@ -3046,12 +3054,57 @@ check_bare_target_unambiguous() {
   return "$AMBIGUOUS_BARE_EXIT"
 }
 
+# E2 (msg-repair): remove stale task-id sequence buckets. Each is an
+# <root>/<target>/<epoch_min>/ dir; once its minute has long passed it is dead
+# weight (192 dirs observed accumulating). Delete buckets whose epoch_min is
+# older than `stale` seconds. Only obviously-stale buckets are touched, so the
+# current allocation minute is never removed. Fail-open (best-effort rm).
+prune_task_seq_buckets() {
+  local root="${1:-$TASK_SEQ_ROOT}" stale="${2:-$TASK_SEQ_STALE_SEC}"
+  [[ -d "$root" ]] || return 0
+  [[ "$stale" =~ ^[0-9]+$ ]] || return 0
+  local now cutoff_min target_dir bucket bmin
+  now=$(date +%s)
+  cutoff_min=$(( (now - stale) / 60 ))
+  for target_dir in "$root"/*/; do
+    [[ -d "$target_dir" ]] || continue
+    for bucket in "$target_dir"*/; do
+      [[ -d "$bucket" ]] || continue
+      bmin=$(basename "$bucket")
+      [[ "$bmin" =~ ^[0-9]+$ ]] || continue
+      (( bmin < cutoff_min )) && rm -rf "$bucket" 2>/dev/null || true
+    done
+  done
+  return 0
+}
+
+# Low-frequency gate around prune_task_seq_buckets: prune at most once per
+# TASK_SEQ_GC_INTERVAL, tracked by a stamp file at the seq root. Runs on the
+# first send after each interval so the accumulated backlog is reclaimed without
+# scanning on every send. Fail-open.
+maybe_prune_task_seq() {
+  local stamp="${TASK_SEQ_ROOT}/.last-gc" now last age
+  now=$(date +%s)
+  last=0
+  [[ -f "$stamp" ]] && last=$(cat "$stamp" 2>/dev/null || echo 0)
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  age=$(( now - last ))
+  if (( age < TASK_SEQ_GC_INTERVAL )); then
+    return 0
+  fi
+  mkdir -p "$TASK_SEQ_ROOT" 2>/dev/null || true
+  printf '%s' "$now" > "$stamp" 2>/dev/null || true
+  prune_task_seq_buckets "$TASK_SEQ_ROOT" "$TASK_SEQ_STALE_SEC" || true
+  return 0
+}
+
 generate_task_id() {
   local alias_part epoch_min seq_root epoch_root seq=0 next=0 seq_dir
+  maybe_prune_task_seq
   alias_part=$(printf '%s' "${MY_ALIAS:-}" | tr -cd '[:alnum:]-')
   [[ -n "$alias_part" ]] || alias_part="tp"
   epoch_min=$(( $(date +%s) / 60 ))
-  seq_root="/tmp/tproj-task-seq/${TARGET}"
+  seq_root="${TASK_SEQ_ROOT}/${TARGET}"
   epoch_root="${seq_root}/${epoch_min}"
   mkdir -p "$epoch_root"
   while [[ $seq -lt 100 ]]; do
