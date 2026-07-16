@@ -50,6 +50,11 @@ while IFS=$'\t' read -r target task_id expect_until _timeout_marker; do
   overdue_min=$(( (overdue_sec + 59) / 60 ))
   [[ "$overdue_min" -lt 0 ]] && overdue_min=0
   echo "[inbox-notice] timeout on ${target} task=${task_id} (${overdue_min}m overdue) — current orchestrator should follow up, reassign, or take over"
+  # C5 (P0-3): explicit delegation-closure notice for the sender. A cache-expired
+  # task was never replied to (any ACK/DONE/BLOCK read removes the cache entry),
+  # so "no ACK" holds. The whole hook is already gated on TPROJ_HOOK_ENABLED=1,
+  # so a disabled-hook environment emits nothing (fail-open).
+  echo "[inbox-notice] task ${task_id} expired (no ACK from ${target})"
 done < <(tt_cache_gc_expired)
 
 exit 0

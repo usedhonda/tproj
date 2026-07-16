@@ -101,6 +101,18 @@ out_c="$(TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
 assert_not_contains "$out_c" "[inbox-notice] reply arrived from $TARGET_NAME task=task-c1" "stdout leak does not trigger reply notice"
 teardown_tmp
 
+# Case E: task expire (C5) — expired cache task yields the explicit no-ACK notice
+# for the sender, alongside the existing timeout notice.
+echo "Case E: task expired no-ACK notice (C5)"
+setup_tmp
+make_mock_msg "no reply in pane" ""
+seed_cache "task-e1" 1
+sleep 2
+out_e="$(TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
+assert_contains "$out_e" "[inbox-notice] task task-e1 expired (no ACK from $TARGET_NAME)" "C5 expired no-ACK notice emitted"
+assert_contains "$out_e" "[inbox-notice] timeout on $TARGET_NAME task=task-e1" "C5 leaves the existing timeout notice intact"
+teardown_tmp
+
 # Case D: monitor cursor bootstrap (C1) — role-independent key, cold-start to MAX(id),
 # legacy role-inclusive cursor left untouched (no backlog replay).
 echo "Case D: monitor cursor role-independent bootstrap + cold-start (C1)"
