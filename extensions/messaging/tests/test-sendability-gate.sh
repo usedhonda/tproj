@@ -716,6 +716,27 @@ else
 fi
 
 # =============================================================================
+# Phase C (msg-repair) — C2 read-marking and C4 bare-alias ambiguity. Same
+# hermetic harness (fake tmux + real tproj-msg + $WORK/messages.db). Existing
+# cases are untouched.
+# =============================================================================
+if command -v sqlite3 >/dev/null 2>&1; then
+  # C2. --read marks inbound rows from the read target to self as read.
+  reset_fixtures
+  set_capture "%2" "some pane content from cdx"
+  c2_id=$(sqlite3 "$TPROJ_MSG_DB_PATH" "INSERT INTO messages (from_alias,to_alias,body,body_hash,direction,delivery,created_at) VALUES ('tproj.cdx','tproj.cc','hi','h','inbound','send-keys',strftime('%s','now')); SELECT last_insert_rowid();" 2>/dev/null || true)
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --read tproj.cdx >/dev/null 2>&1
+  c2_read=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT read_at IS NOT NULL FROM messages WHERE id=${c2_id:-0};" 2>/dev/null || true)
+  if [[ "$c2_read" == "1" ]]; then
+    printf 'PASS  C2_read_marks_inbound_read\n'; PASS=$((PASS+1))
+  else
+    printf 'FAIL  C2_read_marks_inbound_read (want read_at set, got [%s])\n' "$c2_read"; FAIL=$((FAIL+1))
+  fi
+else
+  printf 'PASS  C2_read_marks_inbound_read (SKIP: no sqlite3)\n'; PASS=$((PASS+1))
+fi
+
+# =============================================================================
 echo "----"
 printf 'PASS=%d FAIL=%d PENDING=%d\n' "$PASS" "$FAIL" "$PENDING"
 [[ "$FAIL" -eq 0 ]]

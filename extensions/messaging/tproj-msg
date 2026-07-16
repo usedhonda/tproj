@@ -3009,6 +3009,21 @@ do_read() {
   CAPTURED_OUTPUT="$(tmux capture-pane -t "$TARGET_PANE" -p -S "-${READ_LINES}")"
   printf '%s\n' "$CAPTURED_OUTPUT"
 
+  # C2 (P0-2): best-effort mark inbound messages from this target to self as read.
+  # Not a strict scrollback reconciliation -- advance every unread inbound row
+  # whose sender is this target pane and whose recipient is us. Fail-open: DB
+  # errors are ignored and no DB is created if one does not already exist.
+  if declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_quote >/dev/null 2>&1 \
+     && declare -F tt_db_path >/dev/null 2>&1 && [[ -n "${MY_ALIAS:-}" ]] && [[ -f "$(tt_db_path)" ]]; then
+    _c2_talias=$(tmux display-message -t "$TARGET_PANE" -p '#{@alias}' 2>/dev/null || true)
+    _c2_trole=$(role_to_short "$(tmux display-message -t "$TARGET_PANE" -p '#{@role}' 2>/dev/null || true)")
+    if [[ -n "$_c2_talias" && "$_c2_talias" != "null" && -n "$_c2_trole" ]]; then
+      _c2_from=$(tt_db_quote "${_c2_talias}.${_c2_trole}")
+      _c2_self=$(tt_db_quote "${MY_ALIAS}.${MY_ROLE}")
+      tt_db_exec_safe "UPDATE messages SET read_at=strftime('%s','now') WHERE from_alias='${_c2_from}' AND to_alias='${_c2_self}' AND direction='inbound' AND read_at IS NULL;" >/dev/null 2>&1 || true
+    fi
+  fi
+
   if [[ ! -f "$TASK_CACHE_HELPER" ]]; then
     exit 0
   fi
