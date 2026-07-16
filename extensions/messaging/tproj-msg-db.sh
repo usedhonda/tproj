@@ -5,7 +5,7 @@
 # adds durable history, task lifecycle records, and Monitor cursors in
 # ~/.local/share/tproj-msg/messages.db.
 #
-# Schema: messages / tasks / monitor_cursors (PRAGMA user_version=1).
+# Schema: messages / tasks / monitor_cursors (PRAGMA user_version=TT_DB_SCHEMA_VERSION).
 # Mode: WAL, busy_timeout=5000, synchronous=NORMAL, foreign_keys=ON.
 #
 # All public functions are fail-open. Callers must not depend on rc.
@@ -18,6 +18,13 @@
 : "${TPROJ_MSG_DB_PATH:="${HOME}/.local/share/tproj-msg/messages.db"}"
 : "${TPROJ_MSG_DB_ERROR_LOG:="${HOME}/.cache/tproj-msg/db-errors.log"}"
 : "${TPROJ_MSG_DB_INIT_FLAG:="${HOME}/.cache/tproj-msg/db-init.stamp"}"
+
+# Current on-disk schema version. Bump whenever the schema (tables, columns,
+# indexes managed by tt_db_init / tt_db_migrate_caller_audit_columns) changes so
+# tt_db_ensure_init migrates existing DBs instead of short-circuiting on file
+# existence. Version 2 folds the additive caller-audit columns into the gated
+# schema (they existed pre-E1 but were only reached via a full reinstall).
+: "${TT_DB_SCHEMA_VERSION:=2}"
 
 tt_db_path() { printf '%s\n' "$TPROJ_MSG_DB_PATH"; }
 tt_db_error_log() { printf '%s\n' "$TPROJ_MSG_DB_ERROR_LOG"; }
@@ -76,7 +83,6 @@ PRAGMA journal_mode = WAL;
 PRAGMA busy_timeout = 5000;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 1;
 
 CREATE TABLE IF NOT EXISTS messages (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,6 +133,9 @@ SQL
   tt_db_exec_safe "$schema_sql" >/dev/null
   tt_db_migrate_caller_audit_columns
   tt_db_sweep_orphaned_queued
+  # Stamp user_version last, so it only advances after every migration above has
+  # run. This is the version tt_db_ensure_init compares against on later calls.
+  tt_db_exec_safe "PRAGMA user_version = ${TT_DB_SCHEMA_VERSION};" >/dev/null
 }
 
 # D3 (msg-repair): one-shot idempotent sweep of pre-D3 orphaned 'queued' rows.
@@ -170,13 +179,29 @@ payload_sha256|TEXT
 COLS
 }
 
-# Lazy init guard: call before any write. Re-inits if DB file is missing
-# (handles env override TPROJ_MSG_DB_PATH switching between sessions
-# and test scenarios that wipe the DB file).
+# Lazy init guard: call before any write. Creates the DB when the file is
+# missing (handles env override TPROJ_MSG_DB_PATH switching between sessions
+# and test scenarios that wipe the DB file). When the DB already exists, gate
+# additive migrations on PRAGMA user_version: if the recorded version is behind
+# the current schema, re-run tt_db_init (fully idempotent -- CREATE ... IF NOT
+# EXISTS, column-existence-checked ALTERs, aged-row sweep) and re-stamp the
+# version. This closes the pre-E1 gap where a schema bump never reached an
+# existing DB (the 2026-07-16 156-insert-failure class) without requiring a
+# full reinstall. Fail-open: a version read error leaves recorded=0, which
+# triggers a safe no-op re-init rather than skipping the migration.
 tt_db_ensure_init() {
   tt_db_guard || return 0
-  [[ -f "$TPROJ_MSG_DB_PATH" ]] && return 0
-  tt_db_init
+  if [[ ! -f "$TPROJ_MSG_DB_PATH" ]]; then
+    tt_db_init
+    return 0
+  fi
+  local recorded
+  recorded=$(tt_db_exec_safe "PRAGMA user_version;" 2>/dev/null | tr -dc '0-9')
+  [[ -n "$recorded" ]] || recorded=0
+  if (( recorded < TT_DB_SCHEMA_VERSION )); then
+    tt_db_init
+  fi
+  return 0
 }
 
 # --- escape helpers --------------------------------------------------------
