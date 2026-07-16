@@ -763,6 +763,29 @@ else
   printf 'PASS  C3_status_monitor_diagnostic (SKIP: no sqlite3)\n'; PASS=$((PASS+1))
 fi
 
+# C4. bare cc/cdx ambiguity: a single candidate is NOT rejected by C4; once a
+# second same-role column exists, a columnless bare send is rejected (exit 19)
+# with the candidate list and no send-keys.
+reset_fixtures
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" "...generating..."
+c4compat_out=$(run_send "cdx" "c4 single candidate $$-$RANDOM"); c4compat_rc=$?
+printf '%s\n' "%4:codex-p2:other:2" >> "$FAKE_DIR/panes"
+printf '%s' "/dev/ttys004" > "$FAKE_DIR/tty_%4"
+printf '%s' "codex-p2" > "$FAKE_DIR/role_%4"
+reset_fixtures
+c4amb_out=$(run_send "cdx" "c4 ambiguous $$-$RANDOM"); c4amb_rc=$?
+if [[ "$c4compat_rc" -ne 19 ]] && ! grep -q "is ambiguous" <<<"$c4compat_out" \
+   && [[ "$c4amb_rc" -eq 19 ]] && grep -q "cdx is ambiguous:" <<<"$c4amb_out" \
+   && grep -q "tproj.cdx" <<<"$c4amb_out" && grep -q "other.cdx" <<<"$c4amb_out" \
+   && [[ ! -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  C4_bare_alias_ambiguity\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  C4_bare_alias_ambiguity\n      compat_rc=%s compat=%s\n      amb_rc=%s amb=%s\n' \
+    "$c4compat_rc" "$(tr '\n' '|' <<<"$c4compat_out")" "$c4amb_rc" "$(tr '\n' '|' <<<"$c4amb_out")"
+  FAIL=$((FAIL+1))
+fi
+
 # =============================================================================
 echo "----"
 printf 'PASS=%d FAIL=%d PENDING=%d\n' "$PASS" "$FAIL" "$PENDING"
