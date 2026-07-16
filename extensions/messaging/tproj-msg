@@ -2315,10 +2315,20 @@ start_flush_worker() {
   local script_path
   script_path=$(command -v tproj-msg)
 
+  # D4 (msg-repair): capture the worker's stderr (flush delivery/drop diagnostics)
+  # instead of discarding it via &>/dev/null. Rotate at 1MB (respawn-guard style)
+  # so it can't grow unbounded.
+  local logf="${TPROJ_MSG_FLUSH_WORKER_LOG:-$HOME/.cache/tproj-msg/flush-worker.log}"
+  mkdir -p "$(dirname "$logf")" 2>/dev/null || true
+  if [[ -f "$logf" ]] && [[ $(stat -f%z "$logf" 2>/dev/null || echo 0) -gt 1048576 ]]; then
+    mv -f "$logf" "${logf}.1" 2>/dev/null || true
+  fi
+
   bash -c '
     pidfile="$1"; poll="$2"; stale="$3"; script="$4"; qdir="$5"
     echo $$ > "$pidfile"
     trap "rm -f \"$pidfile\"" EXIT INT TERM
+    echo "[$(date "+%Y-%m-%d %H:%M:%S")] flush-worker started (pid $$, qdir=$qdir)" >&2
     deadline=$(( $(date +%s) + stale ))
     while [[ $(date +%s) -lt $deadline ]]; do
       sleep "$poll"
@@ -2327,9 +2337,10 @@ start_flush_worker() {
         [[ -f "$qf" ]] && { has_q=true; break; }
       done
       $has_q || break
-      "$script" --flush 2>/dev/null || true
+      "$script" --flush || true
     done
-  ' _ "$pidfile" "$FLUSH_POLL_INTERVAL" "$STALE_SECONDS" "$script_path" "$QUEUE_DIR" &>/dev/null &
+    echo "[$(date "+%Y-%m-%d %H:%M:%S")] flush-worker exiting (pid $$)" >&2
+  ' _ "$pidfile" "$FLUSH_POLL_INTERVAL" "$STALE_SECONDS" "$script_path" "$QUEUE_DIR" >>"$logf" 2>&1 &
   disown 2>/dev/null || true
 }
 

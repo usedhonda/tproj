@@ -53,6 +53,8 @@ export TPROJ_MSG_DB_PATH="$WORK/messages.db"
 export TPROJ_MSG_DB_ERROR_LOG="$WORK/db-errors.log"
 # Isolate the D2 send-dedup store so cross-run/global /tmp state can't block sends.
 export TPROJ_MSG_SEND_DEDUP_DIR="$WORK/send-dedup"
+# Isolate the D4 flush-worker log so tests never write to the real ~/.cache.
+export TPROJ_MSG_FLUSH_WORKER_LOG="$WORK/flush-worker.log"
 
 TPROJ_MSG="$BIN_DIR/tproj-msg-verified"
 cat > "$TPROJ_MSG" <<WRAPPER
