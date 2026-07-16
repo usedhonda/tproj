@@ -575,7 +575,7 @@ find_registry_state_file() {
 verify_as_caller_identity() {
   local claimed_alias="$1" session="$2"
   local ancestor_pair ancestor_pid ancestor_start
-  local reg_file reg_pid reg_pid_start reg_observed_at reg_role_epoch reg_role reg_orchestrator_alias now
+  local reg_file reg_pid reg_pid_start reg_pid_start_recorded reg_observed_at reg_role_epoch reg_role reg_orchestrator_alias now
   CALLER_VERIFY_REASON=""
   VERIFIED_REGISTRY_FILE=""
   VERIFIED_ROLE_EPOCH=""
@@ -603,9 +603,23 @@ verify_as_caller_identity() {
     CALLER_VERIFY_REASON="registry_malformed"
     return 1
   fi
-  if ! [[ "$reg_pid_start" =~ ^[0-9]+$ && "$reg_pid_start" -gt 0 ]]; then
-    CALLER_VERIFY_REASON="pid_start_mismatch"
-    return 1
+  # pid_start binding. A recorded, positive pid_start is the strong form: it is
+  # compared verbatim against the live ancestor start below (pid-reuse defence).
+  # When the registry omits pid_start (router peer path historically wrote none
+  # -> jq // 0 == 0), do NOT fail closed on the legitimate unrecorded case:
+  # self-recompute the live start of reg_pid and bind against that instead, so a
+  # recycled pid still cannot masquerade. Only if the live start cannot be
+  # obtained at all do we reject (fail-closed preserved). Unrecorded rejects use
+  # a distinct reason so audits separate "never recorded" from "impersonation".
+  if [[ "$reg_pid_start" =~ ^[0-9]+$ && "$reg_pid_start" -gt 0 ]]; then
+    reg_pid_start_recorded=1
+  else
+    reg_pid_start_recorded=0
+    reg_pid_start=$(pid_start_epoch_bash "$reg_pid")
+    if ! [[ "$reg_pid_start" =~ ^[0-9]+$ && "$reg_pid_start" -gt 0 ]]; then
+      CALLER_VERIFY_REASON="pid_start_unrecorded"
+      return 1
+    fi
   fi
 
   if ! ancestor_pair=$(find_registry_ancestor_match "$reg_pid"); then
@@ -617,7 +631,11 @@ verify_as_caller_identity() {
   ancestor_start="${ancestor_pair##* }"
 
   if [[ "$ancestor_start" != "$reg_pid_start" ]]; then
-    CALLER_VERIFY_REASON="pid_start_mismatch"
+    if [[ "$reg_pid_start_recorded" == "1" ]]; then
+      CALLER_VERIFY_REASON="pid_start_mismatch"
+    else
+      CALLER_VERIFY_REASON="pid_start_unrecorded"
+    fi
     return 1
   fi
   VERIFIED_CALLER_PID="$ancestor_pid"
