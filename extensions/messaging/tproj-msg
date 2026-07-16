@@ -479,6 +479,255 @@ if [[ "$ALLOW_CHI_RETRY" == "true" && ( "$LIST_MODE" == "true" || "$READ_MODE" =
   exit 1
 fi
 
+# === Caller identity verification (R2 Stage 1) ===
+# --as lets an external caller claim any alias.role with no built-in proof
+# of identity, and --role-epoch/--orchestrator accept any syntactically
+# valid value (see below). Both were exploited via unauthenticated tmux
+# send-keys injection (multiple confirmed incidents, 2026-07). This binds
+# a claimed alias to the *live* model-role-router registry entry for that
+# alias: the calling process's own claude/codex agent ancestor must have
+# the exact (pid, pid_start) pair the registry last recorded for the
+# claimed alias. A recycled pid cannot pass this check because pid_start
+# would differ. See docs/reference/tproj-msg-sender-verification.md.
+TPROJ_MSG_REGISTRY_STALE_SECONDS="${TPROJ_MSG_REGISTRY_STALE_SECONDS:-172800}"  # 48h
+
+# Walk process ancestry from this script's own pid upward, looking for a
+# claude/codex agent process. On success prints "<pid> <role>" to stdout
+# and returns 0; on failure (no such ancestor within 6 hops) returns 1.
+find_agent_ancestor_pid() {
+  local walk_pid=$$ ancestor_cmd role="" _hops
+  for _hops in 1 2 3 4 5 6; do
+    walk_pid=$(ps -p "$walk_pid" -o ppid= 2>/dev/null | tr -d ' ')
+    [[ -n "$walk_pid" && "$walk_pid" != "0" && "$walk_pid" != "1" ]] || return 1
+    ancestor_cmd=$(ps -p "$walk_pid" -o comm= 2>/dev/null || true)
+    case "$ancestor_cmd" in
+      claude*) role="cc"; break ;;
+      codex*)  role="cdx"; break ;;
+    esac
+  done
+  [[ -n "$role" ]] || return 1
+  printf '%s %s\n' "$walk_pid" "$role"
+}
+
+# Absolute process start time (unix epoch) for the given pid, or 0 if the
+# pid is invalid/not currently running. macOS `ps -o lstart=` prints an
+# absolute calendar timestamp, so two independent queries for the same
+# still-alive process agree to the second regardless of when each runs.
+pid_start_epoch_bash() {
+  local pid="$1" line
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 0 ]] || { printf '0\n'; return 0; }
+  line=$(ps -p "$pid" -o lstart= 2>/dev/null)
+  [[ -n "$line" ]] || { printf '0\n'; return 0; }
+  date -j -f "%a %b %d %H:%M:%S %Y" "$line" +%s 2>/dev/null || printf '0\n'
+}
+
+# Locate the model-role-router state file for a claimed alias under a
+# given tmux session's registry cache. Prints the file path on success.
+find_registry_state_file() {
+  local claimed_alias="$1" session="$2" cache_dir session_safe f
+  cache_dir="${MODEL_ROLE_CACHE:-$HOME/.cache/tproj-model-role}"
+  session_safe=$(printf '%s' "$session" | sed -E 's/[^A-Za-z0-9_.-]+/_/g')
+  [[ -n "$session_safe" ]] || session_safe="unknown"
+  [[ -d "$cache_dir/$session_safe" ]] || return 1
+  while IFS= read -r -d '' f; do
+    if [[ "$(jq -r '.alias // empty' "$f" 2>/dev/null)" == "$claimed_alias" ]]; then
+      printf '%s\n' "$f"
+      return 0
+    fi
+  done < <(find "$cache_dir/$session_safe" -type f -name '*.json' -print0 2>/dev/null)
+  return 1
+}
+
+# Verify a claimed alias.role for the --session external-caller path by
+# binding it to the live model-role-router registry via process ancestry.
+# On success sets VERIFIED_REGISTRY_FILE / VERIFIED_ROLE_EPOCH /
+# VERIFIED_PLATFORM_ROLE / VERIFIED_CALLER_PID / VERIFIED_CALLER_PPID /
+# VERIFIED_CALLER_EXECUTABLE / VERIFIED_CALLER_UID / VERIFIED_PROCESS_START
+# and returns 0. On any failure sets CALLER_VERIFY_REASON and returns 1.
+# Fail-closed: any unexpected condition is treated as unverified, never
+# as verified.
+verify_as_caller_identity() {
+  local claimed_alias="$1" session="$2"
+  local ancestor ancestor_pid ancestor_role ancestor_start
+  CALLER_VERIFY_REASON=""
+  VERIFIED_REGISTRY_FILE=""
+  VERIFIED_ROLE_EPOCH=""
+  VERIFIED_PLATFORM_ROLE=""
+  VERIFIED_ORCHESTRATOR_ALIAS=""
+  VERIFIED_CALLER_PID=0
+  VERIFIED_CALLER_PPID=0
+  VERIFIED_CALLER_EXECUTABLE=""
+  VERIFIED_CALLER_UID=0
+  VERIFIED_PROCESS_START=0
+
+  if ! ancestor=$(find_agent_ancestor_pid); then
+    CALLER_VERIFY_REASON="no_agent_ancestor"
+    return 1
+  fi
+  ancestor_pid="${ancestor%% *}"
+  ancestor_role="${ancestor##* }"
+  ancestor_start=$(pid_start_epoch_bash "$ancestor_pid")
+  if [[ "$ancestor_start" == "0" ]]; then
+    CALLER_VERIFY_REASON="ancestor_start_unavailable"
+    return 1
+  fi
+  VERIFIED_CALLER_PID="$ancestor_pid"
+  VERIFIED_CALLER_PPID=$(ps -p "$ancestor_pid" -o ppid= 2>/dev/null | tr -d ' ')
+  [[ "$VERIFIED_CALLER_PPID" =~ ^[0-9]+$ ]] || VERIFIED_CALLER_PPID=0
+  VERIFIED_CALLER_EXECUTABLE=$(ps -p "$ancestor_pid" -o comm= 2>/dev/null || true)
+  VERIFIED_CALLER_UID=$(ps -p "$ancestor_pid" -o uid= 2>/dev/null | tr -d ' ')
+  [[ "$VERIFIED_CALLER_UID" =~ ^[0-9]+$ ]] || VERIFIED_CALLER_UID=0
+  VERIFIED_PROCESS_START="$ancestor_start"
+
+  local reg_file
+  if ! reg_file=$(find_registry_state_file "$claimed_alias" "$session"); then
+    CALLER_VERIFY_REASON="registry_alias_not_found"
+    return 1
+  fi
+
+  local reg_pid reg_pid_start reg_observed_at reg_role_epoch reg_role reg_orchestrator_alias now
+  reg_pid=$(jq -r '.pid // 0' "$reg_file" 2>/dev/null)
+  reg_pid_start=$(jq -r '.pid_start // 0' "$reg_file" 2>/dev/null)
+  reg_observed_at=$(jq -r '.observed_at // 0' "$reg_file" 2>/dev/null)
+  reg_role_epoch=$(jq -r '.role_epoch // 0' "$reg_file" 2>/dev/null)
+  reg_role=$(jq -r '.role // empty' "$reg_file" 2>/dev/null)
+  reg_orchestrator_alias=$(jq -r '.orchestrator_alias // empty' "$reg_file" 2>/dev/null)
+
+  if [[ "$reg_pid" != "$ancestor_pid" ]]; then
+    CALLER_VERIFY_REASON="pid_mismatch"
+    return 1
+  fi
+  if [[ "$reg_pid_start" == "0" || "$reg_pid_start" != "$ancestor_start" ]]; then
+    CALLER_VERIFY_REASON="pid_start_mismatch"
+    return 1
+  fi
+  now=$(date +%s)
+  if [[ -z "$reg_observed_at" || "$reg_observed_at" == "0" || $((now - reg_observed_at)) -gt "$TPROJ_MSG_REGISTRY_STALE_SECONDS" ]]; then
+    CALLER_VERIFY_REASON="registry_stale"
+    return 1
+  fi
+
+  VERIFIED_REGISTRY_FILE="$reg_file"
+  VERIFIED_ROLE_EPOCH="$reg_role_epoch"
+  VERIFIED_PLATFORM_ROLE="$reg_role"
+  VERIFIED_ORCHESTRATOR_ALIAS="$reg_orchestrator_alias"
+  return 0
+}
+
+# --- Bare-role service-bound verifier (distinct from the alias.role class
+# above -- bare roles like "gate" have no model-role-router registry entry
+# to bind against, since the caller is not a claude/codex agent process).
+#
+# The only bare-role identity with a confirmed legitimate production
+# caller, found from primary sources (not guessed/hardcoded from a product
+# name):
+#   - extensions/openclaw-plugin/src/outbound.js `sendTprojReturnUrlRedirect()`
+#     posts to `${origin.returnUrl}/v1/tproj-msg-deliver` with
+#     senderAs = "OpenClaw Agent - Reply" for gate:direct Chi reply routing.
+#   - tproj-msg's own gate_reply_callback_url() supplies that return_url
+#     from `gui.bridge.reply_callback_url` in workspace.yaml.
+#   - Empirically confirmed 2026-07-16: the process holding that callback
+#     port (`gui.bridge.url`'s port, currently 8765) is a locally running
+#     `ClawGate.app/Contents/MacOS/ClawGate` process (confirmed via `ps`
+#     executable path + `lsof -i` showing a live Tailscale connection from
+#     the macmini Gateway host to this port) -- not the unrelated `tproj`
+#     GUI app. No launchd label could be confirmed for it in this sandbox
+#     (`launchctl list` was unavailable here); ancestry+executable-path
+#     binding is used instead of a launchd-print binding.
+# Any other bare role is default-deny (no known legitimate caller).
+BARE_ROLE_SERVICE_EXPECTED_EXEC_DEFAULT="$HOME/projects/ios/clawgate/ClawGate.app/Contents/MacOS/ClawGate"
+
+find_bare_role_service_ancestor() {
+  local expected_exec="$1"
+  local walk_pid=$$ ancestor_exec _hops
+  [[ -n "$expected_exec" ]] || return 1
+  for _hops in 1 2 3 4 5 6; do
+    walk_pid=$(ps -p "$walk_pid" -o ppid= 2>/dev/null | tr -d ' ')
+    [[ -n "$walk_pid" && "$walk_pid" != "0" && "$walk_pid" != "1" ]] || return 1
+    ancestor_exec=$(ps -p "$walk_pid" -o comm= 2>/dev/null || true)
+    if [[ "$ancestor_exec" == "$expected_exec" ]]; then
+      printf '%s\n' "$walk_pid"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Verify a bare-role claim (--as <role>, no dot -- e.g. --as "OpenClaw
+# Agent - Reply") by binding it to a live, same-UID process in this
+# process's own ancestry whose executable matches the configured/known
+# service path. Sets the same VERIFIED_* globals as the alias.role
+# verifier. Fail-closed: unknown roles and any unexpected condition are
+# always unverified.
+verify_bare_role_caller_identity() {
+  local claimed_role="$1"
+  CALLER_VERIFY_REASON=""
+  VERIFIED_CALLER_PID=0
+  VERIFIED_CALLER_PPID=0
+  VERIFIED_CALLER_EXECUTABLE=""
+  VERIFIED_CALLER_UID=0
+  VERIFIED_PROCESS_START=0
+
+  case "$claimed_role" in
+    "OpenClaw Agent - Reply") : ;;
+    *)
+      CALLER_VERIFY_REASON="unknown_bare_role"
+      return 1
+      ;;
+  esac
+
+  local expected_exec="$BARE_ROLE_SERVICE_EXPECTED_EXEC_DEFAULT" ws_cfg="$HOME/.config/tproj/workspace.yaml"
+  if command -v yq >/dev/null 2>&1 && [[ -f "$ws_cfg" ]]; then
+    local cfg_exec
+    cfg_exec=$(yq '.gui.bridge.trusted_caller_executable' "$ws_cfg" 2>/dev/null || true)
+    [[ "$cfg_exec" == "null" ]] && cfg_exec=""
+    [[ -n "$cfg_exec" ]] && expected_exec="$cfg_exec"
+  fi
+  if [[ -z "$expected_exec" ]]; then
+    CALLER_VERIFY_REASON="service_executable_unconfigured"
+    return 1
+  fi
+
+  local svc_pid
+  if ! svc_pid=$(find_bare_role_service_ancestor "$expected_exec"); then
+    CALLER_VERIFY_REASON="service_ancestor_not_found"
+    return 1
+  fi
+  local svc_uid my_uid
+  svc_uid=$(ps -p "$svc_pid" -o uid= 2>/dev/null | tr -d ' ')
+  my_uid=$(id -u)
+  if [[ -z "$svc_uid" || "$svc_uid" != "$my_uid" ]]; then
+    CALLER_VERIFY_REASON="service_uid_mismatch"
+    return 1
+  fi
+  local svc_start
+  svc_start=$(pid_start_epoch_bash "$svc_pid")
+  if [[ "$svc_start" == "0" ]]; then
+    CALLER_VERIFY_REASON="service_start_unavailable"
+    return 1
+  fi
+
+  VERIFIED_CALLER_PID="$svc_pid"
+  VERIFIED_CALLER_PPID=$(ps -p "$svc_pid" -o ppid= 2>/dev/null | tr -d ' ')
+  [[ "$VERIFIED_CALLER_PPID" =~ ^[0-9]+$ ]] || VERIFIED_CALLER_PPID=0
+  VERIFIED_CALLER_EXECUTABLE="$expected_exec"
+  VERIFIED_CALLER_UID="$svc_uid"
+  VERIFIED_PROCESS_START="$svc_start"
+  return 0
+}
+
+# Best-effort caller-identity audit write. Fail-open (never blocks a send
+# path on DB unavailability) but always attempted for both accept and
+# reject decisions. No message body/title content is ever passed here.
+audit_log_caller_decision() {
+  local to_target="$1" claimed_alias="$2" verified="$3" reason="$4" payload_sha="$5" header="${6:-}" task_id="${7:-}"
+  declare -F tt_db_log_caller_event >/dev/null 2>&1 || return 0
+  tt_db_log_caller_event "${SESSION:-}" "$to_target" "$claimed_alias" "$verified" "$reason" \
+    "$payload_sha" "${VERIFIED_CALLER_PID:-0}" "${VERIFIED_CALLER_PPID:-0}" \
+    "${VERIFIED_CALLER_EXECUTABLE:-}" "${VERIFIED_CALLER_UID:-0}" "${VERIFIED_PROCESS_START:-0}" \
+    "$header" "$task_id" >/dev/null 2>&1 || true
+}
+
 # === Validate --as usage ===
 if [[ -n "$EXPLICIT_AS" && -z "$EXPLICIT_SESSION" ]]; then
   echo "Error: --as requires --session" >&2
@@ -491,8 +740,13 @@ if [[ -n "$EXPLICIT_SESSION" ]]; then
   SESSION="$EXPLICIT_SESSION"
   IS_WORKSPACE=true
   MY_PANE=""
+  AS_CALLER_VERIFIED=false
+  AS_CLAIMED_IDENTITY=""
   if [[ -n "$EXPLICIT_AS" ]]; then
-    # --as <alias.role>: parse sender identity
+    # --as <alias.role>: parse claimed sender identity. This claim is NOT
+    # trusted on its own -- verify_as_caller_identity below binds it to
+    # the live model-role-router registry via process ancestry before any
+    # role-handoff privilege is granted (see R2 Stage 1 block above).
     if [[ "$EXPLICIT_AS" == *.* ]]; then
       MY_ALIAS="${EXPLICIT_AS%.*}"
       MY_ROLE_RAW="${EXPLICIT_AS##*.}"
@@ -503,6 +757,20 @@ if [[ -n "$EXPLICIT_SESSION" ]]; then
       MY_ROLE_RAW="$EXPLICIT_AS"
       MY_ROLE=$(role_to_short "$MY_ROLE_RAW")
     fi
+    if [[ -n "$MY_ALIAS" ]]; then
+      AS_CLAIMED_IDENTITY="${MY_ALIAS}.${MY_ROLE:-$MY_ROLE_RAW}"
+      if verify_as_caller_identity "$AS_CLAIMED_IDENTITY" "$EXPLICIT_SESSION"; then
+        AS_CALLER_VERIFIED=true
+      fi
+    else
+      # Bare role: no alias.role registry entry is possible (not a
+      # claude/codex agent). Bound to a known service-owner process
+      # instead; any unrecognized bare role is default-deny.
+      AS_CLAIMED_IDENTITY="$MY_ROLE_RAW"
+      if verify_bare_role_caller_identity "$MY_ROLE_RAW"; then
+        AS_CALLER_VERIFIED=true
+      fi
+    fi
   else
     if [[ "$SEND_MODE" != "true" ]]; then
       MY_ALIAS=""
@@ -512,9 +780,14 @@ if [[ -n "$EXPLICIT_SESSION" ]]; then
       # Non-send modes do not need sender identity.
       :
     else
-    # --as omitted: auto-detect sender from CWD + parent process
+    # --as omitted: auto-detect sender from CWD + parent process. This
+    # already proves live process ancestry (claude/codex lineage), so it
+    # is treated as verified for role-handoff purposes -- unlike --as, an
+    # external caller cannot pick an arbitrary alias here; auto_alias
+    # comes only from this host's own workspace.yaml CWD mapping.
     auto_alias=""
     auto_role=""
+    auto_pid=""
     # (a) CWD -> workspace.yaml alias lookup
     ws_cfg="$HOME/.config/tproj/workspace.yaml"
     if command -v yq >/dev/null 2>&1 && [[ -f "$ws_cfg" ]]; then
@@ -522,20 +795,23 @@ if [[ -n "$EXPLICIT_SESSION" ]]; then
       [[ "$auto_alias" == "null" ]] && auto_alias=""
     fi
     # (b) Walk process ancestry to find claude/codex
-    walk_pid=$$
-    for _i in 1 2 3 4 5; do
-      walk_pid=$(ps -p "$walk_pid" -o ppid= 2>/dev/null | tr -d ' ')
-      [[ -n "$walk_pid" && "$walk_pid" != "0" && "$walk_pid" != "1" ]] || break
-      ancestor_cmd=$(ps -p "$walk_pid" -o comm= 2>/dev/null || true)
-      case "$ancestor_cmd" in
-        claude*) auto_role="cc"; break ;;
-        codex*)  auto_role="cdx"; break ;;
-      esac
-    done
+    if auto_ancestor=$(find_agent_ancestor_pid); then
+      auto_pid="${auto_ancestor%% *}"
+      auto_role="${auto_ancestor##* }"
+    fi
     if [[ -n "$auto_alias" && -n "$auto_role" ]]; then
       MY_ALIAS="$auto_alias"
       MY_ROLE="$auto_role"
       MY_ROLE_RAW="$auto_role"
+      AS_CALLER_VERIFIED=true
+      AS_CLAIMED_IDENTITY="${MY_ALIAS}.${MY_ROLE}"
+      VERIFIED_CALLER_PID="$auto_pid"
+      VERIFIED_CALLER_PPID=$(ps -p "$auto_pid" -o ppid= 2>/dev/null | tr -d ' ')
+      [[ "$VERIFIED_CALLER_PPID" =~ ^[0-9]+$ ]] || VERIFIED_CALLER_PPID=0
+      VERIFIED_CALLER_EXECUTABLE=$(ps -p "$auto_pid" -o comm= 2>/dev/null || true)
+      VERIFIED_CALLER_UID=$(ps -p "$auto_pid" -o uid= 2>/dev/null | tr -d ' ')
+      [[ "$VERIFIED_CALLER_UID" =~ ^[0-9]+$ ]] || VERIFIED_CALLER_UID=0
+      VERIFIED_PROCESS_START=$(pid_start_epoch_bash "$auto_pid")
     else
       echo "Error: --session used without --as, and auto-detect failed." >&2
       echo "  CWD alias: ${auto_alias:-<not found>}, parent role: ${auto_role:-<not found>}" >&2
@@ -560,6 +836,11 @@ else
   MY_ROLE_RAW=$(tmux display-message -t "$MY_PANE" -p '#{@role}' 2>/dev/null || true)
   MY_COLUMN=$(tmux display-message -t "$MY_PANE" -p '#{@column}' 2>/dev/null || true)
   MY_ROLE=$(role_to_short "$MY_ROLE_RAW")
+  # In-tmux sends resolve identity from this pane's own tmux user-options,
+  # not from a caller-supplied flag -- not spoofable via --as, so treated
+  # as verified for role-handoff purposes.
+  AS_CALLER_VERIFIED=true
+  AS_CLAIMED_IDENTITY="${MY_ALIAS:+${MY_ALIAS}.}${MY_ROLE}"
 fi
 
 # === Queue directory ===
@@ -631,6 +912,17 @@ sha1_hash() {
     printf '%s' "$raw" | shasum -a 1 | awk '{print $1}'
   else
     printf '%s' "$raw" | sha1sum | awk '{print $1}'
+  fi
+}
+
+# R2 Stage 1 — content reference for the caller-identity audit trail
+# (payload_sha256). Never used to persist the content itself.
+sha256_hash() {
+  local raw="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$raw" | shasum -a 256 | awk '{print $1}'
+  else
+    printf '%s' "$raw" | sha256sum | awk '{print $1}'
   fi
 }
 
@@ -2705,17 +2997,54 @@ else
   HEADER="[from:${MY_ROLE}]"
 fi
 
+# R2 Stage 1 — fail-closed gate for ALL sends, not only --role-handoff.
+# An unverified explicit --as claim (dot alias.role or bare role) is
+# refused outright: no tmux send-keys, no ordinary messages row, only the
+# reject audit entry below. Callers that never claimed an identity via
+# --as (in-tmux pane-derived, or the CWD+ancestry auto-detect fallback)
+# are unaffected -- both already set AS_CALLER_VERIFIED=true above.
+if [[ "${AS_CALLER_VERIFIED:-false}" != "true" && -n "${EXPLICIT_AS:-}" ]]; then
+  echo "Error: send refused for '$TARGET': sender identity for --as '${EXPLICIT_AS}' could not be verified (reason: ${CALLER_VERIFY_REASON:-unverified_caller})" >&2
+  audit_log_caller_decision "$TARGET" "${AS_CLAIMED_IDENTITY:-$EXPLICIT_AS}" 0 "${CALLER_VERIFY_REASON:-unverified_caller}" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
+  exit 1
+fi
+
 TASK_ID=""
 TASK_SENT_AT=""
 
 if [[ "$NEW_TASK_MODE" == "true" ]]; then
   TASK_ID=$(generate_task_id)
   if [[ "$ROLE_HANDOFF_MODE" == "true" ]]; then
+    # R2 Stage 1 — fail-closed gate. A --role-handoff send from a caller
+    # whose --as claim could not be bound to the live model-role-router
+    # registry is refused outright: no tmux send-keys, no messages.db row
+    # beyond the reject audit entry below. This is the primary fix for
+    # the unauthenticated sender-spoofing incidents (2026-07).
+    _rh_payload_sha=$(sha256_hash "$MESSAGE")
+    if [[ "${AS_CALLER_VERIFIED:-false}" != "true" ]]; then
+      echo "Error: --role-handoff refused for '$TARGET': sender identity could not be verified against the model-role-router registry (reason: ${CALLER_VERIFY_REASON:-unverified_caller})" >&2
+      audit_log_caller_decision "$TARGET" "${AS_CLAIMED_IDENTITY:-${MY_ALIAS}.${MY_ROLE}}" 0 "${CALLER_VERIFY_REASON:-unverified_caller}" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
+      exit 1
+    fi
     resolve_role_handoff_metadata
+    # Even a verified caller cannot self-declare an epoch/orchestrator the
+    # registry disagrees with -- this is the value actually observed by
+    # the SessionStart/UserPromptSubmit hooks, not a client-supplied claim.
+    if [[ -n "${VERIFIED_ROLE_EPOCH:-}" && "$ROLE_HANDOFF_EPOCH" != "$VERIFIED_ROLE_EPOCH" ]]; then
+      echo "Error: --role-handoff refused for '$TARGET': claimed --role-epoch ${ROLE_HANDOFF_EPOCH} does not match registry epoch ${VERIFIED_ROLE_EPOCH} for '${AS_CLAIMED_IDENTITY}'" >&2
+      audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 0 "role_epoch_mismatch" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
+      exit 1
+    fi
+    if [[ -n "${VERIFIED_ORCHESTRATOR_ALIAS:-}" && "$ROLE_HANDOFF_ORCHESTRATOR" != "$VERIFIED_ORCHESTRATOR_ALIAS" ]]; then
+      echo "Error: --role-handoff refused for '$TARGET': claimed --orchestrator ${ROLE_HANDOFF_ORCHESTRATOR} does not match registry orchestrator_alias ${VERIFIED_ORCHESTRATOR_ALIAS} for '${AS_CLAIMED_IDENTITY}'" >&2
+      audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 0 "orchestrator_mismatch" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
+      exit 1
+    fi
     MESSAGE="[Role-Handoff: ${TASK_ID}]
 Role-Epoch: ${ROLE_HANDOFF_EPOCH}
 Orchestrator: ${ROLE_HANDOFF_ORCHESTRATOR}
 [Task: ${TASK_ID}] ${MESSAGE}"
+    audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 1 "" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
   else
     MESSAGE="[Task: ${TASK_ID}] ${MESSAGE}"
   fi

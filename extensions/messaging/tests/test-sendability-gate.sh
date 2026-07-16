@@ -23,10 +23,10 @@
 set -uo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-TPROJ_MSG="${1:-$SCRIPT_DIR/../tproj-msg}"
+REAL_TPROJ_MSG="${1:-$SCRIPT_DIR/../tproj-msg}"
 
-if [[ ! -x "$TPROJ_MSG" ]]; then
-  echo "FATAL: tproj-msg not found/executable at: $TPROJ_MSG" >&2
+if [[ ! -x "$REAL_TPROJ_MSG" ]]; then
+  echo "FATAL: tproj-msg not found/executable at: $REAL_TPROJ_MSG" >&2
   exit 2
 fi
 
@@ -36,6 +36,37 @@ FAKE_DIR="$WORK/fixtures"
 BIN_DIR="$WORK/bin"
 mkdir -p "$FAKE_DIR" "$BIN_DIR"
 trap 'rm -rf "$WORK"' EXIT
+
+# R2 Stage 1 — model-role-router registry harness. This test's process tree
+# already runs under a real "claude" ancestor (this file is itself driven
+# by Claude Code), so a naive registry entry keyed on *that* real ancestor
+# would be fragile and environment-dependent. Instead, every "$TPROJ_MSG"
+# call below goes through a one-hop-close wrapper that renames a freshly
+# forked process to "claude" and writes the registry entry for tproj.cc
+# using THAT process's own (pid, pid_start) immediately before invoking
+# the real tproj-msg as its direct child -- deterministic regardless of
+# how deep the real ancestry chain runs.
+REGISTRY_ROOT="$WORK/registry"
+mkdir -p "$REGISTRY_ROOT/tproj-workspace/1"
+export MODEL_ROLE_CACHE="$REGISTRY_ROOT"
+export TPROJ_MSG_DB_PATH="$WORK/messages.db"
+export TPROJ_MSG_DB_ERROR_LOG="$WORK/db-errors.log"
+
+TPROJ_MSG="$BIN_DIR/tproj-msg-verified"
+cat > "$TPROJ_MSG" <<WRAPPER
+#!/bin/bash
+if [[ "\${_VERIFIED_REINVOKED:-}" != "1" ]]; then
+  export _VERIFIED_REINVOKED=1
+  exec -a claude bash "\$0" "\$@"
+fi
+mypid=\$\$
+mystart=\$(date -j -f "%a %b %d %H:%M:%S %Y" "\$(ps -p \$mypid -o lstart=)" +%s 2>/dev/null || echo 0)
+cat > "$REGISTRY_ROOT/tproj-workspace/1/tproj.cc.json" <<JSON
+{"alias":"tproj.cc","pid":\$mypid,"pid_start":\$mystart,"role_epoch":1,"role":"worker","orchestrator_alias":"tproj.cdx","observed_at":\$(date +%s)}
+JSON
+"$REAL_TPROJ_MSG" "\$@"
+WRAPPER
+chmod +x "$TPROJ_MSG"
 
 # Pane table: tproj.cc = %1, tproj.cdx = %2, both column 1.
 # @role MUST be the column-suffixed form (claude-p<col>/codex-p<col>) so

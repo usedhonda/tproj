@@ -125,6 +125,36 @@ CREATE INDEX IF NOT EXISTS idx_tasks_expect       ON tasks(target, state, expect
 SQL
 )
   tt_db_exec_safe "$schema_sql" >/dev/null
+  tt_db_migrate_caller_audit_columns
+}
+
+# R2 Stage 1 migration — additive caller-identity audit columns on the
+# existing messages table. Idempotent: checks PRAGMA table_info before each
+# ALTER rather than relying on ADD COLUMN IF NOT EXISTS (unsupported by the
+# sqlite3 CLI build installed on this host despite library version 3.51).
+# Existing rows get the safe fail-closed default verified=0; every other
+# new column defaults to NULL for pre-migration history. Never stores
+# message body/title content -- see tt_db_log_caller_event.
+tt_db_migrate_caller_audit_columns() {
+  tt_db_guard || return 0
+  local existing_cols
+  existing_cols=$(tt_db_exec_safe "PRAGMA table_info(messages);" 2>/dev/null)
+  local col def
+  while IFS='|' read -r col def; do
+    [[ -n "$col" ]] || continue
+    printf '%s' "$existing_cols" | grep -q "|${col}|" && continue
+    tt_db_exec_safe "ALTER TABLE messages ADD COLUMN ${col} ${def};" >/dev/null
+  done <<'COLS'
+caller_pid|INTEGER
+caller_ppid|INTEGER
+caller_executable|TEXT
+caller_uid|INTEGER
+process_start|INTEGER
+claimed_alias|TEXT
+verified|INTEGER NOT NULL DEFAULT 0
+rejection_reason|TEXT
+payload_sha256|TEXT
+COLS
 }
 
 # Lazy init guard: call before any write. Re-inits if DB file is missing
@@ -171,6 +201,47 @@ tt_db_log_message() {
   local ext_id_sql='NULL'
   [[ -n "$external_id_raw" ]] && ext_id_sql="'$(tt_db_quote "$external_id_raw")'"
   local sql="INSERT INTO messages (session, from_alias, to_alias, body, body_hash, header, task_id, direction, delivery, source_kind, bridge, external_id, created_at) VALUES ('${session}', '${from_a}', '${to_a}', '${body}', '${body_hash}', '${header}', ${task_id_sql}, '${direction}', '${delivery}', '${source_kind}', '${bridge}', ${ext_id_sql}, strftime('%s','now')); SELECT last_insert_rowid();"
+  tt_db_exec_safe "$sql"
+}
+
+# R2 Stage 1 — caller identity verification audit trail. Records an
+# accept or reject decision for a claimed --as sender, independent of
+# whether the underlying message is ever delivered. Never persists
+# message body/title content: `body`/`body_hash` are always empty for
+# these rows, and payload_sha256 is the only content reference kept.
+# Args (13, first 6 required):
+#   session to_alias claimed_alias verified(0|1) rejection_reason
+#   payload_sha256 [caller_pid=0] [caller_ppid=0] [caller_executable=]
+#   [caller_uid=0] [process_start=0] [header=] [task_id=]
+# Echoes new id on stdout (empty on failure).
+tt_db_log_caller_event() {
+  tt_db_guard || return 0
+  tt_db_ensure_init
+  local session=$(tt_db_quote "${1:-}")
+  local to_a=$(tt_db_quote "${2:-}")
+  local claimed_alias=$(tt_db_quote "${3:-}")
+  local verified="${4:-0}"
+  local rejection_reason_raw="${5:-}"
+  local payload_sha=$(tt_db_quote "${6:-}")
+  local caller_pid="${7:-0}"
+  local caller_ppid="${8:-0}"
+  local caller_executable=$(tt_db_quote "${9:-}")
+  local caller_uid="${10:-0}"
+  local process_start="${11:-0}"
+  local header=$(tt_db_quote "${12:-}")
+  local task_id_raw="${13:-}"
+  [[ "$verified" =~ ^[01]$ ]] || verified=0
+  [[ "$caller_pid" =~ ^[0-9]+$ ]] || caller_pid=0
+  [[ "$caller_ppid" =~ ^[0-9]+$ ]] || caller_ppid=0
+  [[ "$caller_uid" =~ ^[0-9]+$ ]] || caller_uid=0
+  [[ "$process_start" =~ ^[0-9]+$ ]] || process_start=0
+  local rejection_reason_sql='NULL'
+  [[ -n "$rejection_reason_raw" ]] && rejection_reason_sql="'$(tt_db_quote "$rejection_reason_raw")'"
+  local task_id_sql='NULL'
+  [[ -n "$task_id_raw" ]] && task_id_sql="'$(tt_db_quote "$task_id_raw")'"
+  local delivery='rejected'
+  [[ "$verified" == "1" ]] && delivery='send-keys'
+  local sql="INSERT INTO messages (session, from_alias, to_alias, body, body_hash, header, task_id, direction, delivery, source_kind, bridge, external_id, created_at, caller_pid, caller_ppid, caller_executable, caller_uid, process_start, claimed_alias, verified, rejection_reason, payload_sha256) VALUES ('${session}', '${claimed_alias}', '${to_a}', '', '', '${header}', ${task_id_sql}, 'outbound', '${delivery}', 'cc', 'tmux', NULL, strftime('%s','now'), ${caller_pid}, ${caller_ppid}, '${caller_executable}', ${caller_uid}, ${process_start}, '${claimed_alias}', ${verified}, ${rejection_reason_sql}, '${payload_sha}'); SELECT last_insert_rowid();"
   tt_db_exec_safe "$sql"
 }
 
