@@ -789,6 +789,90 @@ else
 fi
 
 # =============================================================================
+# D3 (msg-repair Phase D) — queue rows reach a terminal DB state. flush success
+# advances the original queued row to 'flushed' in place (no duplicate INSERT);
+# stale entries become 'dropped-stale'; the orphaned-legacy sweep marks aged
+# pre-D3 queued rows while leaving fresh ones. Legacy 3-column TSV still flushes.
+# =============================================================================
+if command -v sqlite3 >/dev/null 2>&1; then
+  D3_DBSH="$(dirname "$REAL_TPROJ_MSG")/tproj-msg-db.sh"
+  export TPROJ_MSG_QUEUE_DIR="$WORK/queue"
+  mkdir -p "$TPROJ_MSG_QUEUE_DIR"
+
+  # D3a. flush success -> original queued row UPDATEd to 'flushed', no 2nd row.
+  reset_fixtures
+  rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue "$FAKE_DIR/sendkeys.log"
+  set_ws "$CC_TTY" "running" ""
+  set_capture "%1" "...generating..."
+  d3a_body="d3a flushed inplace $$-$RANDOM"
+  d3a_id=$(sqlite3 "$TPROJ_MSG_DB_PATH" "INSERT INTO messages (session,from_alias,to_alias,body,body_hash,header,direction,delivery,created_at) VALUES ('tproj-workspace','tproj.cc','tproj.cc','${d3a_body}','h','[from:tproj.cc]','outbound','queued',strftime('%s','now')); SELECT last_insert_rowid();" 2>/dev/null)
+  d3a_enc=$(printf '%s' "$d3a_body" | base64 | tr -d '\n')
+  printf '%s\t%s\tTPROJ-B64:%s\t%s\n' "$(date +%s)" "[from:tproj.cc]" "$d3a_enc" "$d3a_id" > "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue"
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --flush >/dev/null 2>&1
+  d3a_state=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT delivery FROM messages WHERE id=${d3a_id};" 2>/dev/null)
+  d3a_deliv=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT delivered_at IS NOT NULL FROM messages WHERE id=${d3a_id};" 2>/dev/null)
+  d3a_outcount=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE body='${d3a_body}' AND direction='outbound';" 2>/dev/null)
+  d3a_gone=1; [[ -f "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue" ]] && d3a_gone=0
+  if [[ "$d3a_state" == "flushed" && "$d3a_deliv" == "1" && "$d3a_outcount" == "1" && "$d3a_gone" -eq 1 ]]; then
+    printf 'PASS  D3a_flush_updates_row_inplace\n'; PASS=$((PASS+1))
+  else
+    printf 'FAIL  D3a_flush_updates_row_inplace (state=%s deliv=%s outcount=%s gone=%s)\n' \
+      "$d3a_state" "$d3a_deliv" "$d3a_outcount" "$d3a_gone"; FAIL=$((FAIL+1))
+  fi
+
+  # D3b. stale queued entry -> row marked dropped-stale, queue removed, no send.
+  reset_fixtures
+  rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue "$FAKE_DIR/sendkeys.log"
+  set_ws "$CC_TTY" "running" ""
+  set_capture "%1" "...generating..."
+  d3b_body="d3b stale drop $$-$RANDOM"
+  d3b_id=$(sqlite3 "$TPROJ_MSG_DB_PATH" "INSERT INTO messages (session,from_alias,to_alias,body,body_hash,header,direction,delivery,created_at) VALUES ('tproj-workspace','tproj.cc','tproj.cc','${d3b_body}','h','[from:tproj.cc]','outbound','queued',strftime('%s','now')); SELECT last_insert_rowid();" 2>/dev/null)
+  d3b_enc=$(printf '%s' "$d3b_body" | base64 | tr -d '\n')
+  printf '%s\t%s\tTPROJ-B64:%s\t%s\n' "$(( $(date +%s) - 700 ))" "[from:tproj.cc]" "$d3b_enc" "$d3b_id" > "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue"
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --flush >/dev/null 2>&1
+  d3b_state=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT delivery FROM messages WHERE id=${d3b_id};" 2>/dev/null)
+  d3b_nosend=1; [[ -f "$FAKE_DIR/sendkeys.log" ]] && d3b_nosend=0
+  if [[ "$d3b_state" == "dropped-stale" && "$d3b_nosend" -eq 1 ]]; then
+    printf 'PASS  D3b_stale_marks_dropped\n'; PASS=$((PASS+1))
+  else
+    printf 'FAIL  D3b_stale_marks_dropped (state=%s nosend=%s)\n' "$d3b_state" "$d3b_nosend"; FAIL=$((FAIL+1))
+  fi
+
+  # D3c. legacy 3-column TSV (no dbid) still flushes (backward compatible).
+  reset_fixtures
+  rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue "$FAKE_DIR/sendkeys.log"
+  set_ws "$CC_TTY" "running" ""
+  set_capture "%1" "...generating..."
+  d3c_body="d3c legacy row $$-$RANDOM"
+  d3c_enc=$(printf '%s' "$d3c_body" | base64 | tr -d '\n')
+  printf '%s\t%s\tTPROJ-B64:%s\n' "$(date +%s)" "[from:tproj.cc]" "$d3c_enc" > "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue"
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --flush >/dev/null 2>&1
+  d3c_sent=0; { [[ -f "$FAKE_DIR/sendkeys.log" ]] && grep -q "$d3c_body" "$FAKE_DIR/sendkeys.log"; } && d3c_sent=1
+  d3c_gone=1; [[ -f "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue" ]] && d3c_gone=0
+  if [[ "$d3c_sent" -eq 1 && "$d3c_gone" -eq 1 ]]; then
+    printf 'PASS  D3c_legacy_row_flushes\n'; PASS=$((PASS+1))
+  else
+    printf 'FAIL  D3c_legacy_row_flushes (sent=%s gone=%s)\n' "$d3c_sent" "$d3c_gone"; FAIL=$((FAIL+1))
+  fi
+
+  # D3d. orphaned-legacy sweep: aged queued rows -> orphaned-legacy; fresh stay.
+  d3d_old=$(sqlite3 "$TPROJ_MSG_DB_PATH" "INSERT INTO messages (session,from_alias,to_alias,body,body_hash,direction,delivery,created_at) VALUES ('tproj-workspace','tproj.cc','tproj.cc','d3d old','h','outbound','queued',strftime('%s','now')-700); SELECT last_insert_rowid();" 2>/dev/null)
+  d3d_new=$(sqlite3 "$TPROJ_MSG_DB_PATH" "INSERT INTO messages (session,from_alias,to_alias,body,body_hash,direction,delivery,created_at) VALUES ('tproj-workspace','tproj.cc','tproj.cc','d3d new','h','outbound','queued',strftime('%s','now')); SELECT last_insert_rowid();" 2>/dev/null)
+  bash "$D3_DBSH" init >/dev/null 2>&1
+  d3d_old_state=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT delivery FROM messages WHERE id=${d3d_old};" 2>/dev/null)
+  d3d_new_state=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT delivery FROM messages WHERE id=${d3d_new};" 2>/dev/null)
+  if [[ "$d3d_old_state" == "orphaned-legacy" && "$d3d_new_state" == "queued" ]]; then
+    printf 'PASS  D3d_orphaned_legacy_sweep\n'; PASS=$((PASS+1))
+  else
+    printf 'FAIL  D3d_orphaned_legacy_sweep (old=%s new=%s)\n' "$d3d_old_state" "$d3d_new_state"; FAIL=$((FAIL+1))
+  fi
+
+  unset TPROJ_MSG_QUEUE_DIR
+else
+  printf 'PASS  D3_queue_terminal_state (SKIP: no sqlite3)\n'; PASS=$((PASS+1))
+fi
+
+# =============================================================================
 # D2 (msg-repair Phase D) — empty-body reject (exit 20) and short-window
 # duplicate-resend reject (exit 21, --force bypass). New send commands only.
 # =============================================================================

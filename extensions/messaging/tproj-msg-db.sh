@@ -126,6 +126,19 @@ SQL
 )
   tt_db_exec_safe "$schema_sql" >/dev/null
   tt_db_migrate_caller_audit_columns
+  tt_db_sweep_orphaned_queued
+}
+
+# D3 (msg-repair): one-shot idempotent sweep of pre-D3 orphaned 'queued' rows.
+# Before D3, a successful flush inserted a NEW 'flushed' row and never advanced
+# the original 'queued' row, so ~260 rows are stuck in 'queued' forever. Mark
+# aged (>= 600s old), still-queued, never-delivered rows as 'orphaned-legacy'.
+# Idempotent and safe to re-run: it only touches rows older than the flush
+# stale window, so genuinely in-flight queued rows (< 600s) are never affected.
+# Interim measure until E1's PRAGMA user_version migration gate lands.
+tt_db_sweep_orphaned_queued() {
+  tt_db_guard || return 0
+  tt_db_exec_safe "UPDATE messages SET delivery='orphaned-legacy' WHERE delivery='queued' AND delivered_at IS NULL AND created_at < (strftime('%s','now') - 600);" >/dev/null
 }
 
 # R2 Stage 1 migration — additive caller-identity audit columns on the
@@ -268,6 +281,29 @@ tt_db_set_delivery_error() {
   local msg_id="${1:-}" err=$(tt_db_quote "${2:-}")
   [[ -z "$msg_id" ]] && return 0
   tt_db_exec_safe "UPDATE messages SET delivery='error', delivery_err='${err}' WHERE id=${msg_id};" >/dev/null
+}
+
+# D3 (msg-repair): advance a previously-queued row to its terminal delivered
+# state in place, instead of inserting a second 'flushed' row. Args: msg_id.
+tt_db_set_flushed() {
+  tt_db_guard || return 0
+  local msg_id="${1:-}"
+  [[ "$msg_id" =~ ^[0-9]+$ ]] || return 0
+  tt_db_exec_safe "UPDATE messages SET delivery='flushed', delivered_at=strftime('%s','now') WHERE id=${msg_id};" >/dev/null
+}
+
+# D3 (msg-repair): mark a queued row as dropped with a reason, in place.
+# Args: msg_id state(dropped-stale|dropped-gone|dropped-policy) [err].
+tt_db_set_dropped() {
+  tt_db_guard || return 0
+  local msg_id="${1:-}" state="${2:-dropped-policy}" err
+  err=$(tt_db_quote "${3:-}")
+  [[ "$msg_id" =~ ^[0-9]+$ ]] || return 0
+  case "$state" in
+    dropped-stale|dropped-gone|dropped-policy) ;;
+    *) state='dropped-policy' ;;
+  esac
+  tt_db_exec_safe "UPDATE messages SET delivery='${state}', delivery_err='${err}' WHERE id=${msg_id};" >/dev/null
 }
 
 tt_db_set_read() {

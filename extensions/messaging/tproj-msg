@@ -2260,10 +2260,13 @@ with_queue_lock() {
 # M-D5c: locked append target for with_queue_lock. Args: <target> <epoch>
 # <header> <msg>. Kept as a named helper because with_queue_lock runs a command,
 # and the append needs a redirection that can't be passed as an argument.
+# M-D5c args: <target> <epoch> <header> <msg> [dbid]. D3 adds an optional 4th
+# TSV column carrying the DB row id so flush can advance that row's delivery in
+# place. Legacy 3-column rows parse with an empty dbid (backward compatible).
 _queue_append() {
   local encoded
   encoded=$(printf '%s' "$4" | base64 | tr -d '\n')
-  printf '%s\t%s\tTPROJ-B64:%s\n' "$2" "$3" "$encoded" >> "${QUEUE_DIR}/$1.queue"
+  printf '%s\t%s\tTPROJ-B64:%s\t%s\n' "$2" "$3" "$encoded" "${5:-}" >> "${QUEUE_DIR}/$1.queue"
 }
 
 queue_decode_message() {
@@ -2278,22 +2281,25 @@ queue_decode_message() {
 enqueue() {
   local target_name="$1" header="$2" msg="$3"
   ensure_queue_dir
-  local epoch
+  local epoch _dbid="" _hash _from
   epoch=$(date +%s)
+  # R1' Stage 3 shadow write — record queued state (no delivered_at yet) FIRST so
+  # the row id can be threaded into the queue TSV (D3). Fail-open: on any DB
+  # error _dbid stays empty and the queue entry degrades to the legacy 3-column
+  # form, which flush still handles.
+  if declare -F tt_db_log_message >/dev/null 2>&1; then
+    _hash=$(sha1_hash "$msg" 2>/dev/null)
+    _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
+    _dbid=$(tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "${TASK_ID:-}" "outbound" "queued" "${MY_ROLE:-cc}" "tmux" "" 2>/dev/null) || _dbid=""
+    [[ "$_dbid" =~ ^[0-9]+$ ]] || _dbid=""
+  fi
   # M-D5c: append under the per-target queue lock so a concurrent flush's
   # read->truncate cannot swallow this line.
-  with_queue_lock "$target_name" _queue_append "$target_name" "$epoch" "$header" "$msg"
+  with_queue_lock "$target_name" _queue_append "$target_name" "$epoch" "$header" "$msg" "$_dbid"
   # D2 (msg-repair): mark the short-window dedup store on successful enqueue too,
   # so a duplicate resend while the first is still queued is rejected.
   [[ -n "${DEDUP_BODY:-}" ]] && send_dedup_mark "$target_name" "$DEDUP_BODY" || true
   start_flush_worker
-  # R1' Stage 3 shadow write — record queued state, no delivered_at yet.
-  if declare -F tt_db_log_message >/dev/null 2>&1; then
-    local _hash _from
-    _hash=$(sha1_hash "$msg" 2>/dev/null)
-    _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
-    tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "${TASK_ID:-}" "outbound" "queued" "${MY_ROLE:-cc}" "tmux" "" >/dev/null 2>&1 || true
-  fi
   emit_task_tracking_metadata
 }
 
@@ -2357,22 +2363,47 @@ queue_newest_age() {
   [[ -n "$newest" ]] && echo $(( now - newest ))
 }
 
+# D3 (msg-repair): mark a queued DB row as dropped, in place. No-op for legacy
+# entries with no dbid or when the DB layer is absent (fail-open).
+_flush_mark_dropped() {
+  local dbid="$1" state="$2" err="$3"
+  [[ -n "$dbid" ]] || return 0
+  declare -F tt_db_set_dropped >/dev/null 2>&1 && tt_db_set_dropped "$dbid" "$state" "$err" 2>/dev/null
+  return 0
+}
+
+# D3 (msg-repair): before discarding a whole queue for a gone target, mark each
+# entry's DB row as dropped-gone. Best-effort; legacy rows without a dbid are
+# skipped.
+_flush_mark_queue_gone() {
+  local qfile="$1" epoch header stored_msg dbid
+  [[ -f "$qfile" ]] || return 0
+  while IFS=$'\t' read -r epoch header stored_msg dbid; do
+    [[ "$dbid" =~ ^[0-9]+$ ]] || continue
+    _flush_mark_dropped "$dbid" "dropped-gone" "target gone"
+  done < "$qfile"
+  return 0
+}
+
 # M-D5d: the read->truncate critical section of flush_queue, extracted verbatim
 # so with_queue_lock can serialize it against enqueue's append. Args:
-# <target_name> <pane> <max_count> <qfile>. Behaviour unchanged from the inline
-# version (STALE_SECONDS drop, max_count keep, policy/dedup guards, kept_lines
-# write-back vs rm).
+# <target_name> <pane> <max_count> <qfile>. D3 adds an optional dbid TSV column
+# (4th field) so each terminal outcome advances the original queued row in place
+# (flushed / dropped-*) instead of leaving it orphaned. Legacy 3-column rows
+# (empty dbid) keep the pre-D3 behaviour.
 _flush_drain_queue() {
   local target_name="$1" pane="$2" max_count="$3" qfile="$4"
   local now delivered=0 kept_lines=""
   now=$(date +%s)
 
-  while IFS=$'\t' read -r epoch header stored_msg; do
+  while IFS=$'\t' read -r epoch header stored_msg dbid; do
     # Validate epoch (skip corrupt entries)
     if [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
       echo "  Skipped corrupt entry" >&2
       continue
     fi
+    # D3: normalize the optional dbid column (legacy rows have none).
+    [[ "$dbid" =~ ^[0-9]+$ ]] || dbid=""
 
     local msg="$stored_msg"
     if [[ "$stored_msg" == TPROJ-B64:* ]]; then
@@ -2385,13 +2416,14 @@ _flush_drain_queue() {
     local age=$(( now - epoch ))
     if [[ $age -gt $STALE_SECONDS ]]; then
       echo "  Discarded stale message (${age}s old) for $target_name" >&2
+      _flush_mark_dropped "$dbid" "dropped-stale" "stale ${age}s"
       continue
     fi
 
     # Check max_count limit
     if [[ $max_count -gt 0 && $delivered -ge $max_count ]]; then
-      # Keep remaining messages in queue
-      kept_lines+="${epoch}"$'\t'"${header}"$'\t'"${stored_msg}"$'\n'
+      # Keep remaining messages in queue (preserve the dbid column)
+      kept_lines+="${epoch}"$'\t'"${header}"$'\t'"${stored_msg}"$'\t'"${dbid}"$'\n'
       continue
     fi
 
@@ -2405,6 +2437,7 @@ _flush_drain_queue() {
       else
         echo "  Failed send policy check for $target_name (rc=$rc), dropping entry" >&2
       fi
+      _flush_mark_dropped "$dbid" "dropped-policy" "policy rc=$rc"
       continue
     fi
 
@@ -2415,9 +2448,11 @@ _flush_drain_queue() {
       local rc=$?
       if [[ $rc -eq 12 ]]; then
         echo "  Dropped duplicate control message for $target_name: ${header} ${msg}" >&2
+        _flush_mark_dropped "$dbid" "dropped-policy" "control-dedup"
         continue
       fi
       echo "  Failed control dedup check for $target_name (rc=$rc), dropping entry" >&2
+      _flush_mark_dropped "$dbid" "dropped-policy" "control-dedup rc=$rc"
       continue
     fi
 
@@ -2429,13 +2464,19 @@ _flush_drain_queue() {
     control_dedup_mark "$target_name" "$msg" || true
     ((delivered++)) || true
     echo "  Delivered queued message to $target_name: ${header} ${msg}" >&2
-    # R1' Stage 3 shadow write — flushed delivery, set delivered_at + inbound mirror.
+    # D3 shadow write — advance the original queued row to 'flushed' in place (no
+    # second outbound INSERT); legacy rows with no dbid keep the old insert path.
+    # Inbound mirror is kept in both cases.
     if declare -F tt_db_log_message >/dev/null 2>&1; then
       local _hash _from _outid
       _hash=$(sha1_hash "$msg" 2>/dev/null)
       _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
-      _outid=$(tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "" "outbound" "flushed" "${MY_ROLE:-cc}" "tmux" "" 2>/dev/null)
-      [[ -n "$_outid" ]] && tt_db_set_delivered "$_outid" 2>/dev/null
+      if [[ -n "$dbid" ]] && declare -F tt_db_set_flushed >/dev/null 2>&1; then
+        tt_db_set_flushed "$dbid" 2>/dev/null
+      else
+        _outid=$(tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "" "outbound" "flushed" "${MY_ROLE:-cc}" "tmux" "" 2>/dev/null)
+        [[ -n "$_outid" ]] && tt_db_set_delivered "$_outid" 2>/dev/null
+      fi
       tt_db_mirror_inbound "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "" "flushed" "${MY_ROLE:-cc}" "tmux" "" >/dev/null 2>&1 || true
     fi
   done < "$qfile"
@@ -2498,6 +2539,7 @@ flush_all_queues() {
         newest_age=$(queue_newest_age "$target_name")
         if [[ -n "$newest_age" && "$newest_age" -gt "$TARGET_GONE_GRACE" ]]; then
           echo "Discarding queue for gone target '$target_name' (newest ${newest_age}s > grace ${TARGET_GONE_GRACE}s)" >&2
+          _flush_mark_queue_gone "$qfile"
           rm -f "$qfile"
         else
           echo "Warning: target '$target_name' appears gone (not in pane list), keeping queue" >&2
