@@ -18,6 +18,10 @@
 : "${TPROJ_MSG_DB_PATH:="${HOME}/.local/share/tproj-msg/messages.db"}"
 : "${TPROJ_MSG_DB_ERROR_LOG:="${HOME}/.cache/tproj-msg/db-errors.log"}"
 : "${TPROJ_MSG_DB_INIT_FLAG:="${HOME}/.cache/tproj-msg/db-init.stamp"}"
+# E2 (msg-repair): size cap for the error log so it can't grow unbounded.
+# Rotated to <log>.1 once it exceeds this (same idiom as the D4 flush-worker log
+# and the respawn-guard). Env-adjustable.
+: "${TPROJ_MSG_DB_ERROR_LOG_MAX:=1048576}"
 
 # Current on-disk schema version. Bump whenever the schema (tables, columns,
 # indexes managed by tt_db_init / tt_db_migrate_caller_audit_columns) changes so
@@ -42,8 +46,21 @@ tt_db_ensure_dirs() {
   [[ -d "$log_dir" ]] || mkdir -p "$log_dir" 2>/dev/null || true
 }
 
+# E2 (msg-repair): rotate the error log to <log>.1 once it passes the size cap,
+# so repeated sqlite failures can't grow it without bound. Best-effort; matches
+# the D4 flush-worker log rotate (stat -f%z). Direct `2>>` appends elsewhere in
+# this file are size-capped here too, since every logical error path funnels
+# through tt_db_log_error, which checks total size before appending.
+tt_db_rotate_error_log() {
+  local f="$TPROJ_MSG_DB_ERROR_LOG"
+  [[ -f "$f" ]] || return 0
+  [[ $(stat -f%z "$f" 2>/dev/null || echo 0) -gt $TPROJ_MSG_DB_ERROR_LOG_MAX ]] || return 0
+  mv -f "$f" "${f}.1" 2>/dev/null || true
+}
+
 tt_db_log_error() {
   tt_db_ensure_dirs
+  tt_db_rotate_error_log
   printf '%s | %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" \
     >> "$TPROJ_MSG_DB_ERROR_LOG" 2>/dev/null || true
 }
