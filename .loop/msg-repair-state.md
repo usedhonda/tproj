@@ -409,3 +409,158 @@ messages.db を SELECT 監査した結論：**tproj の send/flush 経路に rel
   poison し既存 case 21 を割った。gate_dedup 同様「成功時に mark」へ変更し、mutation 前 body
   (`DEDUP_BODY`) で check/mark を一致させた。
 - **D5 は tproj 単独で閉じない**: 受信点が他列所有のため、delivered_at 更新は別レーン提案止まり。
+
+---
+
+# Phase E — P2 衛生（実装済み・2026-07-17）
+
+Scope: 契約プラン fizzy-floating-bee.md Phase E（E1..E4）。1 サブステップ = 1 commit。
+既定挙動不変（E3 は off 既定、E4 はテストハーネス側のみ）。ガード群・文言・dedup mark
+タイミング不変。
+
+## E1 — migration を user_version ゲートに（tproj-msg-db.sh）
+
+- `tt_db_ensure_init` は DB ファイル存在で short-circuit していたため、スキーマ変更が
+  既存 DB に届かなかった（reinstall 必須。7/16 の 156 件 insert 失敗クラス）。
+- 修正: DB 欠落時は `tt_db_init`。DB 存在時は `PRAGMA user_version` を読み、
+  `recorded < TT_DB_SCHEMA_VERSION` のときだけ冪等な `tt_db_init` を再実行して
+  user_version を再スタンプ。`TT_DB_SCHEMA_VERSION=2`（env 上書き可）を新設し、
+  既存の caller-audit 列を「gated schema」に取り込んだ。version 読取エラーは
+  recorded=0 にフォールバック → 安全な no-op 再 init（fail-open 維持）。
+- user_version スタンプは全 migration 実行後に最後に打つ（`PRAGMA user_version = 1;`
+  ハードコードを heredoc から除去し、`tt_db_init` 末尾で動的スタンプ）。
+- tproj commit: `44b3cde`。
+- 実機（一時 DB）: (a) 列欠落の v1 DB → migrate 後 verified 列追加 + version 2、
+  (b) **実 DB コピー（全列・v1）→ version 1→2 / count 14303 不変 / errlog 0 行 /
+  2 回目実行も version 2・count 不変（冪等）**、(c) 欠落 DB → 新規 v2。
+
+## E2a — file-per-hash dedup ストアの TTL 掃除（tproj-msg）
+
+- `gate_dedup` と（D2 の）`send_dedup` は hash ごとに 1 ファイルを書くだけで削除ループが
+  無く単調累積（control/fanout の TSV は毎 check で掃除するのと非対称）。
+- 共有ヘルパ `cleanup_hashfile_dedup_store <dir> <ttl>` を新設し、`gate_dedup_check` /
+  `send_dedup_check` の冒頭から呼ぶ。mtime（= 書込時刻、`>` truncate で 1 回書き）で
+  TTL 超のファイルを `find -mmin +ceil(ttl/60) -delete`。分単位切上げで age<TTL の
+  live エントリは絶対に消さない（check の age gate と整合）。gate TTL を
+  `TPROJ_MSG_GATE_DEDUP_SEC`（既定 60=不変）で env 化。
+- tproj commit: `b28c16c`。
+- 実機（一時 dir）: 10 分前 backdate ファイル → 削除、fresh → 保持、
+  欠落 dir / bad ttl → 安全 no-op。
+
+## E2b — task-seq バケット剪定（tproj-msg）
+
+- `generate_task_id` の `/tmp/tproj-task-seq/<target>/<epoch_min>/<seq>` は古い epoch_min
+  バケットを消さず 192 dir 累積。
+- `prune_task_seq_buckets`（epoch_min < (now-STALE)/60 の bucket を rm）+ 低頻度ゲート
+  `maybe_prune_task_seq`（stamp file、GC_INTERVAL に 1 回）を新設し `generate_task_id`
+  冒頭から呼ぶ。root/STALE/INTERVAL を env 化（`TPROJ_MSG_TASK_SEQ_DIR` /
+  `_STALE_SEC` 既定 3600 / `_GC_INTERVAL` 既定 3600）。既定 STALE=1h >> 1 分割当なので
+  現在バケットは絶対に触らない。seq_root ハードコードを `TASK_SEQ_ROOT` 化。
+- tproj commit: `00c41d1`。
+- 実機（一時 dir）: 2h 前 bucket（複数 target）→ 削除 / fresh bucket → 保持、
+  interval ゲート: 1 回目（stamp 無）で剪定 + stamp 書込、2 回目（interval 内）は skip。
+
+## E2c — DB error ログのサイズローテ（tproj-msg-db.sh）
+
+- `tt_db_log_error` は無制限 append だった。`tt_db_rotate_error_log`（`stat -f%z` >
+  `TPROJ_MSG_DB_ERROR_LOG_MAX` 既定 1MB で `<log>.1` へ mv）を append 前に呼ぶ。
+  D4 の flush-worker ログ rotate と同流儀。flush-worker.log は D4 で既にローテ済み。
+  直接 `2>>` append も、全論理エラー経路が `tt_db_log_error` を通り total size を見るため
+  実質キャップ内。
+- tproj commit: `725605b`。
+- 実機（一時ログ、cap=1000）: cap 未満 → rotate なし、2034B に膨らませ → `.1` へ退避 +
+  新ログは新エントリのみ（39B）。
+
+## E3 — TPROJ_MSG_DEBUG 診断タップ（tproj-msg）
+
+- `dlog` ヘルパ 1 個（`TPROJ_MSG_DEBUG=1` のときだけ `~/.cache/tproj-msg/debug.log`
+  = `TPROJ_MSG_DEBUG_LOG` 上書き可、へ timestamped 1 行 append）。既定 off は
+  即 return で挙動・出力完全不変。pre-flight verify より前に早期定義（全下流経路から
+  呼べるように）。
+- タップ点（主要経路）: caller verification（`verify --as: ...`）、send precheck
+  （`send precheck: ...`）、dedup block（`dedup: blocked ...`）、enqueue（`queue: enqueued ...`）、
+  delivery（`deliver: send-keys ok ...`）、status（`status: ...`）。
+- tproj commit: `2cbc53e`。
+- 実機（installed binary + 一時 debug log）: 既定 off で `--status` → debug.log **生えない**、
+  `TPROJ_MSG_DEBUG=1 --status` → debug.log **生成**（`status: target=<none> ...` 1 行）。
+
+## E4 — テスト送信の隔離ハード化（テストハーネスのみ）
+
+- 本体 `tproj-msg` は既に `TPROJ_MSG_DB_PATH`（tproj-msg-db.sh:18）で DB パス env
+  差替可 → **本体変更ゼロ**。DB を触る全スイート（sendability-gate:52 /
+  registry-contract:115 / role-handoff:102）は既に temp DB へ export 済み
+  （前フェーズで逐次導入）。smoke-bin は tproj-msg 非依存、inbox-check は temp HOME +
+  Case D 専用 temp DB で実 DB 非接触。
+- E4 の恒久化: 上記 3 スイートの export 直後に **不変条件ガード**を追加
+  （`TPROJ_MSG_DB_PATH` 未設定 or 実 production DB を指すなら FATAL + exit 2）。
+  将来の編集で隔離が外れても実履歴を汚染しない。既存汚染行は削除せず（履歴は履歴）。
+- tproj commit: `ccf03ff`。
+- 実機: 全 battery（sendability 40 / registry 4 / role-handoff 22 / smoke 17 /
+  inbox 8）実行前後で **実 DB のテスト署名行数 = 0 → 0（delta 0）**。max_id は +3
+  （live pane traffic のみ）。ガード単体: 実 path → rc=2 / temp path → rc=0 / unset → rc=2。
+
+## Phase E 検証（各 commit 後・全緑）
+
+- `test-sendability-gate.sh` → **PASS=40 FAIL=0 PENDING=0**（E で新規ケース追加なし）。
+- `test-registry-contract.sh` → **PASS=4 FAIL=0**。
+- `tests/smoke-bin.sh` → **PASS=17 FAIL=0**。
+- `test-inbox-check.sh` → **8 passed, 0 failed**。
+- `test-role-handoff.sh`（E4 対象）→ **PASS=22 FAIL=0**。
+- 反映: `cp` で `~/bin/{tproj-msg,tproj-msg-db.sh}`（変更分のみ、install.sh は tmux 稼働中のため未実行）。
+  installed == repo（byte 一致）。テストハーネスは runtime 非配布のため cp 対象外。
+
+## 逸脱・申し送り（Phase E）
+
+- **E2a は send_dedup も同時に掃除**: タスク明記は gate-dedup だが、D2 で追加された
+  send_dedup は構造的に同一（file-per-hash・無制限成長）。共有ヘルパ 1 個で両方を
+  同時に締める方が「単調累積の解消」という E2 の趣旨に忠実なため、send_dedup にも
+  同ヘルパ呼び出しを 1 行追加した（既定挙動・dedup 判定は不変、掃除は age>=TTL の死骸のみ）。
+- **E4 は実質的に前フェーズで隔離済み**: 3 スイートの temp DB export は B/C/D で逐次
+  導入されていた。E4 の新規実装はガードによる「恒久化」（回帰防止）と検証。本体変更ゼロ。
+- **実 DB は live workspace で ambient に成長**: 他 pane（vibeterm 等）の実トラフィックで
+  count が常時増える。E4 検証は「テスト署名行の delta=0」で隔離を証明（生 count 差分は
+  ambient と分離）。
+
+---
+
+# 全 Phase 完了サマリ（A-E, msg-repair）
+
+契約プラン `fizzy-floating-bee.md`（P0+P1+P2 全部盛り）を A-E で完了。
+
+## Phase 別 commit（tproj repo）
+
+| Phase | 主眼 | コード commit | state commit | 主要 SHA |
+|---|---|---|---|---|
+| A | P0-1 診断（RED 契約テスト） | 1 | (B と同時記録) | `4eaee4e` |
+| B | P0-1 送信者検証誤爆修正 | 3 | 1 (`d7379b4`) | `2814172` `531ff7e` `fd264ab`（+ general `6a1e7e4`=B1） |
+| C | P0-2/P0-3 monitor/read/bare-alias/expire | 5 | 1 (`c59027a`) | `1484a40` `13ca28e` `1459d5e` `d1e9d47` `f731ea0` |
+| D | P1 relay/empty/dup/queue/worker | 4 | 1 (`507de79`) | `1202c48` `7fb4c46` `35adc6b` `5cab2c6`（D5 は no-code 提案） |
+| E | P2 migration/GC/debug/test 隔離 | 6 | 1 (本 commit) | `44b3cde` `b28c16c` `00c41d1` `725605b` `2cbc53e` `ccf03ff` |
+
+- tproj コード commit 合計: **19**（A1 + B3 + C5 + D4 + E6）。state 記録 commit 4 + 本 finalize 1。
+- 別リポ general: B1 の pid_start writer 1 行（`6a1e7e4`、事後報告済み）。
+
+## ゲート推移（PASS 数）
+
+| ゲート | 起点 | B | C | D | E（最終） |
+|---|---|---|---|---|---|
+| sendability-gate | 26 | 30 | 33 | 40 | **40** |
+| registry-contract | —（A で新設, RED 2/4） | 4 | 4 | 4 | **4** |
+| smoke-bin | 17 | 17 | 17 | 17 | **17** |
+| inbox-check | 3 | 4 | 8 | 8 | **8** |
+| role-handoff（参考） | — | — | — | — | **22** |
+
+- sendability-gate の起点 26 は旧「sendability gate 新設」プラン完了時（その前身は 13 ケース）。
+  本プランで 26 → 40（B+4 / C+3 / D+7、E は runtime + test 隔離のため新規ケースなし）。
+- registry-contract は Phase A の新設スイート（router peer 経路の pid_start 契約）。B で全緑化。
+
+## 到達点
+
+- P0（3 件）: 送信者検証誤爆の構造修正（B）、monitor cursor 前進 + read 化 + bare-alias
+  曖昧解決 + expire 通知（C）を実装・回帰固定。
+- P1（4 件）: empty/dup reject、queue 行の終端遷移、worker 可観測化を実装（D）。relay 漏れ・
+  gate inbound ミラーは監査の結果 tproj 側にバグ無し/受信点が他列所有と判明し、seal 固定 +
+  別レーン提案に整理。
+- P2（4 件）: user_version migration ゲート、GC 3 種、TPROJ_MSG_DEBUG、テスト隔離ガードを
+  実装（E）。再発防止の恒久化まで完了。
+- 全フェーズで既存ガード群・出力文言・dedup mark タイミング・fail-closed 検証方針を不変に維持。
