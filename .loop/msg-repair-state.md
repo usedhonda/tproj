@@ -152,3 +152,59 @@ liveness / mtime の tiebreak が無い。
 - `bash extensions/messaging/tests/test-registry-contract.sh` → PASS=2 FAIL=2（意図的 RED、exit 1）
 - `bash extensions/messaging/tests/test-sendability-gate.sh` → **PASS=26 FAIL=0 PENDING=0**（不変条件維持）
 - 実装コード変更: なし。実キャッシュ / messages.db 書き込み: なし。
+
+---
+
+# Phase B — P0-1 修正（実装済み・2026-07-17）
+
+Scope: 契約プラン fizzy-floating-bee.md Phase B（B1..B4）を完了。Phase A の診断どおり修正。
+
+## B1 — router `pane_peer()` に pid_start 出力を追加（別リポ general）
+
+- 対象: `general/system/model-role-router/model-role-router` の peer 構築 dict。
+  `"pid": ...` の直下へ self 経路と同一算出の
+  `"pid_start": pid_start_epoch(int(pid) if pid.isdigit() else 0),` を 1 行追加。
+  他は無変更。
+- general 側テスト `system/model-role-router/test-model-role-router.sh` → **55 passed, 0 failed**。
+- general commit（push なし）: `6a1e7e4`。
+- 反映: `cp ...model-role-router ~/bin/model-role-router`（launchctl 系 install は未実行）。
+  installed == repo（byte 一致）を確認。
+- 効果: 契約テスト P1 が RED → GREEN。
+
+## B2 — `verify_as_caller_identity` 自衛（tproj）
+
+- 録音 pid_start が正値なら現行の厳密比較を維持（fail-closed 不変）。
+- 録音が欠落/0/null（`jq // 0` で 0）なら即 reject せず、`pid_start_epoch_bash "$reg_pid"`
+  で reg_pid の live start を自前再計算して bind。再計算不能（dead pid 等で 0）なら reject。
+- 未記録経路の reject には新 reason `pid_start_unrecorded` を付与（`pid_start_mismatch`
+  = なりすまし疑い と監査上区別可能に）。final compare の mismatch も録音有無で
+  reason を出し分け。
+- tproj commit: `2814172`。効果: 契約 P2a RED → GREEN、P2b/P2c GREEN 維持。
+
+## B3 — `find_registry_state_file` 決定化（tproj）
+
+- find の FS 走査順先頭採用をやめ、全候補を走査。reg_pid 生存（`kill -0`）を優先、
+  同一 liveness では mtime 最新を採用。単一候補時の挙動は不変。
+- tproj commit: `531ff7e`。効果: 契約 P3 が REJECT(no_agent_ancestor) → VERIFY 決定化。
+
+## B4 — gate suite に回帰テスト追加（tproj）
+
+- REG_MODE 選択式 wrapper で 4 ケース追加（既存 26 は不変）:
+  - B4a 録音欠落 + live ancestor → VERIFY
+  - B4b 録音欠落 + dead reg_pid → REJECT `pid_start_unrecorded`（fail-closed 維持）
+  - B4c 録音あり不一致 → REJECT `pid_start_mismatch`（不変ガード）
+  - B4d live + dead 複数窓 → live 採用で VERIFY（B3）
+- tproj commit: `fd264ab`。
+
+## Phase B 検証
+
+- `test-registry-contract.sh` → **PASS=4 FAIL=0**（P1/P2a/P2b/P2c GREEN、P3 observe=VERIFY）。
+- `test-sendability-gate.sh` → **PASS=30 FAIL=0 PENDING=0**（26 + B4 4）。
+- `tests/smoke-bin.sh` → **PASS=17 FAIL=0**。
+- `extensions/hooks/tests/test-inbox-check.sh` → **4 passed, 0 failed**。
+- 反映: `cp extensions/messaging/tproj-msg ~/bin/tproj-msg`（install.sh は tmux 稼働中のため未実行）。
+  installed == repo（byte 一致）を確認。
+- 実機: `~/bin/tproj-msg --session tproj-workspace --as tproj.cc tproj.cc "P0-1 fix verification ping (ignore)"`
+  → rc=0 "Sent to tproj.cc"。messages.db row 14312 = `verified=1 delivery=send-keys
+  rejection_reason=NULL`（rejected でない）。同クラスは修正前 06:38:19 まで
+  `pid_start_mismatch` で reject されていた（id 14297 が最後）。
