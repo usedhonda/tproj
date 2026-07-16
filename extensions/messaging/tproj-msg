@@ -485,11 +485,12 @@ fi
 # valid value (see below). Both were exploited via unauthenticated tmux
 # send-keys injection (multiple confirmed incidents, 2026-07). This binds
 # a claimed alias to the *live* model-role-router registry entry for that
-# alias: the calling process's own claude/codex agent ancestor must have
-# the exact (pid, pid_start) pair the registry last recorded for the
-# claimed alias. A recycled pid cannot pass this check because pid_start
-# would differ. See docs/reference/tproj-msg-sender-verification.md.
+# alias: the calling process's own ancestry must contain the exact
+# (pid, pid_start) pair the registry last recorded for the claimed alias.
+# A recycled pid cannot pass this check because pid_start would differ.
+# See docs/reference/tproj-msg-sender-verification.md.
 TPROJ_MSG_REGISTRY_STALE_SECONDS="${TPROJ_MSG_REGISTRY_STALE_SECONDS:-172800}"  # 48h
+TPROJ_MSG_VERIFIER_MAX_ANCESTOR_HOPS="${TPROJ_MSG_VERIFIER_MAX_ANCESTOR_HOPS:-32}"
 
 # Walk process ancestry from this script's own pid upward, looking for a
 # claude/codex agent process. On success prints "<pid> <role>" to stdout
@@ -507,6 +508,30 @@ find_agent_ancestor_pid() {
   done
   [[ -n "$role" ]] || return 1
   printf '%s %s\n' "$walk_pid" "$role"
+}
+
+# Walk process ancestry from this process's own pid upward and locate the
+# caller pid in the explicit alias.role registry entry. Returns
+# "<pid> <pid_start>" on success and 1 if the pid does not appear in the
+# bounded ancestor chain.
+find_registry_ancestor_match() {
+  local reg_pid="$1" walk_pid=$$ ancestor_pid ancestor_start
+  local _hops=0
+
+  [[ "$reg_pid" =~ ^[0-9]+$ && "$reg_pid" -gt 0 ]] || return 1
+
+  while [[ $_hops -lt "$TPROJ_MSG_VERIFIER_MAX_ANCESTOR_HOPS" ]]; do
+    (( _hops += 1 ))
+    walk_pid=$(ps -p "$walk_pid" -o ppid= 2>/dev/null | tr -d ' ')
+    [[ -n "$walk_pid" && "$walk_pid" != "0" && "$walk_pid" != "1" ]] || return 1
+    [[ "$walk_pid" != "$reg_pid" ]] || {
+      ancestor_start=$(pid_start_epoch_bash "$walk_pid")
+      printf '%s %s\n' "$walk_pid" "$ancestor_start"
+      return 0
+    }
+  done
+
+  return 1
 }
 
 # Absolute process start time (unix epoch) for the given pid, or 0 if the
@@ -539,7 +564,8 @@ find_registry_state_file() {
 }
 
 # Verify a claimed alias.role for the --session external-caller path by
-# binding it to the live model-role-router registry via process ancestry.
+# binding it to the live model-role-router registry via process ancestry
+# without relying on process-name matching.
 # On success sets VERIFIED_REGISTRY_FILE / VERIFIED_ROLE_EPOCH /
 # VERIFIED_PLATFORM_ROLE / VERIFIED_CALLER_PID / VERIFIED_CALLER_PPID /
 # VERIFIED_CALLER_EXECUTABLE / VERIFIED_CALLER_UID / VERIFIED_PROCESS_START
@@ -548,7 +574,8 @@ find_registry_state_file() {
 # as verified.
 verify_as_caller_identity() {
   local claimed_alias="$1" session="$2"
-  local ancestor ancestor_pid ancestor_role ancestor_start
+  local ancestor_pair ancestor_pid ancestor_start
+  local reg_file reg_pid reg_pid_start reg_observed_at reg_role_epoch reg_role reg_orchestrator_alias now
   CALLER_VERIFY_REASON=""
   VERIFIED_REGISTRY_FILE=""
   VERIFIED_ROLE_EPOCH=""
@@ -560,15 +587,37 @@ verify_as_caller_identity() {
   VERIFIED_CALLER_UID=0
   VERIFIED_PROCESS_START=0
 
-  if ! ancestor=$(find_agent_ancestor_pid); then
+  if ! reg_file=$(find_registry_state_file "$claimed_alias" "$session"); then
+    CALLER_VERIFY_REASON="registry_alias_not_found"
+    return 1
+  fi
+
+  reg_pid=$(jq -r '.pid // 0' "$reg_file" 2>/dev/null)
+  reg_pid_start=$(jq -r '.pid_start // 0' "$reg_file" 2>/dev/null)
+  reg_observed_at=$(jq -r '.observed_at // 0' "$reg_file" 2>/dev/null)
+  reg_role_epoch=$(jq -r '.role_epoch // 0' "$reg_file" 2>/dev/null)
+  reg_role=$(jq -r '.role // empty' "$reg_file" 2>/dev/null)
+  reg_orchestrator_alias=$(jq -r '.orchestrator_alias // empty' "$reg_file" 2>/dev/null)
+
+  if ! [[ "$reg_pid" =~ ^[0-9]+$ && "$reg_pid" -gt 0 ]]; then
+    CALLER_VERIFY_REASON="registry_malformed"
+    return 1
+  fi
+  if ! [[ "$reg_pid_start" =~ ^[0-9]+$ && "$reg_pid_start" -gt 0 ]]; then
+    CALLER_VERIFY_REASON="pid_start_mismatch"
+    return 1
+  fi
+
+  if ! ancestor_pair=$(find_registry_ancestor_match "$reg_pid"); then
     CALLER_VERIFY_REASON="no_agent_ancestor"
     return 1
   fi
-  ancestor_pid="${ancestor%% *}"
-  ancestor_role="${ancestor##* }"
-  ancestor_start=$(pid_start_epoch_bash "$ancestor_pid")
-  if [[ "$ancestor_start" == "0" ]]; then
-    CALLER_VERIFY_REASON="ancestor_start_unavailable"
+
+  ancestor_pid="${ancestor_pair%% *}"
+  ancestor_start="${ancestor_pair##* }"
+
+  if [[ "$ancestor_start" != "$reg_pid_start" ]]; then
+    CALLER_VERIFY_REASON="pid_start_mismatch"
     return 1
   fi
   VERIFIED_CALLER_PID="$ancestor_pid"
@@ -579,26 +628,8 @@ verify_as_caller_identity() {
   [[ "$VERIFIED_CALLER_UID" =~ ^[0-9]+$ ]] || VERIFIED_CALLER_UID=0
   VERIFIED_PROCESS_START="$ancestor_start"
 
-  local reg_file
-  if ! reg_file=$(find_registry_state_file "$claimed_alias" "$session"); then
-    CALLER_VERIFY_REASON="registry_alias_not_found"
-    return 1
-  fi
-
-  local reg_pid reg_pid_start reg_observed_at reg_role_epoch reg_role reg_orchestrator_alias now
-  reg_pid=$(jq -r '.pid // 0' "$reg_file" 2>/dev/null)
-  reg_pid_start=$(jq -r '.pid_start // 0' "$reg_file" 2>/dev/null)
-  reg_observed_at=$(jq -r '.observed_at // 0' "$reg_file" 2>/dev/null)
-  reg_role_epoch=$(jq -r '.role_epoch // 0' "$reg_file" 2>/dev/null)
-  reg_role=$(jq -r '.role // empty' "$reg_file" 2>/dev/null)
-  reg_orchestrator_alias=$(jq -r '.orchestrator_alias // empty' "$reg_file" 2>/dev/null)
-
-  if [[ "$reg_pid" != "$ancestor_pid" ]]; then
-    CALLER_VERIFY_REASON="pid_mismatch"
-    return 1
-  fi
-  if [[ "$reg_pid_start" == "0" || "$reg_pid_start" != "$ancestor_start" ]]; then
-    CALLER_VERIFY_REASON="pid_start_mismatch"
+  if [[ "$VERIFIED_PROCESS_START" == "0" ]]; then
+    CALLER_VERIFY_REASON="ancestor_start_unavailable"
     return 1
   fi
   now=$(date +%s)
@@ -3045,9 +3076,13 @@ Role-Epoch: ${ROLE_HANDOFF_EPOCH}
 Orchestrator: ${ROLE_HANDOFF_ORCHESTRATOR}
 [Task: ${TASK_ID}] ${MESSAGE}"
     audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 1 "" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
-  else
-    MESSAGE="[Task: ${TASK_ID}] ${MESSAGE}"
   fi
+  if [[ -n "${EXPLICIT_AS:-}" && "$ROLE_HANDOFF_MODE" != "true" ]]; then
+    MESSAGE="[Task: ${TASK_ID}] ${MESSAGE}"
+    audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 1 "" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
+  fi
+elif [[ -n "${EXPLICIT_AS:-}" ]]; then
+  audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 1 "" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
 fi
 
 if fanout_guard_check "$TARGET" "$MESSAGE"; then

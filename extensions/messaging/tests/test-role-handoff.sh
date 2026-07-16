@@ -200,6 +200,85 @@ run_ordinary_verified() {
     "$TPROJ_MSG" --session tproj-workspace --as "$sender" "$target" "$body" 2>&1
 }
 
+HAS_SQLITE=0
+command -v sqlite3 >/dev/null 2>&1 && HAS_SQLITE=1
+
+WRAPPED_RUNNER="$WORK/verified_wrapper_runner.sh"
+cat > "$WRAPPED_RUNNER" <<'WRAPPER'
+#!/bin/bash
+set -uo pipefail
+
+depth="${WRAP_DEPTH:-0}"
+if [[ "$depth" -gt 0 ]]; then
+  export WRAP_DEPTH=$((depth - 1))
+  bash "$0" "$@"
+  exit $?
+fi
+
+mypid=$$
+mystart=$(date -j -f "%a %b %d %H:%M:%S %Y" "$(ps -p "$mypid" -o lstart=)" +%s 2>/dev/null || echo 0)
+registry_pid="${REGISTRY_PID_OVERRIDE:-$mypid}"
+registry_pid_start="${REGISTRY_PID_START_OVERRIDE:-$mystart}"
+
+cat > "$REG_FILE" <<JSON
+{"alias":"$CLAIMED_ALIAS","pid":$registry_pid,"pid_start":$registry_pid_start,"role_epoch":$ROLE_EPOCH,"role":"$ROLE","orchestrator_alias":"$ORCH_ALIAS","observed_at":$(date +%s)}
+JSON
+"$@"
+WRAPPER
+chmod +x "$WRAPPED_RUNNER"
+
+run_as_verified_agent_wrapped() {
+  local claimed_alias="$1" role_epoch="$2" role="$3" orchestrator_alias="$4" wrap_depth="$5" reg_pid_override="$6" reg_start_override="$7"
+  shift 7
+  WRAP_DEPTH="$wrap_depth" \
+    CLAIMED_ALIAS="$claimed_alias" ROLE_EPOCH="$role_epoch" ROLE="$role" ORCH_ALIAS="$orchestrator_alias" \
+    REGISTRY_PID_OVERRIDE="${reg_pid_override:-}" REGISTRY_PID_START_OVERRIDE="${reg_start_override:-}" \
+    REG_FILE="$REGISTRY_ROOT/tproj-workspace/1/${claimed_alias}.json" \
+    bash "$WRAPPED_RUNNER" "$@"
+}
+
+db_last_claimed_id() {
+  local alias="$1"
+  local verified="${2:-}"
+  local where="claimed_alias='${alias}' AND length(body)=0 AND length(body_hash)=0 AND ifnull(length(payload_sha256),0)=64"
+  [[ -n "$verified" ]] && where+=" AND verified='${verified}'"
+  sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COALESCE(COUNT(*),0) FROM messages WHERE ${where};" 2>/dev/null || echo 0
+}
+
+db_last_claimed_row() {
+  local alias="$1"
+  local verified="${2:-}"
+  local where="claimed_alias='${alias}' AND length(body)=0 AND length(body_hash)=0 AND ifnull(length(payload_sha256),0)=64"
+  [[ -n "$verified" ]] && where+=" AND verified='${verified}'"
+  sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT verified, ifnull(rejection_reason,''), length(body), length(body_hash), length(payload_sha256), body, body_hash FROM messages WHERE ${where} ORDER BY id DESC LIMIT 1;" 2>/dev/null || true
+}
+
+assert_caller_event_once() {
+  local alias="$1" expected_verified="$2" expected_reason_empty="$3" label="$4"
+  local before="$5" after row verified reason body_len body_hash_len sha_len
+  if [[ "$HAS_SQLITE" -eq 0 ]]; then
+    pass "$label"
+    return 0
+  fi
+  after="$(db_last_claimed_id "$alias" "$expected_verified")"
+  if [[ $((after - before)) -ne 1 ]]; then
+    fail "$label" "expected 1 caller-event; before=$before after=$after"
+    return 0
+  fi
+  IFS='|' read -r verified reason body_len body_hash_len sha_len _body _body_hash <<< "$(db_last_claimed_row "$alias" "$expected_verified")"
+  if [[ "$verified" == "$expected_verified" && "$body_len" == "0" && "$body_hash_len" == "0" && "$sha_len" == "64" ]]; then
+    if [[ "$expected_reason_empty" == "require-empty" && -n "$reason" ]]; then
+      fail "$label" "reason not empty (verified=$verified, reason=$reason)"
+    elif [[ "$expected_reason_empty" == "require-non-empty" && -z "$reason" ]]; then
+      fail "$label" "reason empty for rejected decision (verified=$verified)"
+    else
+      pass "$label"
+    fi
+  else
+    fail "$label" "caller event malformed (verified=$verified reason=$reason body_len=$body_len body_hash_len=$body_hash_len sha_len=$sha_len)"
+  fi
+}
+
 # Symmetric explicit handoff: either platform may hand orchestration to the other.
 reset_case
 set_state %2 idle
@@ -238,6 +317,25 @@ if [[ "$log" == *'[Role-Handoff:'* && "$log" == *$'Role-Epoch: 9\nOrchestrator: 
   pass deferred_handoff_flushes_intact
 else
   fail deferred_handoff_flushes_intact "log=$log"
+fi
+
+if [[ "$HAS_SQLITE" -eq 1 ]]; then
+  before_id="$(db_last_claimed_id tproj.cc 1)"
+else
+  before_id=0
+fi
+reset_case
+set_state %2 idle
+out="$(run_handoff tproj.cc tproj.cdx 7 tproj.cc 'verified-role-handoff-accept-audit' 2>&1)"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[Role-Handoff:'* && "$log" == *$'Role-Epoch: 7\nOrchestrator: tproj.cc\n[Task:'* ]]; then
+  if [[ "$HAS_SQLITE" -eq 1 ]]; then
+    assert_caller_event_once tproj.cc 1 require-empty "verified_role_handoff_accepts_caller_event" "$before_id"
+  else
+    pass verified_role_handoff_accepts_caller_event
+  fi
+else
+  fail verified_role_handoff_accepts_caller_event "rc=$rc out=$out log=$log"
 fi
 
 # Current-pane metadata supplies the epoch; a worker hands the target orchestration.
@@ -287,21 +385,67 @@ fi
 
 # --- R2 Stage 1: fail-closed sender verification -------------------------
 
+# Verified ordinary --as send succeeds only when explicit registry/ancestry binding
+# succeeds; for deep wrapper ancestry this requires registry pid+pid_start in-chain.
+before_id=0
+if [[ "$HAS_SQLITE" -eq 1 ]]; then
+  before_id="$(db_last_claimed_id tproj.cc 1)"
+fi
+reset_case
+set_state %2 idle
+out="$(run_as_verified_agent_wrapped tproj.cc 1 worker tproj.cc 8 '' '' \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc tproj.cdx 'wrapped-verified')"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[from:tproj.cc]'* ]]; then
+  assert_caller_event_once tproj.cc 1 require-empty "verified_ordinary_send_wrapped_chain" "$before_id"
+else
+  fail verified_ordinary_send_wrapped_chain "rc=$rc out=$out log=$log"
+fi
+
+# Same deep wrapper chain, but the registry pid_start/pid pair is not the caller:
+# should be rejected and still emit exactly one reject audit row (reason non-empty).
+if [[ "$HAS_SQLITE" -eq 1 ]]; then
+  before_id="$(db_last_claimed_id tproj.cc 0)"
+fi
+reset_case
+out="$(run_as_verified_agent_wrapped tproj.cc 1 worker tproj.cc 8 999999 1 \
+  2>&1 \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc tproj.cdx 'wrapped-mismatch')"; rc=$?
+if [[ $rc -ne 0 && ! -f "$FIXTURES/sendkeys.log" && "$out" == *'could not be verified'* ]]; then
+  assert_caller_event_once tproj.cc 0 require-non-empty "wrapped_chain_registry_mismatch_rejected" "$before_id"
+else
+  fail wrapped_chain_registry_mismatch_rejected "rc=$rc out=$out"
+fi
+
 # Unverified ordinary (non-role-handoff) --as send is refused: no
 # tmux send-keys, and the reject audit row carries no body content.
 reset_case
+if [[ "$HAS_SQLITE" -eq 1 ]]; then
+  before_id="$(db_last_claimed_id tproj.cc 0)"
+fi
 out="$(run_ordinary_unverified tproj.cc tproj.cdx 'no-registry-entry')"; rc=$?
 if [[ $rc -ne 0 && ! -f "$FIXTURES/sendkeys.log" && "$out" == *'could not be verified'* ]]; then
-  pass unverified_ordinary_send_rejected
+  if [[ "$HAS_SQLITE" -eq 1 ]]; then
+    assert_caller_event_once tproj.cc 0 require-non-empty "unverified_ordinary_send_rejected" "$before_id"
+  else
+    pass unverified_ordinary_send_rejected
+  fi
 else
   fail unverified_ordinary_send_rejected "rc=$rc out=$out"
 fi
 
 # Unverified --role-handoff send is refused the same way.
 reset_case
+if [[ "$HAS_SQLITE" -eq 1 ]]; then
+  before_id="$(db_last_claimed_id tproj.cc 0)"
+fi
 out="$(run_handoff_unverified tproj.cc tproj.cdx 7 tproj.cdx 'no-registry-entry')"; rc=$?
 if [[ $rc -ne 0 && ! -f "$FIXTURES/sendkeys.log" && "$out" == *'could not be verified'* ]]; then
-  pass unverified_role_handoff_rejected
+  if [[ "$HAS_SQLITE" -eq 1 ]]; then
+    assert_caller_event_once tproj.cc 0 require-non-empty "unverified_role_handoff_rejected" "$before_id"
+  else
+    pass unverified_role_handoff_rejected
+  fi
 else
   fail unverified_role_handoff_rejected "rc=$rc out=$out"
 fi
@@ -386,12 +530,17 @@ fi
 
 # The reject audit trail never stores message body/title content: body
 # and body_hash are empty, and only a payload_sha256 reference is kept.
-if command -v sqlite3 >/dev/null 2>&1; then
+if [[ "$HAS_SQLITE" -eq 1 ]]; then
   reset_case
+  before_id="$(db_last_claimed_id tproj.cc 0)"
   out="$(run_ordinary_unverified tproj.cc tproj.cdx 'must-not-be-persisted-anywhere')"
-  row="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT body, body_hash, verified, rejection_reason, length(payload_sha256) FROM messages WHERE claimed_alias='tproj.cc' ORDER BY id DESC LIMIT 1;" 2>/dev/null)"
-  if [[ "$row" == "||0|registry_alias_not_found|64" ]]; then
-    pass reject_audit_body_never_persisted
+  assert_caller_event_once tproj.cc 0 require-non-empty "reject_audit_body_never_persisted" "$before_id"
+  row="$(db_last_claimed_row tproj.cc 0)"
+  if [[ -n "$row" ]]; then
+    IFS='|' read -r verified reason body_len body_hash_len sha_len _body _body_hash <<< "$row"
+    if [[ "$verified" != "0" || "$body_len" != "0" || "$body_hash_len" != "0" || "$sha_len" != "64" || -z "$reason" ]]; then
+      fail reject_audit_body_never_persisted "row=$row"
+    fi
   else
     fail reject_audit_body_never_persisted "row=$row"
   fi

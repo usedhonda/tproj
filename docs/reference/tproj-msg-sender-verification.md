@@ -64,18 +64,16 @@ bind against (it is not a claude/codex agent process).
 
 Implemented by `verify_as_caller_identity()` in `tproj-msg`.
 
-1. Walk this process's own ancestry (`find_agent_ancestor_pid()`, up to 6
-   hops) for a live process whose `comm` starts with `claude` or `codex`.
-2. Read that ancestor's absolute start time (`pid_start_epoch_bash()`,
-   from `ps -o lstart=`, an absolute calendar timestamp — two independent
-   queries of the same still-alive process agree to the second regardless
-   of when each runs).
-3. Look up the model-role-router registry entry for the *claimed* alias
+1. First read the model-role-router registry entry for the *claimed* alias
    under `${MODEL_ROLE_CACHE:-~/.cache/tproj-model-role}/<session>/*/​<alias>.json`
    (`find_registry_state_file()`).
-4. Require the registry's `pid` **and** `pid_start` to exactly match the
-   live ancestor. A recycled pid cannot pass this because `pid_start`
-   would differ from the original process that owned it.
+2. Walk this process's own ancestry for the exact registry `pid` value (never
+   by process name), up to `TPROJ_MSG_VERIFIER_MAX_ANCESTOR_HOPS` hops
+   (default `32`), using `find_registry_ancestor_match()`.
+3. On matching `pid`, read that process's absolute start time (`pid_start` from
+   `ps -o lstart=`, through `pid_start_epoch_bash()`) and require an exact
+   `pid_start` match with the registry's `pid_start`. A recycled pid cannot pass
+   because `pid_start` would differ from the original process that owned it.
 5. Require the registry's `observed_at` to be within
    `TPROJ_MSG_REGISTRY_STALE_SECONDS` (default 48h) of now — an
    anti-replay/stale-registry guard.
