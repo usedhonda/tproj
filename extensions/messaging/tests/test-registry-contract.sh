@@ -114,6 +114,12 @@ mkdir -p "$REGISTRY_ROOT/tproj-workspace/1"
 export MODEL_ROLE_CACHE="$REGISTRY_ROOT"
 export TPROJ_MSG_DB_PATH="$WORK/messages.db"
 export TPROJ_MSG_DB_ERROR_LOG="$WORK/db-errors.log"
+# E4 (msg-repair): hard invariant -- never run against the real production
+# messages.db. Abort loudly if the isolation override above was ever dropped.
+if [[ -z "${TPROJ_MSG_DB_PATH:-}" || "$TPROJ_MSG_DB_PATH" == "$HOME/.local/share/tproj-msg/messages.db" ]]; then
+  echo "FATAL: TPROJ_MSG_DB_PATH not isolated to a temp DB (would pollute the real messages.db)" >&2
+  exit 2
+fi
 
 # A live but non-ancestor pid for the find/liveness observation (P3).
 sleep 600 & SLEEP_PID=$!

@@ -51,6 +51,13 @@ mkdir -p "$REGISTRY_ROOT/tproj-workspace/1"
 export MODEL_ROLE_CACHE="$REGISTRY_ROOT"
 export TPROJ_MSG_DB_PATH="$WORK/messages.db"
 export TPROJ_MSG_DB_ERROR_LOG="$WORK/db-errors.log"
+# E4 (msg-repair): hard invariant -- never run against the real production
+# messages.db. Abort loudly if the isolation override above was ever dropped, so
+# test fixtures can't silently pollute real history again.
+if [[ -z "${TPROJ_MSG_DB_PATH:-}" || "$TPROJ_MSG_DB_PATH" == "$HOME/.local/share/tproj-msg/messages.db" ]]; then
+  echo "FATAL: TPROJ_MSG_DB_PATH not isolated to a temp DB (would pollute the real messages.db)" >&2
+  exit 2
+fi
 # Isolate the D2 send-dedup store so cross-run/global /tmp state can't block sends.
 export TPROJ_MSG_SEND_DEDUP_DIR="$WORK/send-dedup"
 # Isolate the D4 flush-worker log so tests never write to the real ~/.cache.
