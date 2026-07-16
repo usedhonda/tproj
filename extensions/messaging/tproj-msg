@@ -2832,10 +2832,26 @@ send_via_gate() {
 
 # Gate cross-adapter dedup: block same message via different adapters within TTL
 GATE_DEDUP_DIR="${TPROJ_MSG_GATE_DEDUP_DIR:-/tmp/tproj-msg-gate-dedup}"
-GATE_DEDUP_TTL=60
+GATE_DEDUP_TTL="${TPROJ_MSG_GATE_DEDUP_SEC:-60}"
+
+# E2 (msg-repair): TTL sweep for the file-per-hash dedup stores. gate_dedup and
+# send_dedup each write one file per message hash and never removed stale ones,
+# so they grew monotonically (unlike the control/fanout TSV stores, which sweep
+# on every check). This gives them the same TTL-bounded cleanup. A file is
+# written once (truncating `>`), so its mtime equals the stored timestamp; a
+# minute-granularity find that rounds the TTL up never deletes a still-live
+# (age < TTL) entry, matching the check's own age gate. Fail-open.
+cleanup_hashfile_dedup_store() {
+  local dir="$1" ttl="$2" ttl_min
+  [[ -d "$dir" ]] || return 0
+  [[ "$ttl" =~ ^[0-9]+$ ]] || return 0
+  ttl_min=$(( (ttl + 59) / 60 ))
+  find "$dir" -maxdepth 1 -type f -mmin +"$ttl_min" -delete 2>/dev/null || true
+}
 
 gate_dedup_check() {
   local adapter="$1" msg_body="$2"
+  cleanup_hashfile_dedup_store "$GATE_DEDUP_DIR" "$GATE_DEDUP_TTL"
   local msg_hash
   msg_hash=$(printf '%s' "$msg_body" | shasum -a 1 | cut -d' ' -f1)
   local dedup_file="${GATE_DEDUP_DIR}/${msg_hash}"
@@ -2871,6 +2887,7 @@ send_dedup_key() {
 send_dedup_check() {
   local to="$1" msg="$2"
   local from key file prev_ts now age
+  cleanup_hashfile_dedup_store "$SEND_DEDUP_DIR" "$SEND_DEDUP_TTL"
   from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
   key=$(send_dedup_key "$from" "$to" "$msg")
   file="${SEND_DEDUP_DIR}/${key}"
