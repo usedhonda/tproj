@@ -208,3 +208,91 @@ Scope: 契約プラン fizzy-floating-bee.md Phase B（B1..B4）を完了。Phas
   → rc=0 "Sent to tproj.cc"。messages.db row 14312 = `verified=1 delivery=send-keys
   rejection_reason=NULL`（rejected でない）。同クラスは修正前 06:38:19 まで
   `pid_start_mismatch` で reject されていた（id 14297 が最後）。
+
+---
+
+# Phase C — P0-2/P0-3 修正（実装済み・2026-07-17）
+
+Scope: 契約プラン fizzy-floating-bee.md Phase C（C1..C5）を完了。1 commit = 1 サブステップ。
+既存ガード群・文言・dedup mark タイミング不変（--status への行**追加**のみ）。
+
+## C1 — monitor consumer key を role 非依存へ（tproj-inbox-monitor）
+
+- consumer key `${SESSION}:${MY_ALIAS}.${MY_ROLE}` → `${SESSION}:${MY_ALIAS}`。
+  TO_ALIAS（メッセージ突合の宛先）は `alias.role` のまま不変。
+- bootstrap は既存の cold-start（`COALESCE(MAX(id),0)`）を維持。旧 role 込み行
+  （凍結 `tproj-workspace:tproj.cc`=344）は**継承せず**、新 key を MAX(id) で cold-start
+  = 過去 backlog の一括通知爆発を防止（プラン note の趣旨）。新 key は旧 key と別名のため
+  344 の巨大 backlog を舐めない。
+- テスト容易化のため `main` を source guard 化（sourced 時は poll ループを起動しない）。
+- tproj commit: `1484a40`。
+- hermetic test: test-inbox-check.sh Case D（旧 role 込み cursor=5 + messages 最大 100 →
+  新 key が 100 に cold-start、旧行 5 は不変）。
+
+## C2 — `do_read` が inbound を read 化（tproj-msg）
+
+- do_read: 読んだ target pane の `@alias.@role`（= from_alias）→ 自分（to_alias）宛の
+  `direction=inbound AND read_at IS NULL` を一括 `read_at=now` に UPDATE（best-effort、
+  DB 無ければ何もしない、失敗握りつぶし）。scrollback 厳密突合はしない。
+- tproj commit: `13ca28e`。
+- hermetic test: gate suite C2（synthetic inbound tproj.cdx→tproj.cc を --read tproj.cdx で
+  read 化）。
+
+## C3 — `--status` に monitor 生存診断（tproj-msg）
+
+- `print_monitor_diagnostic`: monitor_cursors の自 key（`${SESSION}:${MY_ALIAS}`）の
+  updated_at で判定。行無し=`monitor: not running`、閾値超過（既定 300s、
+  `TPROJ_MONITOR_STALE_SEC`）=`monitor: stale (last <dt>)`、それ以外=`monitor: ok (last <dt>)`。
+  既存の status 行は不変で 1 行**追加**のみ。target 指定/無指定の両分岐に追加。
+- tproj commit: `1459d5e`。
+- hermetic test: gate suite C3（no row/fresh/stale の 3 状態 + 既存 `sendable_running` 併存）。
+
+## C4 — bare alias（`cc`/`cdx`）曖昧解決の厳格化（tproj）
+
+- `check_bare_target_unambiguous`: bare cc/cdx 送信で、workspace の候補が複数かつ
+  列コンテキストで一意化できないとき exit 19 + `cdx is ambiguous: <list>` で reject。
+  候補 0/1（単一列）、in-pane 同一列一致（same-column 意味論）は従来どおり許可。
+  send path（dispatch_mode の READ_MODE!=true）でのみ発火、flush は非対象。
+- exit code `AMBIGUOUS_BARE_EXIT=19` を新設（13-18 は既存）。
+- tproj commit: `d1e9d47`。
+- hermetic test: gate suite C4（cdx 候補 1 → C4 透過 / other.cdx 追加で候補 2 → exit19 +
+  候補一覧 + no send-keys）。
+
+## C5 — task expire 時の送信元通知（tproj-inbox-check）
+
+- 既存の expire 検出ループ（`tt_cache_gc_expired` 消費）に
+  `[inbox-notice] task <id> expired (no ACK from <target>)` を**追加**（既存の
+  `timeout on ...` 通知は不変）。cache-expired = 未 read = 未 ACK（ACK/DONE/BLOCK read で
+  cache 除去済）ゆえ "no ACK" 妥当。hook 無効環境（TPROJ_HOOK_ENABLED!=1）は全体が
+  早期 exit = fail-open。
+- tproj commit: `f731ea0`。
+- hermetic test: test-inbox-check.sh Case E（expired task → no-ACK 通知 + 既存 timeout 併存）。
+
+## Phase C 検証
+
+- `test-sendability-gate.sh` → **PASS=33 FAIL=0 PENDING=0**（30 + C2/C3/C4）。
+- `test-registry-contract.sh` → **PASS=4 FAIL=0**。
+- `tests/smoke-bin.sh` → **PASS=17 FAIL=0**。
+- `test-inbox-check.sh` → **8 passed, 0 failed**（4 + C1 Case D 2 + C5 Case E 2）。
+- 反映: `cp` で `~/bin/{tproj-msg,tproj-inbox-monitor,tproj-inbox-check}`（変更分のみ、
+  install.sh は tmux 稼働中のため未実行）。installed == repo（byte 一致）確認。
+- 実機（live DB 非破壊、read/reject または copy DB 上で検証）:
+  1. monitor 前進: real DB copy に installed monitor を 2s 稼働 → 新 key
+     `tproj-workspace:tproj` が MAX(id)=14314 で cold-start、旧 `.cc`=344 不変、digest 爆発なし。
+  2. `--status`: copy（fresh cursor）で `monitor: ok (last 2026-07-17 07:13:11)`、
+     live（行無し）で `monitor: not running`。既存 status 行不変。
+  3. bare `cdx`（live, 複数列）→ `cdx is ambiguous: oc-general.cdx, ble-bridge.cdx,
+     clawgate.cdx, vibeterm.cdx, tproj.cdx` rc=19、messages 行 0 件（DB 非汚染）。
+  4. 自己宛 `--read tproj.cdx`（copy DB）: synthetic inbound の read_at が
+     NULL → 1784240037（2026-07-17 07:13:57）に前進。
+
+## 逸脱・申し送り
+
+- C1: プラン本文「旧 key の last_message_id を継承」と note「MAX(id) cold-start 適用」は、
+  cold-start = MAX(id) が継承値を上書きするため net で cold-start に収束。過去分再生をしない
+  プラン趣旨（「通知が動き出すこと」）を優先し、旧行は継承せず orphan（無害）として残す。
+  実装は既存 INSERT OR IGNORE の cold-start をそのまま活かし、CONSUMER 変更が主。
+- C5: 既存 `timeout on ...` 通知が既に expire を送信元へ可視化しているため、C5 の
+  `task <id> expired (no ACK ...)` は同一 gc_expired 行から**2 行目**として併存する。
+  文言不変制約（Case B が timeout 文言を固定）と exact-string 要求の両立のための設計。
+  重複というより orchestrator-follow-up 系 / delegation-closure 系の別フレーミング。
