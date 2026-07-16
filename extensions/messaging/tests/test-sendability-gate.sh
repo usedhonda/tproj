@@ -736,6 +736,33 @@ else
   printf 'PASS  C2_read_marks_inbound_read (SKIP: no sqlite3)\n'; PASS=$((PASS+1))
 fi
 
+# C3. --status appends a monitor liveness diagnostic (not running / stale / ok).
+if command -v sqlite3 >/dev/null 2>&1; then
+  MON_KEY="tproj-workspace:tproj"
+  # C3a: no cursor row -> "monitor: not running".
+  reset_fixtures
+  set_ws "$CC_TTY" "running" ""
+  sqlite3 "$TPROJ_MSG_DB_PATH" "DELETE FROM monitor_cursors WHERE consumer='${MON_KEY}';" >/dev/null 2>&1 || true
+  c3a=$(run_status "tproj.cc")
+  # C3b: fresh cursor -> "monitor: ok".
+  sqlite3 "$TPROJ_MSG_DB_PATH" "INSERT OR REPLACE INTO monitor_cursors (consumer,last_message_id,updated_at) VALUES ('${MON_KEY}',1,strftime('%s','now'));" >/dev/null 2>&1 || true
+  c3b=$(run_status "tproj.cc")
+  # C3c: stale cursor -> "monitor: stale".
+  sqlite3 "$TPROJ_MSG_DB_PATH" "UPDATE monitor_cursors SET updated_at=strftime('%s','now')-9999 WHERE consumer='${MON_KEY}';" >/dev/null 2>&1 || true
+  c3c=$(run_status "tproj.cc")
+  sqlite3 "$TPROJ_MSG_DB_PATH" "DELETE FROM monitor_cursors WHERE consumer='${MON_KEY}';" >/dev/null 2>&1 || true
+  if grep -q "monitor: not running" <<<"$c3a" && grep -q "monitor: ok" <<<"$c3b" && grep -q "monitor: stale" <<<"$c3c" \
+     && grep -q "sendable_running" <<<"$c3a"; then
+    printf 'PASS  C3_status_monitor_diagnostic\n'; PASS=$((PASS+1))
+  else
+    printf 'FAIL  C3_status_monitor_diagnostic\n      a=%s\n      b=%s\n      c=%s\n' \
+      "$(tr '\n' '|' <<<"$c3a")" "$(tr '\n' '|' <<<"$c3b")" "$(tr '\n' '|' <<<"$c3c")"
+    FAIL=$((FAIL+1))
+  fi
+else
+  printf 'PASS  C3_status_monitor_diagnostic (SKIP: no sqlite3)\n'; PASS=$((PASS+1))
+fi
+
 # =============================================================================
 echo "----"
 printf 'PASS=%d FAIL=%d PENDING=%d\n' "$PASS" "$FAIL" "$PENDING"

@@ -3386,12 +3386,40 @@ if [[ "$FLUSH_MODE" == "true" ]]; then
 fi
 
 # === --status mode (target optional) ===
+# C3 (P0-2): self's inbox-monitor liveness, derived from the monitor_cursors row
+# for this session+alias (the C1 role-independent key). Additive only: it prints
+# one extra line and never alters the existing status rows. Fail-open when the DB
+# layer, the DB file, or the cursor row is absent.
+print_monitor_diagnostic() {
+  declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_quote >/dev/null 2>&1 \
+    && declare -F tt_db_path >/dev/null 2>&1 || return 0
+  [[ -n "${MY_ALIAS:-}" ]] || return 0
+  local db threshold key row age last_dt
+  db=$(tt_db_path)
+  [[ -f "$db" ]] || return 0
+  key=$(tt_db_quote "${SESSION}:${MY_ALIAS}")
+  threshold="${TPROJ_MONITOR_STALE_SEC:-300}"
+  row=$(tt_db_exec_safe "SELECT (strftime('%s','now') - updated_at) || '|' || datetime(updated_at,'unixepoch','localtime') FROM monitor_cursors WHERE consumer='${key}';" 2>/dev/null)
+  if [[ -z "$row" ]]; then
+    printf "%-20s  monitor: not running\n" ""
+    return 0
+  fi
+  age="${row%%|*}"
+  last_dt="${row#*|}"
+  if [[ "$age" =~ ^-?[0-9]+$ ]] && (( age > threshold )); then
+    printf "%-20s  monitor: stale (last %s)\n" "" "$last_dt"
+  else
+    printf "%-20s  monitor: ok (last %s)\n" "" "$last_dt"
+  fi
+}
+
 if [[ "$STATUS_MODE" == "true" ]]; then
   if [[ -n "$TARGET" ]]; then
     # Gate target: show bridge health instead of pane status
     if is_gate_target "$TARGET"; then
       gstatus=$(gate_health)
       printf "%-20s  %s\n" "$TARGET" "$gstatus"
+      print_monitor_diagnostic
       exit 0
     fi
     TARGET_PANE=$(resolve_target "$TARGET")
@@ -3405,6 +3433,7 @@ if [[ "$STATUS_MODE" == "true" ]]; then
     local_qcount=$(queue_count "$TARGET")
     printf "%-20s  %s/%s  (queued: %s)\n" "$TARGET" "$local_live" "$local_status" "$local_qcount"
     printf "%-20s  detail: %s\n" "" "$local_detail_reason"
+    print_monitor_diagnostic
   else
     if [[ "$IS_WORKSPACE" == "true" ]]; then
       tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null | \
@@ -3434,6 +3463,7 @@ if [[ "$STATUS_MODE" == "true" ]]; then
     # Append gate status
     gstatus=$(gate_health)
     printf "%-20s  %s\n" "gate" "$gstatus"
+    print_monitor_diagnostic
   fi
   exit 0
 fi
