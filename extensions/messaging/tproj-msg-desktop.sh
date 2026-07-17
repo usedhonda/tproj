@@ -299,6 +299,24 @@ _desktop_mailbox_write_locked() {
   return 3
 }
 
+# Drain (explicit ack-all) a mailbox dir: delete every envelope and print the
+# number removed to stdout. This is the ONLY delete path a recipient invokes to
+# reclaim a full mailbox — normal read (below) stays pure/non-deleting. Runs
+# under the per-mailbox lock so a concurrent write is serialized. Fail-open.
+desktop_mailbox_drain() {
+  local dir="$1"
+  [[ -d "$dir" ]] || { printf '0'; return 0; }
+  with_desktop_mailbox_lock "$dir" _desktop_mailbox_drain_locked "$dir"
+}
+_desktop_mailbox_drain_locked() {
+  local dir="$1" f n=0
+  for f in "$dir"/*.json; do
+    [[ -e "$f" ]] || continue
+    rm -f "$f" 2>/dev/null && n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+
 # Read (pure inspection) every current envelope in <dir>, oldest first, to stdout
 # as human-readable blocks. TTL-purges first. NO execution, NO resend, NO task
 # accept, NO role change, NO deletion of read messages. Prints a "(no messages)"

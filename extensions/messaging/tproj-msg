@@ -74,10 +74,12 @@ Usage:
   tproj-msg --list                     List available targets
   tproj-msg --read <target> [lines]    Read target's recent output
   tproj-msg --read desktop             Read messages the Codex Desktop sent to this pane
+  tproj-msg --drain desktop            Ack-all: clear messages the Codex Desktop sent to this pane
   tproj-msg desktop.<project> <msg>    Write to the Codex Desktop mailbox (data-plane only)
   tproj-msg --desktop --session <name> <target> <msg>
                                        Codex Desktop side: write to a session pane's mailbox
   tproj-msg --desktop --mailbox        Codex Desktop side: read this desktop's own mailbox
+  tproj-msg --desktop --drain          Codex Desktop side: ack-all clear this desktop's own mailbox
   tproj-msg --status [target]          Show idle/busy state + queue info
   tproj-msg --flush                    Deliver all queued messages to idle targets
   Note: Desktop is a data-plane mailbox only -- no pane injection, no task tracking, no control flags
@@ -243,6 +245,7 @@ ALLOW_CHI_RETRY_REASON=""
 STDIN_MODE=false
 DESKTOP_MODE=false
 MAILBOX_MODE=false
+DRAIN_MODE=false
 EXPLICIT_SESSION=""
 EXPLICIT_AS=""
 TARGET=""
@@ -351,6 +354,14 @@ while [[ $# -gt 0 ]]; do
       MAILBOX_MODE=true
       shift
       ;;
+    --drain)
+      # Explicit ack-all: delete every envelope in the caller's own inbox.
+      #   --desktop --drain   Desktop side: drain to-desktop/<project>.
+      #   --drain desktop     session side: drain to-session/<session>/<self>.
+      # The only delete path a recipient invokes; plain read stays pure.
+      DRAIN_MODE=true
+      shift
+      ;;
     --session)
       shift
       [[ $# -lt 1 ]] && { echo "Error: --session requires <name>" >&2; exit 1; }
@@ -393,14 +404,15 @@ MODE_COUNT=0
 [[ "$FLUSH_MODE" == "true" ]] && ((MODE_COUNT++)) || true
 [[ "$STATUS_MODE" == "true" ]] && ((MODE_COUNT++)) || true
 [[ "$VERSION_MODE" == "true" ]] && ((MODE_COUNT++)) || true
+[[ "$DRAIN_MODE" == "true" ]] && ((MODE_COUNT++)) || true
 
 if [[ $MODE_COUNT -gt 1 ]]; then
-  echo "Error: mode options cannot be combined (--fire/--force/--list/--read/--flush/--status/--version)" >&2
+  echo "Error: mode options cannot be combined (--fire/--force/--list/--read/--flush/--status/--version/--drain)" >&2
   exit 1
 fi
 
 SEND_MODE=true
-if [[ "$LIST_MODE" == "true" || "$READ_MODE" == "true" || "$FLUSH_MODE" == "true" || "$STATUS_MODE" == "true" || "$VERSION_MODE" == "true" ]]; then
+if [[ "$LIST_MODE" == "true" || "$READ_MODE" == "true" || "$FLUSH_MODE" == "true" || "$STATUS_MODE" == "true" || "$VERSION_MODE" == "true" || "$DRAIN_MODE" == "true" ]]; then
   SEND_MODE=false
 fi
 # --mailbox (read own Desktop mailbox) is a pure-inspection mode, not a send.
@@ -492,7 +504,17 @@ if [[ "$READ_MODE" == "true" ]]; then
   READ_LINES="${POSITIONAL_ARGS[1]:-50}"
 fi
 
-if [[ "$LIST_MODE" != "true" && "$READ_MODE" != "true" && "$FLUSH_MODE" != "true" && "$STATUS_MODE" != "true" && "$MAILBOX_MODE" != "true" ]]; then
+if [[ "$DRAIN_MODE" == "true" && "$DESKTOP_MODE" != "true" ]]; then
+  # Session-side drain: --drain <desktop target> (drains this pane's own inbox).
+  [[ ${#POSITIONAL_ARGS[@]} -eq 1 ]] || { echo "Error: --drain requires exactly one target (desktop[.<project>])" >&2; exit 1; }
+  TARGET="${POSITIONAL_ARGS[0]}"
+  case "$TARGET" in
+    desktop|desktop.*) : ;;
+    *) echo "Error: --drain target must be a Desktop mailbox (desktop[.<project>]); use --desktop --drain on the Desktop side" >&2; exit 1 ;;
+  esac
+fi
+
+if [[ "$LIST_MODE" != "true" && "$READ_MODE" != "true" && "$FLUSH_MODE" != "true" && "$STATUS_MODE" != "true" && "$MAILBOX_MODE" != "true" && "$DRAIN_MODE" != "true" ]]; then
   if [[ "$STDIN_MODE" == "true" ]]; then
     [[ ${#POSITIONAL_ARGS[@]} -ge 1 ]] || { echo "Error: --stdin requires <target>" >&2; show_usage; exit 1; }
     TARGET="${POSITIONAL_ARGS[0]}"
@@ -960,6 +982,14 @@ handle_desktop_mode() {
     exit 0
   fi
 
+  # --- drain own mailbox (explicit ack-all; reclaims a full to-desktop box) ---
+  if [[ "$DRAIN_MODE" == "true" ]]; then
+    local _n
+    _n=$(desktop_mailbox_drain "$(desktop_mailbox_dir to-desktop "$DESKTOP_PROJECT")")
+    echo "Drained ${_n} message(s) from Desktop mailbox: $DESKTOP_IDENTITY" >&2
+    exit 0
+  fi
+
   # --- Desktop -> session send (writes mailbox + body-free arrival bell) ---
   if [[ -z "$EXPLICIT_SESSION" ]]; then
     echo "Error: --desktop send requires --session <name>" >&2
@@ -993,7 +1023,7 @@ handle_desktop_mode() {
   case "$_rc" in
     0) : ;;
     1) echo "Error: message exceeds mailbox size limit (${TPROJ_DESKTOP_MAILBOX_MAX_BYTES} bytes)" >&2; exit 1 ;;
-    2) echo "Error: mailbox for $TARGET is full (${TPROJ_DESKTOP_MAILBOX_MAX_COUNT} messages); recipient must drain it" >&2; exit 1 ;;
+    2) echo "Error: mailbox for $TARGET is full (${TPROJ_DESKTOP_MAILBOX_MAX_COUNT} messages); recipient must drain it (tproj-msg --drain desktop)" >&2; exit 1 ;;
     *) echo "Error: failed to write Desktop mailbox for $TARGET" >&2; exit 1 ;;
   esac
 
@@ -3977,6 +4007,14 @@ do_desktop_session_side() {
     exit 0
   fi
 
+  # --- drain: explicit ack-all of this pane's own inbox (reclaims a full box) ---
+  if [[ "$DRAIN_MODE" == "true" ]]; then
+    local _n
+    _n=$(desktop_mailbox_drain "$(desktop_mailbox_dir to-session "$SESSION" "$_self")")
+    echo "Drained ${_n} message(s) from Desktop mailbox for $_self" >&2
+    exit 0
+  fi
+
   # Task tracking cannot cross the mailbox boundary (Desktop cannot ACK/handoff).
   if [[ "$NEW_TASK_MODE" == "true" || "$ROLE_HANDOFF_MODE" == "true" ]]; then
     echo "Error: --new-task / --role-handoff are not supported for Desktop mailbox targets" >&2
@@ -4005,7 +4043,7 @@ do_desktop_session_side() {
   case "$_rc" in
     0) : ;;
     1) echo "Error: message exceeds mailbox size limit (${TPROJ_DESKTOP_MAILBOX_MAX_BYTES} bytes)" >&2; exit 1 ;;
-    2) echo "Error: Desktop mailbox for $TARGET is full (${TPROJ_DESKTOP_MAILBOX_MAX_COUNT} messages)" >&2; exit 1 ;;
+    2) echo "Error: Desktop mailbox for $TARGET is full (${TPROJ_DESKTOP_MAILBOX_MAX_COUNT} messages); recipient must drain it (tproj-msg --desktop --drain)" >&2; exit 1 ;;
     *) echo "Error: failed to write Desktop mailbox for $TARGET" >&2; exit 1 ;;
   esac
   AUTH_PATH="desktop-mailbox"

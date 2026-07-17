@@ -412,6 +412,39 @@ if [[ "$nover" == "2" && "$bodies" == "first,second," ]]; then
   ok dtm32_no_overwrite
 else no dtm32_no_overwrite "nover=$nover bodies=[$bodies]"; fi
 
+# --- Fix 4: explicit drain (ack-all) on each side; plain read stays pure.
+# 33. session-side `--drain desktop` clears this pane's to-session inbox; a prior
+#     plain read must NOT have deleted anything.
+DR_DIR="$WORK/mailbox/to-session/tproj-workspace/tproj.cc"
+rm -rf "$DR_DIR"; mkdir -p "$DR_DIR"
+for i in 1 2 3; do
+  printf '{"from":"desktop.tproj","to":"tproj.cc","body":"d%s","created_at":%s,"bridge":"desktop"}' "$i" "$(date +%s)" > "$DR_DIR/d$i.json"
+done
+run_sess --read desktop >/dev/null 2>&1   # pure read must not delete
+pre=$(ls "$DR_DIR"/*.json 2>/dev/null | wc -l | tr -d '[:space:]')
+out=$(run_sess --drain desktop)
+post=$(ls "$DR_DIR"/*.json 2>/dev/null | wc -l | tr -d '[:space:]')
+if [[ "$pre" == "3" ]] && grep -q "Drained 3 message" <<<"$out" && [[ "$post" == "0" ]]; then
+  ok dtm33_session_drain
+else no dtm33_session_drain "pre=$pre post=$post out=[$out]"; fi
+
+# 34. Desktop-side `--desktop --drain` clears this desktop's to-desktop inbox.
+DD_DIR="$WORK/mailbox/to-desktop/tproj"
+rm -rf "$DD_DIR"; mkdir -p "$DD_DIR"
+for i in 1 2; do
+  printf '{"from":"tproj.cc","to":"desktop.tproj","body":"r%s","created_at":%s,"bridge":"desktop"}' "$i" "$(date +%s)" > "$DD_DIR/r$i.json"
+done
+out=$(run_dt good --desktop --drain 2>&1)
+post=$(ls "$DD_DIR"/*.json 2>/dev/null | wc -l | tr -d '[:space:]')
+if grep -q "Drained 2 message" <<<"$out" && [[ "$post" == "0" ]]; then
+  ok dtm34_desktop_drain
+else no dtm34_desktop_drain "post=$post out=[$out]"; fi
+
+# 35. --drain rejects a non-Desktop target (guard).
+out=$(run_sess --drain tproj.cc 2>&1)
+grep -q "target must be a Desktop mailbox" <<<"$out" \
+  && ok dtm35_drain_rejects_nondesktop || no dtm35_drain_rejects_nondesktop "out=[$out]"
+
 echo "----"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
 [[ $FAIL -eq 0 ]]
