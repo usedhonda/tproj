@@ -52,6 +52,30 @@ Phase-6 integration TODO. Phase 6 (final field integration) and push are deferre
 - auth_path enum += desktop-mailbox / desktop-rejected.
 - Control use from Desktop rejected: --new-task/--role-handoff/--force/--as/relay/fanout.
 
-## Commits (filled as work proceeds)
+## Commits
 
-(see git log; 1 commit = 1 subphase)
+- b312ccc chore(messaging): record desktop-mailbox baseline + assumed-schema note (Phase 0)
+- f4bad69 feat(tproj-msg): Desktop data-plane mailbox — identity + send + read + reject
+  (Phase 1 identity resolver, Phase 2 Desktop->session write + body-free bell,
+   Phase 4 desktop-side read, Phase 5 control reject; helper + 22-case test)
+- 678914d feat(tproj-msg): session side (send to desktop.<project>, --read desktop)
+  (Phase 3 session->desktop write, Phase 4 session-side read; test -> 26 cases)
+- (docs + install.sh + help + state) — this commit
+
+Phase-to-commit note: Phase 1 (identity) and Phase 2 (Desktop->session write) landed
+together in one coherent, fully-working commit rather than a non-functional
+identity-only intermediate (per §5.3A "no half-working commit"). Each commit is
+independently working with all gates green.
+
+## Final gate status
+
+sendability 40 / registry-contract 4 / role-handoff 22 / caller-verify-hardening 13(+1 skip) /
+inbox-check 8 / smoke-bin 17 — all unchanged & green. New gate test-desktop-mailbox.sh: 26/26.
+
+## Deferred (Phase 6 + push)
+
+- General canonical `identity_class=desktop` schema is NOT yet published. The consumer
+  is isolated in `resolve_desktop_identity` / `_desktop_registry_entry_is_desktop` /
+  `_desktop_project_of_entry` with an ASSUMED SCHEMA + Phase-6 TODO. Only those functions
+  change when general lands the schema.
+- push is NOT done (orchestrator tproj.cdx does cross-repo verification first).

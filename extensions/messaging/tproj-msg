@@ -73,8 +73,14 @@ Usage:
                                        Send a symmetric, typing-safe role handoff
   tproj-msg --list                     List available targets
   tproj-msg --read <target> [lines]    Read target's recent output
+  tproj-msg --read desktop             Read messages the Codex Desktop sent to this pane
+  tproj-msg desktop.<project> <msg>    Write to the Codex Desktop mailbox (data-plane only)
+  tproj-msg --desktop --session <name> <target> <msg>
+                                       Codex Desktop side: write to a session pane's mailbox
+  tproj-msg --desktop --mailbox        Codex Desktop side: read this desktop's own mailbox
   tproj-msg --status [target]          Show idle/busy state + queue info
   tproj-msg --flush                    Deliver all queued messages to idle targets
+  Note: Desktop is a data-plane mailbox only -- no pane injection, no task tracking, no control flags
   Note: duplicate control tags ([Control:*], [ACK:*]) are blocked for 10m per target
   Note: relay-like message body is blocked by default ([from:], [Control:], [ACK:], [Persona Sync/Check])
   Note: accidental fan-out is blocked by default for cc/cdx family (same message to many targets)
