@@ -1010,8 +1010,14 @@ handle_desktop_mode() {
 
   # --- drain own mailbox (explicit ack-all; reclaims a full to-desktop box) ---
   if [[ "$DRAIN_MODE" == "true" ]]; then
-    local _n
-    _n=$(desktop_mailbox_drain "$(desktop_mailbox_dir to-desktop "$DESKTOP_PROJECT")")
+    local _n _drc=0
+    _n=$(desktop_mailbox_drain "$(desktop_mailbox_dir to-desktop "$DESKTOP_PROJECT")") || _drc=$?
+    if [[ "$_drc" == "$TPROJ_DESKTOP_MAILBOX_BUSY_RC" ]]; then
+      # Lock contended/stale: the drain never entered the critical section, so
+      # NO envelope was removed. Fail closed rather than delete unserialized.
+      echo "Error: Desktop mailbox is busy (reason: desktop_mailbox_busy); could not acquire mailbox lock to drain" >&2
+      exit "$TPROJ_DESKTOP_MAILBOX_BUSY_RC"
+    fi
     echo "Drained ${_n} message(s) from Desktop mailbox: $DESKTOP_IDENTITY" >&2
     exit 0
   fi
@@ -1055,6 +1061,13 @@ handle_desktop_mode() {
     0) : ;;
     1) echo "Error: message exceeds mailbox size limit (${TPROJ_DESKTOP_MAILBOX_MAX_BYTES} bytes)" >&2; exit 1 ;;
     2) echo "Error: mailbox for $TARGET is full (${TPROJ_DESKTOP_MAILBOX_MAX_COUNT} messages); recipient must drain it (tproj-msg --drain desktop)" >&2; exit 1 ;;
+    "$TPROJ_DESKTOP_MAILBOX_BUSY_RC")
+      # Lock contended/stale: the write never entered the critical section, so
+      # NO envelope was created. Fail closed rather than write unserialized.
+      echo "Error: Desktop mailbox for $TARGET is busy (reason: desktop_mailbox_busy); could not acquire mailbox lock" >&2
+      AUTH_PATH="desktop-rejected"
+      audit_log_caller_decision "$TARGET" "$DESKTOP_IDENTITY" 0 "desktop_mailbox_busy" "" "" ""
+      exit "$TPROJ_DESKTOP_MAILBOX_BUSY_RC" ;;
     *) echo "Error: failed to write Desktop mailbox for $TARGET" >&2; exit 1 ;;
   esac
 
@@ -4040,8 +4053,14 @@ do_desktop_session_side() {
 
   # --- drain: explicit ack-all of this pane's own inbox (reclaims a full box) ---
   if [[ "$DRAIN_MODE" == "true" ]]; then
-    local _n
-    _n=$(desktop_mailbox_drain "$(desktop_mailbox_dir to-session "$SESSION" "$_self")")
+    local _n _drc=0
+    _n=$(desktop_mailbox_drain "$(desktop_mailbox_dir to-session "$SESSION" "$_self")") || _drc=$?
+    if [[ "$_drc" == "$TPROJ_DESKTOP_MAILBOX_BUSY_RC" ]]; then
+      # Lock contended/stale: the drain never entered the critical section, so
+      # NO envelope was removed. Fail closed rather than delete unserialized.
+      echo "Error: Desktop mailbox is busy (reason: desktop_mailbox_busy); could not acquire mailbox lock to drain" >&2
+      exit "$TPROJ_DESKTOP_MAILBOX_BUSY_RC"
+    fi
     echo "Drained ${_n} message(s) from Desktop mailbox for $_self" >&2
     exit 0
   fi
@@ -4075,6 +4094,13 @@ do_desktop_session_side() {
     0) : ;;
     1) echo "Error: message exceeds mailbox size limit (${TPROJ_DESKTOP_MAILBOX_MAX_BYTES} bytes)" >&2; exit 1 ;;
     2) echo "Error: Desktop mailbox for $TARGET is full (${TPROJ_DESKTOP_MAILBOX_MAX_COUNT} messages); recipient must drain it (tproj-msg --desktop --drain)" >&2; exit 1 ;;
+    "$TPROJ_DESKTOP_MAILBOX_BUSY_RC")
+      # Lock contended/stale: the write never entered the critical section, so
+      # NO envelope was created. Fail closed rather than write unserialized.
+      echo "Error: Desktop mailbox for $TARGET is busy (reason: desktop_mailbox_busy); could not acquire mailbox lock" >&2
+      AUTH_PATH="desktop-rejected"
+      audit_log_caller_decision "$TARGET" "$_self" 0 "desktop_mailbox_busy" "$(sha256_hash "$MESSAGE")" "" ""
+      exit "$TPROJ_DESKTOP_MAILBOX_BUSY_RC" ;;
     *) echo "Error: failed to write Desktop mailbox for $TARGET" >&2; exit 1 ;;
   esac
   AUTH_PATH="desktop-mailbox"

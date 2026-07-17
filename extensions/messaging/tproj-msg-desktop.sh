@@ -225,9 +225,19 @@ desktop_mailbox_count() {
 
 # --- per-mailbox critical-section lock (Fix 3) -------------------------------
 # macOS has no flock(1); use an atomic mkdir lock (same idiom as tproj-msg's
-# with_queue_lock). Serializes purge -> count -> write for one mailbox so
-# concurrent writers cannot race past MAX_COUNT. Fail-open after a bounded wait
-# so a stale lock never wedges delivery.
+# send-queue with_queue_lock, but a DISTINCT concept: this guards the desktop
+# mailbox critical section only). Serializes purge -> count -> write and the
+# drain for one mailbox so concurrent writers cannot race past MAX_COUNT and a
+# drain cannot interleave with a write.
+#
+# Fail-CLOSED: if the lock cannot be acquired within the bounded wait, the
+# critical section is NOT entered. Running the write/drain unlocked under a
+# stale/contended lock would defeat the MAX_COUNT cap and the drain's
+# all-or-nothing guarantee, so instead return a distinct busy rc and let the
+# caller abort with reason=desktop_mailbox_busy. TPROJ_DESKTOP_MAILBOX_BUSY_RC
+# is a protocol constant (not an env tunable) that must not collide with the
+# 0/1/2/3 return codes of the locked write/drain bodies.
+TPROJ_DESKTOP_MAILBOX_BUSY_RC=75
 TPROJ_DESKTOP_LOCK_WAIT_MS="${TPROJ_DESKTOP_LOCK_WAIT_MS:-3000}"
 TPROJ_DESKTOP_LOCK_POLL_MS="${TPROJ_DESKTOP_LOCK_POLL_MS:-25}"
 with_desktop_mailbox_lock() {
@@ -243,9 +253,8 @@ with_desktop_mailbox_lock() {
     sleep 0.025
     waited=$(( waited + TPROJ_DESKTOP_LOCK_POLL_MS ))
   done
-  # fail-open: proceed unlocked rather than drop the message. mktemp naming
-  # below stays collision-free even without the lock.
-  "$@"
+  # fail-closed: do NOT run "$@" unlocked. Signal busy so the caller aborts.
+  return "$TPROJ_DESKTOP_MAILBOX_BUSY_RC"
 }
 
 # Write one envelope into <dir> from <from> to <to> with body <body>.

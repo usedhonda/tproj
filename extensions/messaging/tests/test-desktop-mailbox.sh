@@ -489,6 +489,32 @@ out=$(run_sess --drain tproj.cc 2>&1)
 grep -q "target must be a Desktop mailbox" <<<"$out" \
   && ok dtm35_drain_rejects_nondesktop || no dtm35_drain_rejects_nondesktop "out=[$out]"
 
+# --- Blocker 1: with_desktop_mailbox_lock is fail-CLOSED on a contended lock.
+# A precreated lock dir + zero wait forces the acquisition timeout. Both write
+# and drain must fail with the distinct busy rc WITHOUT touching envelopes: no
+# new envelope is created AND the pre-existing envelope is not deleted.
+# 38. precreated-lock / zero-wait -> write + drain both busy, no envelope change.
+LK_DIR="$WORK/mailbox/to-session/tproj-workspace/lock.cc"
+rm -rf "$LK_DIR" "$LK_DIR.lock"; mkdir -p "$LK_DIR"
+printf '{"from":"desktop.tproj","to":"lock.cc","body":"pre","created_at":0,"bridge":"desktop"}' > "$LK_DIR/pre.json"
+lk_result=$(
+  export TPROJ_DESKTOP_MAILBOX_ROOT="$WORK/mailbox"
+  export TPROJ_DESKTOP_LOCK_WAIT_MS=0
+  source "$HELPER"
+  mkdir -p "$LK_DIR.lock"   # hold the lock so acquisition can never succeed
+  desktop_mailbox_write "$LK_DIR" "desktop.tproj" "lock.cc" "should-not-write"; wrc=$?
+  desktop_mailbox_drain "$LK_DIR" >/dev/null 2>&1; drc=$?
+  printf '%s %s %s' "$wrc" "$drc" "$TPROJ_DESKTOP_MAILBOX_BUSY_RC"
+)
+lk_wrc=${lk_result%% *}; lk_rest=${lk_result#* }; lk_drc=${lk_rest%% *}; lk_busy=${lk_rest##* }
+lk_nfiles=$(ls "$LK_DIR"/*.json 2>/dev/null | wc -l | tr -d '[:space:]')
+lk_body=$(jq -r '.body' "$LK_DIR/pre.json" 2>/dev/null)
+if [[ -n "$lk_busy" && "$lk_wrc" == "$lk_busy" && "$lk_drc" == "$lk_busy" \
+      && "$lk_nfiles" == "1" && -e "$LK_DIR/pre.json" && "$lk_body" == "pre" ]]; then
+  ok dtm38_lock_fail_closed
+else no dtm38_lock_fail_closed "wrc=$lk_wrc drc=$lk_drc busy=$lk_busy nfiles=$lk_nfiles body=$lk_body"; fi
+rm -rf "$LK_DIR.lock"
+
 echo "----"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
 [[ $FAIL -eq 0 ]]
