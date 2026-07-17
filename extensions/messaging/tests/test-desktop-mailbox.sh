@@ -49,16 +49,36 @@ if [[ -z "${TPROJ_MSG_DB_PATH:-}" || "$TPROJ_MSG_DB_PATH" == "$HOME/.local/share
   exit 2
 fi
 
-# --- fake tmux: records any send-keys so the no-injection assertion can fire ---
+# --- fake tmux ---------------------------------------------------------------
+# Records any send-keys (so the no-injection assertion can fire) and answers the
+# in-tmux preflight display-message queries so the session-side path can run.
+# HARNESS_PANE_PID ($$ of the session wrapper) is a genuine ancestor of tproj-msg.
 cat > "$BIN_DIR/tmux" <<'TMUX'
 #!/usr/bin/env bash
 set -uo pipefail
 FAKE_DIR="$FAKE_DIR_ENV"
 sub="${1:-}"; shift || true
+fmt=""
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    -p|-F) fmt="${args[$((i+1))]:-}";;
+  esac
+done
 case "$sub" in
   send-keys) printf 'SENDKEYS %s\n' "$*" >> "$FAKE_DIR/sendkeys.log";;
-  display-message) printf '%s' "tproj-workspace";;
+  display-message)
+    case "$fmt" in
+      "#S"|"") printf '%s' "tproj-workspace";;
+      *@alias*)   printf '%s' "tproj";;
+      *@role*)    printf '%s' "claude-p1";;
+      *@column*)  printf '%s' "1";;
+      *pane_pid*) printf '%s' "${HARNESS_PANE_PID:-0}";;
+      *pane_id*)  printf '%s' "%1";;
+      *) : ;;
+    esac ;;
   has-session) exit 0;;
+  set-option|set|setenv) exit 0;;
   *) : ;;
 esac
 exit 0
@@ -253,6 +273,50 @@ grep -q "reply from session" <<<"$out" \
 if [[ -e "$D2S_DIR/env1.json" && ! -e "$FAKE_DIR/sendkeys.log" ]]; then
   ok dtm22_read_is_pure
 else no dtm22_read_is_pure "env-present=$([[ -e "$D2S_DIR/env1.json" ]] && echo y || echo n)"; fi
+
+# --- session side (in-tmux): send to desktop.<project> + --read desktop ------
+# The session wrapper is a genuine ancestor; the pane-derived path verifies the
+# pane_pid (HARNESS_PANE_PID) is an ancestor -> AS_CALLER_VERIFIED=true.
+SESS_WRAP="$BIN_DIR/sess-wrap"
+cat > "$SESS_WRAP" <<WRAP
+#!/bin/bash
+export TMUX=1 TMUX_PANE=%1
+export HARNESS_PANE_PID=\$\$
+"$REAL_TPROJ_MSG" "\$@"
+rc=\$?
+exit \$rc
+WRAP
+chmod +x "$SESS_WRAP"
+
+run_sess() { rm -f "$FAKE_DIR/sendkeys.log"; "$SESS_WRAP" "$@" 2>&1; }
+
+# 23. session -> desktop.tproj write, no send-keys.
+out=$(run_sess desktop.tproj "reply to desktop")
+d2d="$WORK/mailbox/to-desktop/tproj"
+if grep -q "Delivered to Desktop mailbox: tproj.cc -> desktop.tproj" <<<"$out" \
+   && ls "$d2d"/*.json >/dev/null 2>&1 && [[ ! -e "$FAKE_DIR/sendkeys.log" ]]; then
+  ok dtm23_session_to_desktop_write
+else no dtm23_session_to_desktop_write "out=[$out]"; fi
+
+# 24. --read desktop reads what Desktop sent to this pane (to-session mailbox).
+s2p="$WORK/mailbox/to-session/tproj-workspace/tproj.cc"
+mkdir -p "$s2p"
+printf '{"from":"desktop.tproj","to":"tproj.cc","body":"ping to pane","created_at":%s,"bridge":"desktop"}' "$(date +%s)" > "$s2p/ping.json"
+out=$(run_sess --read desktop)
+grep -q "ping to pane" <<<"$out" \
+  && ok dtm24_session_read_desktop || no dtm24_session_read_desktop "out=[$out]"
+
+# 25. session -> desktop with --new-task is rejected (no cross-boundary tasks).
+out=$(run_sess --new-task desktop.tproj "task body")
+grep -q "not supported for Desktop mailbox targets" <<<"$out" \
+  && ok dtm25_session_new_task_reject || no dtm25_session_new_task_reject "out=[$out]"
+
+# 26. full round trip: session write -> Desktop --mailbox read sees it.
+rm -rf "$WORK/mailbox/to-desktop/tproj"
+run_sess desktop.tproj "roundtrip body" >/dev/null 2>&1
+out=$(run_dt good --desktop --session tproj-workspace --mailbox 2>&1)
+grep -q "roundtrip body" <<<"$out" \
+  && ok dtm26_full_round_trip || no dtm26_full_round_trip "out=[$out]"
 
 echo "----"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"

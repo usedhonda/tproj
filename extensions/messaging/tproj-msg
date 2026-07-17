@@ -3897,7 +3897,75 @@ if [[ "$STATUS_MODE" == "true" ]]; then
   exit 0
 fi
 
+# True (rc 0) if TARGET names the Desktop data-plane mailbox (desktop / desktop.<project>).
+is_desktop_target() {
+  case "$1" in
+    desktop|desktop.*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# In-tmux session side of the Desktop mailbox. Never resolves a pane, never
+# send-keys. `--read desktop[.x]` reads what Desktop sent to this pane; a send to
+# `desktop[.x]` writes into the desktop's own mailbox. ALWAYS exits.
+do_desktop_session_side() {
+  if ! declare -F desktop_mailbox_dir >/dev/null 2>&1; then
+    echo "Error: Desktop mailbox helper (tproj-msg-desktop.sh) not available" >&2
+    exit 1
+  fi
+  local _self _proj _rc=0 _mbdir
+  _self="${MY_ALIAS:+${MY_ALIAS}.}${MY_ROLE}"
+
+  # --- read: messages Desktop sent to me (to-session mailbox) ---
+  if [[ "$READ_MODE" == "true" ]]; then
+    desktop_mailbox_read "$(desktop_mailbox_dir to-session "$SESSION" "$_self")"
+    exit 0
+  fi
+
+  # Task tracking cannot cross the mailbox boundary (Desktop cannot ACK/handoff).
+  if [[ "$NEW_TASK_MODE" == "true" || "$ROLE_HANDOFF_MODE" == "true" ]]; then
+    echo "Error: --new-task / --role-handoff are not supported for Desktop mailbox targets" >&2
+    exit 1
+  fi
+
+  # Fail-closed: the sending pane's identity must be verified (same rule the
+  # pane send path enforces). No mailbox write on an unverified sender.
+  if [[ "${AS_CALLER_VERIFIED:-false}" != "true" ]]; then
+    echo "Error: send to '$TARGET' refused: sender identity could not be verified (reason: ${CALLER_VERIFY_REASON:-unverified_caller})" >&2
+    AUTH_PATH="desktop-rejected"
+    audit_log_caller_decision "$TARGET" "$_self" 0 "${CALLER_VERIFY_REASON:-unverified_caller}" "$(sha256_hash "$MESSAGE")" "" ""
+    exit 1
+  fi
+  if [[ -z "${MESSAGE//[[:space:]]/}" ]]; then
+    echo "Error: refusing to send empty / whitespace-only message" >&2
+    exit "$EMPTY_BODY_EXIT"
+  fi
+
+  case "$TARGET" in
+    desktop)   _proj="${MY_ALIAS:-unknown}" ;;
+    desktop.*) _proj="${TARGET#desktop.}" ;;
+  esac
+  _mbdir=$(desktop_mailbox_dir to-desktop "$_proj")
+  desktop_mailbox_write "$_mbdir" "$_self" "$TARGET" "$MESSAGE" || _rc=$?
+  case "$_rc" in
+    0) : ;;
+    1) echo "Error: message exceeds mailbox size limit (${TPROJ_DESKTOP_MAILBOX_MAX_BYTES} bytes)" >&2; exit 1 ;;
+    2) echo "Error: Desktop mailbox for $TARGET is full (${TPROJ_DESKTOP_MAILBOX_MAX_COUNT} messages)" >&2; exit 1 ;;
+    *) echo "Error: failed to write Desktop mailbox for $TARGET" >&2; exit 1 ;;
+  esac
+  AUTH_PATH="desktop-mailbox"
+  audit_log_caller_decision "$TARGET" "$_self" 1 "" \
+    "$(sha256_hash "$MESSAGE")" "[desktop-mailbox]" ""
+  echo "Delivered to Desktop mailbox: $_self -> $TARGET" >&2
+  exit 0
+}
+
 dispatch_mode() {
+# === Desktop mailbox target (data-plane only; no pane) ===
+if is_desktop_target "$TARGET"; then
+  do_desktop_session_side
+fi
+
 # === Send policy precheck (send modes only) ===
 if [[ "$READ_MODE" != "true" ]]; then
   # D2 (msg-repair): refuse empty / whitespace-only bodies (covers empty --stdin
