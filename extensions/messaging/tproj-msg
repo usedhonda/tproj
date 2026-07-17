@@ -149,6 +149,17 @@ TASK_CACHE_HELPER="$(dirname "$SELF_PATH")/tproj-task-cache.sh"
 # Function-only file, no side effects at source time. Fail-open.
 [[ -f "$TASK_CACHE_HELPER" ]] && source "$TASK_CACHE_HELPER" 2>/dev/null || true
 
+# Desktop <-> session data-plane mailbox helper. Function-only, fail-open.
+# Provides the isolated Desktop registry schema consumer + mailbox storage.
+DESKTOP_HELPER="$(dirname "$SELF_PATH")/tproj-msg-desktop.sh"
+if [[ -f "$DESKTOP_HELPER" ]]; then
+  # shellcheck source=/dev/null
+  source "$DESKTOP_HELPER" 2>/dev/null || true
+elif [[ -f "$HOME/bin/tproj-msg-desktop.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "$HOME/bin/tproj-msg-desktop.sh" 2>/dev/null || true
+fi
+
 if [[ -z "${TPROJ_MSG_REEXECED:-}" ]] && [[ "$SELF_PATH" == "$HOME_BIN_PATH" ]] && [[ -n "${REPO_BIN_CANDIDATE:-}" ]] && [[ "$REPO_BIN_CANDIDATE" != "$SELF_PATH" ]]; then
   echo "Info: stale tproj-msg detected at ~/bin; re-exec -> $REPO_BIN_CANDIDATE" >&2
   export TPROJ_MSG_REEXECED=1
@@ -224,6 +235,8 @@ ALLOW_FANOUT_REASON=""
 ALLOW_CHI_RETRY=false
 ALLOW_CHI_RETRY_REASON=""
 STDIN_MODE=false
+DESKTOP_MODE=false
+MAILBOX_MODE=false
 EXPLICIT_SESSION=""
 EXPLICIT_AS=""
 TARGET=""
@@ -320,6 +333,18 @@ while [[ $# -gt 0 ]]; do
       STDIN_MODE=true
       shift
       ;;
+    --desktop)
+      # Codex Desktop data-plane side. Identity is resolved by PID ancestry
+      # against the Desktop registry entry (never a pane, never --as).
+      DESKTOP_MODE=true
+      shift
+      ;;
+    --mailbox)
+      # Read the caller's OWN mailbox (Desktop side: messages sessions sent to
+      # this desktop). Pure inspection; no send, no exec, no task/role change.
+      MAILBOX_MODE=true
+      shift
+      ;;
     --session)
       shift
       [[ $# -lt 1 ]] && { echo "Error: --session requires <name>" >&2; exit 1; }
@@ -371,6 +396,16 @@ fi
 SEND_MODE=true
 if [[ "$LIST_MODE" == "true" || "$READ_MODE" == "true" || "$FLUSH_MODE" == "true" || "$STATUS_MODE" == "true" || "$VERSION_MODE" == "true" ]]; then
   SEND_MODE=false
+fi
+# --mailbox (read own Desktop mailbox) is a pure-inspection mode, not a send.
+if [[ "$MAILBOX_MODE" == "true" ]]; then
+  SEND_MODE=false
+fi
+
+# --- Desktop mode validation (data-plane mailbox only) ---
+if [[ "$MAILBOX_MODE" == "true" && "$DESKTOP_MODE" != "true" ]]; then
+  echo "Error: --mailbox requires --desktop" >&2
+  exit 1
 fi
 
 if [[ "$NEW_TASK_MODE" == "true" && "$SEND_MODE" != "true" ]]; then
@@ -451,7 +486,7 @@ if [[ "$READ_MODE" == "true" ]]; then
   READ_LINES="${POSITIONAL_ARGS[1]:-50}"
 fi
 
-if [[ "$LIST_MODE" != "true" && "$READ_MODE" != "true" && "$FLUSH_MODE" != "true" && "$STATUS_MODE" != "true" ]]; then
+if [[ "$LIST_MODE" != "true" && "$READ_MODE" != "true" && "$FLUSH_MODE" != "true" && "$STATUS_MODE" != "true" && "$MAILBOX_MODE" != "true" ]]; then
   if [[ "$STDIN_MODE" == "true" ]]; then
     [[ ${#POSITIONAL_ARGS[@]} -ge 1 ]] || { echo "Error: --stdin requires <target>" >&2; show_usage; exit 1; }
     TARGET="${POSITIONAL_ARGS[0]}"
@@ -838,6 +873,95 @@ DIRECT_CALLER_EXE=$(ps -p "$DIRECT_CALLER_PID" -o comm= 2>/dev/null || true)
 DIRECT_CALLER_UID=$(ps -p "$DIRECT_CALLER_PID" -o uid= 2>/dev/null | tr -d ' ' || true)
 [[ "$DIRECT_CALLER_UID" =~ ^[0-9]+$ ]] || DIRECT_CALLER_UID=0
 DIRECT_CALLER_START=$(pid_start_epoch_bash "$DIRECT_CALLER_PID")
+
+# === Codex Desktop data-plane mailbox (isolated; never touches panes) ===
+# Desktop is identity_class=desktop: a per-project mailbox peer, not a pane and
+# not an orchestrator/worker. This handler resolves the Desktop identity purely
+# by PID ancestry (resolve_desktop_identity), rejects every control-plane use,
+# and moves envelopes through the user-private mailbox. It ALWAYS exits — the
+# tmux/--as preflight and pane send paths below never run for --desktop.
+handle_desktop_mode() {
+  # Fail-closed if the helper is unavailable (e.g. stale ~/bin without it).
+  if ! declare -F resolve_desktop_identity >/dev/null 2>&1; then
+    echo "Error: Desktop mailbox helper (tproj-msg-desktop.sh) not available" >&2
+    exit 1
+  fi
+
+  # Phase 5 — reject any control-plane use from the Desktop identity class.
+  # Desktop is untrusted: it may never drive task tracking, role handoff, forced
+  # pane delivery, relay/fanout override, or claim a bare/alias identity via --as.
+  local _ctl=""
+  [[ "$NEW_TASK_MODE" == "true" ]]     && _ctl="--new-task"
+  [[ "$ROLE_HANDOFF_MODE" == "true" ]] && _ctl="--role-handoff"
+  [[ "$FORCE_MODE" == "true" ]]        && _ctl="--force"
+  [[ "$FIRE_MODE" == "true" ]]         && _ctl="--fire"
+  [[ "$ALLOW_RELAY" == "true" ]]       && _ctl="--allow-relay"
+  [[ "$ALLOW_FANOUT" == "true" ]]      && _ctl="--allow-fanout"
+  [[ "$ALLOW_CHI_RETRY" == "true" ]]   && _ctl="--allow-chi-retry"
+  [[ -n "$EXPLICIT_AS" ]]              && _ctl="--as"
+  if [[ -n "$_ctl" ]]; then
+    echo "Error: Desktop mailbox rejects control-plane use ($_ctl); Desktop is data-plane only" >&2
+    AUTH_PATH="desktop-rejected"
+    audit_log_caller_decision "${TARGET:-desktop}" "desktop" 0 "desktop_control_rejected" "" "" ""
+    exit 1
+  fi
+
+  # Resolve the unique live Desktop identity from PID ancestry + recorded
+  # pid_start. Body / role labels / --as are NOT consulted.
+  if ! resolve_desktop_identity; then
+    echo "Error: Desktop identity could not be resolved (reason: ${CALLER_VERIFY_REASON:-desktop_identity_unresolved})" >&2
+    AUTH_PATH="desktop-rejected"
+    audit_log_caller_decision "${TARGET:-desktop}" "desktop" 0 "${CALLER_VERIFY_REASON:-desktop_identity_unresolved}" "" "" ""
+    exit 1
+  fi
+  ANCHOR_PID="${VERIFIED_ANCHOR_PID:-0}"
+
+  # --- read own mailbox (messages sessions sent to this desktop) ---
+  if [[ "$MAILBOX_MODE" == "true" ]]; then
+    desktop_mailbox_read "$(desktop_mailbox_dir to-desktop "$DESKTOP_PROJECT")"
+    exit 0
+  fi
+
+  # --- Desktop -> session send (writes mailbox + body-free arrival bell) ---
+  if [[ -z "$EXPLICIT_SESSION" ]]; then
+    echo "Error: --desktop send requires --session <name>" >&2
+    exit 1
+  fi
+  if [[ -z "${MESSAGE//[[:space:]]/}" ]]; then
+    echo "Error: refusing to send empty / whitespace-only message" >&2
+    exit "$EMPTY_BODY_EXIT"
+  fi
+  local _mbdir _rc=0
+  _mbdir=$(desktop_mailbox_dir to-session "$EXPLICIT_SESSION" "$TARGET")
+  # Capture rc without tripping `set -e` when the write is rejected (bounds).
+  desktop_mailbox_write "$_mbdir" "$DESKTOP_IDENTITY" "$TARGET" "$MESSAGE" || _rc=$?
+  case "$_rc" in
+    0) : ;;
+    1) echo "Error: message exceeds mailbox size limit (${TPROJ_DESKTOP_MAILBOX_MAX_BYTES} bytes)" >&2; exit 1 ;;
+    2) echo "Error: mailbox for $TARGET is full (${TPROJ_DESKTOP_MAILBOX_MAX_COUNT} messages); recipient must drain it" >&2; exit 1 ;;
+    *) echo "Error: failed to write Desktop mailbox for $TARGET" >&2; exit 1 ;;
+  esac
+
+  # Body-free arrival bell: record an inbound row keyed to the recipient so the
+  # existing inbox-monitor rings a count-only notification. Body is deliberately
+  # EMPTY in the shared DB — the envelope file is the only content store.
+  if declare -F tt_db_log_message >/dev/null 2>&1; then
+    local _sha
+    _sha=$(printf '%s' "$MESSAGE" | shasum -a 256 2>/dev/null | awk '{print $1}')
+    tt_db_log_message "$EXPLICIT_SESSION" "$DESKTOP_IDENTITY" "$TARGET" "" "$_sha" \
+      "[desktop-mailbox]" "" "inbound" "desktop-mailbox" "desktop" "desktop" "" >/dev/null 2>&1 || true
+  fi
+
+  AUTH_PATH="desktop-mailbox"
+  audit_log_caller_decision "$TARGET" "$DESKTOP_IDENTITY" 1 "" \
+    "$(printf '%s' "$MESSAGE" | shasum -a 256 2>/dev/null | awk '{print $1}')" "[desktop-mailbox]" ""
+  echo "Delivered to Desktop mailbox: $DESKTOP_IDENTITY -> $TARGET (session $EXPLICIT_SESSION)" >&2
+  exit 0
+}
+
+if [[ "$DESKTOP_MODE" == "true" ]]; then
+  handle_desktop_mode
+fi
 
 # === Validate --as usage ===
 if [[ -n "$EXPLICIT_AS" && -z "$EXPLICIT_SESSION" ]]; then
