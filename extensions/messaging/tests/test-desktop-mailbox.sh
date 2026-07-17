@@ -58,11 +58,12 @@ cat > "$BIN_DIR/tmux" <<'TMUX'
 set -uo pipefail
 FAKE_DIR="$FAKE_DIR_ENV"
 sub="${1:-}"; shift || true
-fmt=""
+fmt=""; tgt=""
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   case "${args[$i]}" in
     -p|-F) fmt="${args[$((i+1))]:-}";;
+    -t)    tgt="${args[$((i+1))]:-}";;
   esac
 done
 case "$sub" in
@@ -77,7 +78,13 @@ case "$sub" in
       *pane_id*)  printf '%s' "%1";;
       *) : ;;
     esac ;;
-  has-session) exit 0;;
+  # Only the workspace session (and its :dev window) is live; any other -t target
+  # is an unknown session so the Fix 1 bound can reject it.
+  has-session) case "$tgt" in tproj-workspace|tproj-workspace:*) exit 0;; *) exit 1;; esac;;
+  list-panes)  case "$tgt" in
+                 tproj-workspace:*) printf '%%1:claude-p1:tproj:1\n%%2:codex-p1:tproj:1\n';;
+                 *) : ;;
+               esac ;;
   set-option|set|setenv) exit 0;;
   *) : ;;
 esac
@@ -317,6 +324,35 @@ run_sess desktop.tproj "roundtrip body" >/dev/null 2>&1
 out=$(run_dt good --desktop --session tproj-workspace --mailbox 2>&1)
 grep -q "roundtrip body" <<<"$out" \
   && ok dtm26_full_round_trip || no dtm26_full_round_trip "out=[$out]"
+
+# --- Fix 1: Desktop send is bounded to a live session + a single canonical pane.
+# 27. unknown session -> reject; no mailbox dir, no DB row, no send-keys.
+rm -rf "$WORK/mailbox/to-session/no-such-session" 2>/dev/null
+db_before=0
+[[ $HAS_SQLITE -eq 1 ]] && db_before=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE bridge='desktop' AND direction='inbound';" 2>/dev/null || echo 0)
+out=$(run_dt good --desktop --session no-such-session tproj.cc "to nowhere")
+db_after=0
+[[ $HAS_SQLITE -eq 1 ]] && db_after=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE bridge='desktop' AND direction='inbound';" 2>/dev/null || echo 0)
+if grep -q "session 'no-such-session' is not live" <<<"$out" \
+   && [[ ! -d "$WORK/mailbox/to-session/no-such-session" ]] \
+   && [[ ! -e "$FAKE_DIR/sendkeys.log" ]] \
+   && [[ "$db_before" == "$db_after" ]]; then
+  ok dtm27_invalid_session_reject
+else no dtm27_invalid_session_reject "out=[$out] db=$db_before->$db_after"; fi
+
+# 28. unresolvable target alias -> reject; no mailbox dir, no DB row, no send-keys.
+rm -rf "$WORK/mailbox/to-session/tproj-workspace/ghost.cc" 2>/dev/null
+db_before=0
+[[ $HAS_SQLITE -eq 1 ]] && db_before=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE bridge='desktop' AND direction='inbound';" 2>/dev/null || echo 0)
+out=$(run_dt good --desktop --session tproj-workspace ghost.cc "to ghost")
+db_after=0
+[[ $HAS_SQLITE -eq 1 ]] && db_after=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE bridge='desktop' AND direction='inbound';" 2>/dev/null || echo 0)
+if grep -q "does not resolve to a live pane" <<<"$out" \
+   && [[ ! -d "$WORK/mailbox/to-session/tproj-workspace/ghost.cc" ]] \
+   && [[ ! -e "$FAKE_DIR/sendkeys.log" ]] \
+   && [[ "$db_before" == "$db_after" ]]; then
+  ok dtm28_invalid_target_reject
+else no dtm28_invalid_target_reject "out=[$out] db=$db_before->$db_after"; fi
 
 echo "----"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"

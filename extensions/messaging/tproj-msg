@@ -886,6 +886,38 @@ DIRECT_CALLER_START=$(pid_start_epoch_bash "$DIRECT_CALLER_PID")
 # by PID ancestry (resolve_desktop_identity), rejects every control-plane use,
 # and moves envelopes through the user-private mailbox. It ALWAYS exits — the
 # tmux/--as preflight and pane send paths below never run for --desktop.
+
+# rc 0 iff <target> resolves to exactly one live canonical pane alias in the
+# named session (same list-panes format + short_to_role_pattern that
+# resolve_target uses). resolve_target itself is defined far below this early
+# desktop call site, so its core matching logic is mirrored here with the shared
+# short_to_role_pattern helper rather than reordering the whole script.
+_desktop_target_resolves() {
+  local session="$1" target="$2"
+  local target_alias="" target_role="" pane_list found_col="" role_pattern
+  local pid prole palias pcol
+  case "$target" in
+    *.*)    target_alias="${target%%.*}"; target_role="${target#*.}" ;;
+    cc|cdx) target_role="$target" ;;
+    *)      target_alias="$target"; target_role="cc" ;;
+  esac
+  pane_list=$(tmux list-panes -t "${session}:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null)
+  [[ -n "$pane_list" ]] || return 1
+  if [[ -n "$target_alias" ]]; then
+    while IFS=: read -r pid prole palias pcol; do
+      [[ "$palias" == "$target_alias" ]] && { found_col="$pcol"; break; }
+    done <<< "$pane_list"
+    [[ -n "$found_col" ]] || return 1
+    role_pattern=$(short_to_role_pattern "$target_role" "$found_col")
+  else
+    role_pattern=$(short_to_role_pattern "$target_role")
+  fi
+  while IFS=: read -r pid prole palias pcol; do
+    [[ "$prole" == "$role_pattern" ]] && return 0
+  done <<< "$pane_list"
+  return 1
+}
+
 handle_desktop_mode() {
   # Fail-closed if the helper is unavailable (e.g. stale ~/bin without it).
   if ! declare -F resolve_desktop_identity >/dev/null 2>&1; then
@@ -931,6 +963,23 @@ handle_desktop_mode() {
   # --- Desktop -> session send (writes mailbox + body-free arrival bell) ---
   if [[ -z "$EXPLICIT_SESSION" ]]; then
     echo "Error: --desktop send requires --session <name>" >&2
+    exit 1
+  fi
+  # Fix 1 — bound the write to a real destination BEFORE any mailbox dir, DB bell
+  # or file is created: the session must be live AND the target must resolve to a
+  # single live canonical pane alias. Unresolvable session/target -> hard reject
+  # (no mailbox, no DB row, no send-keys), so an unbounded set of bogus target
+  # strings can neither spawn per-target mailboxes nor DB bell rows.
+  if ! tmux has-session -t "$EXPLICIT_SESSION" 2>/dev/null; then
+    echo "Error: Desktop send rejected: session '$EXPLICIT_SESSION' is not live" >&2
+    AUTH_PATH="desktop-rejected"
+    audit_log_caller_decision "${TARGET:-desktop}" "$DESKTOP_IDENTITY" 0 "desktop_target_session_invalid" "" "" ""
+    exit 1
+  fi
+  if ! _desktop_target_resolves "$EXPLICIT_SESSION" "$TARGET"; then
+    echo "Error: Desktop send rejected: target '$TARGET' does not resolve to a live pane in session '$EXPLICIT_SESSION'" >&2
+    AUTH_PATH="desktop-rejected"
+    audit_log_caller_decision "$TARGET" "$DESKTOP_IDENTITY" 0 "desktop_target_unresolved" "" "" ""
     exit 1
   fi
   if [[ -z "${MESSAGE//[[:space:]]/}" ]]; then
