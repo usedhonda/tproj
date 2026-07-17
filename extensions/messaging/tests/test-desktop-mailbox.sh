@@ -374,6 +374,44 @@ if grep -q "Delivered to Desktop mailbox" <<<"$out" \
   ok dtm30_multibyte_bytes_under_accept
 else no dtm30_multibyte_bytes_under_accept "out=[$out]"; fi
 
+# --- Fix 3: per-mailbox lock (cap under concurrency) + collision-free writes.
+# Exercised at the function level: the helper's write path is self-contained
+# (no registry deps), so source it directly and drive concurrent writers.
+HELPER="$SCRIPT_DIR/../tproj-msg-desktop.sh"
+
+# 31. N concurrent writers never exceed MAX_COUNT (lock serializes count->write).
+CC_DIR="$WORK/mailbox/to-session/tproj-workspace/conc.cc"
+(
+  export TPROJ_DESKTOP_MAILBOX_ROOT="$WORK/mailbox"
+  export TPROJ_DESKTOP_MAILBOX_MAX_COUNT=5
+  source "$HELPER"
+  pids=()
+  for i in $(seq 1 20); do
+    desktop_mailbox_write "$CC_DIR" "desktop.tproj" "conc.cc" "msg-$i" &
+    pids+=("$!")
+  done
+  wait "${pids[@]}"
+)
+nfiles=$(ls "$CC_DIR"/*.json 2>/dev/null | wc -l | tr -d '[:space:]')
+if [[ "$nfiles" -le 5 && "$nfiles" -ge 1 ]]; then
+  ok dtm31_concurrent_cap
+else no dtm31_concurrent_cap "nfiles=$nfiles (cap 5)"; fi
+
+# 32. no-overwrite: two writes with the same epoch/pid yield two distinct
+# envelopes (collision-free mktemp token + no-clobber rename).
+OW_DIR="$WORK/mailbox/to-session/tproj-workspace/over.cc"
+(
+  export TPROJ_DESKTOP_MAILBOX_ROOT="$WORK/mailbox"
+  source "$HELPER"
+  desktop_mailbox_write "$OW_DIR" "desktop.tproj" "over.cc" "first"
+  desktop_mailbox_write "$OW_DIR" "desktop.tproj" "over.cc" "second"
+)
+nover=$(ls "$OW_DIR"/*.json 2>/dev/null | wc -l | tr -d '[:space:]')
+bodies=$(cat "$OW_DIR"/*.json 2>/dev/null | jq -r '.body' 2>/dev/null | sort | tr '\n' ',')
+if [[ "$nover" == "2" && "$bodies" == "first,second," ]]; then
+  ok dtm32_no_overwrite
+else no dtm32_no_overwrite "nover=$nover bodies=[$bodies]"; fi
+
 echo "----"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
 [[ $FAIL -eq 0 ]]

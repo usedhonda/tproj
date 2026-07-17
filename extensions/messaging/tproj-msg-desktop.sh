@@ -220,29 +220,66 @@ desktop_mailbox_count() {
   printf '%s' "$n"
 }
 
+# --- per-mailbox critical-section lock (Fix 3) -------------------------------
+# macOS has no flock(1); use an atomic mkdir lock (same idiom as tproj-msg's
+# with_queue_lock). Serializes purge -> count -> write for one mailbox so
+# concurrent writers cannot race past MAX_COUNT. Fail-open after a bounded wait
+# so a stale lock never wedges delivery.
+TPROJ_DESKTOP_LOCK_WAIT_MS="${TPROJ_DESKTOP_LOCK_WAIT_MS:-3000}"
+TPROJ_DESKTOP_LOCK_POLL_MS="${TPROJ_DESKTOP_LOCK_POLL_MS:-25}"
+with_desktop_mailbox_lock() {
+  local dir="$1"; shift
+  local lockdir="${dir}.lock" waited=0 rc
+  ( umask 077; mkdir -p "$(dirname "$lockdir")" ) 2>/dev/null || true
+  while (( waited < TPROJ_DESKTOP_LOCK_WAIT_MS )); do
+    if mkdir "$lockdir" 2>/dev/null; then
+      "$@"; rc=$?
+      rmdir "$lockdir" 2>/dev/null || true
+      return $rc
+    fi
+    sleep 0.025
+    waited=$(( waited + TPROJ_DESKTOP_LOCK_POLL_MS ))
+  done
+  # fail-open: proceed unlocked rather than drop the message. mktemp naming
+  # below stays collision-free even without the lock.
+  "$@"
+}
+
 # Write one envelope into <dir> from <from> to <to> with body <body>.
 # Enforces per-envelope byte bound and per-mailbox count bound (after TTL purge).
 # 0700 dir, 0600 atomic file (temp+rename under umask 077). Body is stored as-is
 # in a JSON string (jq-encoded) — it is NEVER shell-expanded or pane-injected.
+# The purge -> count -> write critical section runs under a per-mailbox lock and
+# the final name is a collision-free mktemp token + no-clobber rename, so
+# concurrent writers can neither exceed the cap nor overwrite an envelope.
 # rc: 0 ok | 1 body-too-large | 2 mailbox-full | 3 write-error.
 desktop_mailbox_write() {
   local dir="$1" from="$2" to="$3" body="$4"
-  local now count tmp final rand nbytes
+  local nbytes
   # Enforce the limit in BYTES, not characters. `${#body}` counts UTF-8 code
   # points under a multibyte locale (4 Japanese chars == 4, not 12), which would
   # let an oversized body slip past a byte-denominated cap. Count raw bytes.
+  # (No shared state touched -> checked outside the lock.)
   nbytes=$(LC_ALL=C printf '%s' "$body" | wc -c | tr -d '[:space:]')
   [[ "$nbytes" =~ ^[0-9]+$ ]] || nbytes=0
   (( nbytes > TPROJ_DESKTOP_MAILBOX_MAX_BYTES )) && return 1
+  with_desktop_mailbox_lock "$dir" _desktop_mailbox_write_locked "$dir" "$from" "$to" "$body"
+}
+
+# Locked body of desktop_mailbox_write (runs inside with_desktop_mailbox_lock).
+_desktop_mailbox_write_locked() {
+  local dir="$1" from="$2" to="$3" body="$4"
+  local now count tmp final tok
   ( umask 077; mkdir -p "$dir" ) 2>/dev/null || return 3
   chmod 700 "$dir" 2>/dev/null || true
   desktop_mailbox_purge_expired "$dir"
   count=$(desktop_mailbox_count "$dir")
   (( count >= TPROJ_DESKTOP_MAILBOX_MAX_COUNT )) && return 2
   now=$(date +%s)
-  rand=$(printf '%04x' $(( RANDOM )))
-  final="$dir/${now}-$$-${rand}.json"
-  tmp="$dir/.tmp-$$-${rand}"
+  # Collision-free unique temp inside the mailbox dir (BSD mktemp cannot append a
+  # suffix after the X's, so name the temp then derive the .json final from its
+  # unique token). mv -n never clobbers an existing envelope.
+  tmp=$(mktemp "$dir/.wtmp.XXXXXXXX" 2>/dev/null) || return 3
   if ! ( umask 077; jq -n \
       --arg from "$from" --arg to "$to" --arg body "$body" \
       --arg sha "$(printf '%s' "$body" | shasum -a 256 2>/dev/null | awk '{print $1}')" \
@@ -253,11 +290,13 @@ desktop_mailbox_write() {
     return 3
   fi
   chmod 600 "$tmp" 2>/dev/null || true
-  if ! mv -f "$tmp" "$final" 2>/dev/null; then
-    rm -f "$tmp" 2>/dev/null
-    return 3
+  tok="${tmp##*.wtmp.}"
+  final="$dir/${now}-$$-${tok}.json"
+  if mv -n "$tmp" "$final" 2>/dev/null && [[ -e "$final" && ! -e "$tmp" ]]; then
+    return 0
   fi
-  return 0
+  rm -f "$tmp" 2>/dev/null
+  return 3
 }
 
 # Read (pure inspection) every current envelope in <dir>, oldest first, to stdout
