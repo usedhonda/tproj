@@ -28,7 +28,9 @@
 # tt_db_ensure_init migrates existing DBs instead of short-circuiting on file
 # existence. Version 2 folds the additive caller-audit columns into the gated
 # schema (they existed pre-E1 but were only reached via a full reinstall).
-: "${TT_DB_SCHEMA_VERSION:=2}"
+# Version 3 adds the auth_path + anchor_pid attribution columns (additive,
+# nullable), so existing v2 DBs migrate on next write.
+: "${TT_DB_SCHEMA_VERSION:=3}"
 
 tt_db_path() { printf '%s\n' "$TPROJ_MSG_DB_PATH"; }
 tt_db_error_log() { printf '%s\n' "$TPROJ_MSG_DB_ERROR_LOG"; }
@@ -193,6 +195,8 @@ claimed_alias|TEXT
 verified|INTEGER NOT NULL DEFAULT 0
 rejection_reason|TEXT
 payload_sha256|TEXT
+auth_path|TEXT
+anchor_pid|INTEGER
 COLS
 }
 
@@ -264,10 +268,15 @@ tt_db_log_message() {
 # whether the underlying message is ever delivered. Never persists
 # message body/title content: `body`/`body_hash` are always empty for
 # these rows, and payload_sha256 is the only content reference kept.
-# Args (13, first 6 required):
+# Args (15, first 6 required):
 #   session to_alias claimed_alias verified(0|1) rejection_reason
 #   payload_sha256 [caller_pid=0] [caller_ppid=0] [caller_executable=]
-#   [caller_uid=0] [process_start=0] [header=] [task_id=]
+#   [caller_uid=0] [process_start=0] [header=] [task_id=] [auth_path=]
+#   [anchor_pid=0]
+# caller_* describe the REAL direct invoker (this tproj-msg's parent), captured
+# regardless of the verify outcome; anchor_pid is the verification anchor
+# (pane_pid / registry reg_pid / service pid). On a spoof reject these diverge,
+# which is what makes the reject row usable for attribution.
 # Echoes new id on stdout (empty on failure).
 tt_db_log_caller_event() {
   tt_db_guard || return 0
@@ -285,18 +294,23 @@ tt_db_log_caller_event() {
   local process_start="${11:-0}"
   local header=$(tt_db_quote "${12:-}")
   local task_id_raw="${13:-}"
+  local auth_path_raw="${14:-}"
+  local anchor_pid="${15:-0}"
   [[ "$verified" =~ ^[01]$ ]] || verified=0
   [[ "$caller_pid" =~ ^[0-9]+$ ]] || caller_pid=0
   [[ "$caller_ppid" =~ ^[0-9]+$ ]] || caller_ppid=0
   [[ "$caller_uid" =~ ^[0-9]+$ ]] || caller_uid=0
   [[ "$process_start" =~ ^[0-9]+$ ]] || process_start=0
+  [[ "$anchor_pid" =~ ^[0-9]+$ ]] || anchor_pid=0
   local rejection_reason_sql='NULL'
   [[ -n "$rejection_reason_raw" ]] && rejection_reason_sql="'$(tt_db_quote "$rejection_reason_raw")'"
+  local auth_path_sql='NULL'
+  [[ -n "$auth_path_raw" ]] && auth_path_sql="'$(tt_db_quote "$auth_path_raw")'"
   local task_id_sql='NULL'
   [[ -n "$task_id_raw" ]] && task_id_sql="'$(tt_db_quote "$task_id_raw")'"
   local delivery='rejected'
   [[ "$verified" == "1" ]] && delivery='send-keys'
-  local sql="INSERT INTO messages (session, from_alias, to_alias, body, body_hash, header, task_id, direction, delivery, source_kind, bridge, external_id, created_at, caller_pid, caller_ppid, caller_executable, caller_uid, process_start, claimed_alias, verified, rejection_reason, payload_sha256) VALUES ('${session}', '${claimed_alias}', '${to_a}', '', '', '${header}', ${task_id_sql}, 'outbound', '${delivery}', 'cc', 'tmux', NULL, strftime('%s','now'), ${caller_pid}, ${caller_ppid}, '${caller_executable}', ${caller_uid}, ${process_start}, '${claimed_alias}', ${verified}, ${rejection_reason_sql}, '${payload_sha}'); SELECT last_insert_rowid();"
+  local sql="INSERT INTO messages (session, from_alias, to_alias, body, body_hash, header, task_id, direction, delivery, source_kind, bridge, external_id, created_at, caller_pid, caller_ppid, caller_executable, caller_uid, process_start, claimed_alias, verified, rejection_reason, payload_sha256, auth_path, anchor_pid) VALUES ('${session}', '${claimed_alias}', '${to_a}', '', '', '${header}', ${task_id_sql}, 'outbound', '${delivery}', 'cc', 'tmux', NULL, strftime('%s','now'), ${caller_pid}, ${caller_ppid}, '${caller_executable}', ${caller_uid}, ${process_start}, '${claimed_alias}', ${verified}, ${rejection_reason_sql}, '${payload_sha}', ${auth_path_sql}, ${anchor_pid}); SELECT last_insert_rowid();"
   tt_db_exec_safe "$sql"
 }
 

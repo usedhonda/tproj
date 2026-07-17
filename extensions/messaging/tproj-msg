@@ -618,6 +618,7 @@ verify_as_caller_identity() {
   VERIFIED_CALLER_EXECUTABLE=""
   VERIFIED_CALLER_UID=0
   VERIFIED_PROCESS_START=0
+  VERIFIED_ANCHOR_PID=0
 
   if ! reg_file=$(find_registry_state_file "$claimed_alias" "$session"); then
     CALLER_VERIFY_REASON="registry_alias_not_found"
@@ -635,6 +636,9 @@ verify_as_caller_identity() {
     CALLER_VERIFY_REASON="registry_malformed"
     return 1
   fi
+  # The registry reg_pid is the verification anchor for the alias.role / cwd
+  # paths; record it now so even a reject audit row carries the anchor it checked.
+  VERIFIED_ANCHOR_PID="$reg_pid"
   # pid_start binding. A recorded, positive pid_start is REQUIRED: it is compared
   # verbatim against the live ancestor start below (the pid-reuse defence). When
   # the registry omits pid_start (jq // 0 == 0) the caller cannot be authenticated
@@ -748,6 +752,7 @@ verify_bare_role_caller_identity() {
   VERIFIED_CALLER_EXECUTABLE=""
   VERIFIED_CALLER_UID=0
   VERIFIED_PROCESS_START=0
+  VERIFIED_ANCHOR_PID=0
 
   case "$claimed_role" in
     "OpenClaw Agent - Reply") : ;;
@@ -774,6 +779,8 @@ verify_bare_role_caller_identity() {
     CALLER_VERIFY_REASON="service_ancestor_not_found"
     return 1
   fi
+  # The service process is the verification anchor for the bare-role path.
+  VERIFIED_ANCHOR_PID="$svc_pid"
   local svc_uid my_uid
   svc_uid=$(ps -p "$svc_pid" -o uid= 2>/dev/null | tr -d ' ')
   my_uid=$(id -u)
@@ -802,18 +809,35 @@ verify_bare_role_caller_identity() {
 # reject decisions. No message body/title content is ever passed here.
 audit_log_caller_decision() {
   local to_target="$1" claimed_alias="$2" verified="$3" reason="$4" payload_sha="$5" header="${6:-}" task_id="${7:-}"
+  # auth_path enum: explicit-as-verified / explicit-as-rejected /
+  # bare-role-service / bare-role-rejected / pane-derived / pane-derived-rejected
+  # / cwd-ancestry / cwd-ancestry-rejected. caller_* record the REAL direct
+  # invoker (DIRECT_CALLER_*); anchor_pid records the verification anchor
+  # (ANCHOR_PID). They diverge on a spoof reject -- that divergence is the
+  # attribution signal the audit trail is for.
   declare -F tt_db_log_caller_event >/dev/null 2>&1 || return 0
   tt_db_log_caller_event "${SESSION:-}" "$to_target" "$claimed_alias" "$verified" "$reason" \
-    "$payload_sha" "${VERIFIED_CALLER_PID:-0}" "${VERIFIED_CALLER_PPID:-0}" \
-    "${VERIFIED_CALLER_EXECUTABLE:-}" "${VERIFIED_CALLER_UID:-0}" "${VERIFIED_PROCESS_START:-0}" \
-    "$header" "$task_id" >/dev/null 2>&1 || true
+    "$payload_sha" "${DIRECT_CALLER_PID:-0}" "${DIRECT_CALLER_PPID:-0}" \
+    "${DIRECT_CALLER_EXE:-}" "${DIRECT_CALLER_UID:-0}" "${DIRECT_CALLER_START:-0}" \
+    "$header" "$task_id" "${AUTH_PATH:-}" "${ANCHOR_PID:-0}" >/dev/null 2>&1 || true
 }
 
-# Anchor pid for the caller-identity check/audit. For the in-tmux pane-derived
-# path this is the selected pane's pane_pid (its shell), which must be a genuine
-# ancestor of this process. Initialised for set -u safety; the identity branches
-# below overwrite it.
+# Caller-identity audit metadata. ANCHOR_PID is the verification anchor:
+# pane_pid for the in-tmux pane-derived path, registry reg_pid for explicit --as
+# and the CWD fallback, service pid for bare-role. AUTH_PATH names which path
+# decided (see the enum in audit_log_caller_decision). DIRECT_CALLER_* capture
+# the REAL direct invoker (this process's parent) unconditionally, so a reject
+# row records who tried even when verification fails. Initialised for set -u
+# safety; the identity branches below overwrite ANCHOR_PID / AUTH_PATH.
 ANCHOR_PID=0
+AUTH_PATH=""
+DIRECT_CALLER_PID="$PPID"
+DIRECT_CALLER_PPID=$(ps -p "$DIRECT_CALLER_PID" -o ppid= 2>/dev/null | tr -d ' ' || true)
+[[ "$DIRECT_CALLER_PPID" =~ ^[0-9]+$ ]] || DIRECT_CALLER_PPID=0
+DIRECT_CALLER_EXE=$(ps -p "$DIRECT_CALLER_PID" -o comm= 2>/dev/null || true)
+DIRECT_CALLER_UID=$(ps -p "$DIRECT_CALLER_PID" -o uid= 2>/dev/null | tr -d ' ' || true)
+[[ "$DIRECT_CALLER_UID" =~ ^[0-9]+$ ]] || DIRECT_CALLER_UID=0
+DIRECT_CALLER_START=$(pid_start_epoch_bash "$DIRECT_CALLER_PID")
 
 # === Validate --as usage ===
 if [[ -n "$EXPLICIT_AS" && -z "$EXPLICIT_SESSION" ]]; then
@@ -848,7 +872,11 @@ if [[ -n "$EXPLICIT_SESSION" ]]; then
       AS_CLAIMED_IDENTITY="${MY_ALIAS}.${MY_ROLE:-$MY_ROLE_RAW}"
       if verify_as_caller_identity "$AS_CLAIMED_IDENTITY" "$EXPLICIT_SESSION"; then
         AS_CALLER_VERIFIED=true
+        AUTH_PATH="explicit-as-verified"
+      else
+        AUTH_PATH="explicit-as-rejected"
       fi
+      ANCHOR_PID="${VERIFIED_ANCHOR_PID:-0}"
     else
       # Bare role: no alias.role registry entry is possible (not a
       # claude/codex agent). Bound to a known service-owner process
@@ -856,7 +884,11 @@ if [[ -n "$EXPLICIT_SESSION" ]]; then
       AS_CLAIMED_IDENTITY="$MY_ROLE_RAW"
       if verify_bare_role_caller_identity "$MY_ROLE_RAW"; then
         AS_CALLER_VERIFIED=true
+        AUTH_PATH="bare-role-service"
+      else
+        AUTH_PATH="bare-role-rejected"
       fi
+      ANCHOR_PID="${VERIFIED_ANCHOR_PID:-0}"
     fi
     dlog "verify --as: claimed=${AS_CLAIMED_IDENTITY} verified=${AS_CALLER_VERIFIED}"
   else
@@ -895,12 +927,14 @@ if [[ -n "$EXPLICIT_SESSION" ]]; then
       AS_CLAIMED_IDENTITY="${MY_ALIAS}.${MY_ROLE}"
       if verify_as_caller_identity "$AS_CLAIMED_IDENTITY" "$SESSION"; then
         AS_CALLER_VERIFIED=true
-        ANCHOR_PID="${VERIFIED_CALLER_PID:-0}"
+        AUTH_PATH="cwd-ancestry"
       else
         AS_CALLER_VERIFIED=false
+        AUTH_PATH="cwd-ancestry-rejected"
         # CALLER_VERIFY_REASON is set by verify_as_caller_identity; the non---as
         # send gate refuses the send with that reason (fail-closed).
       fi
+      ANCHOR_PID="${VERIFIED_ANCHOR_PID:-0}"
     else
       echo "Error: --session used without --as, and auto-detect failed." >&2
       echo "  CWD alias: ${auto_alias:-<not found>}, parent role: ${auto_role:-<not found>}" >&2
@@ -937,10 +971,11 @@ else
     ANCHOR_PID=$(tmux display-message -t "$MY_PANE" -p '#{pane_pid}' 2>/dev/null | tr -d ' ' || true)
     [[ "$ANCHOR_PID" =~ ^[0-9]+$ ]] || ANCHOR_PID=0
     if [[ "$ANCHOR_PID" -gt 0 ]] && find_registry_ancestor_match "$ANCHOR_PID" >/dev/null 2>&1; then
-      :
+      AUTH_PATH="pane-derived"
     else
       AS_CALLER_VERIFIED=false
       CALLER_VERIFY_REASON="pane_ancestry_mismatch"
+      AUTH_PATH="pane-derived-rejected"
     fi
   fi
 fi
@@ -3385,12 +3420,22 @@ Orchestrator: ${ROLE_HANDOFF_ORCHESTRATOR}
 [Task: ${TASK_ID}] ${MESSAGE}"
     audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 1 "" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
   fi
-  if [[ -n "${EXPLICIT_AS:-}" && "$ROLE_HANDOFF_MODE" != "true" ]]; then
-    MESSAGE="[Task: ${TASK_ID}] ${MESSAGE}"
-    audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 1 "" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
+  if [[ "$ROLE_HANDOFF_MODE" != "true" ]]; then
+    if [[ -n "${EXPLICIT_AS:-}" ]]; then
+      MESSAGE="[Task: ${TASK_ID}] ${MESSAGE}"
+      audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 1 "" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
+    else
+      # Non-explicit-as verified new-task (pane-derived / cwd): exactly one accept
+      # audit too. No [Task:] prepend -- that is an --as-only convention.
+      audit_log_caller_decision "$TARGET" "${AS_CLAIMED_IDENTITY:-${MY_ALIAS:+${MY_ALIAS}.}${MY_ROLE}}" 1 "" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
+    fi
   fi
 elif [[ -n "${EXPLICIT_AS:-}" ]]; then
   audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 1 "" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
+else
+  # Non-explicit-as verified ordinary send (in-tmux pane-derived / cwd): exactly
+  # one accept audit so every send leaves a single caller-audit row.
+  audit_log_caller_decision "$TARGET" "${AS_CLAIMED_IDENTITY:-${MY_ALIAS:+${MY_ALIAS}.}${MY_ROLE}}" 1 "" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
 fi
 
 if fanout_guard_check "$TARGET" "$MESSAGE"; then

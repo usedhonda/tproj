@@ -180,13 +180,29 @@ under a real privilege boundary.
 ## Audit trail (never stores message content)
 
 `messages.db`'s `messages` table gained additive columns (idempotent
-migration, `tt_db_migrate_caller_audit_columns()` in `tproj-msg-db.sh`):
-`caller_pid`, `caller_ppid`, `caller_executable`, `caller_uid`,
-`process_start`, `claimed_alias`, `verified` (`NOT NULL DEFAULT 0` — all
-pre-migration history is fail-safe-marked unverified), `rejection_reason`,
-`payload_sha256`.
+migration, `tt_db_migrate_caller_audit_columns()` in `tproj-msg-db.sh`, gated on
+`PRAGMA user_version`): `caller_pid`, `caller_ppid`, `caller_executable`,
+`caller_uid`, `process_start`, `claimed_alias`, `verified` (`NOT NULL DEFAULT 0`
+— all pre-migration history is fail-safe-marked unverified), `rejection_reason`,
+`payload_sha256`, `auth_path`, and `anchor_pid` (both nullable; pre-migration
+rows are NULL).
 
-`tt_db_log_caller_event()` writes one row per accept/reject decision.
+`tt_db_log_caller_event()` writes **exactly one** row per accept/reject decision,
+for **every** send path (explicit `--as`, bare-role, in-tmux pane-derived, and
+the CWD fallback — accept and reject alike). Attribution fields:
+
+- `caller_pid` / `caller_ppid` / `caller_executable` / `caller_uid` /
+  `process_start` record the **real direct invoker** (this `tproj-msg`'s parent
+  process), captured regardless of the verify outcome — so a spoof reject row
+  records who tried.
+- `anchor_pid` records the **verification anchor**: the in-tmux pane's `pane_pid`,
+  the registry `reg_pid` for `--as`/CWD, or the service pid for bare-role. On a
+  spoof reject the invoker and the anchor diverge, which is the attribution
+  signal.
+- `auth_path` names which path decided, one of: `explicit-as-verified`,
+  `explicit-as-rejected`, `bare-role-service`, `bare-role-rejected`,
+  `pane-derived`, `pane-derived-rejected`, `cwd-ancestry`, `cwd-ancestry-rejected`.
+
 `body` and `body_hash` are always empty strings for these rows — the only
 content reference kept is `payload_sha256`. Document titles, message
 bodies, and any candidate/suggestion text are never written to this
