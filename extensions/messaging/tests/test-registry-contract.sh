@@ -13,7 +13,7 @@
 #
 # Fatal (suite-failing) contract assertions, all RED until Phase B:
 #   P1  router pane_peer() writes a pid_start key on the peer path   (B1)
-#   P2a recorded pid_start absent + live agent ancestor -> VERIFIED  (B2)
+#   P2a recorded pid_start absent -> REJECT pid_start_unrecorded (fail-closed)
 # Fail-closed guards that must STAY green across Phase B:
 #   P2b recorded pid_start present and matching        -> VERIFIED
 #   P2c recorded pid_start present but mismatching      -> REJECT
@@ -232,12 +232,15 @@ run_verify() {
   fi
 }
 
-# P2a — recorded pid_start absent, live agent IS the ancestor -> contract: VERIFY.
+# P2a — recorded pid_start absent -> REJECT pid_start_unrecorded. Re-deriving
+# reg_pid's own live start at verify time is a tautology (same fn, same pid, no
+# pid-reuse defence), so an unrecorded pid_start is fail-closed. The router now
+# stamps pid_start on the peer path (B1/6a1e7e4), making this a transient race.
 res=$(run_verify null_ancestor)
-if [[ "$res" == VERIFY* ]]; then
-  printf 'PASS  P2a_null_pidstart_self_recompute_verifies\n'; PASS=$((PASS+1))
+if [[ "$res" == "REJECT pid_start_unrecorded" ]]; then
+  printf 'PASS  P2a_null_pidstart_rejects\n'; PASS=$((PASS+1))
 else
-  printf 'FAIL  P2a_null_pidstart_self_recompute_verifies (RED until Phase B2: got %s)\n' "$res"
+  printf 'FAIL  P2a_null_pidstart_rejects (want REJECT pid_start_unrecorded, got %s)\n' "$res"
   FAIL=$((FAIL+1))
 fi
 

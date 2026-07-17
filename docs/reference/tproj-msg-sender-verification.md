@@ -70,10 +70,21 @@ Implemented by `verify_as_caller_identity()` in `tproj-msg`.
 2. Walk this process's own ancestry for the exact registry `pid` value (never
    by process name), up to `TPROJ_MSG_VERIFIER_MAX_ANCESTOR_HOPS` hops
    (default `32`), using `find_registry_ancestor_match()`.
-3. On matching `pid`, read that process's absolute start time (`pid_start` from
+3. Require the registry to carry a **recorded, positive `pid_start`**. An
+   absent/zero `pid_start` (`jq // 0 == 0`) is a fail-closed REJECT with the
+   distinct reason `pid_start_unrecorded` — it is *never* re-derived at
+   verification time. Re-deriving `reg_pid`'s own live start and comparing it to
+   the ancestor's `pid_start_epoch_bash(reg_pid)` is a tautology (same function,
+   same pid, always equal) and provides zero pid-reuse defence; that
+   live-recompute shortcut (commit `2814172`) was withdrawn. Because the router
+   now stamps `pid_start` on the peer path as well (model-role-router `6a1e7e4`),
+   an unrecorded value is a transient startup race and the caller should retry
+   once it is written.
+4. On matching `pid`, read that process's absolute start time (`pid_start` from
    `ps -o lstart=`, through `pid_start_epoch_bash()`) and require an exact
-   `pid_start` match with the registry's `pid_start`. A recycled pid cannot pass
-   because `pid_start` would differ from the original process that owned it.
+   `pid_start` match with the registry's recorded `pid_start` (reason
+   `pid_start_mismatch` otherwise). A recycled pid cannot pass because
+   `pid_start` would differ from the original process that owned it.
 5. Require the registry's `observed_at` to be within
    `TPROJ_MSG_REGISTRY_STALE_SECONDS` (default 48h) of now — an
    anti-replay/stale-registry guard.

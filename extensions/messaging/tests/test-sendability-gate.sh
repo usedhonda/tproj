@@ -693,12 +693,16 @@ run_verify_b4() { # <REG_MODE> -> "VERIFY none" | "REJECT <reason>"
   fi
 }
 
-# B4a. unrecorded pid_start + live agent ancestor -> VERIFY (self-recompute, B2).
+# B4a. unrecorded pid_start + live agent ancestor -> REJECT pid_start_unrecorded.
+#      The withdrawn self-recompute (2814172) re-derived reg_pid's own start and
+#      compared it to itself (tautology, zero pid-reuse defence). A live ancestor
+#      does NOT rescue an unrecorded pid_start; the caller retries once the router
+#      stamps it. This is the fail-closed reversal of the old VERIFY expectation.
 res=$(run_verify_b4 unrecorded_live)
-if [[ "$res" == VERIFY* ]]; then
-  printf 'PASS  B4a_unrecorded_live_verifies\n'; PASS=$((PASS+1))
+if [[ "$res" == "REJECT pid_start_unrecorded" ]]; then
+  printf 'PASS  B4a_unrecorded_live_rejects\n'; PASS=$((PASS+1))
 else
-  printf 'FAIL  B4a_unrecorded_live_verifies (want VERIFY, got %s)\n' "$res"; FAIL=$((FAIL+1))
+  printf 'FAIL  B4a_unrecorded_live_rejects (want REJECT pid_start_unrecorded, got %s)\n' "$res"; FAIL=$((FAIL+1))
 fi
 
 # B4b. unrecorded pid_start + dead reg_pid (live recompute impossible) -> REJECT
