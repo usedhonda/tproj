@@ -86,8 +86,11 @@ Implemented by `verify_as_caller_identity()` in `tproj-msg`.
    `pid_start_mismatch` otherwise). A recycled pid cannot pass because
    `pid_start` would differ from the original process that owned it.
 5. Require the registry's `observed_at` to be within
-   `TPROJ_MSG_REGISTRY_STALE_SECONDS` (default 48h) of now — an
-   anti-replay/stale-registry guard.
+   `TPROJ_MSG_REGISTRY_STALE_SECONDS` (default 48h) of now, bounded on **both**
+   sides: too old (`now - observed_at > window`) and in the future
+   (`now - observed_at < 0`, i.e. clock skew or a forged timestamp) are both
+   REJECTed as `registry_stale`. A non-numeric/zero `observed_at` fails closed
+   the same way. This is the anti-replay/stale-registry guard.
 6. On success, expose `VERIFIED_ROLE_EPOCH` and `VERIFIED_ORCHESTRATOR_ALIAS`
    from the registry. A `--role-handoff` send additionally requires the
    caller's claimed `--role-epoch`/`--orchestrator` to equal these exactly

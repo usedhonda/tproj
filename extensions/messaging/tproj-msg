@@ -676,7 +676,14 @@ verify_as_caller_identity() {
     return 1
   fi
   now=$(date +%s)
-  if [[ -z "$reg_observed_at" || "$reg_observed_at" == "0" || $((now - reg_observed_at)) -gt "$TPROJ_MSG_REGISTRY_STALE_SECONDS" ]]; then
+  # observed_at must be present, positive, and within the stale window on BOTH
+  # sides. A value in the future (now - observed_at < 0: clock skew or a forged
+  # timestamp) is as untrustworthy as a stale one and is REJECTed the same way.
+  # Non-numeric values fail closed too (the numeric guard short-circuits before
+  # the arithmetic clauses, so a bad observed_at never reaches (( ... ))).
+  if ! [[ "$reg_observed_at" =~ ^[0-9]+$ ]] || [[ "$reg_observed_at" == "0" ]] \
+     || (( now - reg_observed_at < 0 )) \
+     || (( now - reg_observed_at > TPROJ_MSG_REGISTRY_STALE_SECONDS )); then
     CALLER_VERIFY_REASON="registry_stale"
     return 1
   fi
