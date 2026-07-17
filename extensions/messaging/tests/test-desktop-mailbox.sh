@@ -82,7 +82,14 @@ case "$sub" in
   # is an unknown session so the Fix 1 bound can reject it.
   has-session) case "$tgt" in tproj-workspace|tproj-workspace:*) exit 0;; *) exit 1;; esac;;
   list-panes)  case "$tgt" in
-                 tproj-workspace:*) printf '%%1:claude-p1:tproj:1\n%%2:codex-p1:tproj:1\n';;
+                 tproj-workspace:*)
+                   # FAKE_PANE_LIST overrides the canonical two-pane column so a
+                   # test can build a multi-match (ambiguous) workspace fixture.
+                   if [[ -n "${FAKE_PANE_LIST:-}" ]]; then
+                     printf '%s\n' "$FAKE_PANE_LIST"
+                   else
+                     printf '%%1:claude-p1:tproj:1\n%%2:codex-p1:tproj:1\n'
+                   fi ;;
                  *) : ;;
                esac ;;
   set-option|set|setenv) exit 0;;
@@ -353,6 +360,43 @@ if grep -q "does not resolve to a live pane" <<<"$out" \
    && [[ "$db_before" == "$db_after" ]]; then
   ok dtm28_invalid_target_reject
 else no dtm28_invalid_target_reject "out=[$out] db=$db_before->$db_after"; fi
+
+# --- Strict single-match: a target resolving to MORE THAN ONE live canonical
+# pane is rejected as ambiguous (fail-closed), never first-match picked. Both
+# reject paths must leave NO mailbox file, NO body-free DB bell, NO send-keys.
+# 36. alias spans two columns -> ambiguous reject.
+rm -rf "$WORK/mailbox/to-session/tproj-workspace/amb.cc" 2>/dev/null
+db_before=0
+[[ $HAS_SQLITE -eq 1 ]] && db_before=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE bridge='desktop' AND direction='inbound';" 2>/dev/null || echo 0)
+export FAKE_PANE_LIST=$'%1:claude-p1:amb:1\n%2:codex-p1:amb:1\n%3:claude-p2:amb:2\n%4:codex-p2:amb:2'
+out=$(run_dt good --desktop --session tproj-workspace amb.cc "to ambiguous alias")
+unset FAKE_PANE_LIST
+db_after=0
+[[ $HAS_SQLITE -eq 1 ]] && db_after=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE bridge='desktop' AND direction='inbound';" 2>/dev/null || echo 0)
+if grep -q "resolves to multiple live panes" <<<"$out" \
+   && grep -q "(ambiguous)" <<<"$out" \
+   && [[ ! -d "$WORK/mailbox/to-session/tproj-workspace/amb.cc" ]] \
+   && [[ ! -e "$FAKE_DIR/sendkeys.log" ]] \
+   && [[ "$db_before" == "$db_after" ]]; then
+  ok dtm36_ambiguous_alias_columns_reject
+else no dtm36_ambiguous_alias_columns_reject "out=[$out] db=$db_before->$db_after"; fi
+
+# 37. duplicate canonical pane (same alias+role+column) -> ambiguous reject.
+rm -rf "$WORK/mailbox/to-session/tproj-workspace/dup.cc" 2>/dev/null
+db_before=0
+[[ $HAS_SQLITE -eq 1 ]] && db_before=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE bridge='desktop' AND direction='inbound';" 2>/dev/null || echo 0)
+export FAKE_PANE_LIST=$'%1:claude-p1:dup:1\n%5:claude-p1:dup:1'
+out=$(run_dt good --desktop --session tproj-workspace dup.cc "to duplicate pane")
+unset FAKE_PANE_LIST
+db_after=0
+[[ $HAS_SQLITE -eq 1 ]] && db_after=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE bridge='desktop' AND direction='inbound';" 2>/dev/null || echo 0)
+if grep -q "resolves to multiple live panes" <<<"$out" \
+   && grep -q "(ambiguous)" <<<"$out" \
+   && [[ ! -d "$WORK/mailbox/to-session/tproj-workspace/dup.cc" ]] \
+   && [[ ! -e "$FAKE_DIR/sendkeys.log" ]] \
+   && [[ "$db_before" == "$db_after" ]]; then
+  ok dtm37_ambiguous_duplicate_pane_reject
+else no dtm37_ambiguous_duplicate_pane_reject "out=[$out] db=$db_before->$db_after"; fi
 
 # --- Fix 2: the size cap is enforced in BYTES, not characters.
 # 29. 4 Japanese chars == 12 bytes > 10-byte cap -> reject (char count 4 would pass).

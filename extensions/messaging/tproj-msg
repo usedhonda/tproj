@@ -909,15 +909,21 @@ DIRECT_CALLER_START=$(pid_start_epoch_bash "$DIRECT_CALLER_PID")
 # and moves envelopes through the user-private mailbox. It ALWAYS exits — the
 # tmux/--as preflight and pane send paths below never run for --desktop.
 
-# rc 0 iff <target> resolves to exactly one live canonical pane alias in the
-# named session (same list-panes format + short_to_role_pattern that
-# resolve_target uses). resolve_target itself is defined far below this early
-# desktop call site, so its core matching logic is mirrored here with the shared
-# short_to_role_pattern helper rather than reordering the whole script.
+# rc 0 iff <target> resolves to EXACTLY ONE live canonical pane in the named
+# session (same list-panes format + short_to_role_pattern that resolve_target
+# uses). Strict single-match, fail-closed: zero matches reject as unresolved,
+# and two-or-more matches reject as ambiguous rather than silently picking the
+# first. The reject reason is published in DESKTOP_TARGET_REASON so the caller
+# can split the audit trail (desktop_target_unresolved vs desktop_target_ambiguous).
+# resolve_target itself is defined far below this early desktop call site, so its
+# core matching logic is mirrored here with the shared short_to_role_pattern
+# helper rather than reordering the whole script.
+DESKTOP_TARGET_REASON=""
 _desktop_target_resolves() {
   local session="$1" target="$2"
   local target_alias="" target_role="" pane_list found_col="" role_pattern
-  local pid prole palias pcol
+  local pid prole palias pcol match_count=0
+  DESKTOP_TARGET_REASON="desktop_target_unresolved"
   case "$target" in
     *.*)    target_alias="${target%%.*}"; target_role="${target#*.}" ;;
     cc|cdx) target_role="$target" ;;
@@ -926,17 +932,37 @@ _desktop_target_resolves() {
   pane_list=$(tmux list-panes -t "${session}:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null)
   [[ -n "$pane_list" ]] || return 1
   if [[ -n "$target_alias" ]]; then
+    # Resolve the alias to a single column. A canonical workspace shares one
+    # @alias across a column's cc+cdx panes, so the alias maps to a column, not
+    # a pane. If the same alias appears on more than one column the column is
+    # ambiguous -> fail closed instead of first-match break.
     while IFS=: read -r pid prole palias pcol; do
-      [[ "$palias" == "$target_alias" ]] && { found_col="$pcol"; break; }
+      if [[ "$palias" == "$target_alias" ]]; then
+        if [[ -z "$found_col" ]]; then
+          found_col="$pcol"
+        elif [[ "$pcol" != "$found_col" ]]; then
+          DESKTOP_TARGET_REASON="desktop_target_ambiguous"
+          return 1
+        fi
+      fi
     done <<< "$pane_list"
     [[ -n "$found_col" ]] || return 1
     role_pattern=$(short_to_role_pattern "$target_role" "$found_col")
   else
     role_pattern=$(short_to_role_pattern "$target_role")
   fi
+  # Count panes matching the resolved role pattern: exactly one -> resolve,
+  # zero -> unresolved, two-or-more -> ambiguous (duplicate canonical pane).
   while IFS=: read -r pid prole palias pcol; do
-    [[ "$prole" == "$role_pattern" ]] && return 0
+    if [[ "$prole" == "$role_pattern" ]]; then
+      match_count=$((match_count+1))
+    fi
   done <<< "$pane_list"
+  if [[ "$match_count" -eq 1 ]]; then
+    return 0
+  elif [[ "$match_count" -gt 1 ]]; then
+    DESKTOP_TARGET_REASON="desktop_target_ambiguous"
+  fi
   return 1
 }
 
@@ -1007,9 +1033,14 @@ handle_desktop_mode() {
     exit 1
   fi
   if ! _desktop_target_resolves "$EXPLICIT_SESSION" "$TARGET"; then
-    echo "Error: Desktop send rejected: target '$TARGET' does not resolve to a live pane in session '$EXPLICIT_SESSION'" >&2
+    local _dreason="${DESKTOP_TARGET_REASON:-desktop_target_unresolved}"
+    if [[ "$_dreason" == "desktop_target_ambiguous" ]]; then
+      echo "Error: Desktop send rejected: target '$TARGET' resolves to multiple live panes in session '$EXPLICIT_SESSION' (ambiguous)" >&2
+    else
+      echo "Error: Desktop send rejected: target '$TARGET' does not resolve to a live pane in session '$EXPLICIT_SESSION'" >&2
+    fi
     AUTH_PATH="desktop-rejected"
-    audit_log_caller_decision "$TARGET" "$DESKTOP_IDENTITY" 0 "desktop_target_unresolved" "" "" ""
+    audit_log_caller_decision "$TARGET" "$DESKTOP_IDENTITY" 0 "$_dreason" "" "" ""
     exit 1
   fi
   if [[ -z "${MESSAGE//[[:space:]]/}" ]]; then
