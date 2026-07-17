@@ -98,6 +98,7 @@ export HARNESS_PANE_PID=$$
 export TPROJ_MSG_QUEUE_DIR="$WORK/queue"
 export TPROJ_MSG_CONTROL_DEDUP_DIR="$WORK/control"
 export TPROJ_MSG_FANOUT_DEDUP_DIR="$WORK/fanout"
+export TPROJ_MSG_SEND_DEDUP_DIR="$WORK/send-dedup"
 
 # --- R2 Stage 1 registry harness -------------------------------------------
 # Simulates a caller verified against the model-role-router registry by
