@@ -227,8 +227,13 @@ desktop_mailbox_count() {
 # rc: 0 ok | 1 body-too-large | 2 mailbox-full | 3 write-error.
 desktop_mailbox_write() {
   local dir="$1" from="$2" to="$3" body="$4"
-  local now count tmp final rand
-  (( ${#body} > TPROJ_DESKTOP_MAILBOX_MAX_BYTES )) && return 1
+  local now count tmp final rand nbytes
+  # Enforce the limit in BYTES, not characters. `${#body}` counts UTF-8 code
+  # points under a multibyte locale (4 Japanese chars == 4, not 12), which would
+  # let an oversized body slip past a byte-denominated cap. Count raw bytes.
+  nbytes=$(LC_ALL=C printf '%s' "$body" | wc -c | tr -d '[:space:]')
+  [[ "$nbytes" =~ ^[0-9]+$ ]] || nbytes=0
+  (( nbytes > TPROJ_DESKTOP_MAILBOX_MAX_BYTES )) && return 1
   ( umask 077; mkdir -p "$dir" ) 2>/dev/null || return 3
   chmod 700 "$dir" 2>/dev/null || true
   desktop_mailbox_purge_expired "$dir"

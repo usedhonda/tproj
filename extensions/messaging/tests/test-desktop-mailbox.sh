@@ -354,6 +354,26 @@ if grep -q "does not resolve to a live pane" <<<"$out" \
   ok dtm28_invalid_target_reject
 else no dtm28_invalid_target_reject "out=[$out] db=$db_before->$db_after"; fi
 
+# --- Fix 2: the size cap is enforced in BYTES, not characters.
+# 29. 4 Japanese chars == 12 bytes > 10-byte cap -> reject (char count 4 would pass).
+jp4=$'\xe3\x81\x82\xe3\x81\x82\xe3\x81\x82\xe3\x81\x82'   # 12 bytes / 4 chars
+export TPROJ_DESKTOP_MAILBOX_MAX_BYTES=10
+out=$(run_dt good --desktop --session tproj-workspace tproj.cc "$jp4")
+unset TPROJ_DESKTOP_MAILBOX_MAX_BYTES
+grep -q "exceeds mailbox size limit" <<<"$out" \
+  && ok dtm29_multibyte_bytes_over_reject || no dtm29_multibyte_bytes_over_reject "out=[$out]"
+
+# 30. 3 Japanese chars == 9 bytes <= 10-byte cap -> accepted (byte count, not chars).
+rm -rf "$WORK/mailbox/to-session/tproj-workspace/tproj.cc" 2>/dev/null
+jp3=$'\xe3\x81\x82\xe3\x81\x82\xe3\x81\x82'   # 9 bytes / 3 chars
+export TPROJ_DESKTOP_MAILBOX_MAX_BYTES=10
+out=$(run_dt good --desktop --session tproj-workspace tproj.cc "$jp3")
+unset TPROJ_DESKTOP_MAILBOX_MAX_BYTES
+if grep -q "Delivered to Desktop mailbox" <<<"$out" \
+   && ls "$WORK/mailbox/to-session/tproj-workspace/tproj.cc"/*.json >/dev/null 2>&1; then
+  ok dtm30_multibyte_bytes_under_accept
+else no dtm30_multibyte_bytes_under_accept "out=[$out]"; fi
+
 echo "----"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
 [[ $FAIL -eq 0 ]]
