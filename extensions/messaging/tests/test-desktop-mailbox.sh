@@ -66,6 +66,23 @@ for ((i=0; i<${#args[@]}; i++)); do
     -t)    tgt="${args[$((i+1))]:-}";;
   esac
 done
+# Reproduce tmux session-target semantics so the Fix 2 exact-match ('=') gate is
+# genuinely exercised: a '=name' target matches EXACTLY, a bare name matches by
+# PREFIX (tmux's default). Only tproj-workspace is a live session. The window
+# part (":dev") is stripped before matching the session name.
+fake_live_sessions="tproj-workspace"
+fake_session_live() {
+  local t="${1%%:*}" exact=0 s
+  case "$t" in =*) exact=1; t="${t#=}";; esac
+  for s in $fake_live_sessions; do
+    if (( exact )); then
+      [[ "$s" == "$t" ]] && return 0
+    else
+      [[ "$s" == "$t"* ]] && return 0
+    fi
+  done
+  return 1
+}
 case "$sub" in
   send-keys) printf 'SENDKEYS %s\n' "$*" >> "$FAKE_DIR/sendkeys.log";;
   display-message)
@@ -78,20 +95,19 @@ case "$sub" in
       *pane_id*)  printf '%s' "%1";;
       *) : ;;
     esac ;;
-  # Only the workspace session (and its :dev window) is live; any other -t target
-  # is an unknown session so the Fix 1 bound can reject it.
-  has-session) case "$tgt" in tproj-workspace|tproj-workspace:*) exit 0;; *) exit 1;; esac;;
-  list-panes)  case "$tgt" in
-                 tproj-workspace:*)
-                   # FAKE_PANE_LIST overrides the canonical two-pane column so a
-                   # test can build a multi-match (ambiguous) workspace fixture.
-                   if [[ -n "${FAKE_PANE_LIST:-}" ]]; then
-                     printf '%s\n' "$FAKE_PANE_LIST"
-                   else
-                     printf '%%1:claude-p1:tproj:1\n%%2:codex-p1:tproj:1\n'
-                   fi ;;
-                 *) : ;;
-               esac ;;
+  # Only tproj-workspace is live; a bare prefix would match under tmux's default
+  # but the '=' exact target the code now uses must not.
+  has-session) fake_session_live "$tgt" && exit 0 || exit 1;;
+  list-panes)  if fake_session_live "$tgt"; then
+                 # FAKE_PANE_LIST overrides the canonical two-pane column so a
+                 # test can build a multi-match (ambiguous) or dead-pane fixture.
+                 # The trailing field is #{pane_dead} (0 live / 1 dead).
+                 if [[ -n "${FAKE_PANE_LIST:-}" ]]; then
+                   printf '%s\n' "$FAKE_PANE_LIST"
+                 else
+                   printf '%%1:claude-p1:tproj:1:0\n%%2:codex-p1:tproj:1:0\n'
+                 fi
+               fi ;;
   set-option|set|setenv) exit 0;;
   *) : ;;
 esac
@@ -514,6 +530,40 @@ if [[ -n "$lk_busy" && "$lk_wrc" == "$lk_busy" && "$lk_drc" == "$lk_busy" \
   ok dtm38_lock_fail_closed
 else no dtm38_lock_fail_closed "wrc=$lk_wrc drc=$lk_drc busy=$lk_busy nfiles=$lk_nfiles body=$lk_body"; fi
 rm -rf "$LK_DIR.lock"
+
+# --- Blocker 2: dead panes are excluded and the session must match EXACTLY.
+# Both rejects must leave NO mailbox file, NO body-free DB bell, NO send-keys.
+# 39. target resolves only to a DEAD pane -> reject (dead excluded from the
+#     live single-match count even though its column resolves via a live pane).
+rm -rf "$WORK/mailbox/to-session/tproj-workspace/dead.cc" 2>/dev/null
+db_before=0
+[[ $HAS_SQLITE -eq 1 ]] && db_before=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE bridge='desktop' AND direction='inbound';" 2>/dev/null || echo 0)
+export FAKE_PANE_LIST=$'%1:codex-p1:dead:1:0\n%2:claude-p1:dead:1:1'
+out=$(run_dt good --desktop --session tproj-workspace dead.cc "to dead pane")
+unset FAKE_PANE_LIST
+db_after=0
+[[ $HAS_SQLITE -eq 1 ]] && db_after=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE bridge='desktop' AND direction='inbound';" 2>/dev/null || echo 0)
+if grep -q "does not resolve to a live pane" <<<"$out" \
+   && [[ ! -d "$WORK/mailbox/to-session/tproj-workspace/dead.cc" ]] \
+   && [[ ! -e "$FAKE_DIR/sendkeys.log" ]] \
+   && [[ "$db_before" == "$db_after" ]]; then
+  ok dtm39_dead_pane_reject
+else no dtm39_dead_pane_reject "out=[$out] db=$db_before->$db_after"; fi
+
+# 40. requested session is only a PREFIX of a live session (exact does not exist)
+#     -> reject. tproj-work is a prefix of tproj-workspace; '=' exact rejects it.
+rm -rf "$WORK/mailbox/to-session/tproj-work" 2>/dev/null
+db_before=0
+[[ $HAS_SQLITE -eq 1 ]] && db_before=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE bridge='desktop' AND direction='inbound';" 2>/dev/null || echo 0)
+out=$(run_dt good --desktop --session tproj-work tproj.cc "to prefix session")
+db_after=0
+[[ $HAS_SQLITE -eq 1 ]] && db_after=$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COUNT(*) FROM messages WHERE bridge='desktop' AND direction='inbound';" 2>/dev/null || echo 0)
+if grep -q "session 'tproj-work' is not live" <<<"$out" \
+   && [[ ! -d "$WORK/mailbox/to-session/tproj-work" ]] \
+   && [[ ! -e "$FAKE_DIR/sendkeys.log" ]] \
+   && [[ "$db_before" == "$db_after" ]]; then
+  ok dtm40_session_prefix_reject
+else no dtm40_session_prefix_reject "out=[$out] db=$db_before->$db_after"; fi
 
 echo "----"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"

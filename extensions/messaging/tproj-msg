@@ -922,21 +922,26 @@ DESKTOP_TARGET_REASON=""
 _desktop_target_resolves() {
   local session="$1" target="$2"
   local target_alias="" target_role="" pane_list found_col="" role_pattern
-  local pid prole palias pcol match_count=0
+  local pid prole palias pcol pdead match_count=0
   DESKTOP_TARGET_REASON="desktop_target_unresolved"
   case "$target" in
     *.*)    target_alias="${target%%.*}"; target_role="${target#*.}" ;;
     cc|cdx) target_role="$target" ;;
     *)      target_alias="$target"; target_role="cc" ;;
   esac
-  pane_list=$(tmux list-panes -t "${session}:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null)
+  # Bind the session to an EXACT name with tmux's '=' target syntax so a name
+  # that is merely a prefix of a live session cannot list its panes. #{pane_dead}
+  # is carried so dead panes are excluded from candidate resolution below.
+  pane_list=$(tmux list-panes -t "=${session}:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}:#{pane_dead}' 2>/dev/null)
   [[ -n "$pane_list" ]] || return 1
   if [[ -n "$target_alias" ]]; then
     # Resolve the alias to a single column. A canonical workspace shares one
     # @alias across a column's cc+cdx panes, so the alias maps to a column, not
     # a pane. If the same alias appears on more than one column the column is
-    # ambiguous -> fail closed instead of first-match break.
-    while IFS=: read -r pid prole palias pcol; do
+    # ambiguous -> fail closed instead of first-match break. Dead panes never
+    # contribute a candidate column.
+    while IFS=: read -r pid prole palias pcol pdead; do
+      [[ "$pdead" == "1" ]] && continue
       if [[ "$palias" == "$target_alias" ]]; then
         if [[ -z "$found_col" ]]; then
           found_col="$pcol"
@@ -951,9 +956,11 @@ _desktop_target_resolves() {
   else
     role_pattern=$(short_to_role_pattern "$target_role")
   fi
-  # Count panes matching the resolved role pattern: exactly one -> resolve,
+  # Count LIVE panes matching the resolved role pattern: exactly one -> resolve,
   # zero -> unresolved, two-or-more -> ambiguous (duplicate canonical pane).
-  while IFS=: read -r pid prole palias pcol; do
+  # Dead panes are excluded so a target resolving only to a dead pane rejects.
+  while IFS=: read -r pid prole palias pcol pdead; do
+    [[ "$pdead" == "1" ]] && continue
     if [[ "$prole" == "$role_pattern" ]]; then
       match_count=$((match_count+1))
     fi
@@ -1032,7 +1039,9 @@ handle_desktop_mode() {
   # single live canonical pane alias. Unresolvable session/target -> hard reject
   # (no mailbox, no DB row, no send-keys), so an unbounded set of bogus target
   # strings can neither spawn per-target mailboxes nor DB bell rows.
-  if ! tmux has-session -t "$EXPLICIT_SESSION" 2>/dev/null; then
+  # Exact session match ('=' target syntax): a name that is only a prefix of a
+  # live session must NOT satisfy the liveness gate.
+  if ! tmux has-session -t "=$EXPLICIT_SESSION" 2>/dev/null; then
     echo "Error: Desktop send rejected: session '$EXPLICIT_SESSION' is not live" >&2
     AUTH_PATH="desktop-rejected"
     audit_log_caller_decision "${TARGET:-desktop}" "$DESKTOP_IDENTITY" 0 "desktop_target_session_invalid" "" "" ""
