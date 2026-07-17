@@ -55,6 +55,10 @@ case "$sub" in
       *@column*) readf "column_${target}" ;;
       *pane_current_command*)
         case "$(readf "role_${target}")" in claude*) printf '%s' claude ;; *) printf '%s' codex ;; esac ;;
+      # pane_pid must be a genuine ancestor of the in-tmux caller for the
+      # pane-derived ancestry check (a real pane's shell is). HARNESS_PANE_PID is
+      # the test process ($$), which IS an ancestor of the tproj-msg it spawns.
+      *pane_pid*) printf '%s' "${HARNESS_PANE_PID:-0}" ;;
       *pane_id*) printf '%s' "${target:-%1}" ;;
     esac
     ;;
@@ -87,6 +91,10 @@ ln -s "$TPROJ_MSG" "$BIN/tproj-msg"
 
 export FAKE_DIR_ENV="$FIXTURES"
 export PATH="$BIN:$PATH"
+# The pane-derived caller check requires the selected pane's pane_pid to be a
+# real ancestor of the in-tmux caller. Expose this test process's pid so the fake
+# tmux can return it as pane_pid for the current_pane_metadata_fallback case.
+export HARNESS_PANE_PID=$$
 export TPROJ_MSG_QUEUE_DIR="$WORK/queue"
 export TPROJ_MSG_CONTROL_DEDUP_DIR="$WORK/control"
 export TPROJ_MSG_FANOUT_DEDUP_DIR="$WORK/fanout"

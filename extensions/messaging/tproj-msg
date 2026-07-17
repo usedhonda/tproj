@@ -809,6 +809,12 @@ audit_log_caller_decision() {
     "$header" "$task_id" >/dev/null 2>&1 || true
 }
 
+# Anchor pid for the caller-identity check/audit. For the in-tmux pane-derived
+# path this is the selected pane's pane_pid (its shell), which must be a genuine
+# ancestor of this process. Initialised for set -u safety; the identity branches
+# below overwrite it.
+ANCHOR_PID=0
+
 # === Validate --as usage ===
 if [[ -n "$EXPLICIT_AS" && -z "$EXPLICIT_SESSION" ]]; then
   echo "Error: --as requires --session" >&2
@@ -918,11 +924,24 @@ else
   MY_ROLE_RAW=$(tmux display-message -t "$MY_PANE" -p '#{@role}' 2>/dev/null || true)
   MY_COLUMN=$(tmux display-message -t "$MY_PANE" -p '#{@column}' 2>/dev/null || true)
   MY_ROLE=$(role_to_short "$MY_ROLE_RAW")
-  # In-tmux sends resolve identity from this pane's own tmux user-options,
-  # not from a caller-supplied flag -- not spoofable via --as, so treated
-  # as verified for role-handoff purposes.
+  # In-tmux sends resolve identity from this pane's own tmux user-options. The
+  # pane id itself is caller-influenced (TMUX_PANE env), so for a real send we
+  # additionally require the selected pane's pane_pid (its shell) to be a genuine
+  # ancestor of this process -- proof the send actually originates from inside
+  # that pane. A spoofed TMUX_PANE pointing at another pane whose pane_pid is not
+  # in our ancestry is REJECTed before any send-keys (pane_ancestry_mismatch).
   AS_CALLER_VERIFIED=true
   AS_CLAIMED_IDENTITY="${MY_ALIAS:+${MY_ALIAS}.}${MY_ROLE}"
+  if [[ "$SEND_MODE" == "true" ]]; then
+    ANCHOR_PID=$(tmux display-message -t "$MY_PANE" -p '#{pane_pid}' 2>/dev/null | tr -d ' ' || true)
+    [[ "$ANCHOR_PID" =~ ^[0-9]+$ ]] || ANCHOR_PID=0
+    if [[ "$ANCHOR_PID" -gt 0 ]] && find_registry_ancestor_match "$ANCHOR_PID" >/dev/null 2>&1; then
+      :
+    else
+      AS_CALLER_VERIFIED=false
+      CALLER_VERIFY_REASON="pane_ancestry_mismatch"
+    fi
+  fi
 fi
 
 # === Queue directory ===
@@ -3315,6 +3334,16 @@ fi
 if [[ "${AS_CALLER_VERIFIED:-false}" != "true" && -n "${EXPLICIT_AS:-}" ]]; then
   echo "Error: send refused for '$TARGET': sender identity for --as '${EXPLICIT_AS}' could not be verified (reason: ${CALLER_VERIFY_REASON:-unverified_caller})" >&2
   audit_log_caller_decision "$TARGET" "${AS_CLAIMED_IDENTITY:-$EXPLICIT_AS}" 0 "${CALLER_VERIFY_REASON:-unverified_caller}" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
+  exit 1
+fi
+
+# The non---as send paths (in-tmux pane-derived; the CWD auto-detect fallback)
+# prove ancestry through their own mechanism. If that proof failed for a real
+# send, refuse it here too: no send-keys, only the reject audit entry. SEND_MODE
+# excludes read/status/list, which never send-keys.
+if [[ "${AS_CALLER_VERIFIED:-false}" != "true" && -z "${EXPLICIT_AS:-}" && "$SEND_MODE" == "true" ]]; then
+  echo "Error: send refused for '$TARGET': sender identity could not be verified (reason: ${CALLER_VERIFY_REASON:-unverified_caller})" >&2
+  audit_log_caller_decision "$TARGET" "${AS_CLAIMED_IDENTITY:-${MY_ALIAS:-}.${MY_ROLE:-}}" 0 "${CALLER_VERIFY_REASON:-unverified_caller}" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
   exit 1
 fi
 

@@ -158,12 +158,15 @@ under a real privilege boundary.
 
 ## Fail-closed behavior
 
-- **Unverified `--as` (either class) refuses ALL sends**, not just
-  `--role-handoff`: no `tmux send-keys`, no ordinary `messages` row —
-  only a reject audit entry (see below). This applies to explicit `--as`
-  callers only; the in-tmux pane-derived path and the CWD+ancestry
-  auto-detect fallback (both already prove real process ancestry through
-  a different mechanism) are unaffected.
+- **An unverified sender refuses ALL sends**, not just `--role-handoff`: no
+  `tmux send-keys`, no ordinary `messages` row — only a reject audit entry (see
+  below). This covers every identity path, not just explicit `--as`:
+  - explicit `--as` (alias.role registry binding or bare-role service binding)
+    that failed verification;
+  - the in-tmux **pane-derived** path when the selected pane's `pane_pid` (its
+    shell) is not a genuine ancestor of the sending process — a spoofed
+    `TMUX_PANE` pointing at another pane is refused (`pane_ancestry_mismatch`);
+  - the CWD auto-detect fallback (see below).
 - A verified caller whose claimed `--role-epoch` or `--orchestrator`
   disagrees with the registry is refused (`role_epoch_mismatch` /
   `orchestrator_mismatch`), even though the sender identity itself
