@@ -868,38 +868,39 @@ if [[ -n "$EXPLICIT_SESSION" ]]; then
       # Non-send modes do not need sender identity.
       :
     else
-    # --as omitted: auto-detect sender from CWD + parent process. This
-    # already proves live process ancestry (claude/codex lineage), so it
-    # is treated as verified for role-handoff purposes -- unlike --as, an
-    # external caller cannot pick an arbitrary alias here; auto_alias
-    # comes only from this host's own workspace.yaml CWD mapping.
+    # --as omitted: auto-detect the sender's ALIAS from CWD (workspace.yaml) and
+    # the platform ROLE from the nearest claude/codex ancestor. Both are only
+    # SELECTION inputs (which registry entry to look up) -- the identity itself is
+    # then bound through the EXACT same registry verification as explicit --as
+    # (recorded pid_start>0 + live-start match + observed_at both-bounded + pid
+    # ancestry). The old comm-name-only trust gate is removed: a matching process
+    # name no longer authenticates on its own. A failed bind sets
+    # AS_CALLER_VERIFIED=false and is refused by the non---as send gate below.
     auto_alias=""
     auto_role=""
-    auto_pid=""
     # (a) CWD -> workspace.yaml alias lookup
     ws_cfg="$HOME/.config/tproj/workspace.yaml"
     if command -v yq >/dev/null 2>&1 && [[ -f "$ws_cfg" ]]; then
       auto_alias=$(yq -r ".projects[] | select(.path == \"$(pwd)\") | .alias" "$ws_cfg" 2>/dev/null || true)
       [[ "$auto_alias" == "null" ]] && auto_alias=""
     fi
-    # (b) Walk process ancestry to find claude/codex
+    # (b) Walk process ancestry to find the platform role (selection hint only).
     if auto_ancestor=$(find_agent_ancestor_pid); then
-      auto_pid="${auto_ancestor%% *}"
       auto_role="${auto_ancestor##* }"
     fi
     if [[ -n "$auto_alias" && -n "$auto_role" ]]; then
       MY_ALIAS="$auto_alias"
       MY_ROLE="$auto_role"
       MY_ROLE_RAW="$auto_role"
-      AS_CALLER_VERIFIED=true
       AS_CLAIMED_IDENTITY="${MY_ALIAS}.${MY_ROLE}"
-      VERIFIED_CALLER_PID="$auto_pid"
-      VERIFIED_CALLER_PPID=$(ps -p "$auto_pid" -o ppid= 2>/dev/null | tr -d ' ')
-      [[ "$VERIFIED_CALLER_PPID" =~ ^[0-9]+$ ]] || VERIFIED_CALLER_PPID=0
-      VERIFIED_CALLER_EXECUTABLE=$(ps -p "$auto_pid" -o comm= 2>/dev/null || true)
-      VERIFIED_CALLER_UID=$(ps -p "$auto_pid" -o uid= 2>/dev/null | tr -d ' ')
-      [[ "$VERIFIED_CALLER_UID" =~ ^[0-9]+$ ]] || VERIFIED_CALLER_UID=0
-      VERIFIED_PROCESS_START=$(pid_start_epoch_bash "$auto_pid")
+      if verify_as_caller_identity "$AS_CLAIMED_IDENTITY" "$SESSION"; then
+        AS_CALLER_VERIFIED=true
+        ANCHOR_PID="${VERIFIED_CALLER_PID:-0}"
+      else
+        AS_CALLER_VERIFIED=false
+        # CALLER_VERIFY_REASON is set by verify_as_caller_identity; the non---as
+        # send gate refuses the send with that reason (fail-closed).
+      fi
     else
       echo "Error: --session used without --as, and auto-detect failed." >&2
       echo "  CWD alias: ${auto_alias:-<not found>}, parent role: ${auto_role:-<not found>}" >&2

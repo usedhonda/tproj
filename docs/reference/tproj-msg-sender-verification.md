@@ -166,7 +166,12 @@ under a real privilege boundary.
   - the in-tmux **pane-derived** path when the selected pane's `pane_pid` (its
     shell) is not a genuine ancestor of the sending process — a spoofed
     `TMUX_PANE` pointing at another pane is refused (`pane_ancestry_mismatch`);
-  - the CWD auto-detect fallback (see below).
+  - the **CWD auto-detect** fallback (`--session` without `--as`), which uses the
+    `workspace.yaml`/CWD alias and the nearest agent-ancestor role as *selection
+    inputs only*, then binds identity through the **same alias.role registry
+    verification** as explicit `--as` (recorded `pid_start` + live-start match +
+    both-bounded `observed_at` + pid ancestry). A matching process name no longer
+    authenticates on its own.
 - A verified caller whose claimed `--role-epoch` or `--orchestrator`
   disagrees with the registry is refused (`role_epoch_mismatch` /
   `orchestrator_mismatch`), even though the sender identity itself
