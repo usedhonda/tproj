@@ -3,7 +3,7 @@
 #
 # Sourced by tproj-msg (function-only, no side effects at source time, fail-open).
 #
-# Design contract (plan: ~/.claude/plans/fizzy-floating-bee.md):
+# Design contract:
 #   - Desktop is identity_class=desktop: a per-project data-plane mailbox peer
 #     (desktop.<project>), NOT a pane alias and NOT an orchestrator/worker.
 #   - Desktop-originated content is ALWAYS untrusted mailbox data. It is NEVER
@@ -67,6 +67,9 @@ sanitize_desktop_id() {
 #   "desktop.<x>" .alias, else basename(.project), else "unknown".
 #   TODO(Phase 6): replace the heuristic predicate + project derivation with the
 #   canonical identity_class=desktop fields once general publishes the schema.
+#   TODO(Phase 6): per-app-server-instance record, collision-resistant project
+#   key — pending general schema. Do NOT synthesize these here on speculation;
+#   this isolated consumer is the only site that changes when general lands them.
 # ---------------------------------------------------------------------------
 
 # True (rc 0) if the registry JSON at $1 is a Desktop-class entry (assumed schema).

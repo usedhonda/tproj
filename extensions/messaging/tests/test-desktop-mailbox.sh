@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # test-desktop-mailbox.sh — hermetic coverage for the Codex Desktop <-> tmux
-# session data-plane mailbox (plan: ~/.claude/plans/fizzy-floating-bee.md).
+# session data-plane mailbox.
 #
 # Drives the REAL tproj-msg with a Desktop registry fixture and a fake tmux on
 # PATH. Uses MODEL_ROLE_CACHE / TPROJ_MSG_DB_PATH / TPROJ_DESKTOP_MAILBOX_ROOT
