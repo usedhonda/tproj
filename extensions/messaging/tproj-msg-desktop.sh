@@ -314,7 +314,8 @@ _desktop_mailbox_write_locked() {
 # Drain (explicit ack-all) a mailbox dir: delete every envelope and print the
 # number removed to stdout. This is the ONLY delete path a recipient invokes to
 # reclaim a full mailbox — normal read (below) stays pure/non-deleting. Runs
-# under the per-mailbox lock so a concurrent write is serialized. Fail-open.
+# under the per-mailbox lock so a concurrent write is serialized. Fail-closed:
+# on lock contention the lock returns busy and nothing is deleted.
 desktop_mailbox_drain() {
   local dir="$1"
   [[ -d "$dir" ]] || { printf '0'; return 0; }
