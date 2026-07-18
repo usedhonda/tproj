@@ -368,6 +368,32 @@ else
   echo "  SKIP: sqlite3 not available"
 fi
 
+# Case N2 (R4-2): when our role cannot be resolved, the recipient predicate is
+# unknown, so the notified update is skipped entirely (fail-closed). It must NOT
+# fall back to session+sender+task_id and flag another recipient's row.
+echo "Case N2: notified_at fail-closed when role is unknown"
+if command -v sqlite3 >/dev/null 2>&1; then
+  setup_tmp_with_db
+  export TT_OWNER_ROLE=""   # role unknown (SET but empty)
+  ( source "$TMP/tproj-msg-db.sh"; tt_db_init ) >/dev/null 2>&1 || true
+  # Same session/sender/task; id 100 = us, id 200 = a different recipient (higher
+  # id -> would win ORDER BY id DESC if the recipient predicate were dropped).
+  sqlite3 "$TPROJ_MSG_DB_PATH" \
+    "INSERT INTO messages (id, session, from_alias, to_alias, body, body_hash, task_id, direction, delivery, created_at) VALUES (100,'testsess','$TARGET_NAME','testcol.cc','b','h','role-x','inbound','send-keys',strftime('%s','now'));
+     INSERT INTO messages (id, session, from_alias, to_alias, body, body_hash, task_id, direction, delivery, created_at) VALUES (200,'testsess','$TARGET_NAME','other.cc','b','h','role-x','inbound','send-keys',strftime('%s','now'));" >/dev/null 2>&1 || true
+  make_mock_msg "pane dummy" "TASK_REPLIED=role-x"
+  seed_cache "role-x" 1800 "$OWNER_SELF" "$TARGET_NAME"
+  TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" >/dev/null 2>&1 || true
+  r100="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT CASE WHEN notified_at IS NULL THEN 'null' ELSE 'set' END FROM messages WHERE id=100;" 2>/dev/null || true)"
+  r200="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT CASE WHEN notified_at IS NULL THEN 'null' ELSE 'set' END FROM messages WHERE id=200;" 2>/dev/null || true)"
+  assert_contains "r100=[$r100]" "r100=[null]" "role unknown: our own row is not notified (skipped)"
+  assert_contains "r200=[$r200]" "r200=[null]" "role unknown: another recipient's row is not stolen"
+  teardown_db
+  teardown_tmp
+else
+  echo "  SKIP: sqlite3 not available"
+fi
+
 # Case O (R2): composite task identity. Same task_id from a different
 # owner/target does not overwrite an existing row; repeated owner-less upserts of
 # the same task_id stay idempotent (no row growth); a v5 DB migrates to v6

@@ -65,20 +65,19 @@ if tt_cache_valid_owner "$OWNER"; then
         echo "[inbox-notice] reply arrived from ${target} task=${task_id} — review with tproj-msg --read ${target} 40"
         # R1' Stage 4: mark notified_at on the latest inbound message for this
         # task, so the R2' Monitor doesn't re-emit it. The row is selected by the
-        # FULL scope (session + recipient=self + sender=target + task_id), never
-        # by task_id alone -- otherwise a same task_id in another session/column
-        # would win the ORDER BY id DESC and flag the wrong row. Fail-open.
-        if declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_set_notified >/dev/null 2>&1 \
+        # FULL identity (session + recipient=self + sender=target + task_id) --
+        # never by task_id alone, and the recipient predicate is ALWAYS present.
+        # Fail-CLOSED (R4-2): if our own role could not be resolved we cannot
+        # identify the recipient, so we skip the notified update entirely rather
+        # than flag a row we might not own. Fail-open on missing DB helpers.
+        if [[ -n "$OWNER_ROLE" ]] \
+           && declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_set_notified >/dev/null 2>&1 \
            && declare -F tt_db_quote >/dev/null 2>&1; then
           _sess_q="$(tt_db_quote "${OWNER%%/*}")"
+          _self_q="$(tt_db_quote "${OWNER##*/}.${OWNER_ROLE}")"
           _from_q="$(tt_db_quote "$target")"
           _task_q="$(tt_db_quote "$task_id")"
-          _sel="SELECT id FROM messages WHERE session='${_sess_q}' AND from_alias='${_from_q}' AND task_id='${_task_q}' AND direction='inbound'"
-          if [[ -n "$OWNER_ROLE" ]]; then
-            _self_q="$(tt_db_quote "${OWNER##*/}.${OWNER_ROLE}")"
-            _sel="${_sel} AND to_alias='${_self_q}'"
-          fi
-          _sel="${_sel} ORDER BY id DESC LIMIT 1;"
+          _sel="SELECT id FROM messages WHERE session='${_sess_q}' AND to_alias='${_self_q}' AND from_alias='${_from_q}' AND task_id='${_task_q}' AND direction='inbound' ORDER BY id DESC LIMIT 1;"
           _notify_id="$(tt_db_exec_safe "$_sel" 2>/dev/null || true)"
           [[ -n "$_notify_id" ]] && tt_db_set_notified "$_notify_id" 2>/dev/null || true
         fi
