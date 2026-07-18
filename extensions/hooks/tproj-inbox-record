@@ -39,10 +39,26 @@ task_sent_at="$(printf '%s\n' "$meta_line" | sed -nE 's/.*TASK_SENT_AT=([0-9]+).
 
 # shellcheck source=/dev/null
 source "$CACHE_HELPER"
-tt_cache_add "$task_target" "$task_id" "$task_sent_at" "$task_ttl_sec" ""
+
+# Resolve the issuing owner = "<session>/<owner_alias>" so this task is recorded
+# ONLY under our own column's subdir (cross-column leak fix). TT_CACHE_OWNER is
+# an explicit override (tests / non-tmux callers); otherwise resolve from this
+# pane's tmux session + @alias. Fail-closed: an unresolvable/invalid owner means
+# we do not write the cache at all (never guess another column's subdir).
+if [[ -n "${TT_CACHE_OWNER+x}" ]]; then
+  OWNER="$TT_CACHE_OWNER"
+else
+  _own_sess="$(tmux display-message -p '#S' 2>/dev/null || true)"
+  _own_alias="$(tmux display-message -p '#{@alias}' 2>/dev/null || true)"
+  OWNER="${_own_sess}/${_own_alias}"
+fi
+tt_cache_valid_owner "$OWNER" || exit 0
+
+tt_cache_add "$OWNER" "$task_target" "$task_id" "$task_sent_at" "$task_ttl_sec" ""
 # R1' Stage 4: redundant DB shadow write so hook-only path stays self-sufficient
 # even if tt_cache_add internals change. INSERT OR REPLACE -> idempotent.
+# owner_alias (issuing column) recorded for query/audit.
 if declare -F tt_db_upsert_task >/dev/null 2>&1; then
-  tt_db_upsert_task "$task_id" "$task_target" "$task_sent_at" "$task_ttl_sec" "" 2>/dev/null || true
+  tt_db_upsert_task "$task_id" "$task_target" "$task_sent_at" "$task_ttl_sec" "" "${OWNER##*/}" 2>/dev/null || true
 fi
 exit 0

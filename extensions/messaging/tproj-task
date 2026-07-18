@@ -5,6 +5,17 @@ SELF_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 # shellcheck source=/dev/null
 source "$SELF_DIR/tproj-task-cache.sh"
 
+# Resolve this pane's owner = "<session>/<owner_alias>" so inspection/close acts
+# ONLY on our own column's tracked tasks (cache is owner-scoped, v2). Explicit
+# override via TT_CACHE_OWNER (tests / non-tmux); else resolve from tmux.
+if [[ -n "${TT_CACHE_OWNER+x}" ]]; then
+  OWNER="$TT_CACHE_OWNER"
+else
+  _own_sess="$(tmux display-message -p '#S' 2>/dev/null || true)"
+  _own_alias="$(tmux display-message -p '#{@alias}' 2>/dev/null || true)"
+  OWNER="${_own_sess}/${_own_alias}"
+fi
+
 show_help() {
   cat <<'EOF'
 tproj-task - inspect tracked tproj delegated tasks
@@ -23,18 +34,18 @@ find_task() {
   local target entry
   while IFS= read -r target; do
     [[ -n "$target" ]] || continue
-    if entry="$(tt_cache_get_task "$target" "$task_id" 2>/dev/null)"; then
+    if entry="$(tt_cache_get_task "$OWNER" "$target" "$task_id" 2>/dev/null)"; then
       printf '%s\t%s\n' "$target" "$entry"
       return 0
     fi
-  done < <(tt_cache_list_targets)
+  done < <(tt_cache_list_targets "$OWNER")
   return 1
 }
 
 cmd="${1:-}"
 case "$cmd" in
   list)
-    tt_cache_list_all
+    tt_cache_list_all "$OWNER"
     ;;
   status)
     [[ $# -eq 2 ]] || { echo "Error: status requires <id>" >&2; exit 1; }
@@ -53,11 +64,11 @@ case "$cmd" in
       exit 1
     fi
     target="${result%%$'\t'*}"
-    tt_cache_remove_task "$target" "$2" >/dev/null
+    tt_cache_remove_task "$OWNER" "$target" "$2" >/dev/null
     echo "closed $2 ($target)"
     ;;
   gc)
-    tt_cache_gc_expired
+    tt_cache_gc_expired "$OWNER"
     ;;
   -h|--help|"")
     show_help

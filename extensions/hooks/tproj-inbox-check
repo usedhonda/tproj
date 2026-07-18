@@ -4,11 +4,13 @@ set -euo pipefail
 [[ "${TPROJ_HOOK_ENABLED:-}" == "1" ]] || exit 0
 
 CACHE_DIR="${TT_CACHE_DIR:-$HOME/.cache/tproj-expect-reply}"
-if ! link_count="$(stat -f '%l' "$CACHE_DIR" 2>/dev/null)"; then
-  exit 0
-fi
-
-[[ "${link_count:-0}" -gt 2 ]] || exit 0
+[[ -d "$CACHE_DIR" ]] || exit 0
+# Fast path: nothing cached at all (no owner subdirs and no legacy flat files) ->
+# exit. A regular-file count would miss subdirs and a link count would miss flat
+# files, so probe for any entry. nullglob makes the empty case an empty array.
+shopt -s nullglob 2>/dev/null || true
+_cache_entries=("$CACHE_DIR"/*)
+[[ ${#_cache_entries[@]} -gt 0 ]] || exit 0
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 CACHE_HELPER="$SELF_DIR/tproj-task-cache.sh"
@@ -24,37 +26,58 @@ fi
 # shellcheck source=/dev/null
 source "$CACHE_HELPER"
 
-while IFS= read -r target; do
-  [[ -n "$target" ]] || continue
-  # Snapshot task ids BEFORE --read (which side-effect-deletes matching cache entries).
-  pending_ids="$(tt_cache_list_tasks "$target" | awk -F '\t' 'NF {print $1}')"
-  read_output="$("$MSG_CLI" --read "$target" 40 2>&1 >/dev/null || true)"
-  while IFS= read -r task_id; do
-    [[ -n "$task_id" ]] || continue
-    if printf '%s\n' "$read_output" | grep -q "TASK_REPLIED=${task_id}"; then
-      echo "[inbox-notice] reply arrived from ${target} task=${task_id} — review with tproj-msg --read ${target} 40"
-      # R1' Stage 4: mark notified_at on the latest inbound message for this task_id
-      # so the R2' Monitor doesn't re-emit the same task. Fail-open.
-      if declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_set_notified >/dev/null 2>&1; then
-        _notify_id="$(tt_db_exec_safe "SELECT id FROM messages WHERE task_id='${task_id}' AND direction='inbound' ORDER BY id DESC LIMIT 1;" 2>/dev/null || true)"
-        [[ -n "$_notify_id" ]] && tt_db_set_notified "$_notify_id" 2>/dev/null || true
-      fi
-    fi
-  done <<< "$pending_ids"
-done < <(tt_cache_list_targets)
+# Resolve this pane's owner = "<session>/<owner_alias>" so we enumerate, GC,
+# notify on, and --read ONLY our own column's tracked tasks (cross-column leak
+# fix). TT_CACHE_OWNER overrides (tests / non-tmux); else resolve from tmux.
+# Fail-closed: an unresolvable/invalid owner disables the owner-scoped section
+# entirely (we still run the legacy flat drain, which needs no owner).
+if [[ -n "${TT_CACHE_OWNER+x}" ]]; then
+  OWNER="$TT_CACHE_OWNER"
+else
+  _own_sess="$(tmux display-message -p '#S' 2>/dev/null || true)"
+  _own_alias="$(tmux display-message -p '#{@alias}' 2>/dev/null || true)"
+  OWNER="${_own_sess}/${_own_alias}"
+fi
 
-while IFS=$'\t' read -r target task_id expect_until _timeout_marker; do
-  [[ -n "$target" && -n "$task_id" && -n "$expect_until" ]] || continue
-  now_epoch="$(date +%s)"
-  overdue_sec=$((now_epoch - expect_until))
-  overdue_min=$(( (overdue_sec + 59) / 60 ))
-  [[ "$overdue_min" -lt 0 ]] && overdue_min=0
-  echo "[inbox-notice] timeout on ${target} task=${task_id} (${overdue_min}m overdue) — current orchestrator should follow up, reassign, or take over"
-  # C5 (P0-3): explicit delegation-closure notice for the sender. A cache-expired
-  # task was never replied to (any ACK/DONE/BLOCK read removes the cache entry),
-  # so "no ACK" holds. The whole hook is already gated on TPROJ_HOOK_ENABLED=1,
-  # so a disabled-hook environment emits nothing (fail-open).
-  echo "[inbox-notice] task ${task_id} expired (no ACK from ${target})"
-done < <(tt_cache_gc_expired)
+if tt_cache_valid_owner "$OWNER"; then
+  while IFS= read -r target; do
+    [[ -n "$target" ]] || continue
+    # Snapshot task ids BEFORE --read (which side-effect-deletes matching cache entries).
+    pending_ids="$(tt_cache_list_tasks "$OWNER" "$target" | awk -F '\t' 'NF {print $1}')"
+    read_output="$("$MSG_CLI" --read "$target" 40 2>&1 >/dev/null || true)"
+    while IFS= read -r task_id; do
+      [[ -n "$task_id" ]] || continue
+      if printf '%s\n' "$read_output" | grep -q "TASK_REPLIED=${task_id}"; then
+        echo "[inbox-notice] reply arrived from ${target} task=${task_id} — review with tproj-msg --read ${target} 40"
+        # R1' Stage 4: mark notified_at on the latest inbound message for this task_id
+        # so the R2' Monitor doesn't re-emit the same task. Fail-open.
+        if declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_set_notified >/dev/null 2>&1; then
+          _notify_id="$(tt_db_exec_safe "SELECT id FROM messages WHERE task_id='${task_id}' AND direction='inbound' ORDER BY id DESC LIMIT 1;" 2>/dev/null || true)"
+          [[ -n "$_notify_id" ]] && tt_db_set_notified "$_notify_id" 2>/dev/null || true
+        fi
+      fi
+    done <<< "$pending_ids"
+  done < <(tt_cache_list_targets "$OWNER")
+
+  while IFS=$'\t' read -r target task_id expect_until _timeout_marker; do
+    [[ -n "$target" && -n "$task_id" && -n "$expect_until" ]] || continue
+    now_epoch="$(date +%s)"
+    overdue_sec=$((now_epoch - expect_until))
+    overdue_min=$(( (overdue_sec + 59) / 60 ))
+    [[ "$overdue_min" -lt 0 ]] && overdue_min=0
+    echo "[inbox-notice] timeout on ${target} task=${task_id} (${overdue_min}m overdue) — current orchestrator should follow up, reassign, or take over"
+    # C5 (P0-3): explicit delegation-closure notice for the sender. A cache-expired
+    # task was never replied to (any ACK/DONE/BLOCK read removes the cache entry),
+    # so "no ACK" holds. The whole hook is already gated on TPROJ_HOOK_ENABLED=1,
+    # so a disabled-hook environment emits nothing (fail-open).
+    echo "[inbox-notice] task ${task_id} expired (no ACK from ${target})"
+  done < <(tt_cache_gc_expired "$OWNER")
+fi
+
+# Legacy (pre-v2) flat-layout drain: silently TTL-GC any old unscoped
+# "<target>.json" files at the cache root so they self-empty after upgrade.
+# NO notice is emitted (owner is unknowable, never guess another column's task).
+# Safe to remove a few releases after v2 ships, once no flat files remain.
+tt_cache_gc_legacy_flat >/dev/null 2>&1 || true
 
 exit 0

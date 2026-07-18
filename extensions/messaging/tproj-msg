@@ -3577,11 +3577,35 @@ do_read() {
   # shellcheck source=/dev/null
   source "$TASK_CACHE_HELPER"
   FOUND_REPLY=1
+  # Owner-scoped MUTATION guard (cross-column leak fix): the destructive side
+  # effects -- DB state transition + cache removal -- fire ONLY for task ids
+  # present in OUR OWN cache subdir (owner = "<session>/<my_alias>"). A tag seen
+  # in this target's pane scrollback for a task some OTHER column delegated must
+  # never transition the shared DB row or steal that column's cache entry (which
+  # is how the other column detects its own reply). Fail-closed: an unresolvable
+  # owner tracks nothing, so nothing is mutated.
+  #
+  # The informational `TASK_REPLIED=<id>` stderr line and the exit code are left
+  # untouched for ALL detected tags: they are this invoking pane's own output of
+  # an explicit `--read`, not a cross-column notice (the D5 hook cross-references
+  # only its own pending ids), and legacy `--read` tag-reading compatibility
+  # depends on it.
+  READ_OWNER=""
+  if [[ -n "${SESSION:-}" && -n "${MY_ALIAS:-}" && "$MY_ALIAS" != "null" ]]; then
+    READ_OWNER="${SESSION}/${MY_ALIAS}"
+  fi
+  OWN_TASK_IDS=""
+  if [[ -n "$READ_OWNER" ]] && tt_cache_valid_owner "$READ_OWNER" 2>/dev/null; then
+    OWN_TASK_IDS="$(tt_cache_list_tasks "$READ_OWNER" "$TARGET" 2>/dev/null | awk -F '\t' 'NF {print $1}')"
+  fi
   while IFS= read -r reply_id; do
     [[ -n "$reply_id" ]] || continue
+    # Is this tag for a task WE are tracking in our own cache subdir?
+    _own_task=0
+    printf '%s\n' "$OWN_TASK_IDS" | grep -qxF "$reply_id" && _own_task=1
     # R1' Stage 3: determine tag (ACK/DONE/BLOCK/BLOCKED) for this reply_id and
-    # shadow-write the state transition before cache removal. Fail-open.
-    if declare -F tt_db_transition_task >/dev/null 2>&1; then
+    # shadow-write the state transition before cache removal -- own tasks only.
+    if [[ "$_own_task" -eq 1 ]] && declare -F tt_db_transition_task >/dev/null 2>&1; then
       # Pick the highest-precedence tag for this reply_id: terminal tags
       # (DONE/BLOCK) win over ACK regardless of buffer order, so an ACK still
       # visible in scrollback cannot block the done/blocked transition.
@@ -3598,7 +3622,7 @@ do_read() {
       esac
       [[ -n "$_state" ]] && tt_db_transition_task "$reply_id" "$_state" 2>/dev/null
     fi
-    tt_cache_remove_task "$TARGET" "$reply_id" >/dev/null 2>&1 || true
+    [[ "$_own_task" -eq 1 ]] && tt_cache_remove_task "$READ_OWNER" "$TARGET" "$reply_id" >/dev/null 2>&1 || true
     echo "TASK_REPLIED=${reply_id}" >&2
     FOUND_REPLY=0
   done < <(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo '\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*[^]]+\]' | sed -E 's/^\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*//; s/\]$//' | awk 'NF {print $0}' | sort -u)

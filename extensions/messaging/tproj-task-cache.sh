@@ -2,8 +2,10 @@
 # tproj-task-cache.sh — shared helpers for the Task ID cache used by
 # tproj-msg --new-task / tproj-task CLI / tproj-inbox-{record,check} hooks.
 #
-# Cache layout: ~/.cache/tproj-expect-reply/<target>.json
-# JSON shape (per file, one file per target):
+# Cache layout (v2, owner-scoped): ~/.cache/tproj-expect-reply/<owner>/<target>.json
+#   where <owner> = "<session>/<owner_alias>" (the tmux session name plus the
+#   issuing pane's @alias, i.e. the column that delegated the task).
+# JSON shape (per file, one file per target under an owner subdir):
 #   {
 #     "<task_id>": {
 #       "target":       "<target>",
@@ -15,9 +17,20 @@
 #     ...
 #   }
 #
+# Owner scoping (cross-column leak fix): every owner-scoped op takes the owner
+# key as its first argument. A caller records into, and enumerates from, ONLY
+# its own owner subdir. Owner resolution is fail-closed: an invalid owner
+# (empty, missing session or alias, "unknown"/"null" sentinels, or `..`) makes
+# mutations refuse and read/list ops return empty — the process never touches
+# another column's subdir.
+#
 # Single-writer contract: only tproj-inbox-record (PostToolUse hook) adds.
 # tproj-msg --read, tproj-inbox-check (UserPromptSubmit), and tproj-task close
 # are removers. All ops are idempotent.
+#
+# Legacy flat files (pre-v2, directly under the cache root) are drained silently
+# by tt_cache_gc_legacy_flat (TTL-GC, no notice, no owner guess) so the old
+# unscoped layout self-empties after upgrade.
 #
 # Source this file with `source "$(dirname "$0")/tproj-task-cache.sh"` or
 # its install path. Functions exit non-zero only on missing `jq`.
@@ -45,18 +58,48 @@ tt_cache_require_jq() {
   }
 }
 
+# Validate an owner key "<session>/<owner_alias>". Fail-closed: returns non-zero
+# on empty, missing session/alias, a nested slash, "unknown"/"null" sentinels,
+# or any `..` path traversal. Owner-scoped ops call this before touching disk.
+tt_cache_valid_owner() {
+  local owner="${1:-}"
+  [[ -n "$owner" ]] || return 1
+  [[ "$owner" == */* ]] || return 1
+  local sess="${owner%%/*}" rest="${owner#*/}"
+  [[ -n "$sess" && -n "$rest" ]] || return 1
+  [[ "$rest" != */* ]] || return 1
+  [[ "$owner" != *..* ]] || return 1
+  case "$sess" in unknown|null) return 1 ;; esac
+  case "$rest" in unknown|null) return 1 ;; esac
+  return 0
+}
+
+tt_cache_owner_dir() {
+  local owner="$1"
+  printf '%s/%s\n' "$TT_CACHE_DIR" "$owner"
+}
+
 tt_cache_init_dir() {
-  [[ -d "$TT_CACHE_DIR" ]] || mkdir -p "$TT_CACHE_DIR"
+  # With an owner arg, ensure that owner's subdir exists; else the cache root.
+  local owner="${1:-}"
+  if [[ -n "$owner" ]]; then
+    local d
+    d="$(tt_cache_owner_dir "$owner")"
+    [[ -d "$d" ]] || mkdir -p "$d"
+  else
+    [[ -d "$TT_CACHE_DIR" ]] || mkdir -p "$TT_CACHE_DIR"
+  fi
 }
 
 tt_cache_path_for_target() {
-  local target="$1"
-  printf '%s/%s.json\n' "$TT_CACHE_DIR" "$target"
+  local owner="$1" target="$2"
+  printf '%s/%s/%s.json\n' "$TT_CACHE_DIR" "$owner" "$target"
 }
 
 tt_cache_lock_for_target() {
-  local target="$1"
-  printf '%s/tproj-task-cache.%s.lock\n' "$TT_CACHE_LOCK_DIR" "$target"
+  local owner="$1" target="$2"
+  local key="${owner//\//.}"
+  printf '%s/tproj-task-cache.%s.%s.lock\n' "$TT_CACHE_LOCK_DIR" "$key" "$target"
 }
 
 # mkdir-based advisory lock (POSIX-atomic, works where flock is absent e.g. macOS).
@@ -120,14 +163,15 @@ tt_cache_msg_hash() {
 }
 
 tt_cache_add() {
-  # Arguments: target task_id sent_at ttl_sec msg_hash
+  # Arguments: owner target task_id sent_at ttl_sec [msg_hash]
   tt_cache_require_jq || return $?
-  local target="$1" task_id="$2" sent_at="$3" ttl_sec="$4" msg_hash="${5:-}"
+  local owner="$1" target="$2" task_id="$3" sent_at="$4" ttl_sec="$5" msg_hash="${6:-}"
+  tt_cache_valid_owner "$owner" || return 2
   local expect_until=$((sent_at + ttl_sec))
-  tt_cache_init_dir
+  tt_cache_init_dir "$owner"
   local path lock
-  path="$(tt_cache_path_for_target "$target")"
-  lock="$(tt_cache_lock_for_target "$target")"
+  path="$(tt_cache_path_for_target "$owner" "$target")"
+  lock="$(tt_cache_lock_for_target "$owner" "$target")"
   tt_cache_acquire_lock "$lock" 5 || return 1
   local rc=0
   {
@@ -149,21 +193,24 @@ tt_cache_add() {
     fi
   }
   tt_cache_release_lock "$lock"
-  # R1' Stage 2 shadow write — best-effort, never affects rc.
+  # R1' Stage 2 shadow write — best-effort, never affects rc. owner_alias (the
+  # issuing column) is recorded for query/audit; it is the alias part of owner.
   if [[ $rc -eq 0 ]] && declare -F tt_db_upsert_task >/dev/null 2>&1; then
-    tt_db_upsert_task "$task_id" "$target" "$sent_at" "$ttl_sec" "$msg_hash" || true
+    tt_db_upsert_task "$task_id" "$target" "$sent_at" "$ttl_sec" "$msg_hash" "${owner##*/}" || true
   fi
   return $rc
 }
 
 tt_cache_remove_task() {
-  # Arguments: target task_id
-  # Idempotent: missing target/task is not an error.
+  # Arguments: owner target task_id
+  # Idempotent: missing owner/target/task is not an error. An invalid owner is a
+  # no-op (fail-closed: never touch another column's subdir).
   tt_cache_require_jq || return $?
-  local target="$1" task_id="$2"
+  local owner="$1" target="$2" task_id="$3"
+  tt_cache_valid_owner "$owner" || return 0
   local path lock
-  path="$(tt_cache_path_for_target "$target")"
-  lock="$(tt_cache_lock_for_target "$target")"
+  path="$(tt_cache_path_for_target "$owner" "$target")"
+  lock="$(tt_cache_lock_for_target "$owner" "$target")"
   [[ -s "$path" ]] || return 0
   tt_cache_acquire_lock "$lock" 5 || return 1
   local rc=0
@@ -186,20 +233,25 @@ tt_cache_remove_task() {
 }
 
 tt_cache_get_task() {
-  # Arguments: target task_id -> prints entry JSON on stdout, empty if missing.
+  # Arguments: owner target task_id -> prints entry JSON on stdout, empty if
+  # missing. Invalid owner prints nothing (fail-closed).
   tt_cache_require_jq || return $?
-  local target="$1" task_id="$2"
+  local owner="$1" target="$2" task_id="$3"
+  tt_cache_valid_owner "$owner" || return 0
   local path
-  path="$(tt_cache_path_for_target "$target")"
+  path="$(tt_cache_path_for_target "$owner" "$target")"
   [[ -s "$path" ]] || return 0
   jq -c --arg id "$task_id" '.[$id] // empty' "$path"
 }
 
 tt_cache_list_targets() {
-  # Lists targets with at least one active task entry on stdout, one per line.
-  [[ -d "$TT_CACHE_DIR" ]] || return 0
-  local f base
-  for f in "$TT_CACHE_DIR"/*.json; do
+  # Arguments: owner -> lists targets with at least one active task entry under
+  # that owner subdir, one per line. Invalid owner lists nothing (fail-closed).
+  local owner="$1" dir f base
+  tt_cache_valid_owner "$owner" || return 0
+  dir="$(tt_cache_owner_dir "$owner")"
+  [[ -d "$dir" ]] || return 0
+  for f in "$dir"/*.json; do
     [[ -e "$f" ]] || continue
     [[ -s "$f" ]] || continue
     base=$(basename "$f" .json)
@@ -208,39 +260,42 @@ tt_cache_list_targets() {
 }
 
 tt_cache_list_tasks() {
-  # Arguments: target -> lines "<task_id>\t<sent_at>\t<expect_until>"
+  # Arguments: owner target -> lines "<task_id>\t<sent_at>\t<expect_until>"
   tt_cache_require_jq || return $?
-  local target="$1"
+  local owner="$1" target="$2"
+  tt_cache_valid_owner "$owner" || return 0
   local path
-  path="$(tt_cache_path_for_target "$target")"
+  path="$(tt_cache_path_for_target "$owner" "$target")"
   [[ -s "$path" ]] || return 0
   jq -r 'to_entries[] | [.key, (.value.sent_at|tostring), (.value.expect_until|tostring)] | @tsv' "$path"
 }
 
 tt_cache_list_all() {
-  # Lines "<target>\t<task_id>\t<sent_at>\t<expect_until>"
-  local target tid sent until_at
+  # Arguments: owner -> lines "<target>\t<task_id>\t<sent_at>\t<expect_until>"
+  local owner="$1" target tid sent until_at
   while IFS= read -r target; do
     [[ -z "$target" ]] && continue
     while IFS=$'\t' read -r tid sent until_at; do
       [[ -z "$tid" ]] && continue
       printf '%s\t%s\t%s\t%s\n' "$target" "$tid" "$sent" "$until_at"
-    done < <(tt_cache_list_tasks "$target")
-  done < <(tt_cache_list_targets)
+    done < <(tt_cache_list_tasks "$owner" "$target")
+  done < <(tt_cache_list_targets "$owner")
 }
 
 tt_cache_gc_expired() {
-  # Arguments: [now_epoch]  (defaults to current time)
-  # Removes entries whose expect_until <= now. Emits removed rows on stdout:
-  #   "<target>\t<task_id>\t<expect_until>\ttimeout"
+  # Arguments: owner [now_epoch]  (now defaults to current time)
+  # Removes entries under the owner subdir whose expect_until <= now. Emits
+  # removed rows on stdout: "<target>\t<task_id>\t<expect_until>\ttimeout".
+  # Invalid owner is a no-op (fail-closed).
   tt_cache_require_jq || return $?
-  local now="${1:-$(date +%s)}"
+  local owner="$1" now="${2:-$(date +%s)}"
+  tt_cache_valid_owner "$owner" || return 0
   local target path lock now_copy
   now_copy="$now"
   while IFS= read -r target; do
     [[ -z "$target" ]] && continue
-    path="$(tt_cache_path_for_target "$target")"
-    lock="$(tt_cache_lock_for_target "$target")"
+    path="$(tt_cache_path_for_target "$owner" "$target")"
+    lock="$(tt_cache_lock_for_target "$owner" "$target")"
     [[ -s "$path" ]] || continue
     tt_cache_acquire_lock "$lock" 5 || continue
     if [[ -s "$path" ]]; then
@@ -264,5 +319,32 @@ tt_cache_gc_expired() {
       fi
     fi
     tt_cache_release_lock "$lock"
-  done < <(tt_cache_list_targets)
+  done < <(tt_cache_list_targets "$owner")
+}
+
+# Legacy (pre-v2) flat-layout drain. Silently TTL-GCs any "<target>.json" files
+# living directly under the cache root (the old unscoped layout), removing
+# expired entries and empty files. Emits NOTHING and touches no DB row — the
+# owner is unknowable from a flat file, so we never guess. Owner subdirs (which
+# are directories, not "*.json" regular files) are skipped by construction.
+# Safe to delete a few releases after v2 ships, once no flat files remain.
+tt_cache_gc_legacy_flat() {
+  tt_cache_require_jq || return $?
+  local now="${1:-$(date +%s)}"
+  [[ -d "$TT_CACHE_DIR" ]] || return 0
+  local f remaining
+  for f in "$TT_CACHE_DIR"/*.json; do
+    [[ -f "$f" ]] || continue
+    if [[ ! -s "$f" ]]; then
+      rm -f "$f"
+      continue
+    fi
+    remaining=$(jq -c --argjson now "$now" \
+      'with_entries(select(.value.expect_until > $now))' "$f" 2>/dev/null) || continue
+    if [[ "$remaining" == "{}" || -z "$remaining" ]]; then
+      rm -f "$f"
+    else
+      printf '%s\n' "$remaining" > "${f}.tmp" && mv "${f}.tmp" "$f"
+    fi
+  done
 }
