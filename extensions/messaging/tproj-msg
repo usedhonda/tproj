@@ -3730,12 +3730,20 @@ if [[ "$NEW_TASK_MODE" == "true" ]]; then
     # registry entries without .project skip this gate (backward compatible).
     if [[ -n "${VERIFIED_REG_PROJECT:-}" ]]; then
       _rh_cwd="$PWD"
-      # Normalize a trailing slash so a recorded "/foo/bar/" matches a legitimate
-      # child cwd "/foo/bar/sub"; a bare "/" is left as-is (stripping it would
-      # collapse the anchor to empty).
+      # Strip ALL trailing slashes so a recorded "/foo/bar/" (or "/foo/bar///")
+      # matches a legitimate child cwd "/foo/bar/sub". A project that reduces to
+      # the empty string was the filesystem root ("/" or only slashes): any
+      # absolute cwd is within root, so admit it without the prefix comparison
+      # (which would otherwise become "//*" and reject "/tmp").
       _rh_proj="$VERIFIED_REG_PROJECT"
-      [[ "$_rh_proj" != "/" ]] && _rh_proj="${_rh_proj%/}"
-      if [[ "$_rh_cwd" != "$_rh_proj" && "$_rh_cwd" != "$_rh_proj"/* ]]; then
+      while [[ "$_rh_proj" == */ ]]; do _rh_proj="${_rh_proj%/}"; done
+      _rh_in_project=false
+      if [[ -z "$_rh_proj" ]]; then
+        [[ "$_rh_cwd" == /* ]] && _rh_in_project=true
+      elif [[ "$_rh_cwd" == "$_rh_proj" || "$_rh_cwd" == "$_rh_proj"/* ]]; then
+        _rh_in_project=true
+      fi
+      if [[ "$_rh_in_project" != true ]]; then
         echo "Error: --role-handoff refused for '$TARGET': sender cwd ${_rh_cwd} is not within registry project ${VERIFIED_REG_PROJECT} for '${AS_CLAIMED_IDENTITY}'" >&2
         audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 0 "cwd_project_mismatch" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
         exit 1

@@ -703,6 +703,32 @@ else
   fail gate_a_trailing_slash_project_allow "rc=$rc out=$out log=$log"
 fi
 
+# (k) registry project="/" (filesystem root) admits any absolute cwd.
+reset_case
+set_state %2 idle
+out="$(run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx "/" '' "/tmp" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
+  --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'root-project' 2>&1)"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[Role-Handoff:'* ]]; then
+  pass gate_a_root_project_allow
+else
+  fail gate_a_root_project_allow "rc=$rc out=$out log=$log"
+fi
+
+# (l) registry project with multiple trailing slashes still admits a child cwd.
+reset_case
+set_state %2 idle
+out="$(run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx "$GATE_PROJ///" '' "$GATE_SUB" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
+  --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'multi-trailing-slash' 2>&1)"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[Role-Handoff:'* ]]; then
+  pass gate_a_multi_trailing_slash_allow
+else
+  fail gate_a_multi_trailing_slash_allow "rc=$rc out=$out log=$log"
+fi
+
 # Stale registry entry (observed_at far in the past) is treated as
 # insufficient evidence, not as a valid verification -- anti-replay.
 reset_case
