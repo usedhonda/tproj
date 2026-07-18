@@ -3443,8 +3443,13 @@ generate_task_id() {
   # Second layer of collision defense (the DB composite identity is the first):
   # embed a target-derived component in the id so the per-target sequence counter
   # can never yield the same id for two different targets in the same epoch min.
-  target_token=$(printf '%s' "${TARGET:-}" | tr -cd '[:alnum:]')
-  [[ -n "$target_token" ]] || target_token="t"
+  # The encoding is INJECTIVE: a lowercase hex encoding of the target's bytes, so
+  # distinct targets (e.g. "a-b", "ab", "a_b", "a.b") always yield distinct
+  # tokens. `od -v` disables the '*' run-collapsing that would otherwise break
+  # injectivity. It is pure hex, so it never collides with the id's '-' delimiter.
+  # (A truncated hash is deliberately avoided -- it is not injective.)
+  target_token=$(printf '%s' "${TARGET:-}" | od -An -v -tx1 | tr -d ' \n')
+  [[ -n "$target_token" ]] || target_token="74"
   epoch_min=$(( $(date +%s) / 60 ))
   seq_root="${TASK_SEQ_ROOT}/${TARGET}"
   epoch_root="${seq_root}/${epoch_min}"

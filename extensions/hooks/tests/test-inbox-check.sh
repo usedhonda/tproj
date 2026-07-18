@@ -483,6 +483,35 @@ tt_cache_init_dir "$OWNER_SELF" || init_rc2=$?
 if [[ "$init_rc2" -eq 0 && -d "$TMP/cache/$OWNER_SELF" ]]; then PASS=$((PASS+1)); echo "  PASS: valid owner creates its subdir"; else FAIL=$((FAIL+1)); echo "  FAIL: valid owner creates its subdir (rc=$init_rc2)"; fi
 teardown_tmp
 
+# Case R (R4-3): the task-id target token is an injective hex encoding, so
+# distinct targets that a plain [:alnum:] strip would collapse ("a-b","ab",
+# "a_b","a.b") produce distinct task ids even in the same epoch minute. Also
+# verify tproj-task resolves such an id unambiguously.
+echo "Case R: injective task-id target token + tproj-task resolution"
+tt_tok() { printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n'; }
+ids=()
+for t in a-b ab a_b a.b; do
+  ids+=("alias-$(tt_tok "$t")-29000000-01")
+done
+uniq_count="$(printf '%s\n' "${ids[@]}" | sort -u | wc -l | tr -d ' ')"
+if [[ "$uniq_count" -eq 4 ]]; then PASS=$((PASS+1)); echo "  PASS: 4 collapse-prone targets -> 4 distinct task ids"; else FAIL=$((FAIL+1)); echo "  FAIL: 4 collapse-prone targets -> 4 distinct task ids (uniq=$uniq_count)"; fi
+if grep -q 'od -An -v -tx1' "$REPO/extensions/messaging/tproj-msg"; then PASS=$((PASS+1)); echo "  PASS: generate_task_id uses the injective od hex token"; else FAIL=$((FAIL+1)); echo "  FAIL: generate_task_id uses the injective od hex token"; fi
+# tproj-task resolves a new-format id (with a hex token) via status and close.
+if [[ -x "$REPO/extensions/messaging/tproj-task" ]]; then
+  setup_tmp
+  newid="alias-$(tt_tok "$TARGET_NAME")-29000000-01"
+  ( source "$TMP/tproj-task-cache.sh"; tt_cache_add "$OWNER_SELF" "$TARGET_NAME" "$newid" "$(date +%s)" 1800 h ) >/dev/null 2>&1 || true
+  st="$("$REPO/extensions/messaging/tproj-task" status "$newid" 2>&1 || true)"
+  # status resolves the id to its entry (prints target=...); an unresolved id
+  # would print "Error: task ... not found" instead.
+  assert_contains "$st" "target=$TARGET_NAME" "tproj-task status resolves the new-format id"
+  cl="$("$REPO/extensions/messaging/tproj-task" close "$newid" 2>&1 || true)"
+  assert_contains "$cl" "closed $newid" "tproj-task close resolves the new-format id"
+  teardown_tmp
+else
+  echo "  SKIP: tproj-task not found"
+fi
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] || exit 1
