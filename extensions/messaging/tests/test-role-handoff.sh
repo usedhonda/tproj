@@ -629,7 +629,7 @@ set_state %2 idle
 out="$(export TPROJ_MSG_CALLER_SESSION_ID=caller-X; run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx '' registry-Y "$GATE_SUB" \
   "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
   --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'session-mismatch' 2>&1)"; rc=$?
-if [[ $rc -ne 0 && ! -f "$FIXTURES/sendkeys.log" && "$out" == *'does not match registry session_id'* ]]; then
+if [[ $rc -ne 0 && ! -f "$FIXTURES/sendkeys.log" && "$out" == *'not a usable match'* ]]; then
   pass gate_b_session_id_mismatch_rejected
 else
   fail gate_b_session_id_mismatch_rejected "rc=$rc out=$out"
@@ -659,6 +659,48 @@ if [[ $rc -eq 0 && "$log" == *'[Role-Handoff:'* ]]; then
   pass gate_b_no_env_session_allow
 else
   fail gate_b_no_env_session_allow "rc=$rc out=$out log=$log"
+fi
+
+# (h) env session id="unknown" + registry session_id="unknown" -> rejected.
+# "unknown" is what the router writes when a payload has no session id; two
+# unusable values must not coincidentally satisfy the gate.
+reset_case
+set_state %2 idle
+out="$(export TPROJ_MSG_CALLER_SESSION_ID=unknown; run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx '' unknown "$GATE_SUB" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
+  --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'unknown-unknown' 2>&1)"; rc=$?
+if [[ $rc -ne 0 && ! -f "$FIXTURES/sendkeys.log" && "$out" == *'not a usable match'* ]]; then
+  pass gate_b_unknown_not_authorized
+else
+  fail gate_b_unknown_not_authorized "rc=$rc out=$out"
+fi
+
+# (i) env session id set-but-empty is treated as "not supplied" -> Gate B
+# skipped, allowed (same as unset; the ${VAR:-} convention used throughout).
+reset_case
+set_state %2 idle
+out="$(export TPROJ_MSG_CALLER_SESSION_ID=; run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx '' registry-Y "$GATE_SUB" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
+  --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'empty-env-session' 2>&1)"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[Role-Handoff:'* ]]; then
+  pass gate_b_empty_env_treated_as_unset
+else
+  fail gate_b_empty_env_treated_as_unset "rc=$rc out=$out log=$log"
+fi
+
+# (j) Gate A path normalization: registry project with a trailing slash still
+# admits a legitimate child cwd.
+reset_case
+set_state %2 idle
+out="$(run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx "$GATE_PROJ/" '' "$GATE_SUB" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
+  --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'trailing-slash-project' 2>&1)"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[Role-Handoff:'* ]]; then
+  pass gate_a_trailing_slash_project_allow
+else
+  fail gate_a_trailing_slash_project_allow "rc=$rc out=$out log=$log"
 fi
 
 # Stale registry entry (observed_at far in the past) is treated as

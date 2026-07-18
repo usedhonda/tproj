@@ -3730,21 +3730,39 @@ if [[ "$NEW_TASK_MODE" == "true" ]]; then
     # registry entries without .project skip this gate (backward compatible).
     if [[ -n "${VERIFIED_REG_PROJECT:-}" ]]; then
       _rh_cwd="$PWD"
-      if [[ "$_rh_cwd" != "$VERIFIED_REG_PROJECT" && "$_rh_cwd" != "$VERIFIED_REG_PROJECT"/* ]]; then
+      # Normalize a trailing slash so a recorded "/foo/bar/" matches a legitimate
+      # child cwd "/foo/bar/sub"; a bare "/" is left as-is (stripping it would
+      # collapse the anchor to empty).
+      _rh_proj="$VERIFIED_REG_PROJECT"
+      [[ "$_rh_proj" != "/" ]] && _rh_proj="${_rh_proj%/}"
+      if [[ "$_rh_cwd" != "$_rh_proj" && "$_rh_cwd" != "$_rh_proj"/* ]]; then
         echo "Error: --role-handoff refused for '$TARGET': sender cwd ${_rh_cwd} is not within registry project ${VERIFIED_REG_PROJECT} for '${AS_CLAIMED_IDENTITY}'" >&2
         audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 0 "cwd_project_mismatch" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
         exit 1
       fi
     fi
     # Gate B (defense-in-depth): when the router-driven auto_handoff call supplies
-    # the caller turn's session id, it must match the registry's recorded
-    # session_id. Manual sends without the env var, or legacy entries without a
-    # recorded session_id, skip this gate (backward compatible).
-    if [[ -n "${TPROJ_MSG_CALLER_SESSION_ID:-}" && -n "${VERIFIED_REG_SESSION_ID:-}" \
-          && "$TPROJ_MSG_CALLER_SESSION_ID" != "$VERIFIED_REG_SESSION_ID" ]]; then
-      echo "Error: --role-handoff refused for '$TARGET': caller session ${TPROJ_MSG_CALLER_SESSION_ID} does not match registry session_id ${VERIFIED_REG_SESSION_ID} for '${AS_CLAIMED_IDENTITY}'" >&2
-      audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 0 "session_id_mismatch" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
-      exit 1
+    # the caller turn's session id, require it to be a USABLE value that matches
+    # the registry's recorded session_id. The router writes "unknown" when the
+    # payload carries no session id, so "unknown" (and empty) are unusable and
+    # must not pass as a match -- an "unknown"==="unknown" coincidence would
+    # otherwise wave the gate through. An unset or empty env var is treated as
+    # "not supplied" and skips the gate (manual sends, backward compatible).
+    #
+    # Scope limit: this only catches an auto_handoff that accidentally fires
+    # across threads. It is NOT an authorization boundary against a same-process
+    # malicious caller -- the env var is caller-suppliable and the registry is
+    # world-readable, so a determined local caller can satisfy it. Closing that
+    # requires a per-turn origin seam upstream (which does not exist yet).
+    if [[ -n "${TPROJ_MSG_CALLER_SESSION_ID:-}" ]]; then
+      _rh_env_sid="$TPROJ_MSG_CALLER_SESSION_ID"
+      _rh_reg_sid="${VERIFIED_REG_SESSION_ID:-}"
+      if [[ "$_rh_env_sid" == "unknown" || -z "$_rh_reg_sid" || "$_rh_reg_sid" == "unknown" \
+            || "$_rh_env_sid" != "$_rh_reg_sid" ]]; then
+        echo "Error: --role-handoff refused for '$TARGET': caller session '${_rh_env_sid}' is not a usable match for registry session_id '${_rh_reg_sid}' for '${AS_CLAIMED_IDENTITY}'" >&2
+        audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 0 "session_id_mismatch" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
+        exit 1
+      fi
     fi
     MESSAGE="[Role-Handoff: ${TASK_ID}]
 Role-Epoch: ${ROLE_HANDOFF_EPOCH}
