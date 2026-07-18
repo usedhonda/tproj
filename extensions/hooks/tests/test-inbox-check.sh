@@ -457,6 +457,29 @@ if command -v sqlite3 >/dev/null 2>&1; then
   assert_contains "rd=[$rec_data]" "rd=[s1,s2]" "recovered rows carry the original task ids"
   assert_contains "rs=[$rec_survivor]" "rs=[0]" "survivor temp table is dropped after recovery"
   assert_contains "rv=[$rec_ver]" "rv=[6]" "recovered DB reaches user_version 6"
+
+  # Blocker 1 (R4-1 cont.): a late-interrupted pre-atomic run created the owner
+  # index but crashed before the legacy index (rebuilt no-PK table, owner index
+  # present, legacy index ABSENT, user_version still 5). The two-index guard must
+  # NOT early-return: it must repair the missing legacy index so ownerless
+  # ON CONFLICT(task_id) WHERE ... upserts work.
+  rm -f "$TPROJ_MSG_DB_PATH"*
+  sqlite3 "$TPROJ_MSG_DB_PATH" "
+    CREATE TABLE tasks (task_id TEXT NOT NULL, target TEXT NOT NULL, sent_at INTEGER NOT NULL, expect_until INTEGER NOT NULL, ttl_sec INTEGER NOT NULL, state TEXT NOT NULL, ack_at INTEGER, done_at INTEGER, block_at INTEGER, msg_hash TEXT, owner_alias TEXT, owner_session TEXT);
+    INSERT INTO tasks (task_id,target,sent_at,expect_until,ttl_sec,state,owner_alias,owner_session) VALUES ('o1','tgtA',1,2,1,'pending','alA','sessA');
+    CREATE UNIQUE INDEX idx_tasks_owner_identity ON tasks(owner_session, owner_alias, target, task_id);
+    PRAGMA user_version=5;" >/dev/null 2>&1 || true
+  ( source "$REPO/extensions/messaging/tproj-msg-db.sh"; tt_db_ensure_init
+    tt_db_upsert_task legX tgtA 1 1 h
+    tt_db_upsert_task legX tgtA 1 1 h ) >/dev/null 2>&1 || true
+  lc_owner="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM sqlite_master WHERE name='idx_tasks_owner_identity';" 2>/dev/null || true)"
+  lc_legacy="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM sqlite_master WHERE name='idx_tasks_legacy_identity';" 2>/dev/null || true)"
+  lc_ver="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
+  lc_leg_rows="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM tasks WHERE task_id='legX';" 2>/dev/null || true)"
+  assert_contains "lo=[$lc_owner]" "lo=[1]" "late-crash: owner identity index present"
+  assert_contains "ll=[$lc_legacy]" "ll=[1]" "late-crash: missing legacy identity index is repaired"
+  assert_contains "lv=[$lc_ver]" "lv=[6]" "late-crash: DB reaches user_version 6 after repair"
+  assert_contains "lr=[$lc_leg_rows]" "lr=[1]" "late-crash: ownerless ON CONFLICT upsert now succeeds (idempotent)"
   rm -rf "$O_TMP"
   unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
 else

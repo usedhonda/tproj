@@ -252,12 +252,34 @@ COLS
 # could crash after DROP TABLE tasks but before renaming its temp, leaving a
 # `tasks_rebuild` survivor holding the only copy of the rows. This migration
 # detects that survivor and folds its rows back in (by task_id) BEFORE dropping
-# it, so no history is lost. Idempotent: gated on the composite index existing.
+# it, so no history is lost. Idempotent: gated on BOTH identity indexes existing.
 tt_db_migrate_tasks_composite_identity() {
   tt_db_guard || return 0
-  local have
-  have=$(tt_db_exec_safe "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_owner_identity';" 2>/dev/null | tr -d '[:space:]')
-  [[ -n "$have" ]] && return 0
+  local have_owner have_legacy
+  have_owner=$(tt_db_exec_safe "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_owner_identity';" 2>/dev/null | tr -d '[:space:]')
+  have_legacy=$(tt_db_exec_safe "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_legacy_identity';" 2>/dev/null | tr -d '[:space:]')
+  # Fully migrated only when BOTH identity indexes exist. Checking just the owner
+  # index would early-return on a late-interrupted prior run that created the
+  # owner index but crashed before the (partial) legacy index -- leaving the
+  # ownerless upsert's ON CONFLICT(task_id) WHERE ... with no matching UNIQUE
+  # index (rows silently rejected).
+  [[ -n "$have_owner" && -n "$have_legacy" ]] && return 0
+
+  if [[ -n "$have_owner" ]]; then
+    # The table was already rebuilt (owner index exists => the rowid/no-PK table
+    # was renamed in); only an index is missing. Repair by (re)creating the
+    # identity indexes -- no table rebuild needed -- atomically.
+    tt_db_exec_safe "
+BEGIN IMMEDIATE;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_owner_identity ON tasks(owner_session, owner_alias, target, task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_legacy_identity ON tasks(task_id) WHERE owner_session IS NULL AND owner_alias IS NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_expect ON tasks(target, state, expect_until);
+COMMIT;
+" >/dev/null
+    return 0
+  fi
+
+  # Neither identity index -> full rebuild (with survivor recovery).
   # Recover rows from a survivor temp table left by an interrupted pre-atomic run.
   local survivor recover_sql=""
   survivor=$(tt_db_exec_safe "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks_rebuild';" 2>/dev/null | tr -d '[:space:]')
