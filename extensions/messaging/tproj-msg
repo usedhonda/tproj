@@ -670,12 +670,14 @@ find_registry_state_file() {
 verify_as_caller_identity() {
   local claimed_alias="$1" session="$2"
   local ancestor_pair ancestor_pid ancestor_start
-  local reg_file reg_pid reg_pid_start reg_observed_at reg_role_epoch reg_role reg_orchestrator_alias now
+  local reg_file reg_pid reg_pid_start reg_observed_at reg_role_epoch reg_role reg_orchestrator_alias reg_project reg_session_id now
   CALLER_VERIFY_REASON=""
   VERIFIED_REGISTRY_FILE=""
   VERIFIED_ROLE_EPOCH=""
   VERIFIED_PLATFORM_ROLE=""
   VERIFIED_ORCHESTRATOR_ALIAS=""
+  VERIFIED_REG_PROJECT=""
+  VERIFIED_REG_SESSION_ID=""
   VERIFIED_CALLER_PID=0
   VERIFIED_CALLER_PPID=0
   VERIFIED_CALLER_EXECUTABLE=""
@@ -694,6 +696,8 @@ verify_as_caller_identity() {
   reg_role_epoch=$(jq -r '.role_epoch // 0' "$reg_file" 2>/dev/null)
   reg_role=$(jq -r '.role // empty' "$reg_file" 2>/dev/null)
   reg_orchestrator_alias=$(jq -r '.orchestrator_alias // empty' "$reg_file" 2>/dev/null)
+  reg_project=$(jq -r '.project // empty' "$reg_file" 2>/dev/null)
+  reg_session_id=$(jq -r '.session_id // empty' "$reg_file" 2>/dev/null)
 
   if ! [[ "$reg_pid" =~ ^[0-9]+$ && "$reg_pid" -gt 0 ]]; then
     CALLER_VERIFY_REASON="registry_malformed"
@@ -759,6 +763,8 @@ verify_as_caller_identity() {
   VERIFIED_ROLE_EPOCH="$reg_role_epoch"
   VERIFIED_PLATFORM_ROLE="$reg_role"
   VERIFIED_ORCHESTRATOR_ALIAS="$reg_orchestrator_alias"
+  VERIFIED_REG_PROJECT="$reg_project"
+  VERIFIED_REG_SESSION_ID="$reg_session_id"
   return 0
 }
 
@@ -3714,6 +3720,30 @@ if [[ "$NEW_TASK_MODE" == "true" ]]; then
     if [[ -n "${VERIFIED_ORCHESTRATOR_ALIAS:-}" && "$ROLE_HANDOFF_ORCHESTRATOR" != "$VERIFIED_ORCHESTRATOR_ALIAS" ]]; then
       echo "Error: --role-handoff refused for '$TARGET': claimed --orchestrator ${ROLE_HANDOFF_ORCHESTRATOR} does not match registry orchestrator_alias ${VERIFIED_ORCHESTRATOR_ALIAS} for '${AS_CLAIMED_IDENTITY}'" >&2
       audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 0 "orchestrator_mismatch" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
+      exit 1
+    fi
+    # Gate A (defense-in-depth): the sending process must actually be working
+    # inside the registry's recorded project tree. A cross-project conversation
+    # that borrowed another agent's registry identity (2026-07 incident) passes
+    # every check above, but its cwd is not under the victim's project. Boundary
+    # match ("$proj" or "$proj"/*) avoids /foo/bar spoofing /foo/barbaz. Legacy
+    # registry entries without .project skip this gate (backward compatible).
+    if [[ -n "${VERIFIED_REG_PROJECT:-}" ]]; then
+      _rh_cwd="$PWD"
+      if [[ "$_rh_cwd" != "$VERIFIED_REG_PROJECT" && "$_rh_cwd" != "$VERIFIED_REG_PROJECT"/* ]]; then
+        echo "Error: --role-handoff refused for '$TARGET': sender cwd ${_rh_cwd} is not within registry project ${VERIFIED_REG_PROJECT} for '${AS_CLAIMED_IDENTITY}'" >&2
+        audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 0 "cwd_project_mismatch" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
+        exit 1
+      fi
+    fi
+    # Gate B (defense-in-depth): when the router-driven auto_handoff call supplies
+    # the caller turn's session id, it must match the registry's recorded
+    # session_id. Manual sends without the env var, or legacy entries without a
+    # recorded session_id, skip this gate (backward compatible).
+    if [[ -n "${TPROJ_MSG_CALLER_SESSION_ID:-}" && -n "${VERIFIED_REG_SESSION_ID:-}" \
+          && "$TPROJ_MSG_CALLER_SESSION_ID" != "$VERIFIED_REG_SESSION_ID" ]]; then
+      echo "Error: --role-handoff refused for '$TARGET': caller session ${TPROJ_MSG_CALLER_SESSION_ID} does not match registry session_id ${VERIFIED_REG_SESSION_ID} for '${AS_CLAIMED_IDENTITY}'" >&2
+      audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 0 "session_id_mismatch" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
       exit 1
     fi
     MESSAGE="[Role-Handoff: ${TASK_ID}]

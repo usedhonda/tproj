@@ -131,8 +131,14 @@ lstart_epoch() {
 
 write_registry_entry() {
   local alias="$1" pid="$2" pid_start="$3" role_epoch="$4" role="$5" orchestrator_alias="$6" observed_at="${7:-$(date +%s)}"
+  local project="${8:-}" session_id="${9:-}"
+  # project / session_id are optional: unset -> omit the key entirely, matching a
+  # legacy registry entry that predates the Gate A / Gate B fields.
+  local extra=""
+  [[ -n "$project" ]] && extra="${extra},\"project\":\"${project}\""
+  [[ -n "$session_id" ]] && extra="${extra},\"session_id\":\"${session_id}\""
   cat > "$REGISTRY_ROOT/tproj-workspace/1/${alias}.json" <<JSON
-{"alias":"${alias}","pid":${pid},"pid_start":${pid_start},"role_epoch":${role_epoch},"role":"${role}","orchestrator_alias":"${orchestrator_alias}","observed_at":${observed_at}}
+{"alias":"${alias}","pid":${pid},"pid_start":${pid_start},"role_epoch":${role_epoch},"role":"${role}","orchestrator_alias":"${orchestrator_alias}","observed_at":${observed_at}${extra}}
 JSON
 }
 
@@ -147,10 +153,20 @@ run_as_verified_agent() {
   cat > "$runner" <<'RUNNER'
 #!/bin/bash
 set -uo pipefail
+# Optional cwd control: run from REG_CWD so tproj-msg's $PWD is the sender cwd
+# under test (Gate A). Unset -> keep the caller's cwd (backward compatible).
+if [[ -n "${REG_CWD:-}" ]]; then
+  cd "$REG_CWD" || exit 97
+fi
 mypid=$$
 mystart=$(date -j -f "%a %b %d %H:%M:%S %Y" "$(ps -p "$mypid" -o lstart=)" +%s 2>/dev/null || echo 0)
+# Optional project / session_id fields (Gate A / Gate B). Empty env -> omit the
+# key entirely, matching a legacy registry entry that predates these fields.
+extra=""
+[[ -n "${REG_PROJECT:-}" ]] && extra="${extra},\"project\":\"${REG_PROJECT}\""
+[[ -n "${REG_SESSION_ID:-}" ]] && extra="${extra},\"session_id\":\"${REG_SESSION_ID}\""
 cat > "$REG_FILE" <<JSON
-{"alias":"$CLAIMED_ALIAS","pid":$mypid,"pid_start":$mystart,"role_epoch":$ROLE_EPOCH,"role":"$ROLE","orchestrator_alias":"$ORCH_ALIAS","observed_at":$(date +%s)}
+{"alias":"$CLAIMED_ALIAS","pid":$mypid,"pid_start":$mystart,"role_epoch":$ROLE_EPOCH,"role":"$ROLE","orchestrator_alias":"$ORCH_ALIAS","observed_at":$(date +%s)${extra}}
 JSON
 "$@"
 RUNNER
@@ -158,6 +174,19 @@ RUNNER
   REG_FILE="$REGISTRY_ROOT/tproj-workspace/1/${claimed_alias}.json" \
   CLAIMED_ALIAS="$claimed_alias" ROLE_EPOCH="$role_epoch" ROLE="$role" ORCH_ALIAS="$orchestrator_alias" \
     exec -a "$platform" bash "$runner" "$@"
+}
+
+# Verified-agent variant that also stamps project / session_id into the registry
+# entry and optionally runs from a chosen cwd, for the Gate A / Gate B cases.
+# MUST be called inside a $(...) subshell: it exports REG_* so they survive the
+# exec inside run_as_verified_agent (prefix assignments are not exported across
+# exec), and the subshell contains that export.
+run_as_verified_agent_gated() {
+  local claimed_alias="$1" platform="$2" role_epoch="$3" role="$4" orchestrator_alias="$5" \
+    reg_project="$6" reg_session_id="$7" run_cwd="$8"
+  shift 8
+  export REG_PROJECT="$reg_project" REG_SESSION_ID="$reg_session_id" REG_CWD="$run_cwd"
+  run_as_verified_agent "$claimed_alias" "$platform" "$role_epoch" "$role" "$orchestrator_alias" "$@"
 }
 
 PASS=0
@@ -528,6 +557,108 @@ if [[ $rc -ne 0 && ! -f "$FIXTURES/sendkeys.log" && "$out" == *'orchestrator'* ]
   pass orchestrator_mismatch_rejected
 else
   fail orchestrator_mismatch_rejected "rc=$rc out=$out"
+fi
+
+# --- Gate A: sender cwd must be within the registry project -----------------
+# Derive every gate path via `cd && pwd` (logical) so it matches exactly the
+# $PWD string the runner's plain `cd` produces -- the gate compares $PWD
+# literally, and a trailing-slash TMPDIR would otherwise leave a '//' in $WORK
+# that `cd` silently collapses on the cwd side but not in the raw project field.
+mkdir -p "$WORK/gateproj/nested/work" "$WORK/other-project" "$WORK/foo/bar" "$WORK/foo/barbaz"
+GATE_PROJ="$(cd "$WORK/gateproj" && pwd)"
+GATE_SUB="$(cd "$WORK/gateproj/nested/work" && pwd)"
+GATE_OTHER="$(cd "$WORK/other-project" && pwd)"
+GATE_FOO_BAR="$(cd "$WORK/foo/bar" && pwd)"
+GATE_FOO_BARBAZ="$(cd "$WORK/foo/barbaz" && pwd)"
+
+# (a) registry project present + sender cwd within it -> allowed.
+reset_case
+set_state %2 idle
+out="$(run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx "$GATE_PROJ" '' "$GATE_SUB" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
+  --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'cwd-within-project' 2>&1)"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[Role-Handoff:'* ]]; then
+  pass gate_a_cwd_within_project_allow
+else
+  fail gate_a_cwd_within_project_allow "rc=$rc out=$out log=$log"
+fi
+
+# (b) registry project present + sender cwd is a different tree -> rejected.
+reset_case
+set_state %2 idle
+out="$(run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx "$GATE_PROJ" '' "$GATE_OTHER" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
+  --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'cwd-elsewhere' 2>&1)"; rc=$?
+if [[ $rc -ne 0 && ! -f "$FIXTURES/sendkeys.log" && "$out" == *'not within registry project'* ]]; then
+  pass gate_a_cwd_project_mismatch_rejected
+else
+  fail gate_a_cwd_project_mismatch_rejected "rc=$rc out=$out"
+fi
+
+# (c) prefix boundary: project /foo/bar must not match cwd /foo/barbaz.
+reset_case
+set_state %2 idle
+out="$(run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx "$GATE_FOO_BAR" '' "$GATE_FOO_BARBAZ" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
+  --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'prefix-boundary' 2>&1)"; rc=$?
+if [[ $rc -ne 0 && ! -f "$FIXTURES/sendkeys.log" && "$out" == *'not within registry project'* ]]; then
+  pass gate_a_prefix_boundary_rejected
+else
+  fail gate_a_prefix_boundary_rejected "rc=$rc out=$out"
+fi
+
+# (d) legacy registry entry (no project field) -> Gate A skipped, allowed.
+reset_case
+set_state %2 idle
+out="$(run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx '' '' "$GATE_OTHER" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
+  --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'legacy-no-project' 2>&1)"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[Role-Handoff:'* ]]; then
+  pass gate_a_legacy_no_project_allow
+else
+  fail gate_a_legacy_no_project_allow "rc=$rc out=$out log=$log"
+fi
+
+# --- Gate B: caller session id must match the registry session_id -----------
+
+# (e) env session id set + registry session_id present but different -> rejected.
+reset_case
+set_state %2 idle
+out="$(export TPROJ_MSG_CALLER_SESSION_ID=caller-X; run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx '' registry-Y "$GATE_SUB" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
+  --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'session-mismatch' 2>&1)"; rc=$?
+if [[ $rc -ne 0 && ! -f "$FIXTURES/sendkeys.log" && "$out" == *'does not match registry session_id'* ]]; then
+  pass gate_b_session_id_mismatch_rejected
+else
+  fail gate_b_session_id_mismatch_rejected "rc=$rc out=$out"
+fi
+
+# (f) env session id set + registry session_id equal -> allowed.
+reset_case
+set_state %2 idle
+out="$(export TPROJ_MSG_CALLER_SESSION_ID=session-Z; run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx '' session-Z "$GATE_SUB" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
+  --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'session-match' 2>&1)"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[Role-Handoff:'* ]]; then
+  pass gate_b_session_id_match_allow
+else
+  fail gate_b_session_id_match_allow "rc=$rc out=$out log=$log"
+fi
+
+# (g) env session id unset + registry session_id present -> Gate B skipped, allowed.
+reset_case
+set_state %2 idle
+out="$(run_as_verified_agent_gated tproj.cc claude 3 worker tproj.cdx '' registry-Y "$GATE_SUB" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task \
+  --role-epoch 3 --orchestrator tproj.cdx tproj.cdx 'no-env-session' 2>&1)"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[Role-Handoff:'* ]]; then
+  pass gate_b_no_env_session_allow
+else
+  fail gate_b_no_env_session_allow "rc=$rc out=$out log=$log"
 fi
 
 # Stale registry entry (observed_at far in the past) is treated as
