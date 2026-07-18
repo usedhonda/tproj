@@ -393,19 +393,44 @@ if command -v sqlite3 >/dev/null 2>&1; then
   assert_contains "legrep=[$n_legrep]" "legrep=[1]" "repeated owner-less upsert is idempotent (no row growth)"
   assert_contains "ver=[$ver6]" "ver=[6]" "fresh DB at user_version 6"
   rm -f "$TPROJ_MSG_DB_PATH"*
-  # v5 -> v6 migration preserves rows and adds the composite identity index.
-  ( source "$REPO/extensions/messaging/tproj-msg-db.sh"
-    TT_DB_SCHEMA_VERSION=5 tt_db_init
-    sqlite3 "$TPROJ_MSG_DB_PATH" "INSERT INTO tasks (task_id,target,sent_at,expect_until,ttl_sec,state,owner_alias,owner_session) VALUES ('m-own','tgtA',1,2,1,'pending','alA','sessA');
-     INSERT INTO tasks (task_id,target,sent_at,expect_until,ttl_sec,state) VALUES ('m-leg','tgtB',1,2,1,'pending');"
-    tt_db_ensure_init
-  ) >/dev/null 2>&1 || true
+  # R4-1: TRUE v5 migration from a hand-crafted v5 schema (task_id PRIMARY KEY),
+  # NOT `TT_DB_SCHEMA_VERSION=5 tt_db_init` (which would run the v6 migration
+  # unconditionally). ensure_init at v6 must migrate, preserving rows.
+  rm -f "$TPROJ_MSG_DB_PATH"*
+  sqlite3 "$TPROJ_MSG_DB_PATH" "
+    CREATE TABLE tasks (task_id TEXT PRIMARY KEY, target TEXT NOT NULL, sent_at INTEGER NOT NULL, expect_until INTEGER NOT NULL, ttl_sec INTEGER NOT NULL, state TEXT NOT NULL, ack_at INTEGER, done_at INTEGER, block_at INTEGER, msg_hash TEXT, owner_alias TEXT, owner_session TEXT);
+    INSERT INTO tasks (task_id,target,sent_at,expect_until,ttl_sec,state,owner_alias,owner_session) VALUES ('m-own','tgtA',1,2,1,'pending','alA','sessA');
+    INSERT INTO tasks (task_id,target,sent_at,expect_until,ttl_sec,state) VALUES ('m-leg','tgtB',1,2,1,'pending');
+    PRAGMA user_version=5;" >/dev/null 2>&1 || true
+  ( source "$REPO/extensions/messaging/tproj-msg-db.sh"; tt_db_ensure_init ) >/dev/null 2>&1 || true
   mig_ver="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
   mig_rows="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM tasks;" 2>/dev/null || true)"
-  mig_idx="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM sqlite_master WHERE name='idx_tasks_owner_identity';" 2>/dev/null || true)"
-  assert_contains "mv=[$mig_ver]" "mv=[6]" "v5 DB migrates to user_version 6"
+  mig_idx="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM sqlite_master WHERE name IN ('idx_tasks_owner_identity','idx_tasks_legacy_identity');" 2>/dev/null || true)"
+  mig_pk="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT pk FROM pragma_table_info('tasks') WHERE name='task_id';" 2>/dev/null || true)"
+  assert_contains "mv=[$mig_ver]" "mv=[6]" "hand-crafted v5 DB migrates to user_version 6"
   assert_contains "mr=[$mig_rows]" "mr=[2]" "migration preserves existing task rows"
-  assert_contains "mi=[$mig_idx]" "mi=[1]" "migration creates composite identity index"
+  assert_contains "mi=[$mig_idx]" "mi=[2]" "migration creates both composite/legacy identity indexes"
+  assert_contains "pk=[$mig_pk]" "pk=[0]" "migration drops the task_id PRIMARY KEY"
+
+  # R4-1 crash recovery: simulate a pre-atomic run interrupted after DROP tasks
+  # but before renaming its temp (survivor tasks_rebuild holds the only rows,
+  # tasks missing, user_version still 5). ensure_init must recover the rows.
+  rm -f "$TPROJ_MSG_DB_PATH"*
+  sqlite3 "$TPROJ_MSG_DB_PATH" "
+    CREATE TABLE tasks (task_id TEXT PRIMARY KEY, target TEXT NOT NULL, sent_at INTEGER NOT NULL, expect_until INTEGER NOT NULL, ttl_sec INTEGER NOT NULL, state TEXT NOT NULL, ack_at INTEGER, done_at INTEGER, block_at INTEGER, msg_hash TEXT, owner_alias TEXT, owner_session TEXT);
+    INSERT INTO tasks (task_id,target,sent_at,expect_until,ttl_sec,state,owner_alias,owner_session) VALUES ('s1','tgtA',1,2,1,'pending','alA','sessA');
+    INSERT INTO tasks (task_id,target,sent_at,expect_until,ttl_sec,state) VALUES ('s2','tgtB',1,2,1,'pending');
+    ALTER TABLE tasks RENAME TO tasks_rebuild;
+    PRAGMA user_version=5;" >/dev/null 2>&1 || true
+  ( source "$REPO/extensions/messaging/tproj-msg-db.sh"; tt_db_ensure_init ) >/dev/null 2>&1 || true
+  rec_rows="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM tasks;" 2>/dev/null || true)"
+  rec_data="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT group_concat(task_id) FROM (SELECT task_id FROM tasks ORDER BY task_id);" 2>/dev/null || true)"
+  rec_survivor="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM sqlite_master WHERE name='tasks_rebuild';" 2>/dev/null || true)"
+  rec_ver="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
+  assert_contains "rr=[$rec_rows]" "rr=[2]" "interrupted-run survivor rows are recovered"
+  assert_contains "rd=[$rec_data]" "rd=[s1,s2]" "recovered rows carry the original task ids"
+  assert_contains "rs=[$rec_survivor]" "rs=[0]" "survivor temp table is dropped after recovery"
+  assert_contains "rv=[$rec_ver]" "rv=[6]" "recovered DB reaches user_version 6"
   rm -rf "$O_TMP"
   unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
 else

@@ -240,21 +240,41 @@ COLS
 # Schema v6 migration — rebuild tasks so identity is the composite
 # UNIQUE(owner_session, owner_alias, target, task_id) instead of a global task_id
 # PRIMARY KEY. SQLite cannot alter a PK in place, so create a rowid table, copy
-# rows, drop, rename, then build the indexes. Idempotent and crash-safe: gated on
-# the presence of the composite index, and a leftover tasks_rebuild from a partial
-# run is dropped first. A partial UNIQUE(task_id) WHERE both owner columns are
-# NULL keeps owner-less legacy upserts idempotent (NULLs in the composite are
-# distinct, so without this a repeated ownerless upsert would insert new rows).
-# Pre-migration task_id was PRIMARY KEY (globally unique), so no copied row can
-# violate either new unique index.
+# rows, drop, rename, then build the indexes. A partial UNIQUE(task_id) WHERE both
+# owner columns are NULL keeps owner-less legacy upserts idempotent (NULLs in the
+# composite are distinct, so without this a repeated ownerless upsert would insert
+# new rows). Pre-migration task_id was PRIMARY KEY (globally unique), so no copied
+# row can violate either new unique index.
+#
+# Atomicity + crash recovery (R4-1): the entire rebuild runs in ONE
+# BEGIN IMMEDIATE ... COMMIT, so an interruption rolls the whole thing back and
+# never leaves tasks half-migrated. An earlier NON-atomic build (shipped once)
+# could crash after DROP TABLE tasks but before renaming its temp, leaving a
+# `tasks_rebuild` survivor holding the only copy of the rows. This migration
+# detects that survivor and folds its rows back in (by task_id) BEFORE dropping
+# it, so no history is lost. Idempotent: gated on the composite index existing.
 tt_db_migrate_tasks_composite_identity() {
   tt_db_guard || return 0
   local have
   have=$(tt_db_exec_safe "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_owner_identity';" 2>/dev/null | tr -d '[:space:]')
   [[ -n "$have" ]] && return 0
+  # Recover rows from a survivor temp table left by an interrupted pre-atomic run.
+  local survivor recover_sql=""
+  survivor=$(tt_db_exec_safe "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks_rebuild';" 2>/dev/null | tr -d '[:space:]')
+  if [[ -n "$survivor" ]]; then
+    recover_sql="INSERT INTO tasks_new (task_id, target, sent_at, expect_until, ttl_sec, state, ack_at, done_at, block_at, msg_hash, owner_alias, owner_session)
+  SELECT task_id, target, sent_at, expect_until, ttl_sec, state, ack_at, done_at, block_at, msg_hash, owner_alias, owner_session FROM tasks_rebuild
+  WHERE task_id NOT IN (SELECT task_id FROM tasks_new);"
+  fi
   tt_db_exec_safe "
-DROP TABLE IF EXISTS tasks_rebuild;
-CREATE TABLE tasks_rebuild (
+BEGIN IMMEDIATE;
+CREATE TABLE IF NOT EXISTS tasks (
+  task_id TEXT, target TEXT, sent_at INTEGER, expect_until INTEGER, ttl_sec INTEGER,
+  state TEXT, ack_at INTEGER, done_at INTEGER, block_at INTEGER, msg_hash TEXT,
+  owner_alias TEXT, owner_session TEXT
+);
+DROP TABLE IF EXISTS tasks_new;
+CREATE TABLE tasks_new (
   task_id      TEXT NOT NULL,
   target       TEXT NOT NULL,
   sent_at      INTEGER NOT NULL,
@@ -268,13 +288,16 @@ CREATE TABLE tasks_rebuild (
   owner_alias  TEXT,
   owner_session TEXT
 );
-INSERT INTO tasks_rebuild (task_id, target, sent_at, expect_until, ttl_sec, state, ack_at, done_at, block_at, msg_hash, owner_alias, owner_session)
+INSERT INTO tasks_new (task_id, target, sent_at, expect_until, ttl_sec, state, ack_at, done_at, block_at, msg_hash, owner_alias, owner_session)
   SELECT task_id, target, sent_at, expect_until, ttl_sec, state, ack_at, done_at, block_at, msg_hash, owner_alias, owner_session FROM tasks;
+${recover_sql}
+DROP TABLE IF EXISTS tasks_rebuild;
 DROP TABLE tasks;
-ALTER TABLE tasks_rebuild RENAME TO tasks;
+ALTER TABLE tasks_new RENAME TO tasks;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_owner_identity ON tasks(owner_session, owner_alias, target, task_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_legacy_identity ON tasks(task_id) WHERE owner_session IS NULL AND owner_alias IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_expect ON tasks(target, state, expect_until);
+COMMIT;
 " >/dev/null
 }
 
