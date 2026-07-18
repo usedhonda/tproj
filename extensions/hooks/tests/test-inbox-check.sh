@@ -412,6 +412,26 @@ else
   echo "  SKIP: sqlite3 not available"
 fi
 
+# Case P (R3): tt_cache_init_dir refuses an invalid owner without any mkdir, so a
+# traversal owner cannot create a directory outside the cache root.
+echo "Case P: init_dir is fail-closed against path traversal"
+setup_tmp
+source "$TMP/tproj-task-cache.sh"
+init_rc=0
+tt_cache_init_dir "../escape" || init_rc=$?
+if [[ "$init_rc" -ne 0 ]]; then PASS=$((PASS+1)); echo "  PASS: init_dir returns non-zero on traversal owner"; else FAIL=$((FAIL+1)); echo "  FAIL: init_dir returns non-zero on traversal owner (rc=$init_rc)"; fi
+# TT_CACHE_DIR is $TMP/cache, so owner "../escape" would resolve to $TMP/escape.
+if [[ ! -d "$TMP/escape" ]]; then
+  PASS=$((PASS+1)); echo "  PASS: no directory created outside the cache root"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: no directory created outside the cache root ($TMP/escape exists)"
+fi
+# A valid owner still creates its subdir.
+init_rc2=0
+tt_cache_init_dir "$OWNER_SELF" || init_rc2=$?
+if [[ "$init_rc2" -eq 0 && -d "$TMP/cache/$OWNER_SELF" ]]; then PASS=$((PASS+1)); echo "  PASS: valid owner creates its subdir"; else FAIL=$((FAIL+1)); echo "  FAIL: valid owner creates its subdir (rc=$init_rc2)"; fi
+teardown_tmp
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] || exit 1

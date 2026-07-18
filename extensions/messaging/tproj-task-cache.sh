@@ -95,8 +95,12 @@ tt_cache_owner_dir() {
 
 tt_cache_init_dir() {
   # With an owner arg, ensure that owner's subdir exists; else the cache root.
+  # Fail-closed at the function boundary: an invalid owner is refused WITHOUT any
+  # mkdir, so a public caller passing e.g. "../escape" can never create a
+  # directory outside the cache root (path-traversal guard).
   local owner="${1:-}"
   if [[ -n "$owner" ]]; then
+    tt_cache_valid_owner "$owner" || return 1
     local d
     d="$(tt_cache_owner_dir "$owner")"
     [[ -d "$d" ]] || mkdir -p "$d"
