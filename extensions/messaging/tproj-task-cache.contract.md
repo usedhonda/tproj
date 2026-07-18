@@ -78,7 +78,7 @@ Source the library (`source /path/to/tproj-task-cache.sh`). All functions return
 | `tt_cache_valid_component` | `(component)` | Returns 0 iff `component` is non-empty, not `.`/`..`, and matches `[A-Za-z0-9._-]+`. Rejects (never sanitizes) so distinct inputs never collapse onto one path. Used for session, alias, and target. |
 | `tt_cache_valid_owner` | `(owner)` | Returns 0 iff `owner` is a well-formed `<session>/<alias>`: exactly two `tt_cache_valid_component`s separated by one slash, neither an `unknown`/`null` sentinel. Fail-closed gate used by every owner-scoped op. |
 | `tt_cache_owner_dir` | `(owner)` | Prints `<cache_root>/<owner>` on stdout. No side effects. |
-| `tt_cache_init_dir` | `([owner])` | With `owner`, `mkdir -p` that owner's subdir; without it, the cache root. Safe to call repeatedly. |
+| `tt_cache_init_dir` | `([owner])` | With `owner`, validates it (`tt_cache_valid_owner`) and `mkdir -p`s that owner's subdir; an invalid owner returns non-zero with **no mkdir** (fail-closed traversal guard). Without an owner, ensures the cache root. Safe to call repeatedly. |
 | `tt_cache_path_for_target` | `(owner, target)` | Prints `<cache_root>/<owner>/<target>.json` on stdout. No side effects. |
 | `tt_cache_lock_for_target` | `(owner, target)` | Prints `<lock_root>/tproj-task-cache~<session>~<alias>~<target>.lock` (injective `~`-join). No side effects. |
 | `tt_cache_acquire_lock` | `(lock_dir, timeout=5)` | mkdir-based advisory lock. Returns 0 on acquire, 1 on timeout. Writes `$$` into `<lock_dir>/pid` (best effort). Detects stale locks by checking if `pid` process is alive. |
@@ -268,6 +268,7 @@ Expected: `PASS: stale lock recovered` within ~50–100 ms (not full 5 s timeout
 - **2026-07-10 — v1.1**: role-neutral orchestrator wording and queued role-handoff tracking contract.
 - **2026-07-18 — v2.0**: owner-scoped layout (`<owner>/<target>.json`, owner = `<session>/<owner_alias>`) to fix cross-column notification leak. All owner-scoped ops take `owner` as their first argument and are fail-closed on an invalid owner. `--read` limits tag-driven transition/removal to own-cache ids. Added `tt_cache_valid_owner`, `tt_cache_owner_dir`, `tt_cache_gc_legacy_flat` (silent pre-v2 flat drain). DB `tasks.owner_alias` (schema v4) records the issuing column.
 - **2026-07-18 — v2.1**: composite hardening. DB `tasks.owner_session` (schema v5) and full-composite (`owner_session + owner_alias + task_id`) task-row transitions, so no owner can mutate another owner's task and no task_id-only UPDATE path remains. Path components (session/alias/target) validated by `tt_cache_valid_component` (reject, not sanitize; `[A-Za-z0-9._-]`, no `.`/`..`) for an injective path mapping; lock name joins with `~` to stay collision-free.
+- **2026-07-18 — v2.2**: independent-verification fixes. `tt_cache_init_dir` is fail-closed against a traversal owner (validates before any mkdir). DB task identity rebuilt to `UNIQUE(owner_session, owner_alias, target, task_id)` with a partial `UNIQUE(task_id) WHERE owner columns NULL` for legacy idempotency (schema v6); `tt_db_transition_task` also matches `target`. `generate_task_id` embeds a target-derived token (second collision-defense layer). `tproj-inbox-check` scopes its `notified_at` update to session + recipient + sender + task_id, not task_id alone.
 
 ---
 
