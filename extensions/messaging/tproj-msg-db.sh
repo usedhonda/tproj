@@ -30,7 +30,10 @@
 # schema (they existed pre-E1 but were only reached via a full reinstall).
 # Version 3 adds the auth_path + anchor_pid attribution columns (additive,
 # nullable), so existing v2 DBs migrate on next write.
-: "${TT_DB_SCHEMA_VERSION:=3}"
+# Version 4 adds tasks.owner_alias (additive, nullable): the issuing column
+# ("<session>/<owner_alias>" alias part) recorded for query/audit of the
+# owner-scoped cache; legacy rows keep NULL and are never back-filled by guess.
+: "${TT_DB_SCHEMA_VERSION:=4}"
 
 tt_db_path() { printf '%s\n' "$TPROJ_MSG_DB_PATH"; }
 tt_db_error_log() { printf '%s\n' "$TPROJ_MSG_DB_ERROR_LOG"; }
@@ -134,7 +137,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   ack_at       INTEGER,
   done_at      INTEGER,
   block_at     INTEGER,
-  msg_hash     TEXT
+  msg_hash     TEXT,
+  owner_alias  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS monitor_cursors (
@@ -151,6 +155,7 @@ SQL
 )
   tt_db_exec_safe "$schema_sql" >/dev/null
   tt_db_migrate_caller_audit_columns
+  tt_db_migrate_task_owner_column
   tt_db_sweep_orphaned_queued
   # Stamp user_version last, so it only advances after every migration above has
   # run. This is the version tt_db_ensure_init compares against on later calls.
@@ -198,6 +203,19 @@ payload_sha256|TEXT
 auth_path|TEXT
 anchor_pid|INTEGER
 COLS
+}
+
+# Schema v4 migration — additive nullable tasks.owner_alias column. Records the
+# issuing column of an owner-scoped cache entry for query/audit. Idempotent:
+# checks PRAGMA table_info before ALTER (same idiom as the caller-audit migration,
+# since this sqlite3 CLI build lacks ADD COLUMN IF NOT EXISTS). Legacy task rows
+# keep owner_alias NULL and are never back-filled by guess.
+tt_db_migrate_task_owner_column() {
+  tt_db_guard || return 0
+  local existing_cols
+  existing_cols=$(tt_db_exec_safe "PRAGMA table_info(tasks);" 2>/dev/null)
+  printf '%s' "$existing_cols" | grep -q '|owner_alias|' && return 0
+  tt_db_exec_safe "ALTER TABLE tasks ADD COLUMN owner_alias TEXT;" >/dev/null
 }
 
 # Lazy init guard: call before any write. Creates the DB when the file is
@@ -378,7 +396,10 @@ tt_db_set_notified() {
 
 # --- task operations -------------------------------------------------------
 
-# Args: task_id target sent_at ttl_sec msg_hash
+# Args: task_id target sent_at ttl_sec msg_hash [owner_alias]
+# owner_alias (additive, nullable) is the issuing column of the owner-scoped
+# cache. An empty owner_alias is stored NULL and never clobbers a known value on
+# conflict (COALESCE), so a later upsert without owner cannot erase attribution.
 tt_db_upsert_task() {
   tt_db_guard || return 0
   tt_db_ensure_init
@@ -387,9 +408,12 @@ tt_db_upsert_task() {
   local sent_at="${3:-0}"
   local ttl_sec="${4:-1800}"
   local msg_hash=$(tt_db_quote "${5:-}")
+  local owner_alias_raw="${6:-}"
   [[ -z "$task_id" ]] && return 0
   local expect_until=$((sent_at + ttl_sec))
-  tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}') ON CONFLICT(task_id) DO UPDATE SET target=excluded.target, sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash;" >/dev/null
+  local owner_sql='NULL'
+  [[ -n "$owner_alias_raw" ]] && owner_sql="'$(tt_db_quote "$owner_alias_raw")'"
+  tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', ${owner_sql}) ON CONFLICT(task_id) DO UPDATE SET target=excluded.target, sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash, owner_alias=COALESCE(excluded.owner_alias, tasks.owner_alias);" >/dev/null
 }
 
 # Args: task_id new_state (one of: pending acked done blocked expired)
