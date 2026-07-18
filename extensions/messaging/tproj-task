@@ -34,7 +34,11 @@ find_task() {
   local target entry
   while IFS= read -r target; do
     [[ -n "$target" ]] || continue
-    if entry="$(tt_cache_get_task "$OWNER" "$target" "$task_id" 2>/dev/null)"; then
+    # tt_cache_get_task returns rc 0 with EMPTY stdout when the id is not in that
+    # target (missing != error), so an rc-only check would match the first target
+    # spuriously. Require a non-empty entry to count as a hit.
+    entry="$(tt_cache_get_task "$OWNER" "$target" "$task_id" 2>/dev/null)"
+    if [[ -n "$entry" ]]; then
       printf '%s\t%s\n' "$target" "$entry"
       return 0
     fi

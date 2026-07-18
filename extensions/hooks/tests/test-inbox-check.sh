@@ -519,17 +519,33 @@ done
 uniq_count="$(printf '%s\n' "${ids[@]}" | sort -u | wc -l | tr -d ' ')"
 if [[ "$uniq_count" -eq 4 ]]; then PASS=$((PASS+1)); echo "  PASS: 4 collapse-prone targets -> 4 distinct task ids"; else FAIL=$((FAIL+1)); echo "  FAIL: 4 collapse-prone targets -> 4 distinct task ids (uniq=$uniq_count)"; fi
 if grep -q 'od -An -v -tx1' "$REPO/extensions/messaging/tproj-msg"; then PASS=$((PASS+1)); echo "  PASS: generate_task_id uses the injective od hex token"; else FAIL=$((FAIL+1)); echo "  FAIL: generate_task_id uses the injective od hex token"; fi
-# tproj-task resolves a new-format id (with a hex token) via status and close.
+# Blocker 2 (R4-3 cont.): with all four collapse-prone targets seeded at once in
+# the SAME owner, each id's status must return ITS OWN target (find_task must not
+# spuriously match the first target on tt_cache_get_task's empty-miss), and after
+# closing all four the owner must have no remaining tracked tasks.
 if [[ -x "$REPO/extensions/messaging/tproj-task" ]]; then
   setup_tmp
-  newid="alias-$(tt_tok "$TARGET_NAME")-29000000-01"
-  ( source "$TMP/tproj-task-cache.sh"; tt_cache_add "$OWNER_SELF" "$TARGET_NAME" "$newid" "$(date +%s)" 1800 h ) >/dev/null 2>&1 || true
-  st="$("$REPO/extensions/messaging/tproj-task" status "$newid" 2>&1 || true)"
-  # status resolves the id to its entry (prints target=...); an unresolved id
-  # would print "Error: task ... not found" instead.
-  assert_contains "$st" "target=$TARGET_NAME" "tproj-task status resolves the new-format id"
-  cl="$("$REPO/extensions/messaging/tproj-task" close "$newid" 2>&1 || true)"
-  assert_contains "$cl" "closed $newid" "tproj-task close resolves the new-format id"
+  # A hermetic DB path so the cache lib's DB shadow write has a bound
+  # TPROJ_MSG_DB_PATH even if a prior DB case left tt_db_* defined in this shell
+  # (avoids a set -u unbound-var abort of the seed subshell).
+  export TPROJ_MSG_DB_PATH="$TMP/r.db" TPROJ_MSG_DB_ERROR_LOG="$TMP/r.err"
+  targets=(a-b ab a_b a.b)
+  # Seed each target with its own distinct id in one owner.
+  ( source "$TMP/tproj-task-cache.sh"
+    for i in 0 1 2 3; do
+      tt_cache_add "$OWNER_SELF" "${targets[$i]}" "${ids[$i]}" "$(date +%s)" 1800 h
+    done ) >/dev/null 2>&1 || true
+  status_ok=1
+  for i in 0 1 2 3; do
+    st="$("$REPO/extensions/messaging/tproj-task" status "${ids[$i]}" 2>&1 || true)"
+    [[ "$st" == *"target=${targets[$i]}"* ]] || { status_ok=0; echo "    mismatch: id ${ids[$i]} expected target=${targets[$i]} got [$st]"; }
+  done
+  if [[ "$status_ok" -eq 1 ]]; then PASS=$((PASS+1)); echo "  PASS: each id's status resolves to its own target (4 seeded at once)"; else FAIL=$((FAIL+1)); echo "  FAIL: each id's status resolves to its own target (4 seeded at once)"; fi
+  # Close all four; the owner must then track zero tasks.
+  for i in 0 1 2 3; do "$REPO/extensions/messaging/tproj-task" close "${ids[$i]}" >/dev/null 2>&1 || true; done
+  remaining="$("$REPO/extensions/messaging/tproj-task" list 2>/dev/null | grep -c . || true)"
+  assert_contains "rem=[$remaining]" "rem=[0]" "all four tasks close, owner has 0 remaining"
+  unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
   teardown_tmp
 else
   echo "  SKIP: tproj-task not found"
