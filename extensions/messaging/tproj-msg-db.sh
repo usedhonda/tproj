@@ -33,7 +33,11 @@
 # Version 4 adds tasks.owner_alias (additive, nullable): the issuing column
 # ("<session>/<owner_alias>" alias part) recorded for query/audit of the
 # owner-scoped cache; legacy rows keep NULL and are never back-filled by guess.
-: "${TT_DB_SCHEMA_VERSION:=4}"
+# Version 5 adds tasks.owner_session (additive, nullable) so task-row mutations
+# (tt_db_transition_task, expired transitions) match on the full composite
+# (owner_session + owner_alias + task_id); an owner-less caller may only touch
+# legacy rows where both owner columns are NULL, never a new owned row.
+: "${TT_DB_SCHEMA_VERSION:=5}"
 
 tt_db_path() { printf '%s\n' "$TPROJ_MSG_DB_PATH"; }
 tt_db_error_log() { printf '%s\n' "$TPROJ_MSG_DB_ERROR_LOG"; }
@@ -138,7 +142,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   done_at      INTEGER,
   block_at     INTEGER,
   msg_hash     TEXT,
-  owner_alias  TEXT
+  owner_alias  TEXT,
+  owner_session TEXT
 );
 
 CREATE TABLE IF NOT EXISTS monitor_cursors (
@@ -205,17 +210,24 @@ anchor_pid|INTEGER
 COLS
 }
 
-# Schema v4 migration — additive nullable tasks.owner_alias column. Records the
-# issuing column of an owner-scoped cache entry for query/audit. Idempotent:
-# checks PRAGMA table_info before ALTER (same idiom as the caller-audit migration,
-# since this sqlite3 CLI build lacks ADD COLUMN IF NOT EXISTS). Legacy task rows
-# keep owner_alias NULL and are never back-filled by guess.
+# Schema v4/v5 migration — additive nullable tasks.owner_alias (v4) and
+# tasks.owner_session (v5) columns. They record the issuing owner of an
+# owner-scoped cache entry so task-row mutations match the full composite.
+# Idempotent: checks PRAGMA table_info before each ALTER (same idiom as the
+# caller-audit migration, since this sqlite3 CLI build lacks ADD COLUMN IF NOT
+# EXISTS). Legacy task rows keep both columns NULL and are never back-filled.
 tt_db_migrate_task_owner_column() {
   tt_db_guard || return 0
-  local existing_cols
+  local existing_cols col def
   existing_cols=$(tt_db_exec_safe "PRAGMA table_info(tasks);" 2>/dev/null)
-  printf '%s' "$existing_cols" | grep -q '|owner_alias|' && return 0
-  tt_db_exec_safe "ALTER TABLE tasks ADD COLUMN owner_alias TEXT;" >/dev/null
+  while IFS='|' read -r col def; do
+    [[ -n "$col" ]] || continue
+    printf '%s' "$existing_cols" | grep -q "|${col}|" && continue
+    tt_db_exec_safe "ALTER TABLE tasks ADD COLUMN ${col} ${def};" >/dev/null
+  done <<'COLS'
+owner_alias|TEXT
+owner_session|TEXT
+COLS
 }
 
 # Lazy init guard: call before any write. Creates the DB when the file is
@@ -396,10 +408,11 @@ tt_db_set_notified() {
 
 # --- task operations -------------------------------------------------------
 
-# Args: task_id target sent_at ttl_sec msg_hash [owner_alias]
-# owner_alias (additive, nullable) is the issuing column of the owner-scoped
-# cache. An empty owner_alias is stored NULL and never clobbers a known value on
-# conflict (COALESCE), so a later upsert without owner cannot erase attribution.
+# Args: task_id target sent_at ttl_sec msg_hash [owner_alias] [owner_session]
+# owner_alias/owner_session (additive, nullable) are the issuing column of the
+# owner-scoped cache. An empty owner value is stored NULL and never clobbers a
+# known value on conflict (COALESCE), so a later upsert without owner cannot
+# erase attribution.
 tt_db_upsert_task() {
   tt_db_guard || return 0
   tt_db_ensure_init
@@ -409,19 +422,31 @@ tt_db_upsert_task() {
   local ttl_sec="${4:-1800}"
   local msg_hash=$(tt_db_quote "${5:-}")
   local owner_alias_raw="${6:-}"
+  local owner_session_raw="${7:-}"
   [[ -z "$task_id" ]] && return 0
   local expect_until=$((sent_at + ttl_sec))
-  local owner_sql='NULL'
-  [[ -n "$owner_alias_raw" ]] && owner_sql="'$(tt_db_quote "$owner_alias_raw")'"
-  tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', ${owner_sql}) ON CONFLICT(task_id) DO UPDATE SET target=excluded.target, sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash, owner_alias=COALESCE(excluded.owner_alias, tasks.owner_alias);" >/dev/null
+  local owner_alias_sql='NULL'
+  [[ -n "$owner_alias_raw" ]] && owner_alias_sql="'$(tt_db_quote "$owner_alias_raw")'"
+  local owner_session_sql='NULL'
+  [[ -n "$owner_session_raw" ]] && owner_session_sql="'$(tt_db_quote "$owner_session_raw")'"
+  tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias, owner_session) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', ${owner_alias_sql}, ${owner_session_sql}) ON CONFLICT(task_id) DO UPDATE SET target=excluded.target, sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash, owner_alias=COALESCE(excluded.owner_alias, tasks.owner_alias), owner_session=COALESCE(excluded.owner_session, tasks.owner_session);" >/dev/null
 }
 
-# Args: task_id new_state (one of: pending acked done blocked expired)
-# Sets the state-specific timestamp column when applicable.
+# Args: task_id new_state [owner_session] [owner_alias]
+#   new_state is one of: pending acked done blocked expired.
+# Sets the state-specific timestamp column when applicable. The UPDATE always
+# matches the FULL composite (task_id + owner). When owner_session and
+# owner_alias are BOTH provided the row must match them exactly; when either is
+# absent the update is restricted to LEGACY rows where both owner columns are
+# NULL. There is no task_id-only UPDATE path -- an owner-less caller can never
+# mutate a new owned row, and a caller from one owner can never transition
+# another owner's task even on a task_id collision.
 tt_db_transition_task() {
   tt_db_guard || return 0
   local task_id=$(tt_db_quote "${1:-}")
   local new_state="${2:-}"
+  local owner_session_raw="${3:-}"
+  local owner_alias_raw="${4:-}"
   [[ -z "$task_id" || -z "$new_state" ]] && return 0
   local ts_col=''
   case "$new_state" in
@@ -433,7 +458,13 @@ tt_db_transition_task() {
   esac
   local ts_set=''
   [[ -n "$ts_col" ]] && ts_set=", ${ts_col}=strftime('%s','now')"
-  tt_db_exec_safe "UPDATE tasks SET state='${new_state}'${ts_set} WHERE task_id='${task_id}';" >/dev/null
+  local owner_where
+  if [[ -n "$owner_session_raw" && -n "$owner_alias_raw" ]]; then
+    owner_where="owner_session='$(tt_db_quote "$owner_session_raw")' AND owner_alias='$(tt_db_quote "$owner_alias_raw")'"
+  else
+    owner_where="owner_session IS NULL AND owner_alias IS NULL"
+  fi
+  tt_db_exec_safe "UPDATE tasks SET state='${new_state}'${ts_set} WHERE task_id='${task_id}' AND ${owner_where};" >/dev/null
 }
 
 # --- monitor cursor + read ops --------------------------------------------

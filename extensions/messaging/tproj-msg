@@ -3620,7 +3620,9 @@ do_read() {
         BLOCK|BLOCKED) _state="blocked" ;;
         *) _state="" ;;
       esac
-      [[ -n "$_state" ]] && tt_db_transition_task "$reply_id" "$_state" 2>/dev/null
+      # Composite-scoped transition: only our own owner's task row is mutated
+      # (READ_OWNER is valid here since _own_task==1 required an own-cache hit).
+      [[ -n "$_state" ]] && tt_db_transition_task "$reply_id" "$_state" "${READ_OWNER%%/*}" "${READ_OWNER##*/}" 2>/dev/null
     fi
     [[ "$_own_task" -eq 1 ]] && tt_cache_remove_task "$READ_OWNER" "$TARGET" "$reply_id" >/dev/null 2>&1 || true
     echo "TASK_REPLIED=${reply_id}" >&2

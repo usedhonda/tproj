@@ -59,6 +59,6 @@ tt_cache_add "$OWNER" "$task_target" "$task_id" "$task_sent_at" "$task_ttl_sec" 
 # even if tt_cache_add internals change. INSERT OR REPLACE -> idempotent.
 # owner_alias (issuing column) recorded for query/audit.
 if declare -F tt_db_upsert_task >/dev/null 2>&1; then
-  tt_db_upsert_task "$task_id" "$task_target" "$task_sent_at" "$task_ttl_sec" "" "${OWNER##*/}" 2>/dev/null || true
+  tt_db_upsert_task "$task_id" "$task_target" "$task_sent_at" "$task_ttl_sec" "" "${OWNER##*/}" "${OWNER%%/*}" 2>/dev/null || true
 fi
 exit 0

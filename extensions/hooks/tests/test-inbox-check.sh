@@ -250,6 +250,36 @@ else
   echo "  SKIP: tproj-inbox-record not found"
 fi
 
+# Case L (composite task transition): a task row owned by one session/alias
+# cannot be transitioned by another owner or by an owner-less call; only the
+# exact composite (owner_session + owner_alias + task_id) updates it. A legacy
+# NULL-owner row is still transitionable by an owner-less call.
+echo "Case L: composite-scoped task transition isolation"
+if command -v sqlite3 >/dev/null 2>&1; then
+  L_TMP="$(mktemp -d)"
+  export TPROJ_MSG_DB_PATH="$L_TMP/messages.db"
+  export TPROJ_MSG_DB_ERROR_LOG="$L_TMP/db-errors.log"
+  ( source "$REPO/extensions/messaging/tproj-msg-db.sh"
+    tt_db_init
+    tt_db_upsert_task tid-own tgt.cdx 1734500000 1800 h alA sessA
+    tt_db_transition_task tid-own done sessB alA        # wrong session -> no-op
+    tt_db_transition_task tid-own done                  # owner-less -> no-op
+    tt_db_upsert_task tid-leg tgt.cdx 1734500000 1800 h # legacy NULL owner
+    tt_db_transition_task tid-leg expired               # owner-less -> updates legacy
+    tt_db_transition_task tid-own done sessA alA        # correct owner -> updates
+  ) >/dev/null 2>&1 || true
+  st_own="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT state FROM tasks WHERE task_id='tid-own';" 2>/dev/null || true)"
+  st_leg="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT state FROM tasks WHERE task_id='tid-leg';" 2>/dev/null || true)"
+  assert_contains "own=[$st_own]" "own=[done]" "owned row updates only via exact composite (wrong/owner-less ignored)"
+  assert_contains "leg=[$st_leg]" "leg=[expired]" "legacy NULL-owner row transitionable by owner-less call"
+  ver="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
+  assert_contains "ver=[$ver]" "ver=[5]" "tasks schema at user_version 5"
+  rm -rf "$L_TMP"
+  unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
+else
+  echo "  SKIP: sqlite3 not available"
+fi
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] || exit 1

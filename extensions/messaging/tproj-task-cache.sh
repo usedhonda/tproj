@@ -196,7 +196,7 @@ tt_cache_add() {
   # R1' Stage 2 shadow write — best-effort, never affects rc. owner_alias (the
   # issuing column) is recorded for query/audit; it is the alias part of owner.
   if [[ $rc -eq 0 ]] && declare -F tt_db_upsert_task >/dev/null 2>&1; then
-    tt_db_upsert_task "$task_id" "$target" "$sent_at" "$ttl_sec" "$msg_hash" "${owner##*/}" || true
+    tt_db_upsert_task "$task_id" "$target" "$sent_at" "$ttl_sec" "$msg_hash" "${owner##*/}" "${owner%%/*}" || true
   fi
   return $rc
 }
@@ -304,9 +304,10 @@ tt_cache_gc_expired() {
         "$path" | while IFS=$'\t' read -r tid until_at; do
           [[ -z "$tid" ]] && continue
           printf '%s\t%s\t%s\ttimeout\n' "$target" "$tid" "$until_at"
-          # R1' Stage 2 shadow write — record expired transition. Fail-open.
+          # R1' Stage 2 shadow write — record expired transition, scoped to this
+          # owner's composite (owner_session + owner_alias + task_id). Fail-open.
           if declare -F tt_db_transition_task >/dev/null 2>&1; then
-            tt_db_transition_task "$tid" "expired" || true
+            tt_db_transition_task "$tid" "expired" "${owner%%/*}" "${owner##*/}" || true
           fi
         done
       local remaining
