@@ -38,6 +38,20 @@ else
   _own_alias="$(tmux display-message -p '#{@alias}' 2>/dev/null || true)"
   OWNER="${_own_sess}/${_own_alias}"
 fi
+# Our own platform role (cc/cdx), used to scope the notified_at update to the
+# message row whose recipient is exactly us. TT_OWNER_ROLE overrides (tests);
+# else resolve from this pane's @role. Empty is tolerated (the update falls back
+# to session + sender + task_id scoping, which already blocks the cross-session
+# leak; it just omits the recipient predicate).
+if [[ -n "${TT_OWNER_ROLE+x}" ]]; then
+  OWNER_ROLE="$TT_OWNER_ROLE"
+else
+  case "$(tmux display-message -p '#{@role}' 2>/dev/null || true)" in
+    claude|claude-p*) OWNER_ROLE=cc ;;
+    codex|codex-p*)   OWNER_ROLE=cdx ;;
+    *)                OWNER_ROLE="" ;;
+  esac
+fi
 
 if tt_cache_valid_owner "$OWNER"; then
   while IFS= read -r target; do
@@ -49,10 +63,23 @@ if tt_cache_valid_owner "$OWNER"; then
       [[ -n "$task_id" ]] || continue
       if printf '%s\n' "$read_output" | grep -q "TASK_REPLIED=${task_id}"; then
         echo "[inbox-notice] reply arrived from ${target} task=${task_id} — review with tproj-msg --read ${target} 40"
-        # R1' Stage 4: mark notified_at on the latest inbound message for this task_id
-        # so the R2' Monitor doesn't re-emit the same task. Fail-open.
-        if declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_set_notified >/dev/null 2>&1; then
-          _notify_id="$(tt_db_exec_safe "SELECT id FROM messages WHERE task_id='${task_id}' AND direction='inbound' ORDER BY id DESC LIMIT 1;" 2>/dev/null || true)"
+        # R1' Stage 4: mark notified_at on the latest inbound message for this
+        # task, so the R2' Monitor doesn't re-emit it. The row is selected by the
+        # FULL scope (session + recipient=self + sender=target + task_id), never
+        # by task_id alone -- otherwise a same task_id in another session/column
+        # would win the ORDER BY id DESC and flag the wrong row. Fail-open.
+        if declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_set_notified >/dev/null 2>&1 \
+           && declare -F tt_db_quote >/dev/null 2>&1; then
+          _sess_q="$(tt_db_quote "${OWNER%%/*}")"
+          _from_q="$(tt_db_quote "$target")"
+          _task_q="$(tt_db_quote "$task_id")"
+          _sel="SELECT id FROM messages WHERE session='${_sess_q}' AND from_alias='${_from_q}' AND task_id='${_task_q}' AND direction='inbound'"
+          if [[ -n "$OWNER_ROLE" ]]; then
+            _self_q="$(tt_db_quote "${OWNER##*/}.${OWNER_ROLE}")"
+            _sel="${_sel} AND to_alias='${_self_q}'"
+          fi
+          _sel="${_sel} ORDER BY id DESC LIMIT 1;"
+          _notify_id="$(tt_db_exec_safe "$_sel" 2>/dev/null || true)"
           [[ -n "$_notify_id" ]] && tt_db_set_notified "$_notify_id" 2>/dev/null || true
         fi
       fi

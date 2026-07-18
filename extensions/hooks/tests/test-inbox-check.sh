@@ -22,6 +22,8 @@ OWNER_SELF="testsess/testcol"
 OWNER_OTHER="testsess/othercol"
 ORIGINAL_HOME="$HOME"
 
+DB_LIB="$REPO/extensions/messaging/tproj-msg-db.sh"
+
 setup_tmp() {
   TMP="$(mktemp -d)"
   cp "$HOOK_SRC" "$TMP/tproj-inbox-check"
@@ -31,6 +33,19 @@ setup_tmp() {
   export HOME="$TMP/home"
   export TT_CACHE_DIR="$TMP/cache"
   export TT_CACHE_OWNER="$OWNER_SELF"
+}
+
+# Copy the DB helper next to the cached lib so a hook's `source
+# tproj-task-cache.sh` also picks up tproj-msg-db.sh (DB-backed cases only).
+setup_tmp_with_db() {
+  setup_tmp
+  cp "$DB_LIB" "$TMP/tproj-msg-db.sh"
+  export TPROJ_MSG_DB_PATH="$TMP/messages.db"
+  export TPROJ_MSG_DB_ERROR_LOG="$TMP/db-errors.log"
+}
+
+teardown_db() {
+  unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG TT_OWNER_ROLE
 }
 
 teardown_tmp() {
@@ -327,6 +342,31 @@ l1="$(tt_cache_lock_for_target "a/b.c" t)"
 l2="$(tt_cache_lock_for_target "a.b/c" t)"
 if [[ "$l1" != "$l2" ]]; then PASS=$((PASS+1)); echo "  PASS: lock names injective across distinct owners"; else FAIL=$((FAIL+1)); echo "  FAIL: lock names injective across distinct owners"; fi
 teardown_tmp
+
+# Case N (R1): notified_at is set on the row scoped to our session (+ recipient +
+# sender + task_id), NOT the latest row with the same task_id in another session.
+echo "Case N: notified_at scoping across same task_id in different sessions"
+if command -v sqlite3 >/dev/null 2>&1; then
+  setup_tmp_with_db
+  export TT_OWNER_ROLE=cc
+  ( source "$TMP/tproj-msg-db.sh"; tt_db_init ) >/dev/null 2>&1 || true
+  # id 100 = our session's inbound row; id 200 = another session, same task_id,
+  # inserted later (would win ORDER BY id DESC under the old task_id-only SELECT).
+  sqlite3 "$TPROJ_MSG_DB_PATH" \
+    "INSERT INTO messages (id, session, from_alias, to_alias, body, body_hash, task_id, direction, delivery, created_at) VALUES (100,'testsess','$TARGET_NAME','testcol.cc','b','h','shared-x','inbound','send-keys',strftime('%s','now'));
+     INSERT INTO messages (id, session, from_alias, to_alias, body, body_hash, task_id, direction, delivery, created_at) VALUES (200,'othersess','$TARGET_NAME','othercol.cc','b','h','shared-x','inbound','send-keys',strftime('%s','now'));" >/dev/null 2>&1 || true
+  make_mock_msg "pane dummy" "TASK_REPLIED=shared-x"
+  seed_cache "shared-x" 1800 "$OWNER_SELF" "$TARGET_NAME"
+  TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" >/dev/null 2>&1 || true
+  n100="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT CASE WHEN notified_at IS NULL THEN 'null' ELSE 'set' END FROM messages WHERE id=100;" 2>/dev/null || true)"
+  n200="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT CASE WHEN notified_at IS NULL THEN 'null' ELSE 'set' END FROM messages WHERE id=200;" 2>/dev/null || true)"
+  assert_contains "own=[$n100]" "own=[set]" "notified_at set on our own session's row"
+  assert_contains "other=[$n200]" "other=[null]" "notified_at NOT set on another session's same-task_id row"
+  teardown_db
+  teardown_tmp
+else
+  echo "  SKIP: sqlite3 not available"
+fi
 
 echo
 echo "Result: $PASS passed, $FAIL failed"
