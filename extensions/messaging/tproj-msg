@@ -1210,13 +1210,17 @@ elif [[ -z "${TMUX:-}" ]]; then
   echo "Error: must be run inside tmux (or use --session <name>)" >&2
   exit 1
 else
+  # === Sender info (for prefix) ===
+  MY_PANE="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
+
   # === Session detection ===
-  SESSION=$(tmux display-message -p '#S')
+  # Resolve from MY_PANE (-t), not a bare display-message, so a hook-spawned
+  # tproj-msg (e.g. inbox-check's --read) reads its own pane's session rather
+  # than the client's focused pane. Falls back to the bare form if -t fails.
+  SESSION=$(tmux display-message -t "$MY_PANE" -p '#S' 2>/dev/null || tmux display-message -p '#S')
   IS_WORKSPACE=false
   [[ "$SESSION" == "tproj-workspace" ]] && IS_WORKSPACE=true
 
-  # === Sender info (for prefix) ===
-  MY_PANE="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}')}"
   MY_ALIAS=$(tmux display-message -t "$MY_PANE" -p '#{@alias}' 2>/dev/null || true)
   MY_ROLE_RAW=$(tmux display-message -t "$MY_PANE" -p '#{@role}' 2>/dev/null || true)
   MY_COLUMN=$(tmux display-message -t "$MY_PANE" -p '#{@column}' 2>/dev/null || true)

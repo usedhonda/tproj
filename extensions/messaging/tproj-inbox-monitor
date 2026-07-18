@@ -20,9 +20,21 @@
 set -u
 
 DB="${TPROJ_MSG_DB_PATH:-$HOME/.local/share/tproj-msg/messages.db}"
-SESSION="${TMUX_SESSION:-$(tmux display-message -p '#S' 2>/dev/null || echo unknown)}"
-MY_ALIAS="${TPROJ_MONITOR_ALIAS:-$(tmux display-message -p '#{@alias}' 2>/dev/null || echo unknown)}"
-PANE_ROLE="$(tmux display-message -p '#{@role}' 2>/dev/null || echo unknown)"
+# The explicit env overrides (TMUX_SESSION / TPROJ_MONITOR_ALIAS / TPROJ_MONITOR_ROLE)
+# are the normal launch path and take precedence. The tmux fallback below resolves
+# THIS monitor's own pane (-t "$TMUX_PANE"), not the client's focused pane -- a bare
+# display-message would bind the monitor to whichever column the user is looking at
+# when it starts, and it resolves once for the process lifetime. No TMUX_PANE (not in
+# a pane) -> unknown, rather than guessing the focused pane.
+if [[ -n "${TMUX_PANE:-}" ]]; then
+  SESSION="${TMUX_SESSION:-$(tmux display-message -t "$TMUX_PANE" -p '#S' 2>/dev/null || echo unknown)}"
+  MY_ALIAS="${TPROJ_MONITOR_ALIAS:-$(tmux display-message -t "$TMUX_PANE" -p '#{@alias}' 2>/dev/null || echo unknown)}"
+  PANE_ROLE="$(tmux display-message -t "$TMUX_PANE" -p '#{@role}' 2>/dev/null || echo unknown)"
+else
+  SESSION="${TMUX_SESSION:-unknown}"
+  MY_ALIAS="${TPROJ_MONITOR_ALIAS:-unknown}"
+  PANE_ROLE="unknown"
+fi
 case "$PANE_ROLE" in
   claude|claude-p*) DEFAULT_PLATFORM_ROLE="cc" ;;
   codex|codex-p*) DEFAULT_PLATFORM_ROLE="cdx" ;;

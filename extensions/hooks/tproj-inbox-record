@@ -47,10 +47,16 @@ source "$CACHE_HELPER"
 # we do not write the cache at all (never guess another column's subdir).
 if [[ -n "${TT_CACHE_OWNER+x}" ]]; then
   OWNER="$TT_CACHE_OWNER"
-else
-  _own_sess="$(tmux display-message -p '#S' 2>/dev/null || true)"
-  _own_alias="$(tmux display-message -p '#{@alias}' 2>/dev/null || true)"
+elif [[ -n "${TMUX_PANE:-}" ]]; then
+  # Resolve from THIS hook's pane (-t "$TMUX_PANE"), NOT a bare display-message,
+  # which returns the client's active/focused pane. Without -t, a task delegated
+  # by column A gets mis-attributed to whatever column the user happens to be
+  # looking at while A's PostToolUse hook runs -- the cross-column leak.
+  _own_sess="$(tmux display-message -t "$TMUX_PANE" -p '#S' 2>/dev/null || true)"
+  _own_alias="$(tmux display-message -t "$TMUX_PANE" -p '#{@alias}' 2>/dev/null || true)"
   OWNER="${_own_sess}/${_own_alias}"
+else
+  OWNER=""   # not inside a pane (no TMUX_PANE) -> unresolved -> fail-closed
 fi
 tt_cache_valid_owner "$OWNER" || exit 0
 # Fail-closed on a target that is not a collision-safe path component, so an odd

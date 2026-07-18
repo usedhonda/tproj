@@ -10,10 +10,15 @@ source "$SELF_DIR/tproj-task-cache.sh"
 # override via TT_CACHE_OWNER (tests / non-tmux); else resolve from tmux.
 if [[ -n "${TT_CACHE_OWNER+x}" ]]; then
   OWNER="$TT_CACHE_OWNER"
-else
-  _own_sess="$(tmux display-message -p '#S' 2>/dev/null || true)"
-  _own_alias="$(tmux display-message -p '#{@alias}' 2>/dev/null || true)"
+elif [[ -n "${TMUX_PANE:-}" ]]; then
+  # -t "$TMUX_PANE": resolve THIS pane's owner, not the client's focused pane
+  # (a bare display-message would let `tproj-task` inspect/close another column's
+  # tasks depending on where the user's focus is).
+  _own_sess="$(tmux display-message -t "$TMUX_PANE" -p '#S' 2>/dev/null || true)"
+  _own_alias="$(tmux display-message -t "$TMUX_PANE" -p '#{@alias}' 2>/dev/null || true)"
   OWNER="${_own_sess}/${_own_alias}"
+else
+  OWNER=""   # not inside a pane -> unresolved -> fail-closed
 fi
 
 show_help() {

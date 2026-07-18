@@ -551,6 +551,58 @@ else
   echo "  SKIP: tproj-task not found"
 fi
 
+# Case S (focus dependence): the hooks must resolve their owner from THEIR OWN
+# pane (tmux display-message -t "$TMUX_PANE"), not from the client's focused pane
+# (a bare display-message). With a fake tmux that returns "blebridge" for -t
+# queries (the hook's pane) but "tprojfocus" for bare queries (a different focused
+# pane), record must write to the blebridge owner subdir and check must notice
+# only blebridge's task. The old -t-less code resolves "tprojfocus" -> FAIL.
+echo "Case S: hooks resolve owner from their own pane, not the focused pane"
+if [[ -f "$RECORD_SRC" ]]; then
+  setup_tmp
+  unset TT_CACHE_OWNER   # exercise the real tmux-based resolution path
+  export TPROJ_MSG_DB_PATH="$TMP/s.db" TPROJ_MSG_DB_ERROR_LOG="$TMP/s.err"
+  mkdir -p "$TMP/bin"
+  cat > "$TMP/bin/tmux" <<'FTMUX'
+#!/bin/bash
+sub="${1:-}"; shift || true
+target=""; fmt=""; args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    -t) target="${args[$((i+1))]:-}" ;;
+    -p) fmt="${args[$((i+1))]:-}" ;;
+  esac
+done
+[[ "$sub" == "display-message" ]] || exit 0
+# -t present => the hook's own pane; -t absent => a different, focused pane.
+if [[ -n "$target" ]]; then a="blebridge"; else a="tprojfocus"; fi
+case "$fmt" in
+  '#S')          printf 'unitsess' ;;
+  '#{@alias}')   printf '%s' "$a" ;;
+  '#{@role}')    printf 'claude' ;;
+esac
+exit 0
+FTMUX
+  chmod +x "$TMP/bin/tmux"
+  make_mock_msg "pane dummy" ""
+  # (1) record attributes the task to the hook pane's owner subdir.
+  s_payload='{"tool_name":"Bash","tool_input":{"command":"tproj-msg --new-task tproj.cdx hi"},"tool_response":{"stderr":"TASK_ID=fx-s TASK_TARGET=tproj.cdx TASK_TTL_SEC=1800 TASK_SENT_AT=1"}}'
+  printf '%s' "$s_payload" | PATH="$TMP/bin:$PATH" TMUX_PANE=%hook TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-record" >/dev/null 2>&1 || true
+  if [[ -f "$TMP/cache/unitsess/blebridge/tproj.cdx.json" ]]; then PASS=$((PASS+1)); echo "  PASS: record writes to the hook pane's owner subdir (blebridge)"; else FAIL=$((FAIL+1)); echo "  FAIL: record writes to the hook pane's owner subdir (blebridge)"; fi
+  if [[ ! -d "$TMP/cache/unitsess/tprojfocus" ]]; then PASS=$((PASS+1)); echo "  PASS: record does NOT write to the focused pane's subdir (tprojfocus)"; else FAIL=$((FAIL+1)); echo "  FAIL: record does NOT write to the focused pane's subdir (tprojfocus)"; fi
+  # (2) check notices only the hook pane's task. Seed one expired task per owner.
+  ( source "$TMP/tproj-task-cache.sh"
+    tt_cache_add "unitsess/blebridge" "tproj.cdx" "own-exp" 1 1 h
+    tt_cache_add "unitsess/tprojfocus" "tproj.cdx" "other-exp" 1 1 h ) >/dev/null 2>&1 || true
+  out_s="$(PATH="$TMP/bin:$PATH" TMUX_PANE=%hook TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
+  assert_contains "$out_s" "own-exp" "check notices our own pane's task (blebridge)"
+  assert_not_contains "$out_s" "other-exp" "check does NOT notice the focused pane's task (tprojfocus)"
+  unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
+  teardown_tmp
+else
+  echo "  SKIP: tproj-inbox-record not found"
+fi
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] || exit 1
