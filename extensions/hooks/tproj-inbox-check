@@ -40,9 +40,10 @@ else
 fi
 # Our own platform role (cc/cdx), used to scope the notified_at update to the
 # message row whose recipient is exactly us. TT_OWNER_ROLE overrides (tests);
-# else resolve from this pane's @role. Empty is tolerated (the update falls back
-# to session + sender + task_id scoping, which already blocks the cross-session
-# leak; it just omits the recipient predicate).
+# else resolve from this pane's @role. If it cannot be resolved (empty), the
+# notified_at update is skipped entirely (fail-closed) -- the recipient predicate
+# is mandatory and never dropped, so we never flag a row we might not own. See
+# the notified block below.
 if [[ -n "${TT_OWNER_ROLE+x}" ]]; then
   OWNER_ROLE="$TT_OWNER_ROLE"
 else
