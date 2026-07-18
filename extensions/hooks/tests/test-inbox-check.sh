@@ -288,7 +288,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   assert_contains "own=[$st_own]" "own=[done]" "owned row updates only via exact composite (wrong/owner-less ignored)"
   assert_contains "leg=[$st_leg]" "leg=[expired]" "legacy NULL-owner row transitionable by owner-less call"
   ver="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
-  assert_contains "ver=[$ver]" "ver=[5]" "tasks schema at user_version 5"
+  assert_contains "ver=[$ver]" "ver=[6]" "tasks schema at user_version 6"
   rm -rf "$L_TMP"
   unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
 else
@@ -364,6 +364,50 @@ if command -v sqlite3 >/dev/null 2>&1; then
   assert_contains "other=[$n200]" "other=[null]" "notified_at NOT set on another session's same-task_id row"
   teardown_db
   teardown_tmp
+else
+  echo "  SKIP: sqlite3 not available"
+fi
+
+# Case O (R2): composite task identity. Same task_id from a different
+# owner/target does not overwrite an existing row; repeated owner-less upserts of
+# the same task_id stay idempotent (no row growth); a v5 DB migrates to v6
+# preserving rows.
+echo "Case O: composite task identity + legacy idempotency + v5->v6 migration"
+if command -v sqlite3 >/dev/null 2>&1; then
+  O_TMP="$(mktemp -d)"
+  export TPROJ_MSG_DB_PATH="$O_TMP/messages.db"
+  export TPROJ_MSG_DB_ERROR_LOG="$O_TMP/db-errors.log"
+  # Fresh v6: collision + legacy idempotency.
+  ( source "$REPO/extensions/messaging/tproj-msg-db.sh"
+    tt_db_init
+    tt_db_upsert_task collide tgtA 100 1800 h alA sessA
+    tt_db_upsert_task collide tgtB 200 1800 h alB sessB   # different owner+target
+    tt_db_upsert_task legrep tgtA 100 1800 h              # owner-less x3 (idempotent)
+    tt_db_upsert_task legrep tgtA 100 1800 h
+    tt_db_upsert_task legrep tgtA 100 1800 h
+  ) >/dev/null 2>&1 || true
+  n_collide="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM tasks WHERE task_id='collide';" 2>/dev/null || true)"
+  n_legrep="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM tasks WHERE task_id='legrep';" 2>/dev/null || true)"
+  ver6="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
+  assert_contains "collide=[$n_collide]" "collide=[2]" "same task_id, different owner/target -> distinct rows (no overwrite)"
+  assert_contains "legrep=[$n_legrep]" "legrep=[1]" "repeated owner-less upsert is idempotent (no row growth)"
+  assert_contains "ver=[$ver6]" "ver=[6]" "fresh DB at user_version 6"
+  rm -f "$TPROJ_MSG_DB_PATH"*
+  # v5 -> v6 migration preserves rows and adds the composite identity index.
+  ( source "$REPO/extensions/messaging/tproj-msg-db.sh"
+    TT_DB_SCHEMA_VERSION=5 tt_db_init
+    sqlite3 "$TPROJ_MSG_DB_PATH" "INSERT INTO tasks (task_id,target,sent_at,expect_until,ttl_sec,state,owner_alias,owner_session) VALUES ('m-own','tgtA',1,2,1,'pending','alA','sessA');
+     INSERT INTO tasks (task_id,target,sent_at,expect_until,ttl_sec,state) VALUES ('m-leg','tgtB',1,2,1,'pending');"
+    tt_db_ensure_init
+  ) >/dev/null 2>&1 || true
+  mig_ver="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
+  mig_rows="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM tasks;" 2>/dev/null || true)"
+  mig_idx="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM sqlite_master WHERE name='idx_tasks_owner_identity';" 2>/dev/null || true)"
+  assert_contains "mv=[$mig_ver]" "mv=[6]" "v5 DB migrates to user_version 6"
+  assert_contains "mr=[$mig_rows]" "mr=[2]" "migration preserves existing task rows"
+  assert_contains "mi=[$mig_idx]" "mi=[1]" "migration creates composite identity index"
+  rm -rf "$O_TMP"
+  unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
 else
   echo "  SKIP: sqlite3 not available"
 fi

@@ -3436,10 +3436,15 @@ maybe_prune_task_seq() {
 }
 
 generate_task_id() {
-  local alias_part epoch_min seq_root epoch_root seq=0 next=0 seq_dir
+  local alias_part target_token epoch_min seq_root epoch_root seq=0 next=0 seq_dir
   maybe_prune_task_seq
   alias_part=$(printf '%s' "${MY_ALIAS:-}" | tr -cd '[:alnum:]-')
   [[ -n "$alias_part" ]] || alias_part="tp"
+  # Second layer of collision defense (the DB composite identity is the first):
+  # embed a target-derived component in the id so the per-target sequence counter
+  # can never yield the same id for two different targets in the same epoch min.
+  target_token=$(printf '%s' "${TARGET:-}" | tr -cd '[:alnum:]')
+  [[ -n "$target_token" ]] || target_token="t"
   epoch_min=$(( $(date +%s) / 60 ))
   seq_root="${TASK_SEQ_ROOT}/${TARGET}"
   epoch_root="${seq_root}/${epoch_min}"
@@ -3448,7 +3453,7 @@ generate_task_id() {
     next=$((seq + 1))
     seq_dir=$(printf '%s/%02d' "$epoch_root" "$next")
     if mkdir "$seq_dir" 2>/dev/null; then
-      printf '%s-%s-%02d\n' "$alias_part" "$epoch_min" "$next"
+      printf '%s-%s-%s-%02d\n' "$alias_part" "$target_token" "$epoch_min" "$next"
       return 0
     fi
     seq=$next
@@ -3620,9 +3625,9 @@ do_read() {
         BLOCK|BLOCKED) _state="blocked" ;;
         *) _state="" ;;
       esac
-      # Composite-scoped transition: only our own owner's task row is mutated
+      # Composite-scoped transition: only our own owner+target task row is mutated
       # (READ_OWNER is valid here since _own_task==1 required an own-cache hit).
-      [[ -n "$_state" ]] && tt_db_transition_task "$reply_id" "$_state" "${READ_OWNER%%/*}" "${READ_OWNER##*/}" 2>/dev/null
+      [[ -n "$_state" ]] && tt_db_transition_task "$reply_id" "$_state" "${READ_OWNER%%/*}" "${READ_OWNER##*/}" "$TARGET" 2>/dev/null
     fi
     [[ "$_own_task" -eq 1 ]] && tt_cache_remove_task "$READ_OWNER" "$TARGET" "$reply_id" >/dev/null 2>&1 || true
     echo "TASK_REPLIED=${reply_id}" >&2

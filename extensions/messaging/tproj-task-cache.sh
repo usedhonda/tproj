@@ -328,7 +328,7 @@ tt_cache_gc_expired() {
           # R1' Stage 2 shadow write — record expired transition, scoped to this
           # owner's composite (owner_session + owner_alias + task_id). Fail-open.
           if declare -F tt_db_transition_task >/dev/null 2>&1; then
-            tt_db_transition_task "$tid" "expired" "${owner%%/*}" "${owner##*/}" || true
+            tt_db_transition_task "$tid" "expired" "${owner%%/*}" "${owner##*/}" "$target" || true
           fi
         done
       local remaining

@@ -37,7 +37,13 @@
 # (tt_db_transition_task, expired transitions) match on the full composite
 # (owner_session + owner_alias + task_id); an owner-less caller may only touch
 # legacy rows where both owner columns are NULL, never a new owned row.
-: "${TT_DB_SCHEMA_VERSION:=5}"
+# Version 6 rebuilds tasks so identity is the composite
+# UNIQUE(owner_session, owner_alias, target, task_id) (task_id is no longer a
+# global PRIMARY KEY): a same task_id from a different owner/target no longer
+# overwrites an existing row. A partial UNIQUE(task_id) WHERE both owner columns
+# are NULL keeps owner-less legacy upserts idempotent (SQLite treats NULLs in the
+# composite as distinct, which would otherwise let ownerless repeats grow rows).
+: "${TT_DB_SCHEMA_VERSION:=6}"
 
 tt_db_path() { printf '%s\n' "$TPROJ_MSG_DB_PATH"; }
 tt_db_error_log() { printf '%s\n' "$TPROJ_MSG_DB_ERROR_LOG"; }
@@ -161,6 +167,7 @@ SQL
   tt_db_exec_safe "$schema_sql" >/dev/null
   tt_db_migrate_caller_audit_columns
   tt_db_migrate_task_owner_column
+  tt_db_migrate_tasks_composite_identity
   tt_db_sweep_orphaned_queued
   # Stamp user_version last, so it only advances after every migration above has
   # run. This is the version tt_db_ensure_init compares against on later calls.
@@ -228,6 +235,47 @@ tt_db_migrate_task_owner_column() {
 owner_alias|TEXT
 owner_session|TEXT
 COLS
+}
+
+# Schema v6 migration — rebuild tasks so identity is the composite
+# UNIQUE(owner_session, owner_alias, target, task_id) instead of a global task_id
+# PRIMARY KEY. SQLite cannot alter a PK in place, so create a rowid table, copy
+# rows, drop, rename, then build the indexes. Idempotent and crash-safe: gated on
+# the presence of the composite index, and a leftover tasks_rebuild from a partial
+# run is dropped first. A partial UNIQUE(task_id) WHERE both owner columns are
+# NULL keeps owner-less legacy upserts idempotent (NULLs in the composite are
+# distinct, so without this a repeated ownerless upsert would insert new rows).
+# Pre-migration task_id was PRIMARY KEY (globally unique), so no copied row can
+# violate either new unique index.
+tt_db_migrate_tasks_composite_identity() {
+  tt_db_guard || return 0
+  local have
+  have=$(tt_db_exec_safe "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_owner_identity';" 2>/dev/null | tr -d '[:space:]')
+  [[ -n "$have" ]] && return 0
+  tt_db_exec_safe "
+DROP TABLE IF EXISTS tasks_rebuild;
+CREATE TABLE tasks_rebuild (
+  task_id      TEXT NOT NULL,
+  target       TEXT NOT NULL,
+  sent_at      INTEGER NOT NULL,
+  expect_until INTEGER NOT NULL,
+  ttl_sec      INTEGER NOT NULL,
+  state        TEXT NOT NULL,
+  ack_at       INTEGER,
+  done_at      INTEGER,
+  block_at     INTEGER,
+  msg_hash     TEXT,
+  owner_alias  TEXT,
+  owner_session TEXT
+);
+INSERT INTO tasks_rebuild (task_id, target, sent_at, expect_until, ttl_sec, state, ack_at, done_at, block_at, msg_hash, owner_alias, owner_session)
+  SELECT task_id, target, sent_at, expect_until, ttl_sec, state, ack_at, done_at, block_at, msg_hash, owner_alias, owner_session FROM tasks;
+DROP TABLE tasks;
+ALTER TABLE tasks_rebuild RENAME TO tasks;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_owner_identity ON tasks(owner_session, owner_alias, target, task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_legacy_identity ON tasks(task_id) WHERE owner_session IS NULL AND owner_alias IS NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_expect ON tasks(target, state, expect_until);
+" >/dev/null
 }
 
 # Lazy init guard: call before any write. Creates the DB when the file is
@@ -425,28 +473,37 @@ tt_db_upsert_task() {
   local owner_session_raw="${7:-}"
   [[ -z "$task_id" ]] && return 0
   local expect_until=$((sent_at + ttl_sec))
-  local owner_alias_sql='NULL'
-  [[ -n "$owner_alias_raw" ]] && owner_alias_sql="'$(tt_db_quote "$owner_alias_raw")'"
-  local owner_session_sql='NULL'
-  [[ -n "$owner_session_raw" ]] && owner_session_sql="'$(tt_db_quote "$owner_session_raw")'"
-  tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias, owner_session) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', ${owner_alias_sql}, ${owner_session_sql}) ON CONFLICT(task_id) DO UPDATE SET target=excluded.target, sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash, owner_alias=COALESCE(excluded.owner_alias, tasks.owner_alias), owner_session=COALESCE(excluded.owner_session, tasks.owner_session);" >/dev/null
+  if [[ -n "$owner_alias_raw" && -n "$owner_session_raw" ]]; then
+    # Owned row: identity is the composite. task_id from a different owner or a
+    # different target inserts a distinct row instead of overwriting this one.
+    local oa=$(tt_db_quote "$owner_alias_raw")
+    local os=$(tt_db_quote "$owner_session_raw")
+    tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias, owner_session) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', '${oa}', '${os}') ON CONFLICT(owner_session, owner_alias, target, task_id) DO UPDATE SET sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash;" >/dev/null
+  else
+    # Legacy / owner-less: conflict on the partial UNIQUE(task_id) WHERE both
+    # owner columns are NULL, so repeated ownerless upserts of the same task_id
+    # update the one legacy row instead of growing the table.
+    tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias, owner_session) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', NULL, NULL) ON CONFLICT(task_id) WHERE owner_session IS NULL AND owner_alias IS NULL DO UPDATE SET target=excluded.target, sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash;" >/dev/null
+  fi
 }
 
-# Args: task_id new_state [owner_session] [owner_alias]
+# Args: task_id new_state [owner_session] [owner_alias] [target]
 #   new_state is one of: pending acked done blocked expired.
 # Sets the state-specific timestamp column when applicable. The UPDATE always
-# matches the FULL composite (task_id + owner). When owner_session and
-# owner_alias are BOTH provided the row must match them exactly; when either is
-# absent the update is restricted to LEGACY rows where both owner columns are
-# NULL. There is no task_id-only UPDATE path -- an owner-less caller can never
-# mutate a new owned row, and a caller from one owner can never transition
-# another owner's task even on a task_id collision.
+# matches the composite identity (task_id + owner [+ target when supplied], the
+# same columns as the UNIQUE identity index). When owner_session and owner_alias
+# are BOTH provided the row must match them exactly; when either is absent the
+# update is restricted to LEGACY rows where both owner columns are NULL. There is
+# no task_id-only UPDATE path -- an owner-less caller can never mutate a new owned
+# row, and a caller from one owner/target can never transition another's task even
+# on a task_id collision.
 tt_db_transition_task() {
   tt_db_guard || return 0
   local task_id=$(tt_db_quote "${1:-}")
   local new_state="${2:-}"
   local owner_session_raw="${3:-}"
   local owner_alias_raw="${4:-}"
+  local target_raw="${5:-}"
   [[ -z "$task_id" || -z "$new_state" ]] && return 0
   local ts_col=''
   case "$new_state" in
@@ -464,7 +521,9 @@ tt_db_transition_task() {
   else
     owner_where="owner_session IS NULL AND owner_alias IS NULL"
   fi
-  tt_db_exec_safe "UPDATE tasks SET state='${new_state}'${ts_set} WHERE task_id='${task_id}' AND ${owner_where};" >/dev/null
+  local target_where=''
+  [[ -n "$target_raw" ]] && target_where=" AND target='$(tt_db_quote "$target_raw")'"
+  tt_db_exec_safe "UPDATE tasks SET state='${new_state}'${ts_set} WHERE task_id='${task_id}' AND ${owner_where}${target_where};" >/dev/null
 }
 
 # --- monitor cursor + read ops --------------------------------------------
