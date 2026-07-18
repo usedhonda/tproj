@@ -58,19 +58,33 @@ tt_cache_require_jq() {
   }
 }
 
+# Validate a single path component (session, alias, or target). Reject (never
+# sanitize/transform): empty, "." / "..", or any character outside the
+# [A-Za-z0-9._-] set. This guarantees an INJECTIVE mapping onto the filesystem
+# -- two distinct inputs can never collapse to the same component, and no
+# traversal ("..", an embedded "/") can be smuggled into a cache path.
+tt_cache_valid_component() {
+  local c="${1:-}"
+  [[ -n "$c" ]] || return 1
+  [[ "$c" == "." || "$c" == ".." ]] && return 1
+  [[ "$c" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  return 0
+}
+
 # Validate an owner key "<session>/<owner_alias>". Fail-closed: returns non-zero
-# on empty, missing session/alias, a nested slash, "unknown"/"null" sentinels,
-# or any `..` path traversal. Owner-scoped ops call this before touching disk.
+# unless it is exactly two collision-safe components separated by a single slash,
+# neither being an "unknown"/"null" resolution sentinel. Owner-scoped ops call
+# this before touching disk.
 tt_cache_valid_owner() {
   local owner="${1:-}"
   [[ -n "$owner" ]] || return 1
   [[ "$owner" == */* ]] || return 1
   local sess="${owner%%/*}" rest="${owner#*/}"
-  [[ -n "$sess" && -n "$rest" ]] || return 1
   [[ "$rest" != */* ]] || return 1
-  [[ "$owner" != *..* ]] || return 1
   case "$sess" in unknown|null) return 1 ;; esac
   case "$rest" in unknown|null) return 1 ;; esac
+  tt_cache_valid_component "$sess" || return 1
+  tt_cache_valid_component "$rest" || return 1
   return 0
 }
 
@@ -98,8 +112,11 @@ tt_cache_path_for_target() {
 
 tt_cache_lock_for_target() {
   local owner="$1" target="$2"
-  local key="${owner//\//.}"
-  printf '%s/tproj-task-cache.%s.%s.lock\n' "$TT_CACHE_LOCK_DIR" "$key" "$target"
+  # Join with '~' (absent from the [A-Za-z0-9._-] component charset) so distinct
+  # (session, alias, target) triples never collapse to the same lock name the
+  # way a '.'-joined key could (e.g. "a/b.c" vs "a.b/c").
+  local sess="${owner%%/*}" al="${owner#*/}"
+  printf '%s/tproj-task-cache~%s~%s~%s.lock\n' "$TT_CACHE_LOCK_DIR" "$sess" "$al" "$target"
 }
 
 # mkdir-based advisory lock (POSIX-atomic, works where flock is absent e.g. macOS).
@@ -167,6 +184,7 @@ tt_cache_add() {
   tt_cache_require_jq || return $?
   local owner="$1" target="$2" task_id="$3" sent_at="$4" ttl_sec="$5" msg_hash="${6:-}"
   tt_cache_valid_owner "$owner" || return 2
+  tt_cache_valid_component "$target" || return 2
   local expect_until=$((sent_at + ttl_sec))
   tt_cache_init_dir "$owner"
   local path lock
@@ -208,6 +226,7 @@ tt_cache_remove_task() {
   tt_cache_require_jq || return $?
   local owner="$1" target="$2" task_id="$3"
   tt_cache_valid_owner "$owner" || return 0
+  tt_cache_valid_component "$target" || return 0
   local path lock
   path="$(tt_cache_path_for_target "$owner" "$target")"
   lock="$(tt_cache_lock_for_target "$owner" "$target")"
@@ -238,6 +257,7 @@ tt_cache_get_task() {
   tt_cache_require_jq || return $?
   local owner="$1" target="$2" task_id="$3"
   tt_cache_valid_owner "$owner" || return 0
+  tt_cache_valid_component "$target" || return 0
   local path
   path="$(tt_cache_path_for_target "$owner" "$target")"
   [[ -s "$path" ]] || return 0
@@ -264,6 +284,7 @@ tt_cache_list_tasks() {
   tt_cache_require_jq || return $?
   local owner="$1" target="$2"
   tt_cache_valid_owner "$owner" || return 0
+  tt_cache_valid_component "$target" || return 0
   local path
   path="$(tt_cache_path_for_target "$owner" "$target")"
   [[ -s "$path" ]] || return 0

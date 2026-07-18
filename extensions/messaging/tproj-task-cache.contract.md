@@ -14,7 +14,7 @@ Scope: implementation guidance for cache consumers and the regression surface ch
 | Owner key | `<session>/<owner_alias>` — the tmux session name plus the issuing pane's `@alias` (the column that delegated the task) |
 | Per-target file (v2) | `<cache_root>/<owner>/<target>.json` (one JSON object per target, under an owner subdir) |
 | Lock dir root | `${TT_CACHE_LOCK_DIR:-/tmp}` |
-| Per-owner-per-target lock | `<lock_root>/tproj-task-cache.<owner-with-/-as-.>.<target>.lock` (mkdir advisory lock) |
+| Per-owner-per-target lock | `<lock_root>/tproj-task-cache~<session>~<alias>~<target>.lock` (mkdir advisory lock; `~` is absent from the component charset so the join is injective) |
 | Sequence dir | `/tmp/tproj-task-seq/<target>/<epoch_min>/NN/` (mkdir-atomic counter, D1 responsibility) |
 | Required tools | `jq` (must), `shasum` or `sha1sum` or `cksum` (any one) |
 | Optional tools | `flock` is **NOT** used (macOS default lacks it) |
@@ -27,12 +27,23 @@ key `<session>/<owner_alias>` as its first argument and touches ONLY that owner'
 subdir. This prevents one column's UserPromptSubmit hook from reading, GC-ing,
 notifying on, or `--read`-driving another column's tracked tasks.
 
-Owner resolution is **fail-closed**. `tt_cache_valid_owner` rejects an empty
-owner, a missing session or alias, a nested slash, the `unknown`/`null`
-resolution sentinels, and any `..` traversal. On an invalid owner, mutations
-refuse (`tt_cache_add` returns 2; `tt_cache_remove_task` is a no-op) and read/list
-ops return empty. A caller that cannot resolve its own `<session>/@alias`
-(e.g. a hook running outside tmux) writes and emits nothing rather than guessing.
+Owner resolution is **fail-closed**. `tt_cache_valid_owner` requires exactly two
+collision-safe components (`<session>/<alias>`) separated by a single slash,
+neither being the `unknown`/`null` resolution sentinel. On an invalid owner,
+mutations refuse (`tt_cache_add` returns 2; `tt_cache_remove_task` is a no-op)
+and read/list ops return empty. A caller that cannot resolve its own
+`<session>/@alias` (e.g. a hook running outside tmux) writes and emits nothing
+rather than guessing.
+
+**Path-component collision resistance.** Every component that reaches a cache
+path (session, alias, and target) is validated by `tt_cache_valid_component`,
+which **rejects** (never sanitizes/transforms) an empty string, `.`/`..`, or any
+character outside `[A-Za-z0-9._-]`. This keeps the `<session>/<alias>/<target>`
+mapping injective — no two distinct inputs collapse onto the same file — and
+blocks traversal (`..`, embedded `/`). `tt_cache_add` and `tproj-inbox-record`
+return fail-closed on an invalid target; remove/get/list ops treat it as a
+no-op/empty. The canonical workspace aliases (`ble-bridge`, `creator_radar`,
+`tproj`, `tproj-workspace`, `tproj.cdx`, ...) all pass.
 
 ### JSON shape (per target file)
 
@@ -64,11 +75,12 @@ Source the library (`source /path/to/tproj-task-cache.sh`). All functions return
 | Function | Signature | Behavior |
 |---|---|---|
 | `tt_cache_require_jq` | `()` | Returns 0 if `jq` is on PATH, else 127 with stderr message. Called internally by mutation ops. |
-| `tt_cache_valid_owner` | `(owner)` | Returns 0 iff `owner` is a well-formed `<session>/<alias>` (non-empty parts, no nested slash, no `unknown`/`null` sentinel, no `..`). Fail-closed gate used by every owner-scoped op. |
+| `tt_cache_valid_component` | `(component)` | Returns 0 iff `component` is non-empty, not `.`/`..`, and matches `[A-Za-z0-9._-]+`. Rejects (never sanitizes) so distinct inputs never collapse onto one path. Used for session, alias, and target. |
+| `tt_cache_valid_owner` | `(owner)` | Returns 0 iff `owner` is a well-formed `<session>/<alias>`: exactly two `tt_cache_valid_component`s separated by one slash, neither an `unknown`/`null` sentinel. Fail-closed gate used by every owner-scoped op. |
 | `tt_cache_owner_dir` | `(owner)` | Prints `<cache_root>/<owner>` on stdout. No side effects. |
 | `tt_cache_init_dir` | `([owner])` | With `owner`, `mkdir -p` that owner's subdir; without it, the cache root. Safe to call repeatedly. |
 | `tt_cache_path_for_target` | `(owner, target)` | Prints `<cache_root>/<owner>/<target>.json` on stdout. No side effects. |
-| `tt_cache_lock_for_target` | `(owner, target)` | Prints `<lock_root>/tproj-task-cache.<owner-with-/-as-.>.<target>.lock`. No side effects. |
+| `tt_cache_lock_for_target` | `(owner, target)` | Prints `<lock_root>/tproj-task-cache~<session>~<alias>~<target>.lock` (injective `~`-join). No side effects. |
 | `tt_cache_acquire_lock` | `(lock_dir, timeout=5)` | mkdir-based advisory lock. Returns 0 on acquire, 1 on timeout. Writes `$$` into `<lock_dir>/pid` (best effort). Detects stale locks by checking if `pid` process is alive. |
 | `tt_cache_release_lock` | `(lock_dir)` | `rm -rf "$lock_dir"`. Idempotent. |
 | `tt_cache_ttl_to_seconds` | `(spec)` | Parses `"30m"`, `"2h"`, `"45s"`, `"1d"`, or raw int seconds. Prints seconds on stdout. Returns 2 on invalid spec. |
@@ -231,9 +243,9 @@ bash -c '
 rm -rf /tmp/rt-cache /tmp/rt-locks
 mkdir -p /tmp/rt-cache /tmp/rt-locks
 export TT_CACHE_DIR=/tmp/rt-cache TT_CACHE_LOCK_DIR=/tmp/rt-locks
-# Forge a stale lock dir with a non-existent pid (owner rt/colA -> lock key rt.colA)
-mkdir -p /tmp/rt-locks/tproj-task-cache.rt.colA.x.cdx.lock
-echo 99999 > /tmp/rt-locks/tproj-task-cache.rt.colA.x.cdx.lock/pid
+# Forge a stale lock dir with a non-existent pid (owner rt/colA, target x.cdx)
+mkdir -p /tmp/rt-locks/tproj-task-cache~rt~colA~x.cdx.lock
+echo 99999 > /tmp/rt-locks/tproj-task-cache~rt~colA~x.cdx.lock/pid
 source ./extensions/messaging/tproj-task-cache.sh
 # Next add should detect dead holder, recycle, succeed
 tt_cache_add rt/colA x.cdx recovered-1 1734500000 600 h && echo "PASS: stale lock recovered"
@@ -255,6 +267,7 @@ Expected: `PASS: stale lock recovered` within ~50–100 ms (not full 5 s timeout
 - **2026-04-17 — v1.0**: initial contract. 8-parallel race test green. mkdir lock accepted in place of flock due to macOS default.
 - **2026-07-10 — v1.1**: role-neutral orchestrator wording and queued role-handoff tracking contract.
 - **2026-07-18 — v2.0**: owner-scoped layout (`<owner>/<target>.json`, owner = `<session>/<owner_alias>`) to fix cross-column notification leak. All owner-scoped ops take `owner` as their first argument and are fail-closed on an invalid owner. `--read` limits tag-driven transition/removal to own-cache ids. Added `tt_cache_valid_owner`, `tt_cache_owner_dir`, `tt_cache_gc_legacy_flat` (silent pre-v2 flat drain). DB `tasks.owner_alias` (schema v4) records the issuing column.
+- **2026-07-18 — v2.1**: composite hardening. DB `tasks.owner_session` (schema v5) and full-composite (`owner_session + owner_alias + task_id`) task-row transitions, so no owner can mutate another owner's task and no task_id-only UPDATE path remains. Path components (session/alias/target) validated by `tt_cache_valid_component` (reject, not sanitize; `[A-Za-z0-9._-]`, no `.`/`..`) for an injective path mapping; lock name joins with `~` to stay collision-free.
 
 ---
 

@@ -53,6 +53,9 @@ else
   OWNER="${_own_sess}/${_own_alias}"
 fi
 tt_cache_valid_owner "$OWNER" || exit 0
+# Fail-closed on a target that is not a collision-safe path component, so an odd
+# target never reaches the cache path (nor a DB row for consistency).
+tt_cache_valid_component "$task_target" || exit 0
 
 tt_cache_add "$OWNER" "$task_target" "$task_id" "$task_sent_at" "$task_ttl_sec" ""
 # R1' Stage 4: redundant DB shadow write so hook-only path stays self-sufficient

@@ -280,6 +280,54 @@ else
   echo "  SKIP: sqlite3 not available"
 fi
 
+# Case M (path-component collision resistance): invalid components (slash, "..",
+# empty, disallowed chars) are rejected and never reach a cache path; canonical
+# workspace aliases pass; the lock name is injective (distinct owners that a
+# '.'-join would collapse map to distinct lock names).
+echo "Case M: path-component validation and injective locks"
+setup_tmp
+source "$TMP/tproj-task-cache.sh"
+# Rejections.
+for bad in "" "." ".." "a/b" "a b" 'a;b' 'a$b' "a..b/c"; do
+  if tt_cache_valid_component "$bad" 2>/dev/null; then
+    FAIL=$((FAIL+1)); echo "  FAIL: rejects invalid component [$bad]"
+  else
+    PASS=$((PASS+1)); echo "  PASS: rejects invalid component [$bad]"
+  fi
+done
+# Canonical aliases accepted.
+for ok in ble-bridge creator_radar tproj tproj-workspace tproj.cdx vibeterm; do
+  if tt_cache_valid_component "$ok" 2>/dev/null; then
+    PASS=$((PASS+1)); echo "  PASS: accepts canonical component [$ok]"
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL: accepts canonical component [$ok]"
+  fi
+done
+# Canonical owner accepted, traversal/degenerate owners rejected.
+if tt_cache_valid_owner "tproj-workspace/ble-bridge" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "  PASS: accepts canonical owner"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: accepts canonical owner"
+fi
+for bad_owner in "a" "a/b/c" "sess/.." "../x/y" "unknown/unknown"; do
+  if tt_cache_valid_owner "$bad_owner" 2>/dev/null; then
+    FAIL=$((FAIL+1)); echo "  FAIL: rejects invalid owner [$bad_owner]"
+  else
+    PASS=$((PASS+1)); echo "  PASS: rejects invalid owner [$bad_owner]"
+  fi
+done
+# tt_cache_add with a traversal target must refuse (return 2) and write nothing.
+add_rc=0
+tt_cache_add "$OWNER_SELF" "../evil" bad-1 "$(date +%s)" 1800 h || add_rc=$?
+if [[ "$add_rc" -eq 2 ]]; then PASS=$((PASS+1)); echo "  PASS: add refuses traversal target (rc=2)"; else FAIL=$((FAIL+1)); echo "  FAIL: add refuses traversal target (rc=$add_rc)"; fi
+stray="$(find "$TMP/cache" -name 'evil*' -o -name '*evil*' 2>/dev/null | head -1)"
+if [[ -z "$stray" ]]; then PASS=$((PASS+1)); echo "  PASS: traversal target created no file"; else FAIL=$((FAIL+1)); echo "  FAIL: traversal target created no file ($stray)"; fi
+# Lock injectivity: two distinct owners a '.'-join would collapse stay distinct.
+l1="$(tt_cache_lock_for_target "a/b.c" t)"
+l2="$(tt_cache_lock_for_target "a.b/c" t)"
+if [[ "$l1" != "$l2" ]]; then PASS=$((PASS+1)); echo "  PASS: lock names injective across distinct owners"; else FAIL=$((FAIL+1)); echo "  FAIL: lock names injective across distinct owners"; fi
+teardown_tmp
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] || exit 1
