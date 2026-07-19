@@ -1904,11 +1904,13 @@ resolve_prompt_state() {
 #   PROMPT_PARSE_TEXT          -> normalized prompt draft text
 #   PROMPT_PARSE_HAS_CURSOR    -> true | false
 #   PROMPT_PARSE_DISTANCE      -> prompt line distance from active bottom
+#   PROMPT_PARSE_MARKER        -> native | ascii | none (prompt-line marker class)
 PROMPT_PARSE_OK="false"
 PROMPT_PARSE_REASON="uninitialized"
 PROMPT_PARSE_TEXT=""
 PROMPT_PARSE_HAS_CURSOR="false"
 PROMPT_PARSE_DISTANCE=999
+PROMPT_PARSE_MARKER="none"
 
 parse_prompt_snapshot() {
   local captured="$1"
@@ -1919,6 +1921,7 @@ parse_prompt_snapshot() {
   PROMPT_PARSE_TEXT=""
   PROMPT_PARSE_HAS_CURSOR="false"
   PROMPT_PARSE_DISTANCE=999
+  PROMPT_PARSE_MARKER="none"
 
   if [[ -z "$captured" ]]; then
     PROMPT_PARSE_REASON="empty_capture"
@@ -1993,6 +1996,18 @@ parse_prompt_snapshot() {
     return 0
   fi
   PROMPT_PARSE_DISTANCE=$(( end - prompt_index ))
+
+  # Classify the prompt-line marker so callers can distinguish a native TUI
+  # prompt (❯ U+276F / › U+203A) from a bare ASCII '>' -- the latter is also a
+  # Markdown blockquote in generated output and must not be trusted as a live
+  # input prompt by the signal-agnostic draft guard.
+  local _prompt_lead
+  _prompt_lead=$(printf '%s' "${_draft_tail[$prompt_index]}" | sed -E 's/^[[:space:]]*//')
+  case "$_prompt_lead" in
+    $'\xe2\x9d\xaf'*|$'\xe2\x80\xba'*) PROMPT_PARSE_MARKER="native" ;;
+    '>'*)                             PROMPT_PARSE_MARKER="ascii" ;;
+    *)                                PROMPT_PARSE_MARKER="none" ;;
+  esac
 
   local draft_parts=()
   local prompt_body first_draft
@@ -2191,9 +2206,18 @@ measure_input_line_draft() {
     return 0
   fi
 
-  # Real text on the active bottom prompt (cursor present, or the prompt line is
-  # at/adjacent to the active bottom) is an unsent draft. Text on a prompt line
-  # further up the scrollback is historical, not a live draft -> unknown.
+  # Require native-marker evidence (❯/›). A bare ASCII '>' line is a Markdown
+  # blockquote in generated output, not a live input prompt -- treating it as a
+  # draft would queue notices behind ordinary output (2026-07-20 false positive).
+  # Without a native marker the measurement is inconclusive -> unknown (fail-open).
+  if [[ "$PROMPT_PARSE_MARKER" != "native" ]]; then
+    INPUT_DRAFT_RESULT="unknown"
+    return 0
+  fi
+
+  # Real text on the active bottom native prompt (cursor present, or the prompt
+  # line is at/adjacent to the active bottom) is an unsent draft. Text on a
+  # prompt line further up the scrollback is historical, not a live draft.
   if [[ "$PROMPT_PARSE_HAS_CURSOR" == "true" ]] || (( PROMPT_PARSE_DISTANCE <= 1 )); then
     INPUT_DRAFT_RESULT="draft"
     INPUT_DRAFT_SNIPPET=$(printf '%s' "$PROMPT_PARSE_TEXT" | cut -c1-120)

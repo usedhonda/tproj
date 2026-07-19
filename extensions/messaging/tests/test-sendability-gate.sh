@@ -1046,6 +1046,24 @@ else
   FAIL=$((FAIL+1))
 fi
 
+# f. false-positive guard: fresh idle signal + capture ending in a Markdown
+#    blockquote ("> quoted conclusion", bare ASCII '>') must NOT be read as a
+#    draft. Delivery proceeds; nothing is queued.
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+set_ws "$CC_TTY" "running" ""
+set_signal "%1" "idle"
+set_capture "%1" $'normal generated output\n> quoted conclusion'
+out=$(run_send "tproj.cc" "notice after blockquote $$-$RANDOM"); rc=$?
+f_sent=0; [[ -f "$FAKE_DIR/sendkeys.log" ]] && f_sent=1
+f_queued=0; [[ -f "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue" ]] && f_queued=1
+if [[ "$rc" -eq 0 && "$f_sent" -eq 1 && "$f_queued" -eq 0 ]]; then
+  printf 'PASS  DG_f_blockquote_not_draft\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  DG_f_blockquote_not_draft (want rc=0 sent=1 queued=0, got rc=%s sent=%s queued=%s)\n' "$rc" "$f_sent" "$f_queued"
+  FAIL=$((FAIL+1))
+fi
+
 unset TPROJ_MSG_QUEUE_DIR
 
 # =============================================================================
