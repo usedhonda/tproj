@@ -955,6 +955,100 @@ else
 fi
 
 # =============================================================================
+# DRAFT-GUARD (2026-07-19 incident) — an independent, signal-agnostic capture of
+# the target's input line must queue an unsent draft rather than let send-keys
+# concatenate it with our text. Existing cases above are untouched.
+# =============================================================================
+# Fresh @prompt_state signal writer (idle here is deliberately STALE vs the
+# capture: the incident had a fresh-looking idle signal over a live draft).
+set_signal() { # pane state
+  printf '%s' "$2" > "$FAKE_DIR/promptstate_$1"
+  printf '%s' "$(date +%s)" > "$FAKE_DIR/promptstate_ts_$1"
+  printf '%s' "hook" > "$FAKE_DIR/promptstate_src_$1"
+}
+# A real unsent draft on the CC bottom prompt (❯ = U+276F), no cursor glyph.
+DRAFT_CAP=$'output line one\noutput line two\n\xe2\x9d\xaf this is a real unsent draft'
+
+export TPROJ_MSG_QUEUE_DIR="$WORK/queue"
+mkdir -p "$TPROJ_MSG_QUEUE_DIR"
+
+# a. draft on the input line -> a normal send queues, no send-keys.
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" "$DRAFT_CAP"
+run_send "tproj.cc" "notice while draft present $$-$RANDOM" >/dev/null 2>&1
+a_nosend=1; [[ -f "$FAKE_DIR/sendkeys.log" ]] && a_nosend=0
+a_queued=0; [[ -f "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue" ]] && a_queued=1
+if [[ "$a_nosend" -eq 1 && "$a_queued" -eq 1 ]]; then
+  printf 'PASS  DG_a_draft_normal_send_queued\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  DG_a_draft_normal_send_queued (want nosend=1 queued=1, got nosend=%s queued=%s)\n' "$a_nosend" "$a_queued"
+  FAIL=$((FAIL+1))
+fi
+
+# b. empty input line -> delivered as before (❯ with nothing after it).
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" $'some output\n\xe2\x9d\xaf'
+out=$(run_send "tproj.cc" "notice on clean prompt $$-$RANDOM"); rc=$?
+if [[ "$rc" -eq 0 && -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  DG_b_empty_prompt_delivered\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  DG_b_empty_prompt_delivered (want rc=0 and sendkeys, got rc=%s send=%s)\n' "$rc" "$([[ -f "$FAKE_DIR/sendkeys.log" ]] && echo 1 || echo 0)"
+  FAIL=$((FAIL+1))
+fi
+
+# c. draft + --force -> delivered (force bypasses the draft guard).
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+set_ws "$CC_TTY" "running" ""
+set_capture "%1" "$DRAFT_CAP"
+out=$(run_force "tproj.cc" "force over draft $$-$RANDOM"); rc=$?
+if [[ "$rc" -eq 0 && -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  DG_c_draft_force_delivered\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  DG_c_draft_force_delivered (want rc=0 and sendkeys, got rc=%s send=%s)\n' "$rc" "$([[ -f "$FAKE_DIR/sendkeys.log" ]] && echo 1 || echo 0)"
+  FAIL=$((FAIL+1))
+fi
+
+# d. INCIDENT: fresh @prompt_state=idle (stale) over a live draft -> the
+#    independent capture still queues it. --status verdict is blocked_typing.
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+set_ws "$CC_TTY" "running" ""
+set_signal "%1" "idle"
+set_capture "%1" "$DRAFT_CAP"
+d_status=$(run_status "tproj.cc")
+run_send "tproj.cc" "notice under stale idle $$-$RANDOM" >/dev/null 2>&1
+d_nosend=1; [[ -f "$FAKE_DIR/sendkeys.log" ]] && d_nosend=0
+d_queued=0; [[ -f "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue" ]] && d_queued=1
+if grep -q "blocked_typing" <<<"$d_status" && grep -q "input_line_capture" <<<"$d_status" && [[ "$d_nosend" -eq 1 && "$d_queued" -eq 1 ]]; then
+  printf 'PASS  DG_d_stale_idle_draft_queued\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  DG_d_stale_idle_draft_queued (want blocked_typing/input_line_capture, nosend=1 queued=1)\n      status=%s nosend=%s queued=%s\n' "$(tr '\n' '|' <<<"$d_status")" "$d_nosend" "$d_queued"
+  FAIL=$((FAIL+1))
+fi
+
+# e. capture failure (no capture fixture) -> the new guard fails open: with a
+#    fresh idle signal and no measurable draft, delivery proceeds as before.
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+set_ws "$CC_TTY" "running" ""
+set_signal "%1" "idle"
+# no set_capture -> fake tmux capture-pane returns empty (capture failure)
+out=$(run_send "tproj.cc" "notice on capture failure $$-$RANDOM"); rc=$?
+if [[ "$rc" -eq 0 && -f "$FAKE_DIR/sendkeys.log" ]]; then
+  printf 'PASS  DG_e_capture_failure_failopen\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  DG_e_capture_failure_failopen (want rc=0 and sendkeys, got rc=%s send=%s)\n' "$rc" "$([[ -f "$FAKE_DIR/sendkeys.log" ]] && echo 1 || echo 0)"
+  FAIL=$((FAIL+1))
+fi
+
+unset TPROJ_MSG_QUEUE_DIR
+
+# =============================================================================
 echo "----"
 printf 'PASS=%d FAIL=%d PENDING=%d\n' "$PASS" "$FAIL" "$PENDING"
 [[ "$FAIL" -eq 0 ]]

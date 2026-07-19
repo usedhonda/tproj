@@ -2145,6 +2145,65 @@ detect_prompt_draft_state() {
   return 0
 }
 
+# Signal-agnostic measurement of whether the target pane's INPUT line carries
+# unsent draft text, done with its own capture-pane read. This is deliberately
+# INDEPENDENT of resolve_prompt_state / @prompt_state: the 2026-07-19 incident
+# delivered a notice on a fresh-looking idle signal while the user's half-typed
+# draft still sat on the prompt line, so send-keys concatenated the two into a
+# single submit (a mangled path fired as a Role-Handoff). resolve_prompt_state
+# trusts a fresh signal and returns before the capture heuristic runs, so this
+# re-checks the input line directly right before delivery.
+#
+# Output slots:
+#   INPUT_DRAFT_RESULT  -> draft | clear | unknown
+#   INPUT_DRAFT_SNIPPET -> short snippet when a draft is present
+# Fail-open: a failed/unlocatable capture yields "unknown" so delivery falls
+# back to the existing prompt-state resolution rather than blocking forever. A
+# detected draft ("draft") must always queue on the non-force paths.
+INPUT_DRAFT_RESULT="unknown"
+INPUT_DRAFT_SNIPPET=""
+measure_input_line_draft() {
+  local pane="$1"
+  local raw_captured captured
+  INPUT_DRAFT_RESULT="unknown"
+  INPUT_DRAFT_SNIPPET=""
+
+  raw_captured=$(tmux capture-pane -t "$pane" -e -p -S "-${TMUX_TYPING_GUARD_READ_LINES}" 2>/dev/null || true)
+  if [[ -z "$raw_captured" ]]; then
+    return 0  # capture failed -> unknown (fail-open)
+  fi
+  captured=$(printf '%s\n' "$raw_captured" | strip_ansi)
+  parse_prompt_snapshot "$captured"
+  if [[ "$PROMPT_PARSE_OK" != "true" ]]; then
+    return 0  # no locatable prompt line -> unknown (fail-open)
+  fi
+
+  # Empty or placeholder-only input line -> clean prompt.
+  if [[ -z "$PROMPT_PARSE_TEXT" ]] || is_prompt_placeholder_text "$PROMPT_PARSE_TEXT"; then
+    INPUT_DRAFT_RESULT="clear"
+    return 0
+  fi
+
+  # A dim ghost-suggestion is not an unsent draft; existing behavior treats it
+  # as sendable, so do not block on it (keeps the #9 false-busy contract).
+  if raw_prompt_has_dim "$raw_captured"; then
+    INPUT_DRAFT_RESULT="clear"
+    return 0
+  fi
+
+  # Real text on the active bottom prompt (cursor present, or the prompt line is
+  # at/adjacent to the active bottom) is an unsent draft. Text on a prompt line
+  # further up the scrollback is historical, not a live draft -> unknown.
+  if [[ "$PROMPT_PARSE_HAS_CURSOR" == "true" ]] || (( PROMPT_PARSE_DISTANCE <= 1 )); then
+    INPUT_DRAFT_RESULT="draft"
+    INPUT_DRAFT_SNIPPET=$(printf '%s' "$PROMPT_PARSE_TEXT" | cut -c1-120)
+    return 0
+  fi
+
+  INPUT_DRAFT_RESULT="unknown"
+  return 0
+}
+
 # Check if pane shows a CC prompt marker (U+276F)
 # Simple: search last 15 lines for ❯ — no separator logic needed
 has_cc_prompt() {
@@ -2470,6 +2529,22 @@ send_block_reason() {
       return 0
       ;;
   esac
+
+  # Independent draft measurement (signal-agnostic). resolve_prompt_state above
+  # may have trusted a fresh @prompt_state=idle that is actually stale, so
+  # re-check the input line directly: a paused user draft must still queue rather
+  # than be submitted together with our text (2026-07-19 incident). This only
+  # runs when the resolution above did not already block, and only ADDS a block
+  # on a positively-detected draft -- an "unknown"/"clear" measurement leaves the
+  # existing verdict untouched (fail-open).
+  measure_input_line_draft "$pane"
+  if [[ "$INPUT_DRAFT_RESULT" == "draft" ]]; then
+    SEND_BLOCK_REASON="typing_draft"
+    SEND_BLOCK_SOURCE="input_line_capture"
+    SEND_BLOCK_DETAIL="draft_detected"
+    [[ -n "$INPUT_DRAFT_SNIPPET" ]] && SEND_BLOCK_DETAIL+=",draft=${INPUT_DRAFT_SNIPPET}"
+    return 0
+  fi
 
   return 0
 }
@@ -3828,6 +3903,15 @@ if [[ "$FORCE_MODE" == "true" ]]; then
     echo "Warning: target '$TARGET' has unsent input (session_typing_busy); proceeding due to --force" >&2
     echo "Detail: source=${PROMPT_RESOLVED_SOURCE} reason=${PROMPT_RESOLVED_REASON}" >&2
     [[ -n "$PROMPT_RESOLVED_SNIPPET" ]] && echo "Detail: draft='${PROMPT_RESOLVED_SNIPPET}'" >&2
+  else
+    # Surface a draft that the (possibly stale) prompt-state resolution missed,
+    # so an operator forcing delivery still sees they are overwriting input.
+    # --force always proceeds; this only adds the warning, never blocks.
+    measure_input_line_draft "$TARGET_PANE"
+    if [[ "$INPUT_DRAFT_RESULT" == "draft" ]]; then
+      echo "Warning: target '$TARGET' has unsent input (input_line_capture:draft_detected); proceeding due to --force" >&2
+      [[ -n "$INPUT_DRAFT_SNIPPET" ]] && echo "Detail: draft='${INPUT_DRAFT_SNIPPET}'" >&2
+    fi
   fi
   if raw_send; then
     fanout_guard_mark "$TARGET" "$MESSAGE" || true
