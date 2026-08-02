@@ -31,6 +31,7 @@ repository root are:
 ```bash
 bash tests/smoke-bin.sh
 bash extensions/messaging/tests/test-sendability-gate.sh
+bash extensions/messaging/tests/test-role-handoff.sh
 bash extensions/hooks/tests/test-inbox-check.sh
 ```
 
@@ -49,9 +50,25 @@ cd apps/tproj
 ./dev-app.sh
 ```
 
-Use `./dev-app.sh --release` only when a release build is required. Do not use a
-direct `.app` open or launch a `.build` executable manually as a substitute for
-the wrapper when validating GUI changes.
+Use `./dev-app.sh --release` only when a release build is required. Never
+launch the GUI any other way (no direct `.app` open, no manual `.build`
+binary): other launch paths run stale variants and invalidate verification.
+
+## Do Not Touch
+
+- `AGENTS.md`, `CLAUDE.md`, `.gitignore`: tracked contract files. Runtime
+  startup must never create or modify them (enforced by
+  `extensions/persona/test-project-bootstrap-contract.sh`).
+- `project-bootstrap`, `model-role-router`: tracked symlinks into the sibling
+  `general` checkout. Do not materialize or retarget them
+  (`install.sh --check` verifies canonical/symlink/installed copies match).
+- Generated or ignored runtime artifacts (`.local/`, `apps/tproj/AGENTS.md`,
+  `apps/tproj/CLAUDE.md`, `CLAUDE.local.md`): owned by their generators;
+  never commit them.
+- Messaging identity and safety gates in `extensions/messaging/` (sender
+  verification, relay/fanout/typing/draft guards, role-handoff validation):
+  behavior changes require updating the matching contract doc under
+  `docs/reference/` and the focused tests in the same commit.
 
 ## Runtime Instruction Contract
 
@@ -75,6 +92,34 @@ The repository's `project-bootstrap` entrypoint is a tracked symlink to the
 canonical implementation in the sibling `general` checkout. Do not materialize
 or retarget that symlink in tproj changes. `install.sh --check` verifies the
 canonical source, tracked symlink, and installed copy remain byte-identical.
+
+Durable project rules belong in this file. Do not introduce important shared
+rules only in `CLAUDE.local.md`, `.codex/config.toml`, or agent memory: those
+layers are tool- or machine-local and do not reach the other agent.
+
+## Quality Bar and Completion
+
+A change is complete when all of the following hold:
+
+1. The relevant focused tests above pass (run the smallest covering set; run
+   the messaging suites for any `extensions/messaging` or `extensions/hooks`
+   change).
+2. Deployed copies are refreshed when `bin/` or `extensions/` scripts changed
+   (copy the changed script to `~/bin`; avoid `install.sh` while a tmux
+   workspace is live). GUI changes are verified through `dev-app.sh` only.
+3. The change is committed with an English conventional commit
+   (`feat:`/`fix:`/`docs:`/`test:`/`chore:`), one logical substep per commit.
+4. Contract-sensitive changes (startup, installer, messaging, runtime
+   contracts) include their focused test updates in the same commit.
+
+## Handoff
+
+Work must be resumable from repository state alone. When handing off between
+agents (either direction), record scope, current state, verified results, open
+risks, and next steps in a handoff note (template:
+`docs/reference/handoff.md`; instances live outside version control, e.g.
+`.local/handoff/`). Do not rely on conversation history or agent-local memory
+for anything the next agent needs.
 
 ## Contribution Rules
 
