@@ -146,8 +146,8 @@ tmux ワークスペース内の他 AI ペイン（CC, Cdx, Agent）と通信す
 
 - 送信後は**即 exit**する。応答は `[from:<sender>]` プレフィックスで自動配信される
 - 返信を待つためにポーリングする必要はない。**そのまま作業を続ける**
-- `--new-task` 委任の往復は PostToolUse / UserPromptSubmit hook が自動追跡する（Task ID cache 登録 → `[DONE:]` / `[ACK:]` 検出 → cache 自動削除 → `[inbox-notice]` を次 prompt の context に inject）。詳細は CLAUDE.md §6.3.1 / §8.5.1
-- hook 追跡が効くのは `--new-task` 送信のみ。ID なし送信 or `TPROJ_HOOK_ENABLED` 未設定では CLAUDE.md §8.5.1 の手動 `--read` 運用に従う
+- `--new-task` 委任の往復は PostToolUse / UserPromptSubmit hook が自動追跡する（Task ID cache 登録 → `[DONE:]` / `[ACK:]` 検出 → cache 自動削除 → `[inbox-notice]` を次 prompt の context に inject）。詳細は docs/reference/tproj-msg-sender-verification.md
+- hook 追跡が効くのは `--new-task` 送信のみ。ID なし送信 or `TPROJ_HOOK_ENABLED` 未設定では手動 `--read`（目視確認）で往復を閉じる
 - `--read` はターミナル出力を目視確認するためのツール。受信待ち目的では使わない
 
 **禁止:**
@@ -237,7 +237,7 @@ tproj-msg --flush                   # キュー内メッセージを idle ター
 - `[from:...]` で届いたメッセージには、FYI/返信不要の明示がない限り必ず返信すること
 - 相談・質問も返信対象（「完了報告」だけではない）
 - 返信は次の無関係な作業に移る前に送ること
-- 詳細は CLAUDE.md Section 6.3 参照
+- 詳細はグローバル契約 §5.5（AI 間通信）参照
 
 ## 典型的なユースケース
 
