@@ -54,7 +54,7 @@ Use `./dev-app.sh --release` only when a release build is required. Never
 launch the GUI any other way (no direct `.app` open, no manual `.build`
 binary): other launch paths run stale variants and invalidate verification.
 
-## Do Not Touch
+## Protected Contracts
 
 - `AGENTS.md`, `CLAUDE.md`, `.gitignore`: tracked contract files. Runtime
   startup must never create or modify them (enforced by
@@ -63,8 +63,8 @@ binary): other launch paths run stale variants and invalidate verification.
   `general` checkout. Do not materialize or retarget them
   (`install.sh --check` verifies canonical/symlink/installed copies match).
 - Generated or ignored runtime artifacts (`.local/`, `apps/tproj/AGENTS.md`,
-  `apps/tproj/CLAUDE.md`, `CLAUDE.local.md`): owned by their generators;
-  never commit them.
+  `apps/tproj/CLAUDE.md`, `CLAUDE.local.md`): never commit them; their
+  generators refresh them.
 - Messaging identity and safety gates in `extensions/messaging/` (sender
   verification, relay/fanout/typing/draft guards, role-handoff validation):
   behavior changes require updating the matching contract doc under
@@ -102,10 +102,10 @@ layers are tool- or machine-local and do not reach the other agent.
 A change is complete when all of the following hold:
 
 1. The relevant focused tests above pass (run the smallest covering set; run
-   the messaging suites for any `extensions/messaging` or `extensions/hooks`
-   change).
-2. Deployed copies are refreshed when `bin/` or `extensions/` scripts changed
-   (copy the changed script to `~/bin`; avoid `install.sh` while a tmux
+   the full suite set defined in `.github/workflows/test.yml` for any
+   `extensions/messaging` or `extensions/hooks` change).
+2. The installed copy is refreshed for scripts that `install.sh` distributes
+   (verify with `install.sh --check`; avoid running `install.sh` while a tmux
    workspace is live). GUI changes are verified through `dev-app.sh` only.
 3. The change is committed with an English conventional commit
    (`feat:`/`fix:`/`docs:`/`test:`/`chore:`), one logical substep per commit.
@@ -114,9 +114,10 @@ A change is complete when all of the following hold:
 
 ## Handoff
 
-Work must be resumable from repository state alone. When handing off between
-agents (either direction), record scope, current state, verified results, open
-risks, and next steps in a handoff note (template:
+Work must be resumable from the local worktree state plus the handoff note,
+without conversation history or agent memory. When handing off between agents
+(either direction), record scope, current state, verified results, open risks,
+and next steps in a handoff note (template:
 `docs/reference/handoff.md`; instances live outside version control, e.g.
 `.local/handoff/`). Do not rely on conversation history or agent-local memory
 for anything the next agent needs.
