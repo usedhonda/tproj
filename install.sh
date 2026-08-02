@@ -161,6 +161,16 @@ if $CHECK_ONLY; then
     elif ! cmp -s "$MODEL_ROLE_ROUTER_LINK" "$HOME/bin/model-role-router"; then
       drift+=("model-role-router (installed copy differs from canonical source)")
     fi
+    # msg skill distributed to Claude Code and Codex (see install step below)
+    skill_src="$SCRIPT_DIR/extensions/messaging/skill-msg/SKILL.md"
+    for skill_rel in ".claude/skills/msg/SKILL.md" ".codex/skills/msg/SKILL.md"; do
+      skill_copy="$HOME/$skill_rel"
+      if [[ ! -f "$skill_copy" ]]; then
+        drift+=("$skill_rel (missing installed copy)")
+      elif ! diff -q "$skill_src" "$skill_copy" >/dev/null 2>&1; then
+        drift+=("$skill_rel (installed copy differs from repo source)")
+      fi
+    done
   fi
   if [[ ${#drift[@]} -gt 0 ]]; then
     echo "drift detected in repo/install chain:"

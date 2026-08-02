@@ -60,6 +60,9 @@ cp "$REPO_ROOT/bin/lib/tproj-common.sh" "$TEST_HOME/bin/lib/tproj-common.sh"
 cp "$REPO_ROOT/bin/lib/tproj-model-role.sh" "$TEST_HOME/bin/lib/tproj-model-role.sh"
 cp -L "$BOOTSTRAP_LINK" "$TEST_HOME/bin/project-bootstrap"
 cp -L "$MODEL_ROLE_ROUTER_LINK" "$TEST_HOME/bin/model-role-router"
+mkdir -p "$TEST_HOME/.claude/skills/msg" "$TEST_HOME/.codex/skills/msg"
+cp "$REPO_ROOT/extensions/messaging/skill-msg/SKILL.md" "$TEST_HOME/.claude/skills/msg/SKILL.md"
+cp "$REPO_ROOT/extensions/messaging/skill-msg/SKILL.md" "$TEST_HOME/.codex/skills/msg/SKILL.md"
 
 check_output=$(HOME="$TEST_HOME" "$REPO_ROOT/install.sh" --check)
 [[ "$check_output" == *"canonical extension chains match"* ]] || \
@@ -80,6 +83,14 @@ fi
 [[ "$drift_output" == *"model-role-router (installed copy differs from canonical source)"* ]] || \
   fail "install --check did not report model-role-router copy drift"
 cp -L "$MODEL_ROLE_ROUTER_LINK" "$TEST_HOME/bin/model-role-router"
+
+printf '\n<!-- test drift -->\n' >> "$TEST_HOME/.claude/skills/msg/SKILL.md"
+if drift_output=$(HOME="$TEST_HOME" "$REPO_ROOT/install.sh" --check 2>&1); then
+  fail "install --check accepted a stale msg skill copy"
+fi
+[[ "$drift_output" == *".claude/skills/msg/SKILL.md (installed copy differs from repo source)"* ]] || \
+  fail "install --check did not report msg skill copy drift"
+cp "$REPO_ROOT/extensions/messaging/skill-msg/SKILL.md" "$TEST_HOME/.claude/skills/msg/SKILL.md"
 
 prime_repo="$TMP_ROOT/prime-repo"
 make_shared_fixture "$prime_repo"

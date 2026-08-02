@@ -104,7 +104,7 @@ A change is complete when all of the following hold:
 1. The relevant focused tests above pass (run the smallest covering set; run
    the full suite set defined in `.github/workflows/test.yml` for any
    `extensions/messaging` or `extensions/hooks` change).
-2. The installed copy is refreshed for scripts that `install.sh` distributes
+2. The installed copy is refreshed for artifacts that `install.sh` distributes
    (verify with `install.sh --check`; avoid running `install.sh` while a tmux
    workspace is live). GUI changes are verified through `dev-app.sh` only.
 3. The change is committed with an English conventional commit
