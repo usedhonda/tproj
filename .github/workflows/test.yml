@@ -1,0 +1,24 @@
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  shell-suites:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Smoke
+        run: bash tests/smoke-bin.sh
+      - name: Messaging sendability
+        run: bash extensions/messaging/tests/test-sendability-gate.sh
+      - name: Role handoff
+        run: bash extensions/messaging/tests/test-role-handoff.sh
+      - name: Desktop mailbox
+        run: bash extensions/messaging/tests/test-desktop-mailbox.sh
+      - name: Caller verify hardening
+        run: bash extensions/messaging/tests/test-caller-verify-hardening.sh
+      - name: Registry contract
+        run: bash extensions/messaging/tests/test-registry-contract.sh
+      - name: Inbox check
+        run: bash extensions/hooks/tests/test-inbox-check.sh
