@@ -18,7 +18,10 @@ jobs:
         run: bash extensions/messaging/tests/test-desktop-mailbox.sh
       - name: Caller verify hardening
         run: bash extensions/messaging/tests/test-caller-verify-hardening.sh
-      - name: Registry contract
-        run: bash extensions/messaging/tests/test-registry-contract.sh
+      # test-registry-contract.sh is excluded here: it executes the canonical
+      # model-role-router from the sibling `general` checkout, which is not
+      # present in a tproj-only CI checkout (same sibling-general dependency
+      # that keeps test-project-bootstrap-contract.sh a local-only contract
+      # test). Run it locally where the general checkout exists.
       - name: Inbox check
         run: bash extensions/hooks/tests/test-inbox-check.sh
