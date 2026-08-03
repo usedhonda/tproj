@@ -171,6 +171,23 @@ exit 0
 WS
 chmod +x "$BIN_DIR/websocat"
 
+# --- fake timeout / gtimeout -------------------------------------------------
+# The ws_status probe wraps websocat in coreutils `timeout`, which is absent on
+# stock macOS and the macos-14 CI runner (only present on dev machines that have
+# Homebrew coreutils). Without it the probe returns timeout_missing and falls
+# back to the capture heuristic, diverging from local runs. Provide a hermetic
+# stand-in that drops the leading duration argument and execs the rest, so the
+# ws_status path is exercised identically on dev machines and CI.
+for to_name in timeout gtimeout; do
+  cat > "$BIN_DIR/$to_name" <<'TO'
+#!/usr/bin/env bash
+set -uo pipefail
+[[ "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] && shift
+exec "$@"
+TO
+  chmod +x "$BIN_DIR/$to_name"
+done
+
 # --- fake curl ---------------------------------------------------------------
 # Captures ClawGate payloads for gate:direct tests.
 cat > "$BIN_DIR/curl" <<'CURL'
