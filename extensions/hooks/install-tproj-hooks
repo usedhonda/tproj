@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Merge tproj lifecycle hooks for Claude and Codex without clobbering peers."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import select
+import shutil
+import subprocess
+import time
+from pathlib import Path
+from typing import Any
+
+
+def load(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save(path: Path, value: dict[str, Any], dry_run: bool) -> None:
+    rendered = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    if path.exists() and path.read_text(encoding="utf-8") == rendered:
+        return
+    if dry_run:
+        print(f"WOULD WRITE {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        shutil.copy2(path, path.with_name(f"{path.name}.bak.tproj-{int(time.time())}"))
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(rendered, encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def command_of(entry: dict[str, Any]) -> str:
+    hooks = entry.get("hooks", [])
+    if not hooks or not isinstance(hooks[0], dict):
+        return ""
+    return str(hooks[0].get("command", ""))
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_installed_hooks(canonical: Path, installed: Path) -> None:
+    for name in ("tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard"):
+        source = canonical / name
+        deployed = installed / name
+        if not source.is_file() or not deployed.is_file() or sha256(source) != sha256(deployed):
+            raise RuntimeError(f"canonical/installed hook mismatch: {name}")
+
+
+def ensure_entry(hooks: dict[str, Any], event: str, matcher: str, command: str) -> None:
+    entries = hooks.setdefault(event, [])
+    for entry in entries:
+        if entry.get("matcher", "") == matcher and command_of(entry) == command:
+            return
+    item: dict[str, Any] = {"hooks": [{"type": "command", "command": command}]}
+    if matcher:
+        item["matcher"] = matcher
+    entries.append(item)
+
+
+def merge(document: dict[str, Any], platform: str) -> dict[str, Any]:
+    hooks = document.setdefault("hooks", {})
+    if platform == "claude":
+        home = "$HOME/bin"
+        ensure_entry(hooks, "PostToolUse", "Bash|functions.exec", f"{home}/tproj-inbox-record")
+        ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check")
+        ensure_entry(hooks, "Stop", "", f"{home}/tproj-completion-guard")
+    else:
+        home = str(Path("~/bin").expanduser())
+        ensure_entry(hooks, "PostToolUse", "Bash|functions.exec", f"{home}/tproj-inbox-record")
+        ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check --platform codex")
+        ensure_entry(hooks, "Stop", "", f"{home}/tproj-completion-guard --platform codex")
+    return document
+
+
+def read_response(process: subprocess.Popen[str], request_id: int) -> dict[str, Any]:
+    deadline = time.monotonic() + 8.0
+    assert process.stdout is not None
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([process.stdout], [], [], max(0.0, deadline - time.monotonic()))
+        if not ready:
+            break
+        line = process.stdout.readline()
+        if not line:
+            break
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if value.get("id") == request_id:
+            return value
+    raise RuntimeError("Codex app-server hooks/list timed out")
+
+
+def live_hooks(cwd: Path) -> dict[str, Any]:
+    process = subprocess.Popen(
+        ["codex", "app-server", "--stdio"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        assert process.stdin is not None
+        process.stdin.write(json.dumps({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "tproj-hook-installer", "version": "1"}}}) + "\n")
+        process.stdin.flush()
+        read_response(process, 1)
+        process.stdin.write(json.dumps({"method": "initialized"}) + "\n")
+        process.stdin.write(json.dumps({"id": 2, "method": "hooks/list", "params": {"cwds": [str(cwd)]}}) + "\n")
+        process.stdin.flush()
+        return read_response(process, 2)
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+def hook_metadata(response: dict[str, Any], source: Path) -> list[dict[str, str]]:
+    result = response.get("result", response)
+    found: list[dict[str, str]] = []
+    required = {"tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard"}
+    seen: set[str] = set()
+    for group in result.get("data", []):
+        for hook in group.get("hooks", []):
+            command = str(hook.get("command") or "")
+            matched = next((name for name in required if name in command), None)
+            if matched is None:
+                continue
+            if Path(str(hook.get("sourcePath", ""))).expanduser() != source:
+                continue
+            key = str(hook.get("key", ""))
+            current_hash = str(hook.get("currentHash", ""))
+            if key and current_hash.startswith("sha256:"):
+                found.append({"key": key, "trusted_hash": current_hash})
+                seen.add(matched)
+    if seen != required:
+        missing = ", ".join(sorted(required - seen))
+        raise RuntimeError(f"Codex hooks/list omitted required tproj hooks: {missing}")
+    return found
+
+
+def update_trust(path: Path, hooks: list[dict[str, str]], dry_run: bool) -> None:
+    if not hooks:
+        raise RuntimeError("No tproj Codex hooks were returned by hooks/list")
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
+    lines = original.splitlines()
+    for hook in hooks:
+        header = f'[hooks.state.{json.dumps(hook["key"])}]'
+        trusted = f'trusted_hash = {json.dumps(hook["trusted_hash"])}'
+        try:
+            start = lines.index(header)
+        except ValueError:
+            if lines and lines[-1]:
+                lines.append("")
+            lines.extend([header, trusted])
+            continue
+        end = next((index for index in range(start + 1, len(lines)) if lines[index].startswith("[")), len(lines))
+        slot = next((index for index in range(start + 1, end) if lines[index].startswith("trusted_hash =")), None)
+        if slot is None:
+            lines.insert(start + 1, trusted)
+        else:
+            lines[slot] = trusted
+    updated = "\n".join(lines) + "\n"
+    if updated == original:
+        return
+    if dry_run:
+        print(f"WOULD TRUST {len(hooks)} hooks in {path}")
+        return
+    if path.exists():
+        shutil.copy2(path, path.with_name(f"{path.name}.bak.tproj-trust-{int(time.time())}"))
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(updated, encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--claude-settings", default="~/.claude/settings.json")
+    parser.add_argument("--codex-hooks", default="~/.codex/hooks.json")
+    parser.add_argument("--codex-config", default="~/.codex/config.toml")
+    parser.add_argument("--trust-response")
+    parser.add_argument("--canonical-hooks-dir", default=str(Path(__file__).resolve().parent))
+    parser.add_argument("--installed-hooks-dir", default="~/bin")
+    parser.add_argument("--skip-codex-trust", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    claude = Path(args.claude_settings).expanduser()
+    codex = Path(args.codex_hooks).expanduser()
+    config = Path(args.codex_config).expanduser()
+    if not args.skip_codex_trust and not args.dry_run:
+        verify_installed_hooks(Path(args.canonical_hooks_dir).expanduser(), Path(args.installed_hooks_dir).expanduser())
+    save(claude, merge(load(claude), "claude"), args.dry_run)
+    save(codex, merge(load(codex), "codex"), args.dry_run)
+    if args.skip_codex_trust or args.dry_run:
+        return 0
+    response = load(Path(args.trust_response)) if args.trust_response else live_hooks(Path.cwd())
+    update_trust(config, hook_metadata(response, codex), args.dry_run)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

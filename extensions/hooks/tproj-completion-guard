@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""Block silent delegated-task completion for Claude and Codex Stop hooks."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+
+LIFECYCLE_RE = re.compile(
+    r"\[(ACK-PROGRESS|ACK|DONE|BLOCK|BLOCKED):\s*([A-Za-z0-9._-]+)\]"
+)
+REPORT_RE = re.compile(r"\[COMPLETION-REPORT:\s*([A-Za-z0-9._-]+)\]")
+
+
+def block(reason: str) -> int:
+    print(json.dumps({"decision": "block", "reason": reason}, separators=(",", ":")))
+    return 0
+
+
+def owner_identity() -> tuple[str, str, str] | None:
+    owner = os.environ.get("TT_CACHE_OWNER", "")
+    role = os.environ.get("TT_OWNER_ROLE", "")
+    if not owner and os.environ.get("TMUX_PANE"):
+        pane = os.environ["TMUX_PANE"]
+        try:
+            session = subprocess.check_output(
+                ["tmux", "display-message", "-t", pane, "-p", "#S"], text=True
+            ).strip()
+            alias = subprocess.check_output(
+                ["tmux", "display-message", "-t", pane, "-p", "#{@alias}"], text=True
+            ).strip()
+            raw_role = subprocess.check_output(
+                ["tmux", "display-message", "-t", pane, "-p", "#{@role}"], text=True
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        owner = f"{session}/{alias}"
+        if not role:
+            if raw_role.startswith("claude"):
+                role = "cc"
+            elif raw_role.startswith("codex"):
+                role = "cdx"
+    if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", owner):
+        return None
+    if role not in {"cc", "cdx"}:
+        return None
+    session, alias = owner.split("/", 1)
+    return session, alias, role
+
+
+def open_db() -> sqlite3.Connection | None:
+    path = Path(
+        os.environ.get(
+            "TPROJ_MSG_DB_PATH", str(Path.home() / ".local/share/tproj-msg/messages.db")
+        )
+    )
+    if not path.is_file():
+        return None
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=rw", uri=True, timeout=1.0)
+        connection.execute("PRAGMA busy_timeout=1000")
+        return connection
+    except sqlite3.Error:
+        return None
+
+
+def activation_epoch() -> int:
+    raw = os.environ.get("TPROJ_TASK_GUARD_SINCE", "")
+    if raw.isdigit():
+        return int(raw)
+    try:
+        return int(Path(__file__).stat().st_mtime)
+    except OSError:
+        return 0
+
+
+def latest_worker_task(
+    db: sqlite3.Connection, session: str, self_alias: str
+) -> tuple[str, str, str] | None:
+    row = db.execute(
+        """
+        SELECT t.task_id, m.from_alias, t.state
+          FROM tasks t
+          JOIN messages m
+            ON m.task_id=t.task_id
+           AND m.direction='inbound'
+           AND m.to_alias=t.target
+         WHERE t.owner_session=?
+           AND t.target=?
+           AND t.state IN ('pending','acked')
+           AND m.created_at>=?
+           AND (m.from_alias=t.owner_alias || '.cc' OR m.from_alias=t.owner_alias || '.cdx')
+         ORDER BY m.id DESC
+         LIMIT 1
+        """,
+        (session, self_alias, activation_epoch()),
+    ).fetchone()
+    return tuple(str(value) for value in row) if row else None
+
+
+def marker_was_sent(
+    db: sqlite3.Connection, sender: str, recipient: str, marker: str
+) -> bool:
+    row = db.execute(
+        """
+        SELECT 1
+          FROM messages
+         WHERE from_alias=? AND to_alias=? AND direction='outbound'
+           AND instr(body, ?) > 0
+         ORDER BY id DESC LIMIT 1
+        """,
+        (sender, recipient, marker),
+    ).fetchone()
+    return row is not None
+
+
+def record_worker_transition(
+    db: sqlite3.Connection,
+    task_id: str,
+    session: str,
+    sender_alias: str,
+    target: str,
+    tag: str,
+) -> None:
+    owner_alias = sender_alias.rsplit(".", 1)[0]
+    if tag in {"ACK", "ACK-PROGRESS"}:
+        state, column = "acked", "ack_at"
+    elif tag == "DONE":
+        state, column = "done", "done_at"
+    else:
+        state, column = "blocked", "block_at"
+    with db:
+        db.execute(
+            f"""
+            UPDATE tasks
+               SET state=?, {column}=COALESCE({column}, strftime('%s','now'))
+             WHERE task_id=? AND owner_session=? AND owner_alias=? AND target=?
+               AND state IN ('pending','acked')
+            """,
+            (state, task_id, session, owner_alias, target),
+        )
+
+
+def verified_cache_tasks(owner: str) -> list[tuple[int, str, str]]:
+    root = Path(os.environ.get("TT_CACHE_DIR", str(Path.home() / ".cache/tproj-expect-reply")))
+    owner_dir = root / owner
+    found: list[tuple[int, str, str]] = []
+    if not owner_dir.is_dir():
+        return found
+    for path in owner_dir.glob("*.json"):
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(document, dict):
+            continue
+        for task_id, entry in document.items():
+            if not isinstance(entry, dict) or entry.get("state") != "verified":
+                continue
+            target = str(entry.get("target") or path.stem)
+            verified_at = int(entry.get("verified_at") or entry.get("sent_at") or 0)
+            found.append((verified_at, str(task_id), target))
+    return sorted(found, reverse=True)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--platform", choices=("claude", "codex"), default="claude")
+    parser.parse_args()
+    try:
+        payload: Any = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError):
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    raw_event = payload.get("raw_event")
+    if not isinstance(raw_event, dict):
+        raw_event = {}
+    text = payload.get("last_assistant_message") or raw_event.get("last_assistant_message", "")
+    if not isinstance(text, str):
+        return 0
+    identity = owner_identity()
+    if identity is None:
+        return 0
+    session, alias, role = identity
+    owner = f"{session}/{alias}"
+    self_alias = f"{alias}.{role}"
+    db = open_db()
+
+    if db is not None:
+        try:
+            worker = latest_worker_task(db, session, self_alias)
+        except sqlite3.Error:
+            worker = None
+        if worker is not None:
+            task_id, sender_alias, _state = worker
+            markers = LIFECYCLE_RE.findall(text)
+            exact = [(tag, marked_id) for tag, marked_id in markers if marked_id == task_id]
+            if len(markers) != 1 or len(exact) != 1:
+                db.close()
+                return block(
+                    f"Active delegated task {task_id} requires exactly one sent lifecycle tag: "
+                    f"[ACK: {task_id}], [ACK-PROGRESS: {task_id}], [DONE: {task_id}], or [BLOCK: {task_id}]"
+                )
+            tag, _marked_id = exact[0]
+            normalized = "BLOCK" if tag == "BLOCKED" else tag
+            marker = f"[{tag}: {task_id}]"
+            if not marker_was_sent(db, self_alias, sender_alias, marker):
+                db.close()
+                return block(
+                    f"Lifecycle tag {marker} must first be sent to exact owner {sender_alias} with tproj-msg"
+                )
+            try:
+                record_worker_transition(db, task_id, session, sender_alias, self_alias, normalized)
+            except sqlite3.Error:
+                db.close()
+                return block(f"Could not durably record lifecycle tag {marker}; task remains open")
+            db.close()
+            return 0
+        db.close()
+
+    reports = REPORT_RE.findall(text)
+    verified = verified_cache_tasks(owner)
+    verified_by_id = {task_id: target for _timestamp, task_id, target in verified}
+    if reports:
+        if len(reports) != 1 or reports[0] not in verified_by_id:
+            if verified:
+                task_id = verified[0][1]
+                return block(
+                    f"Verified task {task_id} requires exactly [COMPLETION-REPORT: {task_id}] before Stop"
+                )
+            return block(f"Completion report task {reports[0]} is not verified for owner {owner}")
+        task_id = reports[0]
+        target = verified_by_id[task_id]
+        cli = os.environ.get("TPROJ_TASK_CLI", str(Path.home() / "bin/tproj-task"))
+        result = subprocess.run(
+            [cli, "report", task_id, target],
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env={
+                **os.environ,
+                "TT_CACHE_OWNER": owner,
+                "TPROJ_PLATFORM_REPORT_OBSERVED": "1",
+            },
+            timeout=5,
+            check=False,
+        )
+        if result.returncode != 0:
+            return block(f"USER_REPORTED recording failed for task {task_id}; task remains open")
+    elif verified:
+        task_id = verified[0][1]
+        return block(
+            f"Verified task {task_id} requires exactly [COMPLETION-REPORT: {task_id}] before Stop"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -3696,8 +3696,8 @@ do_read() {
   # shellcheck source=/dev/null
   source "$TASK_CACHE_HELPER"
   FOUND_REPLY=1
-  # Owner-scoped MUTATION guard (cross-column leak fix): the destructive side
-  # effects -- DB state transition + cache removal -- fire ONLY for task ids
+  # Owner-scoped MUTATION guard (cross-column leak fix): lifecycle side effects
+  # fire ONLY for task ids
   # present in OUR OWN cache subdir (owner = "<session>/<my_alias>"). A tag seen
   # in this target's pane scrollback for a task some OTHER column delegated must
   # never transition the shared DB row or steal that column's cache entry (which
@@ -3722,31 +3722,42 @@ do_read() {
     # Is this tag for a task WE are tracking in our own cache subdir?
     _own_task=0
     printf '%s\n' "$OWN_TASK_IDS" | grep -qxF "$reply_id" && _own_task=1
-    # R1' Stage 3: determine tag (ACK/DONE/BLOCK/BLOCKED) for this reply_id and
-    # shadow-write the state transition before cache removal -- own tasks only.
-    if [[ "$_own_task" -eq 1 ]] && declare -F tt_db_transition_task >/dev/null 2>&1; then
+    # Determine the highest-precedence lifecycle tag. ACK and ACK-PROGRESS are
+    # non-terminal. DONE/BLOCK require durable message-id + body-hash evidence
+    # from the exact sender/recipient pair before the cache can advance.
+    if [[ "$_own_task" -eq 1 ]]; then
       # Pick the highest-precedence tag for this reply_id: terminal tags
       # (DONE/BLOCK) win over ACK regardless of buffer order, so an ACK still
       # visible in scrollback cannot block the done/blocked transition.
-      _tags=$(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo "\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*${reply_id}[[:space:]]*\]" | sed -E 's/^\[([A-Z]+):.*$/\1/')
+      _tags=$(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo "\[(ACK-PROGRESS|ACK|DONE|BLOCK|BLOCKED):[[:space:]]*${reply_id}[[:space:]]*\]" | sed -E 's/^\[([A-Z-]+):.*$/\1/')
       if printf '%s\n' "$_tags" | grep -q '^DONE$'; then _tag=DONE
       elif printf '%s\n' "$_tags" | grep -qE '^BLOCK(ED)?$'; then _tag=BLOCK
+      elif printf '%s\n' "$_tags" | grep -q '^ACK-PROGRESS$'; then _tag=ACK-PROGRESS
       elif printf '%s\n' "$_tags" | grep -q '^ACK$'; then _tag=ACK
       else _tag=""; fi
       case "$_tag" in
-        ACK) _state="acked" ;;
-        DONE) _state="done" ;;
-        BLOCK|BLOCKED) _state="blocked" ;;
-        *) _state="" ;;
+        ACK|ACK-PROGRESS)
+          tt_cache_apply_reply "$READ_OWNER" "$TARGET" "$reply_id" "$_tag" >/dev/null 2>&1 || true
+          ;;
+        DONE|BLOCK)
+          _evidence=""
+          if declare -F tt_db_find_lifecycle_evidence >/dev/null 2>&1; then
+            _self_alias="${MY_ALIAS}.${MY_ROLE}"
+            _evidence=$(tt_db_find_lifecycle_evidence "$reply_id" "$TARGET" "$_self_alias" "$_tag" 2>/dev/null || true)
+            if [[ -z "$_evidence" && "$_tag" == BLOCK ]]; then
+              _evidence=$(tt_db_find_lifecycle_evidence "$reply_id" "$TARGET" "$_self_alias" BLOCKED 2>/dev/null || true)
+            fi
+          fi
+          _message_id="${_evidence%%$'\t'*}"
+          _body_hash="${_evidence#*$'\t'}"
+          [[ "$_evidence" == *$'\t'* ]] || { _message_id=""; _body_hash=""; }
+          tt_cache_apply_reply "$READ_OWNER" "$TARGET" "$reply_id" "$_tag" "$_message_id" "$_body_hash" "$_self_alias" >/dev/null 2>&1 || true
+          ;;
       esac
-      # Composite-scoped transition: only our own owner+target task row is mutated
-      # (READ_OWNER is valid here since _own_task==1 required an own-cache hit).
-      [[ -n "$_state" ]] && tt_db_transition_task "$reply_id" "$_state" "${READ_OWNER%%/*}" "${READ_OWNER##*/}" "$TARGET" 2>/dev/null
     fi
-    [[ "$_own_task" -eq 1 ]] && tt_cache_remove_task "$READ_OWNER" "$TARGET" "$reply_id" >/dev/null 2>&1 || true
     echo "TASK_REPLIED=${reply_id}" >&2
     FOUND_REPLY=0
-  done < <(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo '\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*[^]]+\]' | sed -E 's/^\[(ACK|DONE|BLOCK|BLOCKED):[[:space:]]*//; s/\]$//' | awk 'NF {print $0}' | sort -u)
+  done < <(printf '%s\n' "$CAPTURED_OUTPUT" | grep -Eo '\[(ACK-PROGRESS|ACK|DONE|BLOCK|BLOCKED):[[:space:]]*[^]]+\]' | sed -E 's/^\[(ACK-PROGRESS|ACK|DONE|BLOCK|BLOCKED):[[:space:]]*//; s/\]$//' | awk 'NF {print $0}' | sort -u)
 
   exit "$FOUND_REPLY"
 }

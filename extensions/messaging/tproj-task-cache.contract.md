@@ -54,13 +54,15 @@ no-op/empty. The canonical workspace aliases (`ble-bridge`, `creator_radar`,
     "sent_at":      <int-epoch-seconds>,
     "expect_until": <int-epoch-seconds>,
     "ttl_sec":      <int>,
-    "msg_hash":     "<sha1-hex-or-cksum-decimal>"
+    "msg_hash":     "<sha1-hex-or-cksum-decimal>",
+    "state":        "pending|acked|done|blocked|received|verified",
+    "notices":      {"<event>": <int-epoch-seconds>}
   },
   ...
 }
 ```
 
-- Empty files are removed (post-remove / post-gc); consumers treat missing files as "no active tasks for that target".
+- Empty files are removed only after platform-observed `USER_REPORTED`; consumers treat missing files as "no open tasks for that target".
 - Atomic writes use `tmp + mv` under lock.
 - `msg_hash` is opaque to consumers; D4 may pass empty string if hashing is not feasible.
 
@@ -91,8 +93,11 @@ Source the library (`source /path/to/tproj-task-cache.sh`). All functions return
 | Function | Signature | Behavior |
 |---|---|---|
 | `tt_cache_add` | `(owner, target, task_id, sent_at, ttl_sec, [msg_hash])` | **Single-writer role** — called only by D4 PostToolUse hook. Adds entry to `<owner>/<target>.json`, computing `expect_until = sent_at + ttl_sec`. Overwrites if `task_id` already exists. Invalid owner returns 2 (fail-closed). Shadow-writes the DB task row with `owner_alias = <alias>`. Takes per-owner-per-target lock. |
-| `tt_cache_remove_task` | `(owner, target, task_id)` | **Remover role** — called by tproj-msg `--read` (on `[ACK:]` / `[DONE:]` / `[BLOCK:]` detection, limited to own-cache task ids), D5 UserPromptSubmit hook (on TTL expiry via `tt_cache_gc_expired`), and `tproj-task close`. Idempotent; missing entry or invalid owner is a no-op. Takes per-owner-per-target lock. If the resulting file is empty `{}`, the file is removed. |
-| `tt_cache_gc_expired` | `(owner, [now_epoch])` | Used by D5 hook. Removes entries under the owner subdir where `expect_until <= now`. Emits one TSV row per removed entry on stdout: `<target>\t<task_id>\t<expect_until>\ttimeout`. Invalid owner is a no-op. Defaults `now` to current epoch. Takes per-owner-per-target locks. |
+| `tt_cache_transition_state` | `(owner, target, task_id, state, [now_epoch])` | Monotonic in-place transition. ACK and ACK-PROGRESS become `acked`; valid terminal evidence advances through `done|blocked` to `received`; verification becomes `verified`. Never removes the entry. |
+| `tt_cache_apply_reply` | `(owner, target, task_id, tag, [message_id], [body_hash], [owner_recipient], [now_epoch])` | Applies ACK/ACK-PROGRESS as non-terminal. DONE/BLOCK requires a matching inbound DB row for the exact sender, recipient, message id, body hash, and marker; malformed evidence leaves the task open. |
+| `tt_cache_mark_notice` | `(owner, target, task_id, notice, [now_epoch])` | Atomically records one notice key. Returns 0 only on first emission. |
+| `tt_cache_due_notices` | `(owner, [now_epoch])` | Emits newly due once-only rows `<target>\t<task_id>\t<state>\t<event>`. It never removes or expires open tasks. `tt_cache_gc_expired` is a compatibility alias. |
+| `tt_cache_remove_task` | `(owner, target, task_id)` | Internal USER_REPORTED remover. Idempotent and exact-owner scoped. `tproj-msg --read`, TTL handling, and manual `tproj-task close` MUST NOT call it. |
 | `tt_cache_gc_legacy_flat` | `([now_epoch])` | Silent drain of pre-v2 flat `<cache_root>/<target>.json` files. TTL-GCs expired entries and empty files. Emits NOTHING on stdout and writes no DB row (owner is unknowable). Owner subdirs are skipped (they are not `*.json` regular files). |
 
 ### 2.3 Cache inspection (read-only)
@@ -106,26 +111,40 @@ Source the library (`source /path/to/tproj-task-cache.sh`). All functions return
 
 ---
 
-## 3. Single-writer rule (MUST)
+## 3. Lifecycle and single-writer rule (MUST)
+
+The machine lifecycle is:
+
+`DELEGATED -> WORKER_ACK -> WORKER_DONE/BLOCKED -> ORCH_RECEIVED -> ORCH_VERIFIED -> USER_REPORTED`
+
+- ACK and ACK-PROGRESS are non-terminal.
+- DONE/BLOCK carries only durable message id + body hash into the task ledger; arbitrary response bodies are not copied into task evidence.
+- `tproj-task verify <id> <target> <summary> <done-body-hash>` is exact owner/target scoped and rejects a mismatched hash.
+- `[COMPLETION-REPORT: <id>]` in platform-observed final assistant text invokes `tproj-task report`; only that transition records `user_reported_at` and removes the cache entry. It means the platform observed the report marker, not that a human read it.
+- `tproj-task close` is retired and fails closed.
+- While an exact inbound task is active, the Claude/Codex Stop hook requires exactly one matching lifecycle tag that was already sent to the exact owner. Untagged local success is blocked with the required tag forms. The parser accepts Claude's top-level and Codex's nested `raw_event.last_assistant_message` Stop payloads.
+- A completion report selects its verified task by the explicit marker ID, so parallel verified tasks do not block one another. The Stop gate activation boundary defaults to the installed guard file's mtime; older historical task rows are never inferred as current work.
+
+Escalation defaults are code-owned environment variables and notices are once-only: `TT_TASK_NO_ACK_SEC=30`, `TT_TASK_FOLLOWUP_SEC=900`, `TT_TASK_REROUTE_SEC=1800`, `TT_TASK_REPORT_DUE_SEC=900`, `TT_TASK_COMPLETION_STALLED_SEC=1800`. The final notice does not close the task.
 
 This is the invariant that keeps the system race-free without a heavier lock manager:
 
 - `tt_cache_add` has **exactly one caller**: the D4 PostToolUse hook (`tproj-inbox-record`), which resolves and passes its own owner key.
-- `tt_cache_remove_task` has **three callers**: `tproj-msg --read`, D5 hook (`tproj-inbox-check` via `tt_cache_gc_expired`), and `tproj-task close`. Each passes its own owner key. In `--read` the destructive side effects (DB state transition + cache removal) fire **only** for task ids present in its own owner subdir, so a tag seen in another column's pane scrollback never transitions the shared DB row nor steals that column's cache entry. The informational `TASK_REPLIED=<id>` stderr line and `--read`'s exit code are still emitted for every detected tag (legacy `--read` compatibility; it is the invoking pane's own output, not a cross-column notice, since the D5 hook cross-references only its own pending ids).
+- Lifecycle updates have many readers but remain exact-owner scoped and monotonic. `tproj-msg --read` applies tags only to IDs present in its own cache and never removes them. The Stop hook validates exact sender/recipient DB evidence. `tproj-inbox-check` only marks notices. The sole removal occurs after `USER_REPORTED`.
 - `tproj-msg --new-task` itself **MUST NOT** touch the cache. It only:
   1. generates a Task ID,
   2. prepends `[Task: <id>] `, or a role-handoff envelope containing that tag, to the outgoing message,
   3. emits `TASK_ID=<id> TASK_TARGET=<t> TASK_TTL_SEC=<n> TASK_SENT_AT=<epoch>` on stderr when the send is delivered or accepted into the deferred queue,
   4. invokes the normal send path.
 
-Rationale: adds are rare (one per delegation, at the moment of send) and pass through a single hook; removes are many (per `--read`, per hook tick, per manual close) but idempotent. Funneling adds through one writer removes the "two tproj-msg processes both opening + rewriting the same file" race.
+Rationale: adds are rare (one per delegation) and pass through a single hook. State transitions serialize under the same per-target lock, while the sole remove follows durable USER_REPORTED. This avoids competing read-modify-write add paths without treating ACK as completion.
 
 ### 3.1 Backward compatibility (MUST)
 
 - `TPROJ_HOOK_ENABLED != "1"` → D4/D5 hooks exit 0 immediately. In that mode, `tproj-msg --new-task` still generates IDs and sends, but no cache file is ever written.
 - `tproj-msg` calls with no `--new-task` flag behave byte-identically to pre-Lane-D.
-- `tproj-msg --role-handoff --new-task` uses the same cache record and accepts the same `[ACK:]` / `[DONE:]` / `[BLOCK:]` terminal compatibility as a normal tracked task.
-- `tproj-msg --read` still returns the capture output on stdout; the only behavioural additions are (a) idempotent cache removal as a side effect, and (b) exit code `0` if any `[ACK:]` / `[DONE:]` / `[BLOCK:]` was detected, else `1` (pre-Lane-D always exited 0).
+- `tproj-msg --role-handoff --new-task` uses the same cache record and lifecycle.
+- `tproj-msg --read` still returns capture output and exits 0 when any ACK/ACK-PROGRESS/DONE/BLOCK marker is detected. Its lifecycle side effect is state advancement, never close.
 
 Consumers that depend on `--read` exit code being 0 unconditionally must be audited; none are known inside the tproj workspace at Lane D implementation time (regression floor).
 
@@ -146,7 +165,7 @@ Per-target lock, not global. Concurrent `--new-task` sends to **different** targ
 
 ### 4.3 Timeout
 
-Default 5 s. Exceeding it returns non-zero from `tt_cache_add` / `tt_cache_remove_task` / `tt_cache_gc_expired`. Callers (D4/D5 hooks, `tproj-task`) MUST log-and-continue on non-zero — the cache is auxiliary, never block the user's command.
+Default 5 s. Exceeding it returns non-zero from cache mutation functions. Hooks fail open on cache lock contention, except the Stop gate keeps an already-known active task open when durable lifecycle recording fails.
 
 ---
 
@@ -217,7 +236,7 @@ tt_cache_remove_task "$owner" a.cdx t-1 && echo "PASS: idempotent remove"
 
 Expected: all four PASS lines.
 
-### 5.4 TTL gc
+### 5.4 Once-only escalation without expiry
 
 ```bash
 bash -c '
@@ -226,15 +245,14 @@ mkdir -p /tmp/rt-cache /tmp/rt-locks
 export TT_CACHE_DIR=/tmp/rt-cache TT_CACHE_LOCK_DIR=/tmp/rt-locks
 source ./extensions/messaging/tproj-task-cache.sh
 owner=rt/colA
-tt_cache_add "$owner" x.cdx live-1 1734500000 3600 h1   # expect_until = 1734503600
-tt_cache_add "$owner" x.cdx stale-1 1734500000 60 h2    # expect_until = 1734500060
-tt_cache_gc_expired "$owner" 1734503500                 # stale-1 expired, live-1 survives
-[[ -n $(tt_cache_get_task "$owner" x.cdx live-1) ]] && echo "PASS: live survived"
-[[ -z $(tt_cache_get_task "$owner" x.cdx stale-1) ]] && echo "PASS: stale removed"
+tt_cache_add "$owner" x.cdx open-1 1734500000 1800 h1
+TT_TASK_NO_ACK_SEC=30 tt_cache_due_notices "$owner" 1734500031
+TT_TASK_NO_ACK_SEC=30 tt_cache_due_notices "$owner" 1734500031
+[[ -n $(tt_cache_get_task "$owner" x.cdx open-1) ]] && echo "PASS: open task retained"
 '
 ```
 
-Expected: `PASS: live survived` + `PASS: stale removed`, plus the timeout TSV row emitted on stdout during gc.
+Expected: one `no_ack` TSV row total and `PASS: open task retained`.
 
 ### 5.5 Stale lock recovery
 
@@ -270,6 +288,7 @@ Expected: `PASS: stale lock recovered` within ~50–100 ms (not full 5 s timeout
 - **2026-07-18 — v2.1**: composite hardening. DB `tasks.owner_session` (schema v5) and full-composite (`owner_session + owner_alias + task_id`) task-row transitions, so no owner can mutate another owner's task and no task_id-only UPDATE path remains. Path components (session/alias/target) validated by `tt_cache_valid_component` (reject, not sanitize; `[A-Za-z0-9._-]`, no `.`/`..`) for an injective path mapping; lock name joins with `~` to stay collision-free.
 - **2026-07-18 — v2.2**: independent-verification fixes. `tt_cache_init_dir` is fail-closed against a traversal owner (validates before any mkdir). DB task identity rebuilt to `UNIQUE(owner_session, owner_alias, target, task_id)` with a partial `UNIQUE(task_id) WHERE owner columns NULL` for legacy idempotency (schema v6); `tt_db_transition_task` also matches `target`. `generate_task_id` embeds a target-derived token (second collision-defense layer). `tproj-inbox-check` scopes its `notified_at` update to session + recipient + sender + task_id, not task_id alone.
 - **2026-07-18 — v2.3**: second-round verification fixes. The v6 tasks rebuild runs in a single `BEGIN IMMEDIATE ... COMMIT` and recovers rows from a survivor temp table left by an interrupted pre-atomic run (no history loss). `tproj-inbox-check`'s `notified_at` update is fail-CLOSED when the pane role is unresolved (the recipient predicate is mandatory, never dropped). `generate_task_id`'s target token is an **injective** lowercase hex encoding of the target bytes (`od -An -v -tx1`), so collapse-prone targets (`a-b`/`ab`/`a_b`/`a.b`) yield distinct ids.
+- **2026-08-06 — v3.0**: cache entries represent open delegations and close only at platform-observed USER_REPORTED. Added schema v7 lifecycle evidence, exact-owner verification/report commands, once-only staged escalation, ACK-PROGRESS, and symmetric Claude/Codex inbox + Stop hooks.
 
 ---
 
@@ -278,5 +297,5 @@ Authoritative references:
 - `AGENTS.md` (public messaging and runtime contribution rules)
 - `extensions/messaging/tproj-msg` (D1 consumer — §3 single-writer rule binds this file)
 - `extensions/hooks/tproj-inbox-record` (D4 adder — exclusive `tt_cache_add` caller)
-- `extensions/hooks/tproj-inbox-check` (D5 remover via `tt_cache_gc_expired`)
+- `extensions/hooks/tproj-inbox-check` (D5 once-only lifecycle notices)
 - `extensions/messaging/tproj-task` (D2 CLI)

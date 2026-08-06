@@ -12,7 +12,9 @@
 #       "sent_at":      <epoch_seconds>,
 #       "expect_until": <epoch_seconds>,
 #       "ttl_sec":      <int>,
-#       "msg_hash":     "<sha1-of-normalized-message>"
+#       "msg_hash":     "<sha1-of-normalized-message>",
+#       "state":        "pending|acked|done|blocked|received|verified",
+#       "notices":      {"<event>": <epoch>}
 #     },
 #     ...
 #   }
@@ -25,8 +27,8 @@
 # another column's subdir.
 #
 # Single-writer contract: only tproj-inbox-record (PostToolUse hook) adds.
-# tproj-msg --read, tproj-inbox-check (UserPromptSubmit), and tproj-task close
-# are removers. All ops are idempotent.
+# Lifecycle consumers update the existing entry in place. Only a platform-
+# observed USER_REPORTED transition removes it. All ops are idempotent.
 #
 # Legacy flat files (pre-v2, directly under the cache root) are drained silently
 # by tt_cache_gc_legacy_flat (TTL-GC, no notice, no owner guess) so the old
@@ -37,6 +39,11 @@
 
 : "${TT_CACHE_DIR:="${HOME}/.cache/tproj-expect-reply"}"
 : "${TT_CACHE_LOCK_DIR:="/tmp"}"
+: "${TT_TASK_NO_ACK_SEC:=30}"
+: "${TT_TASK_FOLLOWUP_SEC:=900}"
+: "${TT_TASK_REROUTE_SEC:=1800}"
+: "${TT_TASK_REPORT_DUE_SEC:=900}"
+: "${TT_TASK_COMPLETION_STALLED_SEC:=1800}"
 
 # Best-effort shadow-write to SQLite WAL (R1' Stage 2).
 # Mirrors task state into ~/.local/share/tproj-msg/messages.db.
@@ -206,7 +213,8 @@ tt_cache_add() {
       --argjson until "$expect_until" \
       --argjson ttl "$ttl_sec" \
       --arg hash "$msg_hash" \
-      '{target: $target, sent_at: $sent, expect_until: $until, ttl_sec: $ttl, msg_hash: $hash}') || rc=1
+      '{target: $target, sent_at: $sent, expect_until: $until, ttl_sec: $ttl, msg_hash: $hash,
+        state: "pending", notices: {}}') || rc=1
     if [[ $rc -eq 0 ]]; then
       printf '%s\n' "$current" \
         | jq -c --arg id "$task_id" --argjson e "$entry" '. + {($id): $e}' \
@@ -249,10 +257,117 @@ tt_cache_remove_task() {
     fi
   fi
   tt_cache_release_lock "$lock"
-  # No DB shadow write here: state transitions (acked/done/blocked) are recorded
-  # at the call site (tproj-msg --read with tag detection, tproj-task close, etc.)
-  # so this generic remove path stays state-agnostic.
+  # No DB shadow write here: USER_REPORTED is recorded before this internal
+  # remover runs, so the generic filesystem operation stays state-agnostic.
   return $rc
+}
+
+tt_cache_transition_state() {
+  # Arguments: owner target task_id new_state [now_epoch]
+  # The cache is the open-task control surface. Transitions are monotonic and
+  # retain the entry until USER_REPORTED removes it.
+  tt_cache_require_jq || return $?
+  local owner="$1" target="$2" task_id="$3" new_state="$4" now="${5:-$(date +%s)}"
+  tt_cache_valid_owner "$owner" || return 2
+  tt_cache_valid_component "$target" || return 2
+  [[ "$now" =~ ^[0-9]+$ ]] || return 2
+  case "$new_state" in
+    pending|acked|done|blocked|received|verified) ;;
+    *) return 2 ;;
+  esac
+  local path lock
+  path="$(tt_cache_path_for_target "$owner" "$target")"
+  lock="$(tt_cache_lock_for_target "$owner" "$target")"
+  [[ -s "$path" ]] || return 1
+  tt_cache_acquire_lock "$lock" 5 || return 1
+  local rc=0 current_state updated
+  current_state="$(jq -r --arg id "$task_id" 'if .[$id] == null then empty else (.[$id].state // "pending") end' "$path" 2>/dev/null)"
+  case "${current_state}:${new_state}" in
+    pending:pending|pending:acked|pending:done|pending:blocked|\
+    acked:acked|acked:done|acked:blocked|\
+    done:done|done:received|blocked:blocked|blocked:received|\
+    received:received|received:verified|verified:verified) ;;
+    *) rc=2 ;;
+  esac
+  if [[ $rc -eq 0 ]]; then
+    updated=$(jq -c --arg id "$task_id" --arg state "$new_state" --argjson now "$now" '
+      if .[$id] == null then error("missing task")
+      else .[$id].state = $state
+        | if $state == "acked" then .[$id].ack_at //= $now
+          elif ($state == "done" or $state == "blocked") then .[$id].terminal_at //= $now
+          elif $state == "received" then .[$id].received_at //= $now
+          elif $state == "verified" then .[$id].verified_at //= $now
+          else . end
+      end' "$path") || rc=1
+    if [[ $rc -eq 0 ]]; then
+      printf '%s\n' "$updated" > "${path}.tmp" && mv "${path}.tmp" "$path" || rc=1
+    fi
+  fi
+  tt_cache_release_lock "$lock"
+  return $rc
+}
+
+tt_cache_mark_notice() {
+  # Arguments: owner target task_id notice [now_epoch]
+  # Returns 0 only when the notice was newly recorded; 1 means already emitted.
+  tt_cache_require_jq || return $?
+  local owner="$1" target="$2" task_id="$3" notice="$4" now="${5:-$(date +%s)}"
+  tt_cache_valid_owner "$owner" || return 2
+  tt_cache_valid_component "$target" || return 2
+  tt_cache_valid_component "$notice" || return 2
+  [[ "$now" =~ ^[0-9]+$ ]] || return 2
+  local path lock existing updated rc=0
+  path="$(tt_cache_path_for_target "$owner" "$target")"
+  lock="$(tt_cache_lock_for_target "$owner" "$target")"
+  [[ -s "$path" ]] || return 1
+  tt_cache_acquire_lock "$lock" 5 || return 1
+  existing="$(jq -r --arg id "$task_id" --arg key "$notice" '.[$id].notices[$key] // empty' "$path" 2>/dev/null)"
+  if [[ -n "$existing" ]]; then
+    rc=1
+  else
+    updated=$(jq -c --arg id "$task_id" --arg key "$notice" --argjson now "$now" '
+      if .[$id] == null then error("missing task")
+      else .[$id].notices = (.[$id].notices // {}) | .[$id].notices[$key] = $now end' "$path") || rc=2
+    if [[ $rc -eq 0 ]]; then
+      printf '%s\n' "$updated" > "${path}.tmp" && mv "${path}.tmp" "$path" || rc=2
+    fi
+  fi
+  tt_cache_release_lock "$lock"
+  return $rc
+}
+
+tt_cache_apply_reply() {
+  # Arguments: owner target task_id tag [message_id] [body_hash]
+  #            [owner_recipient] [now_epoch]
+  # Terminal replies require durable DB evidence. A scrollback-only DONE/BLOCK
+  # is malformed and leaves the task open in its prior state.
+  local owner="$1" target="$2" task_id="$3" tag="$4"
+  local message_id="${5:-}" body_hash="${6:-}" owner_recipient="${7:-}"
+  local now="${8:-$(date +%s)}"
+  case "$tag" in
+    ACK|ACK-PROGRESS)
+      tt_cache_transition_state "$owner" "$target" "$task_id" acked "$now" || return $?
+      declare -F tt_db_transition_task >/dev/null 2>&1 \
+        && tt_db_transition_task "$task_id" acked "${owner%%/*}" "${owner##*/}" "$target" "$now" >/dev/null 2>&1 || true
+      ;;
+    DONE|BLOCK|BLOCKED)
+      [[ "$message_id" =~ ^[0-9]+$ && "$body_hash" =~ ^[A-Za-z0-9._:-]{8,128}$ ]] || return 3
+      local terminal_state=done
+      [[ "$tag" == BLOCK || "$tag" == BLOCKED ]] && terminal_state=blocked
+      declare -F tt_db_record_done_evidence >/dev/null 2>&1 || return 3
+      declare -F tt_db_task_lifecycle >/dev/null 2>&1 || return 3
+      tt_db_record_done_evidence "$task_id" "$message_id" "$body_hash" \
+        "${owner%%/*}" "${owner##*/}" "$target" "$owner_recipient" "$terminal_state" "$now" || return 3
+      local lifecycle
+      lifecycle="$(tt_db_task_lifecycle "$task_id" "${owner%%/*}" "${owner##*/}" "$target" 2>/dev/null || true)"
+      [[ "$lifecycle" == "${terminal_state}|${message_id}|${body_hash}|"* ]] || return 3
+      tt_cache_transition_state "$owner" "$target" "$task_id" "$terminal_state" "$now" || return $?
+      tt_cache_transition_state "$owner" "$target" "$task_id" received "$now" || return $?
+      tt_db_transition_task "$task_id" received "${owner%%/*}" "${owner##*/}" "$target" "$now" >/dev/null 2>&1 || return 3
+      ;;
+    *) return 2 ;;
+  esac
+  return 0
 }
 
 tt_cache_get_task() {
@@ -308,43 +423,56 @@ tt_cache_list_all() {
 }
 
 tt_cache_gc_expired() {
-  # Arguments: owner [now_epoch]  (now defaults to current time)
-  # Removes entries under the owner subdir whose expect_until <= now. Emits
-  # removed rows on stdout: "<target>\t<task_id>\t<expect_until>\ttimeout".
-  # Invalid owner is a no-op (fail-closed).
+  # Compatibility alias. Open tasks no longer expire/close; they emit bounded
+  # lifecycle notices and stay tracked until USER_REPORTED.
+  tt_cache_due_notices "$@"
+}
+
+tt_cache_due_notices() {
+  # Arguments: owner [now_epoch]
+  # Emits newly-due TSV rows: target, task_id, state, event. Each event is marked
+  # atomically and emitted once. The task entry is never removed here.
   tt_cache_require_jq || return $?
   local owner="$1" now="${2:-$(date +%s)}"
   tt_cache_valid_owner "$owner" || return 0
-  local target path lock now_copy
-  now_copy="$now"
+  [[ "$now" =~ ^[0-9]+$ ]] || return 2
+  local target task_id state sent base event threshold
   while IFS= read -r target; do
-    [[ -z "$target" ]] && continue
-    path="$(tt_cache_path_for_target "$owner" "$target")"
-    lock="$(tt_cache_lock_for_target "$owner" "$target")"
-    [[ -s "$path" ]] || continue
-    tt_cache_acquire_lock "$lock" 5 || continue
-    if [[ -s "$path" ]]; then
-      jq -r --argjson now "$now_copy" \
-        'to_entries[] | select(.value.expect_until <= $now) | [.key, (.value.expect_until|tostring)] | @tsv' \
-        "$path" | while IFS=$'\t' read -r tid until_at; do
-          [[ -z "$tid" ]] && continue
-          printf '%s\t%s\t%s\ttimeout\n' "$target" "$tid" "$until_at"
-          # R1' Stage 2 shadow write — record expired transition, scoped to this
-          # owner's composite (owner_session + owner_alias + task_id). Fail-open.
-          if declare -F tt_db_transition_task >/dev/null 2>&1; then
-            tt_db_transition_task "$tid" "expired" "${owner%%/*}" "${owner##*/}" "$target" || true
-          fi
-        done
-      local remaining
-      remaining=$(jq -c --argjson now "$now_copy" \
-        'with_entries(select(.value.expect_until > $now))' "$path")
-      if [[ "$remaining" == "{}" ]]; then
-        rm -f "$path"
-      else
-        printf '%s\n' "$remaining" > "${path}.tmp" && mv "${path}.tmp" "$path"
-      fi
-    fi
-    tt_cache_release_lock "$lock"
+    [[ -n "$target" ]] || continue
+    while IFS=$'\t' read -r task_id sent state base; do
+      [[ -n "$task_id" && "$sent" =~ ^[0-9]+$ ]] || continue
+      case "$state" in
+        pending)
+          for event in no_ack followup_due reroute_due; do
+            case "$event" in
+              no_ack) threshold="$TT_TASK_NO_ACK_SEC" ;;
+              followup_due) threshold="$TT_TASK_FOLLOWUP_SEC" ;;
+              reroute_due) threshold="$TT_TASK_REROUTE_SEC" ;;
+            esac
+            if (( now - sent >= threshold )) && tt_cache_mark_notice "$owner" "$target" "$task_id" "$event" "$now"; then
+              printf '%s\t%s\t%s\t%s\n' "$target" "$task_id" "$state" "$event"
+            fi
+          done
+          ;;
+        acked)
+          for event in followup_due reroute_due; do
+            [[ "$event" == followup_due ]] && threshold="$TT_TASK_FOLLOWUP_SEC" || threshold="$TT_TASK_REROUTE_SEC"
+            if (( now - sent >= threshold )) && tt_cache_mark_notice "$owner" "$target" "$task_id" "$event" "$now"; then
+              printf '%s\t%s\t%s\t%s\n' "$target" "$task_id" "$state" "$event"
+            fi
+          done
+          ;;
+        done|blocked|received|verified)
+          [[ "$base" =~ ^[0-9]+$ ]] || base="$sent"
+          for event in report_due completion_stalled; do
+            [[ "$event" == report_due ]] && threshold="$TT_TASK_REPORT_DUE_SEC" || threshold="$TT_TASK_COMPLETION_STALLED_SEC"
+            if (( now - base >= threshold )) && tt_cache_mark_notice "$owner" "$target" "$task_id" "$event" "$now"; then
+              printf '%s\t%s\t%s\t%s\n' "$target" "$task_id" "$state" "$event"
+            fi
+          done
+          ;;
+      esac
+    done < <(jq -r 'to_entries[] | [.key, (.value.sent_at|tostring), (.value.state // "pending"), ((.value.received_at // .value.terminal_at // .value.sent_at)|tostring)] | @tsv' "$(tt_cache_path_for_target "$owner" "$target")")
   done < <(tt_cache_list_targets "$owner")
 }
 

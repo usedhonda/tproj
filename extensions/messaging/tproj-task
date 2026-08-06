@@ -5,7 +5,7 @@ SELF_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 # shellcheck source=/dev/null
 source "$SELF_DIR/tproj-task-cache.sh"
 
-# Resolve this pane's owner = "<session>/<owner_alias>" so inspection/close acts
+# Resolve this pane's owner = "<session>/<owner_alias>" so lifecycle actions act
 # ONLY on our own column's tracked tasks (cache is owner-scoped, v2). Explicit
 # override via TT_CACHE_OWNER (tests / non-tmux); else resolve from tmux.
 if [[ -n "${TT_CACHE_OWNER+x}" ]]; then
@@ -28,7 +28,8 @@ tproj-task - inspect tracked tproj delegated tasks
 Usage:
   tproj-task list
   tproj-task status <id>
-  tproj-task close <id>
+  tproj-task verify <id> <target> <summary> <done-body-hash>
+  tproj-task report <id> <target>
   tproj-task gc
   tproj-task --help
 EOF
@@ -51,6 +52,28 @@ find_task() {
   return 1
 }
 
+require_owner() {
+  tt_cache_valid_owner "$OWNER" || {
+    echo "Error: current task owner could not be resolved" >&2
+    exit 1
+  }
+}
+
+require_exact_task() {
+  local task_id="$1" expected_target="$2" result target entry
+  result="$(find_task "$task_id")" || {
+    echo "Error: task '$task_id' not found for current owner" >&2
+    return 1
+  }
+  target="${result%%$'\t'*}"
+  entry="${result#*$'\t'}"
+  if [[ "$target" != "$expected_target" ]]; then
+    echo "Error: task '$task_id' belongs to target '$target', not '$expected_target'" >&2
+    return 1
+  fi
+  printf '%s\n' "$entry"
+}
+
 cmd="${1:-}"
 case "$cmd" in
   list)
@@ -66,15 +89,64 @@ case "$cmd" in
     entry="${result#*$'\t'}"
     printf 'target=%s\n%s\n' "$target" "$entry"
     ;;
-  close)
-    [[ $# -eq 2 ]] || { echo "Error: close requires <id>" >&2; exit 1; }
-    if ! result="$(find_task "$2")"; then
-      echo "Error: task '$2' not found" >&2
+  verify)
+    [[ $# -eq 5 ]] || { echo "Error: verify requires <id> <target> <summary> <done-body-hash>" >&2; exit 1; }
+    require_owner
+    task_id="$2"; target="$3"; summary="$4"; done_hash="$5"
+    entry="$(require_exact_task "$task_id" "$target")" || exit 1
+    [[ "$(printf '%s' "$entry" | jq -r '.state // ""')" == received ]] || {
+      echo "Error: task '$task_id' is not awaiting verification" >&2
       exit 1
-    fi
-    target="${result%%$'\t'*}"
-    tt_cache_remove_task "$OWNER" "$target" "$2" >/dev/null
-    echo "closed $2 ($target)"
+    }
+    [[ "$done_hash" =~ ^[A-Za-z0-9._:-]{8,128}$ ]] || {
+      echo "Error: invalid DONE body hash" >&2
+      exit 1
+    }
+    [[ -n "$summary" && ${#summary} -le 240 && "$summary" != *$'\n'* ]] || {
+      echo "Error: verification summary must be one non-empty line (max 240 chars)" >&2
+      exit 1
+    }
+    lifecycle="$(tt_db_task_lifecycle "$task_id" "${OWNER%%/*}" "${OWNER##*/}" "$target" 2>/dev/null || true)"
+    IFS='|' read -r db_state _msg_id db_done_hash _received _verified _reported <<< "$lifecycle"
+    [[ "$db_state" == received && "$db_done_hash" == "$done_hash" ]] || {
+      echo "Error: DONE evidence does not match the current owner/target" >&2
+      exit 1
+    }
+    tt_db_record_verification "$task_id" "${OWNER%%/*}" "${OWNER##*/}" "$target" "$summary" "$done_hash"
+    lifecycle="$(tt_db_task_lifecycle "$task_id" "${OWNER%%/*}" "${OWNER##*/}" "$target" 2>/dev/null || true)"
+    [[ "${lifecycle%%|*}" == verified ]] || {
+      echo "Error: verification was not durably recorded" >&2
+      exit 1
+    }
+    tt_cache_transition_state "$OWNER" "$target" "$task_id" verified >/dev/null
+    echo "verified $task_id ($target)"
+    ;;
+  report)
+    [[ $# -eq 3 ]] || { echo "Error: report requires <id> <target>" >&2; exit 1; }
+    [[ "${TPROJ_PLATFORM_REPORT_OBSERVED:-}" == 1 ]] || {
+      echo "Error: report requires a platform-observed COMPLETION-REPORT marker" >&2
+      exit 1
+    }
+    require_owner
+    task_id="$2"; target="$3"
+    entry="$(require_exact_task "$task_id" "$target")" || exit 1
+    [[ "$(printf '%s' "$entry" | jq -r '.state // ""')" == verified ]] || {
+      echo "Error: task '$task_id' is not verified" >&2
+      exit 1
+    }
+    tt_db_transition_task "$task_id" user_reported "${OWNER%%/*}" "${OWNER##*/}" "$target"
+    lifecycle="$(tt_db_task_lifecycle "$task_id" "${OWNER%%/*}" "${OWNER##*/}" "$target" 2>/dev/null || true)"
+    IFS='|' read -r db_state _msg_id _done_hash _received _verified reported_at <<< "$lifecycle"
+    [[ "$db_state" == user_reported && -n "$reported_at" ]] || {
+      echo "Error: USER_REPORTED was not durably recorded" >&2
+      exit 1
+    }
+    tt_cache_remove_task "$OWNER" "$target" "$task_id" >/dev/null
+    echo "reported $task_id ($target)"
+    ;;
+  close)
+    echo "Error: close is retired; a task closes only via platform-observed 'tproj-task report'" >&2
+    exit 1
     ;;
   gc)
     tt_cache_gc_expired "$OWNER"

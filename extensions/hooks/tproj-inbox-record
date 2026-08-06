@@ -12,9 +12,9 @@ fi
 
 payload="$(cat)"
 tool_name="$(printf '%s' "$payload" | jq -r '(.tool_name // .hook_input.tool_name // "")' 2>/dev/null || printf '')"
-[[ "$tool_name" == "Bash" ]] || exit 0
+[[ "$tool_name" == "Bash" || "$tool_name" == "functions.exec" ]] || exit 0
 
-command_text="$(printf '%s' "$payload" | jq -r '(.tool_input.command // .tool_input.cmd // .command // "")' 2>/dev/null || printf '')"
+command_text="$(printf '%s' "$payload" | jq -r '(.tool_input.command // .tool_input.cmd // .tool_input.source // .command // "") | tostring | .[0:8192]' 2>/dev/null || printf '')"
 [[ "$command_text" == *tproj-msg* && "$command_text" == *--new-task* ]] || exit 0
 
 response_blob="$(printf '%s' "$payload" | jq -r '[
@@ -24,8 +24,11 @@ response_blob="$(printf '%s' "$payload" | jq -r '[
   .stderr,
   .stdout,
   .output,
-  .response
-] | map(select(. != null and . != "")) | join("\n")' 2>/dev/null || printf '')"
+  .response,
+  (.tool_response.content[]? | select(.type == "text") | .text),
+  .tool_response.result,
+  .tool_response.data
+] | map(select(. != null and . != "") | tostring | .[0:8192]) | join("\n") | .[0:16384]' 2>/dev/null || printf '')"
 
 meta_line="$(printf '%s\n' "$response_blob" | grep -E 'TASK_ID=.*TASK_TARGET=.*TASK_TTL_SEC=.*TASK_SENT_AT=' | tail -n 1 || true)"
 [[ -n "$meta_line" ]] || exit 0

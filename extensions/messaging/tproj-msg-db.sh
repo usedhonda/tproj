@@ -43,7 +43,9 @@
 # overwrites an existing row. A partial UNIQUE(task_id) WHERE both owner columns
 # are NULL keeps owner-less legacy upserts idempotent (SQLite treats NULLs in the
 # composite as distinct, which would otherwise let ownerless repeats grow rows).
-: "${TT_DB_SCHEMA_VERSION:=6}"
+# Version 7 adds platform-observed lifecycle evidence and verification/report
+# timestamps without persisting arbitrary response bodies.
+: "${TT_DB_SCHEMA_VERSION:=7}"
 
 tt_db_path() { printf '%s\n' "$TPROJ_MSG_DB_PATH"; }
 tt_db_error_log() { printf '%s\n' "$TPROJ_MSG_DB_ERROR_LOG"; }
@@ -168,10 +170,33 @@ SQL
   tt_db_migrate_caller_audit_columns
   tt_db_migrate_task_owner_column
   tt_db_migrate_tasks_composite_identity
+  tt_db_migrate_task_lifecycle_columns
   tt_db_sweep_orphaned_queued
   # Stamp user_version last, so it only advances after every migration above has
   # run. This is the version tt_db_ensure_init compares against on later calls.
   tt_db_exec_safe "PRAGMA user_version = ${TT_DB_SCHEMA_VERSION};" >/dev/null
+}
+
+# Schema v7 migration - append-only lifecycle evidence for delegated tasks.
+# The JSON cache remains the open-task control surface; these nullable columns
+# record observed facts without persisting arbitrary response bodies.
+tt_db_migrate_task_lifecycle_columns() {
+  tt_db_guard || return 0
+  local existing_cols col def
+  existing_cols=$(tt_db_exec_safe "PRAGMA table_info(tasks);" 2>/dev/null)
+  while IFS='|' read -r col def; do
+    [[ -n "$col" ]] || continue
+    printf '%s' "$existing_cols" | grep -q "|${col}|" && continue
+    tt_db_exec_safe "ALTER TABLE tasks ADD COLUMN ${col} ${def};" >/dev/null
+  done <<'COLS'
+orch_received_at|INTEGER
+orch_verified_at|INTEGER
+user_reported_at|INTEGER
+done_message_id|INTEGER
+done_body_hash|TEXT
+verification_summary|TEXT
+verification_hash|TEXT
+COLS
 }
 
 # D3 (msg-repair): one-shot idempotent sweep of pre-D3 orphaned 'queued' rows.
@@ -532,8 +557,9 @@ tt_db_upsert_task() {
   fi
 }
 
-# Args: task_id new_state [owner_session] [owner_alias] [target]
-#   new_state is one of: pending acked done blocked expired.
+# Args: task_id new_state [owner_session] [owner_alias] [target] [now_epoch]
+#   new_state is one of: pending acked done blocked expired received verified
+#   user_reported.
 # Sets the state-specific timestamp column when applicable. The UPDATE always
 # matches the composite identity (task_id + owner [+ target when supplied], the
 # same columns as the UNIQUE identity index). When owner_session and owner_alias
@@ -549,17 +575,33 @@ tt_db_transition_task() {
   local owner_session_raw="${3:-}"
   local owner_alias_raw="${4:-}"
   local target_raw="${5:-}"
+  local now="${6:-$(date +%s)}"
   [[ -z "$task_id" || -z "$new_state" ]] && return 0
+  [[ "$now" =~ ^[0-9]+$ ]] || return 0
   local ts_col=''
   case "$new_state" in
     acked)   ts_col='ack_at' ;;
     done)    ts_col='done_at' ;;
     blocked) ts_col='block_at' ;;
+    received) ts_col='orch_received_at' ;;
+    verified) ts_col='orch_verified_at' ;;
+    user_reported) ts_col='user_reported_at' ;;
     expired|pending) ts_col='' ;;
     *) return 0 ;;
   esac
   local ts_set=''
-  [[ -n "$ts_col" ]] && ts_set=", ${ts_col}=strftime('%s','now')"
+  [[ -n "$ts_col" ]] && ts_set=", ${ts_col}=COALESCE(${ts_col}, ${now})"
+  local state_where
+  case "$new_state" in
+    pending)       state_where="state='pending'" ;;
+    acked)         state_where="state IN ('pending','acked')" ;;
+    done)          state_where="state IN ('pending','acked','done')" ;;
+    blocked)       state_where="state IN ('pending','acked','blocked')" ;;
+    received)      state_where="state IN ('done','blocked','received')" ;;
+    verified)      state_where="state IN ('received','verified')" ;;
+    user_reported) state_where="state IN ('verified','user_reported')" ;;
+    expired)       state_where="state IN ('pending','acked','expired')" ;;
+  esac
   local owner_where
   if [[ -n "$owner_session_raw" && -n "$owner_alias_raw" ]]; then
     owner_where="owner_session='$(tt_db_quote "$owner_session_raw")' AND owner_alias='$(tt_db_quote "$owner_alias_raw")'"
@@ -568,7 +610,89 @@ tt_db_transition_task() {
   fi
   local target_where=''
   [[ -n "$target_raw" ]] && target_where=" AND target='$(tt_db_quote "$target_raw")'"
-  tt_db_exec_safe "UPDATE tasks SET state='${new_state}'${ts_set} WHERE task_id='${task_id}' AND ${owner_where}${target_where};" >/dev/null
+  tt_db_exec_safe "UPDATE tasks SET state='${new_state}'${ts_set} WHERE task_id='${task_id}' AND ${owner_where}${target_where} AND ${state_where};" >/dev/null
+}
+
+# Args: task_id message_id body_hash owner_session owner_alias target
+#       owner_recipient terminal_state [now_epoch]
+tt_db_record_done_evidence() {
+  tt_db_guard || return 1
+  tt_db_ensure_init
+  local task_id_raw="${1:-}" message_id="${2:-}" body_hash_raw="${3:-}"
+  local owner_session_raw="${4:-}" owner_alias_raw="${5:-}" target_raw="${6:-}"
+  local owner_recipient_raw="${7:-}" terminal_state="${8:-done}" now="${9:-$(date +%s)}"
+  [[ "$message_id" =~ ^[0-9]+$ && "$body_hash_raw" =~ ^[A-Za-z0-9._:-]{8,128}$ ]] || return 2
+  [[ "$terminal_state" == done || "$terminal_state" == blocked ]] || return 2
+  [[ -n "$task_id_raw" && -n "$owner_session_raw" && -n "$owner_alias_raw" && -n "$target_raw" ]] || return 2
+  [[ "$owner_recipient_raw" == "${owner_alias_raw}.cc" || "$owner_recipient_raw" == "${owner_alias_raw}.cdx" ]] || return 2
+  [[ "$now" =~ ^[0-9]+$ ]] || return 2
+  local task_id owner_session owner_alias target owner_recipient body_hash ts_col evidence_marker evidence_count
+  task_id=$(tt_db_quote "$task_id_raw")
+  owner_session=$(tt_db_quote "$owner_session_raw")
+  owner_alias=$(tt_db_quote "$owner_alias_raw")
+  target=$(tt_db_quote "$target_raw")
+  owner_recipient=$(tt_db_quote "$owner_recipient_raw")
+  body_hash=$(tt_db_quote "$body_hash_raw")
+  [[ "$terminal_state" == done ]] && ts_col=done_at || ts_col=block_at
+  [[ "$terminal_state" == done ]] && evidence_marker="[DONE: ${task_id_raw}]" || evidence_marker="[BLOCK: ${task_id_raw}]"
+  evidence_marker=$(tt_db_quote "$evidence_marker")
+  evidence_count=$(tt_db_exec_safe "SELECT count(*) FROM messages WHERE id=${message_id} AND body_hash='${body_hash}' AND from_alias='${target}' AND to_alias='${owner_recipient}' AND direction='inbound' AND instr(body, '${evidence_marker}') > 0;" 2>/dev/null || true)
+  if [[ "$terminal_state" == blocked && "$evidence_count" != 1 ]]; then
+    evidence_marker=$(tt_db_quote "[BLOCKED: ${task_id_raw}]")
+    evidence_count=$(tt_db_exec_safe "SELECT count(*) FROM messages WHERE id=${message_id} AND body_hash='${body_hash}' AND from_alias='${target}' AND to_alias='${owner_recipient}' AND direction='inbound' AND instr(body, '${evidence_marker}') > 0;" 2>/dev/null || true)
+  fi
+  [[ "$evidence_count" == 1 ]] || return 3
+  tt_db_exec_safe "UPDATE tasks SET state='${terminal_state}', ${ts_col}=COALESCE(${ts_col}, ${now}), done_message_id=COALESCE(done_message_id, ${message_id}), done_body_hash=COALESCE(done_body_hash, '${body_hash}') WHERE task_id='${task_id}' AND owner_session='${owner_session}' AND owner_alias='${owner_alias}' AND target='${target}' AND state IN ('pending','acked','${terminal_state}');" >/dev/null
+}
+
+# Args: task_id owner_session owner_alias target summary verification_hash
+#       [now_epoch]
+tt_db_record_verification() {
+  tt_db_guard || return 1
+  tt_db_ensure_init
+  local task_id_raw="${1:-}" owner_session_raw="${2:-}" owner_alias_raw="${3:-}"
+  local target_raw="${4:-}" summary_raw="${5:-}" hash_raw="${6:-}"
+  local now="${7:-$(date +%s)}"
+  [[ -n "$task_id_raw" && -n "$owner_session_raw" && -n "$owner_alias_raw" && -n "$target_raw" ]] || return 2
+  [[ -n "$summary_raw" && ${#summary_raw} -le 240 && "$summary_raw" != *$'\n'* ]] || return 2
+  [[ "$hash_raw" =~ ^[A-Za-z0-9._:-]{8,128}$ && "$now" =~ ^[0-9]+$ ]] || return 2
+  local task_id owner_session owner_alias target summary hash
+  task_id=$(tt_db_quote "$task_id_raw")
+  owner_session=$(tt_db_quote "$owner_session_raw")
+  owner_alias=$(tt_db_quote "$owner_alias_raw")
+  target=$(tt_db_quote "$target_raw")
+  summary=$(tt_db_quote "$summary_raw")
+  hash=$(tt_db_quote "$hash_raw")
+  tt_db_exec_safe "UPDATE tasks SET state='verified', orch_verified_at=COALESCE(orch_verified_at, ${now}), verification_summary=COALESCE(verification_summary, '${summary}'), verification_hash=COALESCE(verification_hash, '${hash}') WHERE task_id='${task_id}' AND owner_session='${owner_session}' AND owner_alias='${owner_alias}' AND target='${target}' AND state='received' AND done_body_hash='${hash}';" >/dev/null
+}
+
+# Args: task_id owner_session owner_alias target
+# Emits: state|done_message_id|done_body_hash|orch_received_at|orch_verified_at|user_reported_at
+tt_db_task_lifecycle() {
+  tt_db_guard || return 0
+  tt_db_ensure_init
+  local task_id owner_session owner_alias target
+  task_id=$(tt_db_quote "${1:-}")
+  owner_session=$(tt_db_quote "${2:-}")
+  owner_alias=$(tt_db_quote "${3:-}")
+  target=$(tt_db_quote "${4:-}")
+  [[ -n "$task_id" && -n "$owner_session" && -n "$owner_alias" && -n "$target" ]] || return 0
+  tt_db_exec_safe "SELECT state || '|' || COALESCE(done_message_id,'') || '|' || COALESCE(done_body_hash,'') || '|' || COALESCE(orch_received_at,'') || '|' || COALESCE(orch_verified_at,'') || '|' || COALESCE(user_reported_at,'') FROM tasks WHERE task_id='${task_id}' AND owner_session='${owner_session}' AND owner_alias='${owner_alias}' AND target='${target}' LIMIT 1;"
+}
+
+# Args: task_id from_alias to_alias marker
+# Emits latest exact inbound evidence as message_id<TAB>body_hash. The body is
+# inspected only inside SQLite for marker matching and is never returned.
+tt_db_find_lifecycle_evidence() {
+  tt_db_guard || return 0
+  tt_db_ensure_init
+  local task_id from_alias to_alias marker
+  task_id=$(tt_db_quote "${1:-}")
+  from_alias=$(tt_db_quote "${2:-}")
+  to_alias=$(tt_db_quote "${3:-}")
+  marker=$(tt_db_quote "${4:-}")
+  [[ -n "$task_id" && -n "$from_alias" && -n "$to_alias" && -n "$marker" ]] || return 0
+  tt_db_exec_safe "SELECT id || char(9) || body_hash FROM messages WHERE from_alias='${from_alias}' AND to_alias='${to_alias}' AND direction='inbound' AND instr(body, '[${marker}: ${task_id}]') > 0 ORDER BY id DESC LIMIT 1;"
 }
 
 # --- monitor cursor + read ops --------------------------------------------

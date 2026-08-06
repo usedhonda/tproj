@@ -1,6 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+PLATFORM=claude
+if [[ "${1:-}" == --platform ]]; then
+  PLATFORM="${2:-claude}"
+  shift 2
+fi
+[[ $# -eq 0 ]] || exit 0
+NOTICES=()
+emit_notice() { NOTICES+=("$1"); }
+
 [[ "${TPROJ_HOOK_ENABLED:-}" == "1" ]] || exit 0
 
 CACHE_DIR="${TT_CACHE_DIR:-$HOME/.cache/tproj-expect-reply}"
@@ -66,13 +75,16 @@ fi
 if tt_cache_valid_owner "$OWNER"; then
   while IFS= read -r target; do
     [[ -n "$target" ]] || continue
-    # Snapshot task ids BEFORE --read (which side-effect-deletes matching cache entries).
+    # Snapshot open task ids before --read. Lifecycle transitions retain cache
+    # entries through verification; only USER_REPORTED removes them.
     pending_ids="$(tt_cache_list_tasks "$OWNER" "$target" | awk -F '\t' 'NF {print $1}')"
     read_output="$("$MSG_CLI" --read "$target" 40 2>&1 >/dev/null || true)"
     while IFS= read -r task_id; do
       [[ -n "$task_id" ]] || continue
       if printf '%s\n' "$read_output" | grep -q "TASK_REPLIED=${task_id}"; then
-        echo "[inbox-notice] reply arrived from ${target} task=${task_id} — review with tproj-msg --read ${target} 40"
+        if tt_cache_mark_notice "$OWNER" "$target" "$task_id" reply_arrived >/dev/null 2>&1; then
+          emit_notice "[inbox-notice] reply arrived from ${target} task=${task_id} - review with tproj-msg --read ${target} 40"
+        fi
         # R1' Stage 4: mark notified_at on the latest inbound message for this
         # task, so the R2' Monitor doesn't re-emit it. The row is selected by the
         # FULL identity (session + recipient=self + sender=target + task_id) --
@@ -95,19 +107,26 @@ if tt_cache_valid_owner "$OWNER"; then
     done <<< "$pending_ids"
   done < <(tt_cache_list_targets "$OWNER")
 
-  while IFS=$'\t' read -r target task_id expect_until _timeout_marker; do
-    [[ -n "$target" && -n "$task_id" && -n "$expect_until" ]] || continue
-    now_epoch="$(date +%s)"
-    overdue_sec=$((now_epoch - expect_until))
-    overdue_min=$(( (overdue_sec + 59) / 60 ))
-    [[ "$overdue_min" -lt 0 ]] && overdue_min=0
-    echo "[inbox-notice] timeout on ${target} task=${task_id} (${overdue_min}m overdue) — current orchestrator should follow up, reassign, or take over"
-    # C5 (P0-3): explicit delegation-closure notice for the sender. A cache-expired
-    # task was never replied to (any ACK/DONE/BLOCK read removes the cache entry),
-    # so "no ACK" holds. The whole hook is already gated on TPROJ_HOOK_ENABLED=1,
-    # so a disabled-hook environment emits nothing (fail-open).
-    echo "[inbox-notice] task ${task_id} expired (no ACK from ${target})"
-  done < <(tt_cache_gc_expired "$OWNER")
+  while IFS=$'\t' read -r target task_id state event; do
+    [[ -n "$target" && -n "$task_id" && -n "$event" ]] || continue
+    case "$event" in
+      no_ack)
+        emit_notice "[inbox-notice] no ACK from ${target} task=${task_id} after ${TT_TASK_NO_ACK_SEC}s"
+        ;;
+      followup_due)
+        emit_notice "[inbox-notice] followup_due target=${target} task=${task_id} state=${state}"
+        ;;
+      reroute_due)
+        emit_notice "[inbox-notice] reroute_due target=${target} task=${task_id} state=${state}"
+        ;;
+      report_due)
+        emit_notice "[inbox-notice] report_due target=${target} task=${task_id} state=${state}"
+        ;;
+      completion_stalled)
+        emit_notice "[inbox-notice] completion_stalled target=${target} task=${task_id} state=${state}; task remains open"
+        ;;
+    esac
+  done < <(tt_cache_due_notices "$OWNER")
 fi
 
 # Legacy (pre-v2) flat-layout drain: silently TTL-GC any old unscoped
@@ -115,5 +134,14 @@ fi
 # NO notice is emitted (owner is unknowable, never guess another column's task).
 # Safe to remove a few releases after v2 ships, once no flat files remain.
 tt_cache_gc_legacy_flat >/dev/null 2>&1 || true
+
+if [[ ${#NOTICES[@]} -gt 0 ]]; then
+  notice_text="$(printf '%s\n' "${NOTICES[@]}")"
+  if [[ "$PLATFORM" == codex ]]; then
+    jq -nc --arg context "$notice_text" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:$context}}'
+  else
+    printf '%s' "$notice_text"
+  fi
+fi
 
 exit 0

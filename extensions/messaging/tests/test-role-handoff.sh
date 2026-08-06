@@ -110,6 +110,9 @@ mkdir -p "$REGISTRY_ROOT/tproj-workspace/1"
 export MODEL_ROLE_CACHE="$REGISTRY_ROOT"
 export TPROJ_MSG_DB_PATH="$WORK/messages.db"
 export TPROJ_MSG_DB_ERROR_LOG="$WORK/db-errors.log"
+export TT_CACHE_DIR="$WORK/task-cache"
+export TT_CACHE_LOCK_DIR="$WORK/task-locks"
+mkdir -p "$TT_CACHE_DIR" "$TT_CACHE_LOCK_DIR"
 # E4 (msg-repair): hard invariant -- never run against the real production
 # messages.db. Abort loudly if the isolation override above was ever dropped.
 if [[ -z "${TPROJ_MSG_DB_PATH:-}" || "$TPROJ_MSG_DB_PATH" == "$HOME/.local/share/tproj-msg/messages.db" ]]; then
@@ -415,6 +418,25 @@ if [[ $rc -eq 0 && "$out" == *'TASK_REPLIED=old-a'* && "$out" == *'TASK_REPLIED=
   pass legacy_reply_tags_compatible
 else
   fail legacy_reply_tags_compatible "rc=$rc out=$out"
+fi
+
+# A tracked ACK/DONE must advance lifecycle state without deleting the open
+# cache entry. This executes the real --read seam that previously removed on ACK.
+source "$ROOT/extensions/messaging/tproj-task-cache.sh"
+tt_cache_add tproj-workspace/tproj tproj.cdx lifecycle-read 1000 1800 seed >/dev/null
+printf '%s\n' '[ACK: lifecycle-read]' > "$FIXTURES/capture_%2"
+"$TPROJ_MSG" --session tproj-workspace --as tproj.cc --read tproj.cdx 40 >/dev/null 2>&1 || true
+ack_state="$(tt_cache_get_task tproj-workspace/tproj tproj.cdx lifecycle-read | jq -r '.state')"
+if [[ "$ack_state" == acked ]]; then pass tracked_ack_stays_open; else fail tracked_ack_stays_open "state=$ack_state"; fi
+tt_db_log_message tproj-workspace tproj.cdx tproj.cc '[DONE: lifecycle-read] evidence' bodyhash12345678 '[from:tproj.cdx]' '' inbound send-keys cdx tmux '' >/dev/null
+printf '%s\n' '[DONE: lifecycle-read]' > "$FIXTURES/capture_%2"
+"$TPROJ_MSG" --session tproj-workspace --as tproj.cc --read tproj.cdx 40 >/dev/null 2>&1 || true
+done_state="$(tt_cache_get_task tproj-workspace/tproj tproj.cdx lifecycle-read | jq -r '.state')"
+done_evidence="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT done_body_hash FROM tasks WHERE task_id='lifecycle-read' AND owner_session='tproj-workspace' AND owner_alias='tproj' AND target='tproj.cdx';")"
+if [[ "$done_state" == received && "$done_evidence" == bodyhash12345678 ]]; then
+  pass tracked_done_reaches_received
+else
+  fail tracked_done_reaches_received "state=$done_state evidence=$done_evidence"
 fi
 
 # Force is structurally unavailable for handoff, even when the target is typing.

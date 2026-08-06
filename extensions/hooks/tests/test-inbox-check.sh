@@ -118,16 +118,16 @@ out_a="$(TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
 assert_contains "$out_a" "[inbox-notice] reply arrived from $TARGET_NAME task=task-a1" "reply notice emitted"
 teardown_tmp
 
-# Case B: timeout path — expired task in cache yields [inbox-notice] timeout
-echo "Case B: timeout emission"
+# Case B: open task emits bounded lifecycle escalation without being removed.
+echo "Case B: lifecycle escalation emission"
 setup_tmp
 make_mock_msg "no reply in pane" ""
 # Seed with ttl=1 then backdate by overwriting cache file
 seed_cache "task-b1" 1
 sleep 2
-out_b="$(TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
-assert_contains "$out_b" "[inbox-notice] timeout on $TARGET_NAME task=task-b1" "timeout notice emitted"
-assert_contains "$out_b" "current orchestrator should follow up, reassign, or take over" "timeout ownership wording is role-neutral"
+out_b="$(TT_TASK_NO_ACK_SEC=1 TT_TASK_FOLLOWUP_SEC=1 TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
+assert_contains "$out_b" "[inbox-notice] no ACK from $TARGET_NAME task=task-b1" "no-ACK notice emitted"
+assert_contains "$out_b" "followup_due target=$TARGET_NAME task=task-b1" "followup wording is role-neutral"
 teardown_tmp
 
 # Case C: false-positive prevention — pane stdout contains TASK_REPLIED must be ignored
@@ -139,16 +139,32 @@ out_c="$(TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
 assert_not_contains "$out_c" "[inbox-notice] reply arrived from $TARGET_NAME task=task-c1" "stdout leak does not trigger reply notice"
 teardown_tmp
 
-# Case E: task expire (C5) — expired cache task yields the explicit no-ACK notice
-# for the sender, alongside the existing timeout notice.
-echo "Case E: task expired no-ACK notice (C5)"
+# Case E: escalation is once-only and does not close the open task.
+echo "Case E: once-only no-ACK notice"
 setup_tmp
 make_mock_msg "no reply in pane" ""
 seed_cache "task-e1" 1
 sleep 2
-out_e="$(TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
-assert_contains "$out_e" "[inbox-notice] task task-e1 expired (no ACK from $TARGET_NAME)" "C5 expired no-ACK notice emitted"
-assert_contains "$out_e" "[inbox-notice] timeout on $TARGET_NAME task=task-e1" "C5 leaves the existing timeout notice intact"
+out_e="$(TT_TASK_NO_ACK_SEC=1 TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
+out_e2="$(TT_TASK_NO_ACK_SEC=1 TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
+assert_contains "$out_e" "[inbox-notice] no ACK from $TARGET_NAME task=task-e1" "no-ACK notice emitted"
+assert_not_contains "$out_e2" "no ACK from $TARGET_NAME task=task-e1" "no-ACK notice emitted once"
+[[ -n "$(tt_cache_get_task "$OWNER_SELF" "$TARGET_NAME" task-e1 2>/dev/null)" ]] \
+  && { PASS=$((PASS+1)); echo "  PASS: escalated task remains open"; } \
+  || { FAIL=$((FAIL+1)); echo "  FAIL: escalated task remains open"; }
+teardown_tmp
+
+# Case E2: Codex context output uses the required JSON envelope.
+echo "Case E2: Codex lifecycle notice envelope"
+setup_tmp
+make_mock_msg "no reply in pane" ""
+seed_cache "task-e2" 1
+sleep 2
+out_e2="$(TT_TASK_NO_ACK_SEC=1 TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" --platform codex 2>/dev/null || true)"
+codex_event="$(printf '%s' "$out_e2" | jq -r '.hookSpecificOutput.hookEventName // ""' 2>/dev/null)"
+codex_context="$(printf '%s' "$out_e2" | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null)"
+assert_contains "$codex_event" "UserPromptSubmit" "Codex notice names the hook event"
+assert_contains "$codex_context" "no ACK from $TARGET_NAME task=task-e2" "Codex notice is wrapped as additional context"
 teardown_tmp
 
 # Case D: monitor cursor bootstrap (C1) — role-independent key, cold-start to MAX(id),
@@ -221,8 +237,8 @@ make_mock_msg "no reply in pane" ""
 seed_cache "task-self-exp" 1 "$OWNER_SELF"
 seed_cache "task-other-exp" 1 "$OWNER_OTHER"
 sleep 2
-out_i="$(TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
-assert_contains "$out_i" "[inbox-notice] timeout on $TARGET_NAME task=task-self-exp" "self owner's expired task noticed"
+out_i="$(TT_TASK_NO_ACK_SEC=1 TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" 2>/dev/null || true)"
+assert_contains "$out_i" "[inbox-notice] no ACK from $TARGET_NAME task=task-self-exp" "self owner's overdue task noticed"
 assert_not_contains "$out_i" "task-other-exp" "other owner's expired task not noticed"
 teardown_tmp
 
@@ -288,7 +304,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   assert_contains "own=[$st_own]" "own=[done]" "owned row updates only via exact composite (wrong/owner-less ignored)"
   assert_contains "leg=[$st_leg]" "leg=[expired]" "legacy NULL-owner row transitionable by owner-less call"
   ver="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
-  assert_contains "ver=[$ver]" "ver=[6]" "tasks schema at user_version 6"
+  assert_contains "ver=[$ver]" "ver=[7]" "tasks schema at user_version 7"
   rm -rf "$L_TMP"
   unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
 else
@@ -396,14 +412,14 @@ fi
 
 # Case O (R2): composite task identity. Same task_id from a different
 # owner/target does not overwrite an existing row; repeated owner-less upserts of
-# the same task_id stay idempotent (no row growth); a v5 DB migrates to v6
+# the same task_id stay idempotent (no row growth); a v5 DB migrates through v7
 # preserving rows.
-echo "Case O: composite task identity + legacy idempotency + v5->v6 migration"
+echo "Case O: composite task identity + legacy idempotency + v5->v7 migration"
 if command -v sqlite3 >/dev/null 2>&1; then
   O_TMP="$(mktemp -d)"
   export TPROJ_MSG_DB_PATH="$O_TMP/messages.db"
   export TPROJ_MSG_DB_ERROR_LOG="$O_TMP/db-errors.log"
-  # Fresh v6: collision + legacy idempotency.
+  # Fresh v7: collision + legacy idempotency.
   ( source "$REPO/extensions/messaging/tproj-msg-db.sh"
     tt_db_init
     tt_db_upsert_task collide tgtA 100 1800 h alA sessA
@@ -417,7 +433,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   ver6="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
   assert_contains "collide=[$n_collide]" "collide=[2]" "same task_id, different owner/target -> distinct rows (no overwrite)"
   assert_contains "legrep=[$n_legrep]" "legrep=[1]" "repeated owner-less upsert is idempotent (no row growth)"
-  assert_contains "ver=[$ver6]" "ver=[6]" "fresh DB at user_version 6"
+  assert_contains "ver=[$ver6]" "ver=[7]" "fresh DB at user_version 7"
   rm -f "$TPROJ_MSG_DB_PATH"*
   # R4-1: TRUE v5 migration from a hand-crafted v5 schema (task_id PRIMARY KEY),
   # NOT `TT_DB_SCHEMA_VERSION=5 tt_db_init` (which would run the v6 migration
@@ -433,7 +449,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   mig_rows="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM tasks;" 2>/dev/null || true)"
   mig_idx="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM sqlite_master WHERE name IN ('idx_tasks_owner_identity','idx_tasks_legacy_identity');" 2>/dev/null || true)"
   mig_pk="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT pk FROM pragma_table_info('tasks') WHERE name='task_id';" 2>/dev/null || true)"
-  assert_contains "mv=[$mig_ver]" "mv=[6]" "hand-crafted v5 DB migrates to user_version 6"
+  assert_contains "mv=[$mig_ver]" "mv=[7]" "hand-crafted v5 DB migrates to user_version 7"
   assert_contains "mr=[$mig_rows]" "mr=[2]" "migration preserves existing task rows"
   assert_contains "mi=[$mig_idx]" "mi=[2]" "migration creates both composite/legacy identity indexes"
   assert_contains "pk=[$mig_pk]" "pk=[0]" "migration drops the task_id PRIMARY KEY"
@@ -456,7 +472,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   assert_contains "rr=[$rec_rows]" "rr=[2]" "interrupted-run survivor rows are recovered"
   assert_contains "rd=[$rec_data]" "rd=[s1,s2]" "recovered rows carry the original task ids"
   assert_contains "rs=[$rec_survivor]" "rs=[0]" "survivor temp table is dropped after recovery"
-  assert_contains "rv=[$rec_ver]" "rv=[6]" "recovered DB reaches user_version 6"
+  assert_contains "rv=[$rec_ver]" "rv=[7]" "recovered DB reaches user_version 7"
 
   # Blocker 1 (R4-1 cont.): a late-interrupted pre-atomic run created the owner
   # index but crashed before the legacy index (rebuilt no-PK table, owner index
@@ -478,7 +494,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   lc_leg_rows="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM tasks WHERE task_id='legX';" 2>/dev/null || true)"
   assert_contains "lo=[$lc_owner]" "lo=[1]" "late-crash: owner identity index present"
   assert_contains "ll=[$lc_legacy]" "ll=[1]" "late-crash: missing legacy identity index is repaired"
-  assert_contains "lv=[$lc_ver]" "lv=[6]" "late-crash: DB reaches user_version 6 after repair"
+  assert_contains "lv=[$lc_ver]" "lv=[7]" "late-crash: DB reaches user_version 7 after repair"
   assert_contains "lr=[$lc_leg_rows]" "lr=[1]" "late-crash: ownerless ON CONFLICT upsert now succeeds (idempotent)"
   rm -rf "$O_TMP"
   unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
@@ -541,10 +557,11 @@ if [[ -x "$REPO/extensions/messaging/tproj-task" ]]; then
     [[ "$st" == *"target=${targets[$i]}"* ]] || { status_ok=0; echo "    mismatch: id ${ids[$i]} expected target=${targets[$i]} got [$st]"; }
   done
   if [[ "$status_ok" -eq 1 ]]; then PASS=$((PASS+1)); echo "  PASS: each id's status resolves to its own target (4 seeded at once)"; else FAIL=$((FAIL+1)); echo "  FAIL: each id's status resolves to its own target (4 seeded at once)"; fi
-  # Close all four; the owner must then track zero tasks.
-  for i in 0 1 2 3; do "$REPO/extensions/messaging/tproj-task" close "${ids[$i]}" >/dev/null 2>&1 || true; done
+  # Manual close is retired: open delegation state survives until USER_REPORTED.
+  close_rejected=1
+  "$REPO/extensions/messaging/tproj-task" close "${ids[0]}" >/dev/null 2>&1 && close_rejected=0
   remaining="$("$REPO/extensions/messaging/tproj-task" list 2>/dev/null | grep -c . || true)"
-  assert_contains "rem=[$remaining]" "rem=[0]" "all four tasks close, owner has 0 remaining"
+  assert_contains "close=[$close_rejected] rem=[$remaining]" "close=[1] rem=[4]" "manual close rejected and all tasks remain open"
   unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
   teardown_tmp
 else
