@@ -41,6 +41,15 @@ Queued role handoffs are revalidated at flush time: if the target pane's current
 
 If a delegated task is cancelled or frozen, Claude and Codex both install the same mutation guard. Source edits, staging/commit/reset/revert/stash/checkout, build/test/restart/deploy, and ambiguous shell commands are blocked; only the strict read-only incident shell whitelist is allowed for evidence collection.
 
+## Runtime refresh
+
+Use the narrow canonical installer when only the messaging/task runtime and lifecycle guards need to be refreshed live:
+
+```bash
+./extensions/messaging/install-tproj-messaging-runtime
+./extensions/messaging/install-tproj-messaging-runtime --check
+```
+
 ## Requirements
 
 - tmux (included with tproj core)

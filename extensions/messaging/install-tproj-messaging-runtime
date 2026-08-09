@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Install or verify the narrow tproj messaging/task runtime for Claude and Codex."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_FILES = (
+    ("extensions/messaging/tproj-msg", "tproj-msg"),
+    ("extensions/messaging/tproj-task", "tproj-task"),
+    ("extensions/messaging/tproj-task-cache.sh", "tproj-task-cache.sh"),
+    ("extensions/messaging/tproj-msg-db.sh", "tproj-msg-db.sh"),
+    ("extensions/messaging/tproj-msg-desktop.sh", "tproj-msg-desktop.sh"),
+    ("extensions/messaging/tproj-inbox-monitor", "tproj-inbox-monitor"),
+    ("extensions/hooks/tproj-inbox-record", "tproj-inbox-record"),
+    ("extensions/hooks/tproj-inbox-check", "tproj-inbox-check"),
+    ("extensions/hooks/tproj-completion-guard", "tproj-completion-guard"),
+    ("extensions/hooks/tproj-mutation-guard", "tproj-mutation-guard"),
+)
+SKILL_SOURCE = Path("extensions/messaging/skill-msg/SKILL.md")
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def hook_command_strings(home: Path) -> tuple[set[str], set[str]]:
+    claude = {
+        "$HOME/bin/tproj-mutation-guard",
+        "$HOME/bin/tproj-inbox-record",
+        "$HOME/bin/tproj-inbox-check",
+        "$HOME/bin/tproj-completion-guard",
+    }
+    codex = {
+        f"{home / 'bin' / 'tproj-mutation-guard'} --platform codex",
+        str(home / "bin" / "tproj-inbox-record"),
+        f"{home / 'bin' / 'tproj-inbox-check'} --platform codex",
+        f"{home / 'bin' / 'tproj-completion-guard'} --platform codex",
+    }
+    return claude, codex
+
+
+def runtime_sources() -> list[tuple[Path, str]]:
+    return [(REPO_ROOT / rel, dest) for rel, dest in RUNTIME_FILES]
+
+
+def iter_commands(document: dict[str, Any]) -> list[str]:
+    commands: list[str] = []
+    hooks = document.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return commands
+    for entries in hooks.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            for hook in entry.get("hooks", []):
+                if isinstance(hook, dict):
+                    command = hook.get("command")
+                    if isinstance(command, str):
+                        commands.append(command)
+    return commands
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def install_file(source: Path, target: Path, executable: bool, dry_run: bool) -> bool:
+    data = source.read_bytes()
+    desired_mode = 0o755 if executable else 0o644
+    if target.exists():
+        current_mode = stat.S_IMODE(target.stat().st_mode)
+        if target.read_bytes() == data and current_mode == desired_mode:
+            return False
+    if dry_run:
+        print(f"WOULD INSTALL {source} -> {target}")
+        return True
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=str(target.parent), prefix=f".{target.name}.", delete=False) as tmp:
+        tmp.write(data)
+        tmp_path = Path(tmp.name)
+    os.chmod(tmp_path, desired_mode)
+    os.replace(tmp_path, target)
+    return True
+
+
+def run_hook_installer(args: argparse.Namespace, home: Path) -> None:
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "extensions/hooks/install-tproj-hooks"),
+        "--claude-settings",
+        str(args.claude_settings),
+        "--codex-hooks",
+        str(args.codex_hooks),
+        "--codex-config",
+        str(args.codex_config),
+        "--canonical-hooks-dir",
+        str(REPO_ROOT / "extensions/hooks"),
+        "--installed-hooks-dir",
+        str(args.bin_dir),
+    ]
+    if args.trust_response:
+        command.extend(["--trust-response", str(args.trust_response)])
+    if args.skip_codex_trust:
+        command.append("--skip-codex-trust")
+    if args.dry_run:
+        command.append("--dry-run")
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    subprocess.run(command, check=True, env=env)
+
+
+def init_db(args: argparse.Namespace, home: Path) -> None:
+    db_script = args.bin_dir / "tproj-msg-db.sh"
+    if not db_script.exists():
+        return
+    if shutil.which("sqlite3") is None:
+        print("[warn] sqlite3 not found; skipped tproj-msg DB init", file=sys.stderr)
+        return
+    args.db_path.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["TPROJ_MSG_DB_PATH"] = str(args.db_path)
+    env.setdefault("TPROJ_MSG_DB_ERROR_LOG", str(args.db_path.with_name("db-errors.log")))
+    subprocess.run([str(db_script), "init"], check=True, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def verify_files(bin_dir: Path, claude_skill: Path, codex_skill: Path) -> list[str]:
+    errors: list[str] = []
+    for source, dest_name in runtime_sources():
+        target = bin_dir / dest_name
+        if not target.is_file():
+            errors.append(f"{target} missing")
+            continue
+        if sha256(source) != sha256(target):
+            errors.append(f"{target} differs from {source}")
+            continue
+        if not os.access(target, os.X_OK):
+            errors.append(f"{target} is not executable")
+    skill_source = REPO_ROOT / SKILL_SOURCE
+    for skill_target in (claude_skill, codex_skill):
+        if not skill_target.is_file():
+            errors.append(f"{skill_target} missing")
+        elif sha256(skill_source) != sha256(skill_target):
+            errors.append(f"{skill_target} differs from {skill_source}")
+    return errors
+
+
+def verify_hook_configs(claude_settings: Path, codex_hooks: Path, home: Path) -> list[str]:
+    errors: list[str] = []
+    claude_expected, codex_expected = hook_command_strings(home)
+    claude_commands = set(iter_commands(load_json(claude_settings)))
+    codex_commands = set(iter_commands(load_json(codex_hooks)))
+    missing_claude = claude_expected - claude_commands
+    missing_codex = codex_expected - codex_commands
+    if missing_claude:
+        errors.append(f"{claude_settings} missing hooks: {', '.join(sorted(missing_claude))}")
+    if missing_codex:
+        errors.append(f"{codex_hooks} missing hooks: {', '.join(sorted(missing_codex))}")
+    return errors
+
+
+def check(args: argparse.Namespace, home: Path) -> int:
+    errors = []
+    errors.extend(verify_files(args.bin_dir, args.claude_skill, args.codex_skill))
+    errors.extend(verify_hook_configs(args.claude_settings, args.codex_hooks, home))
+    if errors:
+        for line in errors:
+            print(line)
+        return 1
+    print("ok: messaging/task runtime matches repo source and hook config")
+    return 0
+
+
+def install(args: argparse.Namespace, home: Path) -> int:
+    changed = False
+    for source, dest_name in runtime_sources():
+        changed |= install_file(source, args.bin_dir / dest_name, executable=True, dry_run=args.dry_run)
+    skill_source = REPO_ROOT / SKILL_SOURCE
+    changed |= install_file(skill_source, args.claude_skill, executable=False, dry_run=args.dry_run)
+    changed |= install_file(skill_source, args.codex_skill, executable=False, dry_run=args.dry_run)
+    run_hook_installer(args, home)
+    if args.dry_run:
+        print("WOULD INIT tproj-msg DB")
+        return 0
+    try:
+        init_db(args, home)
+    except (OSError, subprocess.CalledProcessError):
+        print("[warn] tproj-msg DB init failed (fail-open, shadow writes disabled)", file=sys.stderr)
+    if changed:
+        print(f"installed messaging/task runtime into {args.bin_dir}")
+    else:
+        print(f"messaging/task runtime already current in {args.bin_dir}")
+    return 0
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--home", default=os.environ.get("HOME", str(Path.home())))
+    parser.add_argument("--bin-dir")
+    parser.add_argument("--claude-settings")
+    parser.add_argument("--codex-hooks")
+    parser.add_argument("--codex-config")
+    parser.add_argument("--claude-skill")
+    parser.add_argument("--codex-skill")
+    parser.add_argument("--db-path")
+    parser.add_argument("--trust-response")
+    parser.add_argument("--skip-codex-trust", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    home = Path(args.home).expanduser()
+    args.home = home
+    args.bin_dir = Path(args.bin_dir).expanduser() if args.bin_dir else home / "bin"
+    args.claude_settings = Path(args.claude_settings).expanduser() if args.claude_settings else home / ".claude/settings.json"
+    args.codex_hooks = Path(args.codex_hooks).expanduser() if args.codex_hooks else home / ".codex/hooks.json"
+    args.codex_config = Path(args.codex_config).expanduser() if args.codex_config else home / ".codex/config.toml"
+    args.claude_skill = Path(args.claude_skill).expanduser() if args.claude_skill else home / ".claude/skills/msg/SKILL.md"
+    args.codex_skill = Path(args.codex_skill).expanduser() if args.codex_skill else home / ".codex/skills/msg/SKILL.md"
+    args.db_path = Path(args.db_path).expanduser() if args.db_path else home / ".local/share/tproj-msg/messages.db"
+    args.trust_response = Path(args.trust_response).expanduser() if args.trust_response else None
+    return args
+
+
+def main() -> int:
+    args = parse_args()
+    if args.check:
+        return check(args, args.home)
+    return install(args, args.home)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -18,6 +18,8 @@ jobs:
         run: bash extensions/messaging/tests/test-desktop-mailbox.sh
       - name: Caller verify hardening
         run: bash extensions/messaging/tests/test-caller-verify-hardening.sh
+      - name: Messaging runtime installer
+        run: bash extensions/messaging/tests/test-runtime-installer.sh
       # test-registry-contract.sh is excluded here: it executes the canonical
       # model-role-router from the sibling `general` checkout, which is not
       # present in a tproj-only CI checkout (same sibling-general dependency

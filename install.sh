@@ -23,6 +23,7 @@ PERSONA_BOOTSTRAP_ERROR=""
 MODEL_ROLE_ROUTER_LINK="$SCRIPT_DIR/extensions/model-role-router/model-role-router"
 MODEL_ROLE_ROUTER_TARGET="../../../general/system/model-role-router/model-role-router"
 MODEL_ROLE_ROUTER_ERROR=""
+MESSAGING_RUNTIME_INSTALLER="$SCRIPT_DIR/extensions/messaging/install-tproj-messaging-runtime"
 
 validate_persona_bootstrap_source() {
   PERSONA_BOOTSTRAP_ERROR=""
@@ -161,16 +162,17 @@ if $CHECK_ONLY; then
     elif ! cmp -s "$MODEL_ROLE_ROUTER_LINK" "$HOME/bin/model-role-router"; then
       drift+=("model-role-router (installed copy differs from canonical source)")
     fi
-    # msg skill distributed to Claude Code and Codex (see install step below)
-    skill_src="$SCRIPT_DIR/extensions/messaging/skill-msg/SKILL.md"
-    for skill_rel in ".claude/skills/msg/SKILL.md" ".codex/skills/msg/SKILL.md"; do
-      skill_copy="$HOME/$skill_rel"
-      if [[ ! -f "$skill_copy" ]]; then
-        drift+=("$skill_rel (missing installed copy)")
-      elif ! diff -q "$skill_src" "$skill_copy" >/dev/null 2>&1; then
-        drift+=("$skill_rel (installed copy differs from repo source)")
+    if [[ -x "$MESSAGING_RUNTIME_INSTALLER" ]]; then
+      runtime_check="$("$MESSAGING_RUNTIME_INSTALLER" --check 2>&1)" || runtime_rc=$?
+      runtime_rc="${runtime_rc:-0}"
+      if [[ "$runtime_rc" -ne 0 ]]; then
+        while IFS= read -r line; do
+          [[ -n "$line" ]] && drift+=("$line")
+        done <<<"$runtime_check"
       fi
-    done
+    else
+      drift+=("install-tproj-messaging-runtime (missing or not executable)")
+    fi
   fi
   if [[ ${#drift[@]} -gt 0 ]]; then
     echo "drift detected in repo/install chain:"
@@ -497,60 +499,17 @@ if ! $CORE_ONLY; then
   echo "Installing extensions..."
   mkdir -p ~/bin
 
-  # --- messaging ---
-  if [[ -d "$SCRIPT_DIR/extensions/messaging" ]]; then
-    echo "  messaging (tproj-msg, tproj-task, tproj-task-cache, tproj-msg-db, tproj-msg-desktop)"
+  # --- messaging/task runtime + lifecycle hooks ---
+  if [[ -x "$MESSAGING_RUNTIME_INSTALLER" ]]; then
+    echo "  messaging/task runtime + lifecycle hooks"
     if ! $DRY_RUN; then
-      cp "$SCRIPT_DIR/extensions/messaging/tproj-msg" ~/bin/
-      cp "$SCRIPT_DIR/extensions/messaging/tproj-task" ~/bin/
-      cp "$SCRIPT_DIR/extensions/messaging/tproj-task-cache.sh" ~/bin/
-      cp "$SCRIPT_DIR/extensions/messaging/tproj-msg-db.sh" ~/bin/
-      cp "$SCRIPT_DIR/extensions/messaging/tproj-msg-desktop.sh" ~/bin/
-      cp "$SCRIPT_DIR/extensions/messaging/tproj-inbox-monitor" ~/bin/
-      chmod +x ~/bin/tproj-msg
-      chmod +x ~/bin/tproj-task
-      chmod +x ~/bin/tproj-task-cache.sh
-      chmod +x ~/bin/tproj-msg-db.sh
-      chmod +x ~/bin/tproj-msg-desktop.sh
-      chmod +x ~/bin/tproj-inbox-monitor
-      # Install msg skill for Claude Code and Codex
-      mkdir -p "$HOME/.claude/skills/msg" "$HOME/.codex/skills/msg"
-      cp "$SCRIPT_DIR/extensions/messaging/skill-msg/SKILL.md" "$HOME/.claude/skills/msg/"
-      cp "$SCRIPT_DIR/extensions/messaging/skill-msg/SKILL.md" "$HOME/.codex/skills/msg/"
+      "$MESSAGING_RUNTIME_INSTALLER"
     else
-      echo "    [DRY-RUN] tproj-msg -> ~/bin/"
-      echo "    [DRY-RUN] tproj-task, tproj-task-cache.sh, tproj-msg-db.sh, tproj-msg-desktop.sh, tproj-inbox-monitor -> ~/bin/"
-      echo "    [DRY-RUN] msg skill -> ~/.claude/skills/ + ~/.codex/skills/"
-    fi
-  fi
-
-  # --- hooks ---
-  if [[ -d "$SCRIPT_DIR/extensions/hooks" ]]; then
-    echo "  hooks (tproj-inbox-record, tproj-inbox-check, tproj-completion-guard, tproj-mutation-guard)"
-    if ! $DRY_RUN; then
-      cp "$SCRIPT_DIR/extensions/hooks/tproj-inbox-record" ~/bin/
-      cp "$SCRIPT_DIR/extensions/hooks/tproj-inbox-check" ~/bin/
-      cp "$SCRIPT_DIR/extensions/hooks/tproj-completion-guard" ~/bin/
-      cp "$SCRIPT_DIR/extensions/hooks/tproj-mutation-guard" ~/bin/
-      chmod +x ~/bin/tproj-inbox-record ~/bin/tproj-inbox-check ~/bin/tproj-completion-guard ~/bin/tproj-mutation-guard
-      "$SCRIPT_DIR/extensions/hooks/install-tproj-hooks"
-    else
-      echo "    [DRY-RUN] tproj-inbox-record, tproj-inbox-check, tproj-completion-guard, tproj-mutation-guard -> ~/bin/"
-      echo "    [DRY-RUN] merge lifecycle hooks into Claude/Codex settings"
-    fi
-  fi
-
-  # --- tproj-msg DB init (R1' Stage 5) ---
-  echo "  tproj-msg DB (SQLite WAL at ~/.local/share/tproj-msg/messages.db)"
-  if ! $DRY_RUN; then
-    mkdir -p ~/.local/share/tproj-msg
-    if command -v sqlite3 >/dev/null 2>&1; then
-      ~/bin/tproj-msg-db.sh init 2>/dev/null || echo "    [warn] DB init failed (fail-open, shadow writes disabled)"
-    else
-      echo "    [skip] sqlite3 not found, DB shadow writes disabled (fail-open)"
+      "$MESSAGING_RUNTIME_INSTALLER" --dry-run
     fi
   else
-    echo "    [DRY-RUN] mkdir -p ~/.local/share/tproj-msg + tproj-msg-db.sh init"
+    echo "    [error] install-tproj-messaging-runtime missing or not executable" >&2
+    exit 1
   fi
 
   # --- persona ---
