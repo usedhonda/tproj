@@ -54,7 +54,7 @@ def sha256(path: Path) -> str:
 
 
 def verify_installed_hooks(canonical: Path, installed: Path) -> None:
-    for name in ("tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard"):
+    for name in ("tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard", "tproj-mutation-guard"):
         source = canonical / name
         deployed = installed / name
         if not source.is_file() or not deployed.is_file() or sha256(source) != sha256(deployed):
@@ -76,11 +76,13 @@ def merge(document: dict[str, Any], platform: str) -> dict[str, Any]:
     hooks = document.setdefault("hooks", {})
     if platform == "claude":
         home = "$HOME/bin"
+        ensure_entry(hooks, "PreToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|apply_patch|functions.apply_patch", f"{home}/tproj-mutation-guard")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec", f"{home}/tproj-inbox-record")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check")
         ensure_entry(hooks, "Stop", "", f"{home}/tproj-completion-guard")
     else:
         home = str(Path("~/bin").expanduser())
+        ensure_entry(hooks, "PreToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|apply_patch|functions.apply_patch", f"{home}/tproj-mutation-guard --platform codex")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec", f"{home}/tproj-inbox-record")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check --platform codex")
         ensure_entry(hooks, "Stop", "", f"{home}/tproj-completion-guard --platform codex")
@@ -135,7 +137,7 @@ def live_hooks(cwd: Path) -> dict[str, Any]:
 def hook_metadata(response: dict[str, Any], source: Path) -> list[dict[str, str]]:
     result = response.get("result", response)
     found: list[dict[str, str]] = []
-    required = {"tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard"}
+    required = {"tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard", "tproj-mutation-guard"}
     seen: set[str] = set()
     for group in result.get("data", []):
         for hook in group.get("hooks", []):

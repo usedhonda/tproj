@@ -25,3 +25,5 @@ jobs:
       # test). Run it locally where the general checkout exists.
       - name: Inbox check
         run: bash extensions/hooks/tests/test-inbox-check.sh
+      - name: Mutation guard
+        run: bash extensions/hooks/tests/test-mutation-guard.sh

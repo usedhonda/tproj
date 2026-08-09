@@ -28,6 +28,8 @@ tproj-task - inspect tracked tproj delegated tasks
 Usage:
   tproj-task list
   tproj-task status <id>
+  tproj-task cancel <id> <target> <reason-hash>
+  tproj-task freeze <id> <target> <reason-hash>
   tproj-task verify <id> <target> <summary> <done-body-hash>
   tproj-task report <id> <target>
   tproj-task gc
@@ -74,6 +76,31 @@ require_exact_task() {
   printf '%s\n' "$entry"
 }
 
+apply_tombstone() {
+  local state="$1" task_id="$2" target="$3" reason_hash="$4"
+  entry="$(require_exact_task "$task_id" "$target")" || exit 1
+  current_state="$(printf '%s' "$entry" | jq -r '.state // ""')"
+  if [[ "$current_state" == "$state" ]]; then
+    echo "${state} ${task_id} (${target})"
+    return 0
+  fi
+  if [[ "$current_state" == "cancelled" || "$current_state" == "frozen" ]]; then
+    echo "Error: task '$task_id' is already tombstoned as '$current_state'" >&2
+    exit 1
+  fi
+  [[ "$reason_hash" =~ ^[A-Za-z0-9._:-]{8,128}$ ]] || {
+    echo "Error: invalid reason hash" >&2
+    exit 1
+  }
+  tt_cache_tombstone_task "$OWNER" "$target" "$task_id" "$state" "$reason_hash" >/dev/null
+  refreshed="$(require_exact_task "$task_id" "$target")" || exit 1
+  [[ "$(printf '%s' "$refreshed" | jq -r '.state // ""')" == "$state" ]] || {
+    echo "Error: task '$task_id' was not durably tombstoned" >&2
+    exit 1
+  }
+  echo "${state} ${task_id} (${target})"
+}
+
 cmd="${1:-}"
 case "$cmd" in
   list)
@@ -88,6 +115,13 @@ case "$cmd" in
     target="${result%%$'\t'*}"
     entry="${result#*$'\t'}"
     printf 'target=%s\n%s\n' "$target" "$entry"
+    ;;
+  cancel|freeze)
+    [[ $# -eq 4 ]] || { echo "Error: $cmd requires <id> <target> <reason-hash>" >&2; exit 1; }
+    require_owner
+    tombstone_state="cancelled"
+    [[ "$cmd" == freeze ]] && tombstone_state="frozen"
+    apply_tombstone "$tombstone_state" "$2" "$3" "$4"
     ;;
   verify)
     [[ $# -eq 5 ]] || { echo "Error: verify requires <id> <target> <summary> <done-body-hash>" >&2; exit 1; }

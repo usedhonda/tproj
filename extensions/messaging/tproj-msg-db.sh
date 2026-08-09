@@ -45,7 +45,9 @@
 # composite as distinct, which would otherwise let ownerless repeats grow rows).
 # Version 7 adds platform-observed lifecycle evidence and verification/report
 # timestamps without persisting arbitrary response bodies.
-: "${TT_DB_SCHEMA_VERSION:=7}"
+# Version 8 adds durable task contract metadata plus cancellation/freeze
+# tombstones and one-shot receiver notice bookkeeping.
+: "${TT_DB_SCHEMA_VERSION:=8}"
 
 tt_db_path() { printf '%s\n' "$TPROJ_MSG_DB_PATH"; }
 tt_db_error_log() { printf '%s\n' "$TPROJ_MSG_DB_ERROR_LOG"; }
@@ -171,6 +173,7 @@ SQL
   tt_db_migrate_task_owner_column
   tt_db_migrate_tasks_composite_identity
   tt_db_migrate_task_lifecycle_columns
+  tt_db_migrate_task_contract_columns
   tt_db_sweep_orphaned_queued
   # Stamp user_version last, so it only advances after every migration above has
   # run. This is the version tt_db_ensure_init compares against on later calls.
@@ -196,6 +199,30 @@ done_message_id|INTEGER
 done_body_hash|TEXT
 verification_summary|TEXT
 verification_hash|TEXT
+COLS
+}
+
+# Schema v8 migration - task contract metadata and durable tombstones. All
+# fields remain structural or hashed; no delegated body/prompt text is stored.
+tt_db_migrate_task_contract_columns() {
+  tt_db_guard || return 0
+  local existing_cols col def
+  existing_cols=$(tt_db_exec_safe "PRAGMA table_info(tasks);" 2>/dev/null)
+  while IFS='|' read -r col def; do
+    [[ -n "$col" ]] || continue
+    printf '%s' "$existing_cols" | grep -q "|${col}|" && continue
+    tt_db_exec_safe "ALTER TABLE tasks ADD COLUMN ${col} ${def};" >/dev/null
+  done <<'COLS'
+task_kind|TEXT
+intent_hash|TEXT
+user_authorized_exact|INTEGER
+role_handoff_epoch|INTEGER
+orchestrator_alias|TEXT
+cancelled_at|INTEGER
+frozen_at|INTEGER
+tombstone_reason_hash|TEXT
+worker_notice_state|TEXT
+worker_notice_at|INTEGER
 COLS
 }
 
@@ -527,10 +554,12 @@ tt_db_set_notified() {
 # --- task operations -------------------------------------------------------
 
 # Args: task_id target sent_at ttl_sec msg_hash [owner_alias] [owner_session]
+#       [task_kind] [intent_hash] [user_authorized_exact]
+#       [role_handoff_epoch] [orchestrator_alias]
 # owner_alias/owner_session (additive, nullable) are the issuing column of the
 # owner-scoped cache. An empty owner value is stored NULL and never clobbers a
 # known value on conflict (COALESCE), so a later upsert without owner cannot
-# erase attribution.
+# erase attribution. Optional contract metadata is structural or hashed only.
 tt_db_upsert_task() {
   tt_db_guard || return 0
   tt_db_ensure_init
@@ -541,25 +570,37 @@ tt_db_upsert_task() {
   local msg_hash=$(tt_db_quote "${5:-}")
   local owner_alias_raw="${6:-}"
   local owner_session_raw="${7:-}"
+  local task_kind_raw="${8:-}"
+  local intent_hash_raw="${9:-}"
+  local user_authorized_exact_raw="${10:-0}"
+  local role_handoff_epoch_raw="${11:-}"
+  local orchestrator_alias_raw="${12:-}"
   [[ -z "$task_id" ]] && return 0
   local expect_until=$((sent_at + ttl_sec))
+  local task_kind_sql="NULL" intent_hash_sql="NULL" user_authorized_exact_sql=0
+  local role_handoff_epoch_sql="NULL" orchestrator_alias_sql="NULL"
+  [[ -n "$task_kind_raw" ]] && task_kind_sql="'$(tt_db_quote "$task_kind_raw")'"
+  [[ "$intent_hash_raw" =~ ^[A-Fa-f0-9]{16,128}$ ]] && intent_hash_sql="'$(tt_db_quote "$intent_hash_raw")'"
+  [[ "$user_authorized_exact_raw" == "1" ]] && user_authorized_exact_sql=1
+  [[ "$role_handoff_epoch_raw" =~ ^[0-9]+$ ]] && role_handoff_epoch_sql="$role_handoff_epoch_raw"
+  [[ -n "$orchestrator_alias_raw" ]] && orchestrator_alias_sql="'$(tt_db_quote "$orchestrator_alias_raw")'"
   if [[ -n "$owner_alias_raw" && -n "$owner_session_raw" ]]; then
     # Owned row: identity is the composite. task_id from a different owner or a
     # different target inserts a distinct row instead of overwriting this one.
     local oa=$(tt_db_quote "$owner_alias_raw")
     local os=$(tt_db_quote "$owner_session_raw")
-    tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias, owner_session) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', '${oa}', '${os}') ON CONFLICT(owner_session, owner_alias, target, task_id) DO UPDATE SET sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash;" >/dev/null
+    tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias, owner_session, task_kind, intent_hash, user_authorized_exact, role_handoff_epoch, orchestrator_alias) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', '${oa}', '${os}', ${task_kind_sql}, ${intent_hash_sql}, ${user_authorized_exact_sql}, ${role_handoff_epoch_sql}, ${orchestrator_alias_sql}) ON CONFLICT(owner_session, owner_alias, target, task_id) DO UPDATE SET sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash, task_kind=COALESCE(excluded.task_kind, task_kind), intent_hash=COALESCE(excluded.intent_hash, intent_hash), user_authorized_exact=CASE WHEN excluded.user_authorized_exact = 1 THEN 1 ELSE user_authorized_exact END, role_handoff_epoch=COALESCE(excluded.role_handoff_epoch, role_handoff_epoch), orchestrator_alias=COALESCE(excluded.orchestrator_alias, orchestrator_alias);" >/dev/null
   else
     # Legacy / owner-less: conflict on the partial UNIQUE(task_id) WHERE both
     # owner columns are NULL, so repeated ownerless upserts of the same task_id
     # update the one legacy row instead of growing the table.
-    tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias, owner_session) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', NULL, NULL) ON CONFLICT(task_id) WHERE owner_session IS NULL AND owner_alias IS NULL DO UPDATE SET target=excluded.target, sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash;" >/dev/null
+    tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias, owner_session, task_kind, intent_hash, user_authorized_exact, role_handoff_epoch, orchestrator_alias) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', NULL, NULL, ${task_kind_sql}, ${intent_hash_sql}, ${user_authorized_exact_sql}, ${role_handoff_epoch_sql}, ${orchestrator_alias_sql}) ON CONFLICT(task_id) WHERE owner_session IS NULL AND owner_alias IS NULL DO UPDATE SET target=excluded.target, sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash, task_kind=COALESCE(excluded.task_kind, task_kind), intent_hash=COALESCE(excluded.intent_hash, intent_hash), user_authorized_exact=CASE WHEN excluded.user_authorized_exact = 1 THEN 1 ELSE user_authorized_exact END, role_handoff_epoch=COALESCE(excluded.role_handoff_epoch, role_handoff_epoch), orchestrator_alias=COALESCE(excluded.orchestrator_alias, orchestrator_alias);" >/dev/null
   fi
 }
 
 # Args: task_id new_state [owner_session] [owner_alias] [target] [now_epoch]
 #   new_state is one of: pending acked done blocked expired received verified
-#   user_reported.
+#   cancelled frozen user_reported.
 # Sets the state-specific timestamp column when applicable. The UPDATE always
 # matches the composite identity (task_id + owner [+ target when supplied], the
 # same columns as the UNIQUE identity index). When owner_session and owner_alias
@@ -585,6 +626,8 @@ tt_db_transition_task() {
     blocked) ts_col='block_at' ;;
     received) ts_col='orch_received_at' ;;
     verified) ts_col='orch_verified_at' ;;
+    cancelled) ts_col='cancelled_at' ;;
+    frozen) ts_col='frozen_at' ;;
     user_reported) ts_col='user_reported_at' ;;
     expired|pending) ts_col='' ;;
     *) return 0 ;;
@@ -599,6 +642,8 @@ tt_db_transition_task() {
     blocked)       state_where="state IN ('pending','acked','blocked')" ;;
     received)      state_where="state IN ('done','blocked','received')" ;;
     verified)      state_where="state IN ('received','verified')" ;;
+    cancelled)     state_where="state IN ('pending','acked','done','blocked','received','verified','cancelled')" ;;
+    frozen)        state_where="state IN ('pending','acked','done','blocked','received','verified','frozen')" ;;
     user_reported) state_where="state IN ('verified','user_reported')" ;;
     expired)       state_where="state IN ('pending','acked','expired')" ;;
   esac
@@ -613,6 +658,26 @@ tt_db_transition_task() {
   tt_db_exec_safe "UPDATE tasks SET state='${new_state}'${ts_set} WHERE task_id='${task_id}' AND ${owner_where}${target_where} AND ${state_where};" >/dev/null
 }
 
+# Args: task_id tombstone_state owner_session owner_alias target reason_hash
+#       [now_epoch]
+tt_db_tombstone_task() {
+  tt_db_guard || return 0
+  local task_id_raw="${1:-}" tombstone_state="${2:-}" owner_session_raw="${3:-}"
+  local owner_alias_raw="${4:-}" target_raw="${5:-}" reason_hash_raw="${6:-}"
+  local now="${7:-$(date +%s)}"
+  [[ "$tombstone_state" == "cancelled" || "$tombstone_state" == "frozen" ]] || return 0
+  [[ -n "$task_id_raw" && -n "$owner_session_raw" && -n "$owner_alias_raw" && -n "$target_raw" ]] || return 0
+  [[ "$reason_hash_raw" =~ ^[A-Za-z0-9._:-]{8,128}$ && "$now" =~ ^[0-9]+$ ]] || return 0
+  local task_id owner_session owner_alias target reason_hash ts_col
+  task_id=$(tt_db_quote "$task_id_raw")
+  owner_session=$(tt_db_quote "$owner_session_raw")
+  owner_alias=$(tt_db_quote "$owner_alias_raw")
+  target=$(tt_db_quote "$target_raw")
+  reason_hash=$(tt_db_quote "$reason_hash_raw")
+  [[ "$tombstone_state" == "cancelled" ]] && ts_col=cancelled_at || ts_col=frozen_at
+  tt_db_exec_safe "UPDATE tasks SET state='${tombstone_state}', ${ts_col}=COALESCE(${ts_col}, ${now}), tombstone_reason_hash='${reason_hash}', worker_notice_state=NULL, worker_notice_at=NULL WHERE task_id='${task_id}' AND owner_session='${owner_session}' AND owner_alias='${owner_alias}' AND target='${target}' AND state IN ('pending','acked','done','blocked','received','verified','${tombstone_state}');" >/dev/null
+}
+
 # Args: task_id message_id body_hash owner_session owner_alias target
 #       owner_recipient terminal_state [now_epoch]
 tt_db_record_done_evidence() {
@@ -622,7 +687,7 @@ tt_db_record_done_evidence() {
   local owner_session_raw="${4:-}" owner_alias_raw="${5:-}" target_raw="${6:-}"
   local owner_recipient_raw="${7:-}" terminal_state="${8:-done}" now="${9:-$(date +%s)}"
   [[ "$message_id" =~ ^[0-9]+$ && "$body_hash_raw" =~ ^[A-Za-z0-9._:-]{8,128}$ ]] || return 2
-  [[ "$terminal_state" == done || "$terminal_state" == blocked ]] || return 2
+  [[ "$terminal_state" == "done" || "$terminal_state" == "blocked" ]] || return 2
   [[ -n "$task_id_raw" && -n "$owner_session_raw" && -n "$owner_alias_raw" && -n "$target_raw" ]] || return 2
   [[ "$owner_recipient_raw" == "${owner_alias_raw}.cc" || "$owner_recipient_raw" == "${owner_alias_raw}.cdx" ]] || return 2
   [[ "$now" =~ ^[0-9]+$ ]] || return 2
@@ -633,8 +698,8 @@ tt_db_record_done_evidence() {
   target=$(tt_db_quote "$target_raw")
   owner_recipient=$(tt_db_quote "$owner_recipient_raw")
   body_hash=$(tt_db_quote "$body_hash_raw")
-  [[ "$terminal_state" == done ]] && ts_col=done_at || ts_col=block_at
-  [[ "$terminal_state" == done ]] && evidence_marker="[DONE: ${task_id_raw}]" || evidence_marker="[BLOCK: ${task_id_raw}]"
+  [[ "$terminal_state" == "done" ]] && ts_col=done_at || ts_col=block_at
+  [[ "$terminal_state" == "done" ]] && evidence_marker="[DONE: ${task_id_raw}]" || evidence_marker="[BLOCK: ${task_id_raw}]"
   evidence_marker=$(tt_db_quote "$evidence_marker")
   evidence_count=$(tt_db_exec_safe "SELECT count(*) FROM messages WHERE id=${message_id} AND body_hash='${body_hash}' AND from_alias='${target}' AND to_alias='${owner_recipient}' AND direction='inbound' AND instr(body, '${evidence_marker}') > 0;" 2>/dev/null || true)
   if [[ "$terminal_state" == blocked && "$evidence_count" != 1 ]]; then

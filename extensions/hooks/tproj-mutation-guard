@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""Block mutations when the current delegated task is frozen or cancelled."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+READONLY_GIT_SUBCOMMANDS = {"status", "diff", "show", "log", "rev-parse", "ls-files"}
+READONLY_HASH_COMMANDS = {"shasum", "sha1sum", "sha256sum", "md5", "md5sum", "cksum"}
+MUTATING_TOOL_NAMES = {
+    "Edit",
+    "Write",
+    "MultiEdit",
+    "apply_patch",
+    "functions.apply_patch",
+}
+READONLY_TOOL_NAMES = {
+    "Read",
+    "LS",
+    "Glob",
+    "Search",
+    "Grep",
+}
+AMBIGUOUS_SHELL_RE = re.compile(r"[|&;><`$()]|\\n")
+
+
+def block(reason: str) -> int:
+    print(json.dumps({"decision": "block", "reason": reason}, separators=(",", ":")))
+    return 0
+
+
+def owner_identity() -> tuple[str, str, str] | None:
+    owner = os.environ.get("TT_CACHE_OWNER", "")
+    role = os.environ.get("TT_OWNER_ROLE", "")
+    if not owner and os.environ.get("TMUX_PANE"):
+        pane = os.environ["TMUX_PANE"]
+        try:
+            session = subprocess.check_output(["tmux", "display-message", "-t", pane, "-p", "#S"], text=True).strip()
+            alias = subprocess.check_output(["tmux", "display-message", "-t", pane, "-p", "#{@alias}"], text=True).strip()
+            raw_role = subprocess.check_output(["tmux", "display-message", "-t", pane, "-p", "#{@role}"], text=True).strip()
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        owner = f"{session}/{alias}"
+        if not role:
+            if raw_role.startswith("claude"):
+                role = "cc"
+            elif raw_role.startswith("codex"):
+                role = "cdx"
+    if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", owner):
+        return None
+    if role not in {"cc", "cdx"}:
+        return None
+    session, alias = owner.split("/", 1)
+    return session, alias, role
+
+
+def open_db() -> sqlite3.Connection | None:
+    path = Path(os.environ.get("TPROJ_MSG_DB_PATH", str(Path.home() / ".local/share/tproj-msg/messages.db")))
+    if not path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=rw", uri=True, timeout=1.0)
+        conn.execute("PRAGMA busy_timeout=1000")
+        return conn
+    except sqlite3.Error:
+        return None
+
+
+def active_tombstone(db: sqlite3.Connection, session: str, alias: str, role: str) -> tuple[str, str, str, str] | None:
+    self_alias = f"{alias}.{role}"
+    row = db.execute(
+        """
+        SELECT task_id, owner_alias, state, COALESCE(tombstone_reason_hash, '')
+          FROM tasks
+         WHERE owner_session=?
+           AND target=?
+           AND state IN ('cancelled','frozen')
+         ORDER BY COALESCE(frozen_at, cancelled_at, sent_at) DESC, sent_at DESC
+         LIMIT 1
+        """,
+        (session, self_alias),
+    ).fetchone()
+    return tuple(str(value) for value in row) if row else None
+
+
+def extract_payload_value(payload: dict[str, Any], *path: str) -> str:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return ""
+        current = current.get(key)
+    return current if isinstance(current, str) else ""
+
+
+def parse_command(payload: dict[str, Any]) -> tuple[str, str]:
+    tool_name = str(payload.get("tool_name") or payload.get("hook_input", {}).get("tool_name") or "")
+    for path in [
+        ("tool_input", "command"),
+        ("tool_input", "cmd"),
+        ("tool_input", "source"),
+        ("hook_input", "tool_input", "command"),
+        ("hook_input", "tool_input", "cmd"),
+        ("hook_input", "tool_input", "source"),
+    ]:
+        value = extract_payload_value(payload, *path)
+        if value:
+            return tool_name, value
+    return tool_name, ""
+
+
+def is_readonly_shell(command: str) -> bool:
+    stripped = command.strip()
+    if not stripped:
+        return False
+    if AMBIGUOUS_SHELL_RE.search(stripped):
+        return False
+    try:
+        argv = shlex.split(stripped)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    cmd = argv[0]
+    if cmd == "git":
+        if len(argv) < 2 or argv[1] not in READONLY_GIT_SUBCOMMANDS:
+            return False
+        if argv[1] == "diff" and any(flag in {"--no-index", "--output"} for flag in argv[2:]):
+            return False
+        return True
+    if cmd in {"find", "stat"}:
+        return True
+    if cmd in READONLY_HASH_COMMANDS:
+        return True
+    return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--platform", choices=("claude", "codex"), default="claude")
+    parser.parse_args()
+    try:
+        payload: Any = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError):
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    identity = owner_identity()
+    if identity is None:
+        return 0
+    session, alias, role = identity
+    db = open_db()
+    if db is None:
+        return 0
+    try:
+        tombstone = active_tombstone(db, session, alias, role)
+    except sqlite3.Error:
+        db.close()
+        return 0
+    db.close()
+    if tombstone is None:
+        return 0
+    task_id, owner_alias, state, reason_hash = tombstone
+    tool_name, command = parse_command(payload)
+    if tool_name in READONLY_TOOL_NAMES:
+        return 0
+    if tool_name in MUTATING_TOOL_NAMES:
+        return block(f"Delegated task {task_id} from {owner_alias} is {state} (reason_hash={reason_hash}); edits are blocked")
+    if command:
+        if is_readonly_shell(command):
+            return 0
+        return block(
+            f"Delegated task {task_id} from {owner_alias} is {state} (reason_hash={reason_hash}); only read-only incident shell commands are allowed"
+        )
+    if tool_name:
+        return block(
+            f"Delegated task {task_id} from {owner_alias} is {state} (reason_hash={reason_hash}); mutating tool '{tool_name}' is blocked"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

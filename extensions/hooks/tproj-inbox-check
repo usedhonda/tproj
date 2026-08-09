@@ -13,13 +13,19 @@ emit_notice() { NOTICES+=("$1"); }
 [[ "${TPROJ_HOOK_ENABLED:-}" == "1" ]] || exit 0
 
 CACHE_DIR="${TT_CACHE_DIR:-$HOME/.cache/tproj-expect-reply}"
-[[ -d "$CACHE_DIR" ]] || exit 0
+if [[ -d "$CACHE_DIR" ]]; then
+  CACHE_PRESENT=1
+else
+  CACHE_PRESENT=0
+fi
 # Fast path: nothing cached at all (no owner subdirs and no legacy flat files) ->
 # exit. A regular-file count would miss subdirs and a link count would miss flat
 # files, so probe for any entry. nullglob makes the empty case an empty array.
 shopt -s nullglob 2>/dev/null || true
-_cache_entries=("$CACHE_DIR"/*)
-[[ ${#_cache_entries[@]} -gt 0 ]] || exit 0
+_cache_entries=()
+if [[ "$CACHE_PRESENT" -eq 1 ]]; then
+  _cache_entries=("$CACHE_DIR"/*)
+fi
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 CACHE_HELPER="$SELF_DIR/tproj-task-cache.sh"
@@ -72,12 +78,23 @@ else
   OWNER_ROLE=""   # not inside a pane -> role unknown -> notified update fail-closed
 fi
 
-if tt_cache_valid_owner "$OWNER"; then
+if [[ -n "$OWNER_ROLE" ]] && declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_quote >/dev/null 2>&1 \
+   && tt_cache_valid_owner "$OWNER"; then
+  self_alias="${OWNER##*/}.${OWNER_ROLE}"
+  _notice_row="$(tt_db_exec_safe "SELECT task_id || char(9) || owner_alias || char(9) || state || char(9) || COALESCE(tombstone_reason_hash,'') FROM tasks WHERE owner_session='$(tt_db_quote "${OWNER%%/*}")' AND target='$(tt_db_quote "$self_alias")' AND state IN ('cancelled','frozen') AND (worker_notice_state IS NULL OR worker_notice_state != state) ORDER BY COALESCE(frozen_at, cancelled_at, sent_at) DESC LIMIT 1;" 2>/dev/null || true)"
+  if [[ "$_notice_row" == *$'\t'* ]]; then
+    IFS=$'\t' read -r notice_task_id notice_owner_alias notice_state notice_reason_hash <<< "$_notice_row"
+    emit_notice "[task-${notice_state}] owner=${notice_owner_alias} task=${notice_task_id} reason_hash=${notice_reason_hash}; edits and mutating shell are blocked, collect read-only evidence only"
+    tt_db_exec_safe "UPDATE tasks SET worker_notice_state='${notice_state}', worker_notice_at=strftime('%s','now') WHERE owner_session='$(tt_db_quote "${OWNER%%/*}")' AND owner_alias='$(tt_db_quote "$notice_owner_alias")' AND target='$(tt_db_quote "$self_alias")' AND task_id='$(tt_db_quote "$notice_task_id")' AND state='${notice_state}';" >/dev/null 2>&1 || true
+  fi
+fi
+
+if [[ "$CACHE_PRESENT" -eq 1 && ${#_cache_entries[@]} -gt 0 ]] && tt_cache_valid_owner "$OWNER"; then
   while IFS= read -r target; do
     [[ -n "$target" ]] || continue
     # Snapshot open task ids before --read. Lifecycle transitions retain cache
     # entries through verification; only USER_REPORTED removes them.
-    pending_ids="$(tt_cache_list_tasks "$OWNER" "$target" | awk -F '\t' 'NF {print $1}')"
+    pending_ids="$(tt_cache_list_open_tasks "$OWNER" "$target" | awk -F '\t' 'NF {print $1}')"
     read_output="$("$MSG_CLI" --read "$target" 40 2>&1 >/dev/null || true)"
     while IFS= read -r task_id; do
       [[ -n "$task_id" ]] || continue
@@ -133,7 +150,9 @@ fi
 # "<target>.json" files at the cache root so they self-empty after upgrade.
 # NO notice is emitted (owner is unknowable, never guess another column's task).
 # Safe to remove a few releases after v2 ships, once no flat files remain.
-tt_cache_gc_legacy_flat >/dev/null 2>&1 || true
+if [[ "$CACHE_PRESENT" -eq 1 ]]; then
+  tt_cache_gc_legacy_flat >/dev/null 2>&1 || true
+fi
 
 if [[ ${#NOTICES[@]} -gt 0 ]]; then
   notice_text="$(printf '%s\n' "${NOTICES[@]}")"

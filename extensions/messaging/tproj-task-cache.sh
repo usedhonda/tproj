@@ -13,7 +13,13 @@
 #       "expect_until": <epoch_seconds>,
 #       "ttl_sec":      <int>,
 #       "msg_hash":     "<sha1-of-normalized-message>",
-#       "state":        "pending|acked|done|blocked|received|verified",
+#       "state":        "pending|acked|done|blocked|received|verified|cancelled|frozen",
+#       "task_kind":    "delegated|role_handoff",
+#       "intent_hash":  "<sha256-of-delegated-intent-or-empty>",
+#       "user_authorized_exact": 0|1,
+#       "role_handoff_epoch": <int-or-null>,
+#       "orchestrator": "<alias.role-or-empty>",
+#       "tombstone_reason_hash": "<hash-or-empty>",
 #       "notices":      {"<event>": <epoch>}
 #     },
 #     ...
@@ -190,10 +196,23 @@ tt_cache_msg_hash() {
   fi
 }
 
+tt_cache_open_state_predicate() {
+  printf '(.value.state // "pending") | test("^(pending|acked|done|blocked|received|verified)$")'
+}
+
+tt_cache_tombstone_state() {
+  local state="${1:-}"
+  [[ "$state" == "cancelled" || "$state" == "frozen" ]]
+}
+
 tt_cache_add() {
-  # Arguments: owner target task_id sent_at ttl_sec [msg_hash]
+  # Arguments: owner target task_id sent_at ttl_sec [msg_hash] [task_kind]
+  #            [intent_hash] [user_authorized_exact] [role_handoff_epoch]
+  #            [orchestrator]
   tt_cache_require_jq || return $?
   local owner="$1" target="$2" task_id="$3" sent_at="$4" ttl_sec="$5" msg_hash="${6:-}"
+  local task_kind="${7:-delegated}" intent_hash="${8:-}" user_authorized_exact="${9:-0}"
+  local role_handoff_epoch="${10:-}" orchestrator="${11:-}"
   tt_cache_valid_owner "$owner" || return 2
   tt_cache_valid_component "$target" || return 2
   local expect_until=$((sent_at + ttl_sec))
@@ -213,8 +232,16 @@ tt_cache_add() {
       --argjson until "$expect_until" \
       --argjson ttl "$ttl_sec" \
       --arg hash "$msg_hash" \
+      --arg kind "$task_kind" \
+      --arg intent_hash "$intent_hash" \
+      --argjson user_authorized_exact "$([[ "$user_authorized_exact" == "1" ]] && echo 1 || echo 0)" \
+      --argjson role_handoff_epoch "${role_handoff_epoch:-null}" \
+      --arg orchestrator "$orchestrator" \
       '{target: $target, sent_at: $sent, expect_until: $until, ttl_sec: $ttl, msg_hash: $hash,
-        state: "pending", notices: {}}') || rc=1
+        state: "pending", task_kind: $kind, intent_hash: $intent_hash,
+        user_authorized_exact: $user_authorized_exact,
+        role_handoff_epoch: $role_handoff_epoch, orchestrator: $orchestrator,
+        tombstone_reason_hash: "", notices: {}}') || rc=1
     if [[ $rc -eq 0 ]]; then
       printf '%s\n' "$current" \
         | jq -c --arg id "$task_id" --argjson e "$entry" '. + {($id): $e}' \
@@ -226,7 +253,7 @@ tt_cache_add() {
   # R1' Stage 2 shadow write — best-effort, never affects rc. owner_alias (the
   # issuing column) is recorded for query/audit; it is the alias part of owner.
   if [[ $rc -eq 0 ]] && declare -F tt_db_upsert_task >/dev/null 2>&1; then
-    tt_db_upsert_task "$task_id" "$target" "$sent_at" "$ttl_sec" "$msg_hash" "${owner##*/}" "${owner%%/*}" || true
+    tt_db_upsert_task "$task_id" "$target" "$sent_at" "$ttl_sec" "$msg_hash" "${owner##*/}" "${owner%%/*}" "$task_kind" "$intent_hash" "$user_authorized_exact" "$role_handoff_epoch" "$orchestrator" || true
   fi
   return $rc
 }
@@ -272,7 +299,7 @@ tt_cache_transition_state() {
   tt_cache_valid_component "$target" || return 2
   [[ "$now" =~ ^[0-9]+$ ]] || return 2
   case "$new_state" in
-    pending|acked|done|blocked|received|verified) ;;
+    pending|acked|done|blocked|received|verified|cancelled|frozen) ;;
     *) return 2 ;;
   esac
   local path lock
@@ -283,10 +310,13 @@ tt_cache_transition_state() {
   local rc=0 current_state updated
   current_state="$(jq -r --arg id "$task_id" 'if .[$id] == null then empty else (.[$id].state // "pending") end' "$path" 2>/dev/null)"
   case "${current_state}:${new_state}" in
-    pending:pending|pending:acked|pending:done|pending:blocked|\
-    acked:acked|acked:done|acked:blocked|\
-    done:done|done:received|blocked:blocked|blocked:received|\
-    received:received|received:verified|verified:verified) ;;
+    pending:pending|pending:acked|pending:done|pending:blocked|pending:cancelled|pending:frozen|\
+    acked:acked|acked:done|acked:blocked|acked:cancelled|acked:frozen|\
+    done:done|done:received|done:cancelled|done:frozen|\
+    blocked:blocked|blocked:received|blocked:cancelled|blocked:frozen|\
+    received:received|received:verified|received:cancelled|received:frozen|\
+    verified:verified|verified:cancelled|verified:frozen|\
+    cancelled:cancelled|frozen:frozen) ;;
     *) rc=2 ;;
   esac
   if [[ $rc -eq 0 ]]; then
@@ -297,6 +327,8 @@ tt_cache_transition_state() {
           elif ($state == "done" or $state == "blocked") then .[$id].terminal_at //= $now
           elif $state == "received" then .[$id].received_at //= $now
           elif $state == "verified" then .[$id].verified_at //= $now
+          elif $state == "cancelled" then .[$id].cancelled_at //= $now
+          elif $state == "frozen" then .[$id].frozen_at //= $now
           else . end
       end' "$path") || rc=1
     if [[ $rc -eq 0 ]]; then
@@ -304,6 +336,44 @@ tt_cache_transition_state() {
     fi
   fi
   tt_cache_release_lock "$lock"
+  return $rc
+}
+
+tt_cache_tombstone_task() {
+  # Arguments: owner target task_id tombstone_state reason_hash [now_epoch]
+  tt_cache_require_jq || return $?
+  local owner="$1" target="$2" task_id="$3" tombstone_state="$4" reason_hash="$5"
+  local now="${6:-$(date +%s)}"
+  tt_cache_valid_owner "$owner" || return 2
+  tt_cache_valid_component "$target" || return 2
+  tt_cache_tombstone_state "$tombstone_state" || return 2
+  [[ "$reason_hash" =~ ^[A-Za-z0-9._:-]{8,128}$ && "$now" =~ ^[0-9]+$ ]] || return 2
+  local path lock rc=0 updated
+  path="$(tt_cache_path_for_target "$owner" "$target")"
+  lock="$(tt_cache_lock_for_target "$owner" "$target")"
+  [[ -s "$path" ]] || return 1
+  tt_cache_acquire_lock "$lock" 5 || return 1
+  updated=$(jq -c --arg id "$task_id" --arg state "$tombstone_state" --arg reason "$reason_hash" --argjson now "$now" '
+    if .[$id] == null then error("missing task")
+    else
+      .[$id].state as $current
+      | if ($current == "cancelled" and $state == "cancelled") or ($current == "frozen" and $state == "frozen") then
+          .
+        elif ($current | test("^(pending|acked|done|blocked|received|verified)$")) then
+          .[$id].state = $state
+          | .[$id].tombstone_reason_hash = $reason
+          | if $state == "cancelled" then .[$id].cancelled_at //= $now else .[$id].frozen_at //= $now end
+        else
+          error("invalid tombstone transition")
+        end
+    end' "$path" 2>/dev/null) || rc=2
+  if [[ $rc -eq 0 ]]; then
+    printf '%s\n' "$updated" > "${path}.tmp" && mv "${path}.tmp" "$path" || rc=1
+  fi
+  tt_cache_release_lock "$lock"
+  if [[ $rc -eq 0 ]] && declare -F tt_db_tombstone_task >/dev/null 2>&1; then
+    tt_db_tombstone_task "$task_id" "$tombstone_state" "${owner%%/*}" "${owner##*/}" "$target" "$reason_hash" "$now" >/dev/null 2>&1 || true
+  fi
   return $rc
 }
 
@@ -344,6 +414,10 @@ tt_cache_apply_reply() {
   local owner="$1" target="$2" task_id="$3" tag="$4"
   local message_id="${5:-}" body_hash="${6:-}" owner_recipient="${7:-}"
   local now="${8:-$(date +%s)}"
+  local current_entry current_state
+  current_entry="$(tt_cache_get_task "$owner" "$target" "$task_id" 2>/dev/null || true)"
+  current_state="$(printf '%s' "$current_entry" | jq -r '.state // ""' 2>/dev/null || true)"
+  tt_cache_tombstone_state "$current_state" && return 4
   case "$tag" in
     ACK|ACK-PROGRESS)
       tt_cache_transition_state "$owner" "$target" "$task_id" acked "$now" || return $?
@@ -352,7 +426,7 @@ tt_cache_apply_reply() {
       ;;
     DONE|BLOCK|BLOCKED)
       [[ "$message_id" =~ ^[0-9]+$ && "$body_hash" =~ ^[A-Za-z0-9._:-]{8,128}$ ]] || return 3
-      local terminal_state=done
+      local terminal_state="done"
       [[ "$tag" == BLOCK || "$tag" == BLOCKED ]] && terminal_state=blocked
       declare -F tt_db_record_done_evidence >/dev/null 2>&1 || return 3
       declare -F tt_db_task_lifecycle >/dev/null 2>&1 || return 3
@@ -408,6 +482,18 @@ tt_cache_list_tasks() {
   path="$(tt_cache_path_for_target "$owner" "$target")"
   [[ -s "$path" ]] || return 0
   jq -r 'to_entries[] | [.key, (.value.sent_at|tostring), (.value.expect_until|tostring)] | @tsv' "$path"
+}
+
+tt_cache_list_open_tasks() {
+  # Arguments: owner target -> lines "<task_id>\t<sent_at>\t<expect_until>"
+  tt_cache_require_jq || return $?
+  local owner="$1" target="$2"
+  tt_cache_valid_owner "$owner" || return 0
+  tt_cache_valid_component "$target" || return 0
+  local path
+  path="$(tt_cache_path_for_target "$owner" "$target")"
+  [[ -s "$path" ]] || return 0
+  jq -r 'to_entries[] | select('"$(tt_cache_open_state_predicate)"') | [.key, (.value.sent_at|tostring), (.value.expect_until|tostring)] | @tsv' "$path"
 }
 
 tt_cache_list_all() {
@@ -470,6 +556,8 @@ tt_cache_due_notices() {
               printf '%s\t%s\t%s\t%s\n' "$target" "$task_id" "$state" "$event"
             fi
           done
+          ;;
+        cancelled|frozen)
           ;;
       esac
     done < <(jq -r 'to_entries[] | [.key, (.value.sent_at|tostring), (.value.state // "pending"), ((.value.received_at // .value.terminal_at // .value.sent_at)|tostring)] | @tsv' "$(tt_cache_path_for_target "$owner" "$target")")

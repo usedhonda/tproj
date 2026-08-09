@@ -526,15 +526,16 @@ if ! $CORE_ONLY; then
 
   # --- hooks ---
   if [[ -d "$SCRIPT_DIR/extensions/hooks" ]]; then
-    echo "  hooks (tproj-inbox-record, tproj-inbox-check, tproj-completion-guard)"
+    echo "  hooks (tproj-inbox-record, tproj-inbox-check, tproj-completion-guard, tproj-mutation-guard)"
     if ! $DRY_RUN; then
       cp "$SCRIPT_DIR/extensions/hooks/tproj-inbox-record" ~/bin/
       cp "$SCRIPT_DIR/extensions/hooks/tproj-inbox-check" ~/bin/
       cp "$SCRIPT_DIR/extensions/hooks/tproj-completion-guard" ~/bin/
-      chmod +x ~/bin/tproj-inbox-record ~/bin/tproj-inbox-check ~/bin/tproj-completion-guard
+      cp "$SCRIPT_DIR/extensions/hooks/tproj-mutation-guard" ~/bin/
+      chmod +x ~/bin/tproj-inbox-record ~/bin/tproj-inbox-check ~/bin/tproj-completion-guard ~/bin/tproj-mutation-guard
       "$SCRIPT_DIR/extensions/hooks/install-tproj-hooks"
     else
-      echo "    [DRY-RUN] tproj-inbox-record, tproj-inbox-check, tproj-completion-guard -> ~/bin/"
+      echo "    [DRY-RUN] tproj-inbox-record, tproj-inbox-check, tproj-completion-guard, tproj-mutation-guard -> ~/bin/"
       echo "    [DRY-RUN] merge lifecycle hooks into Claude/Codex settings"
     fi
   fi

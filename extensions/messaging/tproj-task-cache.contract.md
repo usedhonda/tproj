@@ -55,7 +55,13 @@ no-op/empty. The canonical workspace aliases (`ble-bridge`, `creator_radar`,
     "expect_until": <int-epoch-seconds>,
     "ttl_sec":      <int>,
     "msg_hash":     "<sha1-hex-or-cksum-decimal>",
-    "state":        "pending|acked|done|blocked|received|verified",
+    "state":        "pending|acked|done|blocked|received|verified|cancelled|frozen",
+    "task_kind":    "delegated|role_handoff",
+    "intent_hash":  "<sha256-hex-or-empty>",
+    "user_authorized_exact": 0,
+    "role_handoff_epoch": null,
+    "orchestrator": "<alias.role-or-empty>",
+    "tombstone_reason_hash": "<hash-or-empty>",
     "notices":      {"<event>": <int-epoch-seconds>}
   },
   ...
@@ -92,8 +98,9 @@ Source the library (`source /path/to/tproj-task-cache.sh`). All functions return
 
 | Function | Signature | Behavior |
 |---|---|---|
-| `tt_cache_add` | `(owner, target, task_id, sent_at, ttl_sec, [msg_hash])` | **Single-writer role** — called only by D4 PostToolUse hook. Adds entry to `<owner>/<target>.json`, computing `expect_until = sent_at + ttl_sec`. Overwrites if `task_id` already exists. Invalid owner returns 2 (fail-closed). Shadow-writes the DB task row with `owner_alias = <alias>`. Takes per-owner-per-target lock. |
-| `tt_cache_transition_state` | `(owner, target, task_id, state, [now_epoch])` | Monotonic in-place transition. ACK and ACK-PROGRESS become `acked`; valid terminal evidence advances through `done|blocked` to `received`; verification becomes `verified`. Never removes the entry. |
+| `tt_cache_add` | `(owner, target, task_id, sent_at, ttl_sec, [msg_hash], [task_kind], [intent_hash], [user_authorized_exact], [role_handoff_epoch], [orchestrator])` | **Single-writer role** — called only by D4 PostToolUse hook for cache insertion. Adds or refreshes `<owner>/<target>.json`, computing `expect_until = sent_at + ttl_sec`, and records only structural metadata / hashes (never delegated body text). Invalid owner returns 2 (fail-closed). Shadow-writes the durable DB task row with the same metadata. Takes per-owner-per-target lock. |
+| `tt_cache_transition_state` | `(owner, target, task_id, state, [now_epoch])` | Monotonic in-place transition. ACK and ACK-PROGRESS become `acked`; valid terminal evidence advances through `done|blocked` to `received`; verification becomes `verified`; owner tombstones become `cancelled|frozen`. Tombstones are terminal except same-state idempotency. Never removes the entry. |
+| `tt_cache_tombstone_task` | `(owner, target, task_id, cancelled\\|frozen, reason_hash, [now_epoch])` | Exact-owner durable tombstone. Writes only the structural `reason_hash`, never raw body/prompt text. Idempotent on repeated same-state requests; rejects cross-owner and cross-target mutation. Shadow-writes DB tombstone columns and resets the receiver one-shot notice marker. |
 | `tt_cache_apply_reply` | `(owner, target, task_id, tag, [message_id], [body_hash], [owner_recipient], [now_epoch])` | Applies ACK/ACK-PROGRESS as non-terminal. DONE/BLOCK requires a matching inbound DB row for the exact sender, recipient, message id, body hash, and marker; malformed evidence leaves the task open. |
 | `tt_cache_mark_notice` | `(owner, target, task_id, notice, [now_epoch])` | Atomically records one notice key. Returns 0 only on first emission. |
 | `tt_cache_due_notices` | `(owner, [now_epoch])` | Emits newly due once-only rows `<target>\t<task_id>\t<state>\t<event>`. It never removes or expires open tasks. `tt_cache_gc_expired` is a compatibility alias. |
@@ -107,6 +114,7 @@ Source the library (`source /path/to/tproj-task-cache.sh`). All functions return
 | `tt_cache_get_task` | `(owner, target, task_id)` | Prints the entry JSON on stdout, empty if missing or owner invalid. No locking (atomic `jq` read of a possibly half-written file is considered acceptable; the writer uses tmp+mv so the file is never mid-write). |
 | `tt_cache_list_targets` | `(owner)` | Prints active targets under the owner subdir on stdout (one per line). A target is "active" iff the file exists and is non-empty. Invalid owner lists nothing. |
 | `tt_cache_list_tasks` | `(owner, target)` | TSV on stdout: `<task_id>\t<sent_at>\t<expect_until>`. |
+| `tt_cache_list_open_tasks` | `(owner, target)` | TSV on stdout for non-tombstoned rows only (`pending|acked|done|blocked|received|verified`). Used by `tproj-msg --read` and D5 so cancelled/frozen workers cannot reopen or re-notify the orchestrator. |
 | `tt_cache_list_all` | `(owner)` | TSV on stdout: `<target>\t<task_id>\t<sent_at>\t<expect_until>` for that owner. |
 
 ---
@@ -117,12 +125,22 @@ The machine lifecycle is:
 
 `DELEGATED -> WORKER_ACK -> WORKER_DONE/BLOCKED -> ORCH_RECEIVED -> ORCH_VERIFIED -> USER_REPORTED`
 
+Owner-side tombstones branch to durable terminal states:
+
+`DELEGATED|WORKER_ACK|WORKER_DONE/BLOCKED|ORCH_RECEIVED|ORCH_VERIFIED -> CANCELLED|FROZEN`
+
 - ACK and ACK-PROGRESS are non-terminal.
 - DONE/BLOCK carries only durable message id + body hash into the task ledger; arbitrary response bodies are not copied into task evidence.
+- CANCELLED/FROZEN retain the cache + DB tombstone instead of deleting the task. Only hashed structural reason metadata is stored.
 - `tproj-task verify <id> <target> <summary> <done-body-hash>` is exact owner/target scoped and rejects a mismatched hash.
+- `tproj-task cancel <id> <target> <reason-hash>` and `tproj-task freeze <id> <target> <reason-hash>` are exact owner/target scoped and idempotent.
 - `[COMPLETION-REPORT: <id>]` in platform-observed final assistant text invokes `tproj-task report`; only that transition records `user_reported_at` and removes the cache entry. It means the platform observed the report marker, not that a human read it.
 - `tproj-task close` is retired and fails closed.
 - While an exact inbound task is active, the Claude/Codex Stop hook requires exactly one matching lifecycle tag that was already sent to the exact owner. Untagged local success is blocked with the required tag forms. The parser accepts Claude's top-level and Codex's nested `raw_event.last_assistant_message` Stop payloads.
+- A cancelled/frozen inbound task installs a symmetric PreToolUse mutation guard: edits, staging/commit/reset/revert/stash/checkout, build/test/restart/deploy, and ambiguous shell commands are denied. Only the strict read-only incident whitelist is allowed.
+- A queued `--role-handoff --new-task` revalidates the target pane's current `@role_epoch` at flush time. If the queued epoch is stale, the handoff is cancelled into a tombstone and never injected.
+- Messages carrying `[Task:]` / `[ACK:]` / `[ACK-PROGRESS:]` / `[DONE:]` / `[BLOCK:]` for cancelled/frozen IDs are suppressed; they cannot advance or reopen the task and are not replayed to the orchestrator.
+- `--user-authorized` exact tasks persist only `intent_hash` + `user_authorized_exact=1`. The worker contract is: do not re-ask the user for the same exact one-shot operation unless target or scope changes.
 - A completion report selects its verified task by the explicit marker ID, so parallel verified tasks do not block one another. The Stop gate activation boundary defaults to the installed guard file's mtime; older historical task rows are never inferred as current work.
 
 Escalation defaults are code-owned environment variables and notices are once-only: `TT_TASK_NO_ACK_SEC=30`, `TT_TASK_FOLLOWUP_SEC=900`, `TT_TASK_REROUTE_SEC=1800`, `TT_TASK_REPORT_DUE_SEC=900`, `TT_TASK_COMPLETION_STALLED_SEC=1800`. The final notice does not close the task.
@@ -134,8 +152,9 @@ This is the invariant that keeps the system race-free without a heavier lock man
 - `tproj-msg --new-task` itself **MUST NOT** touch the cache. It only:
   1. generates a Task ID,
   2. prepends `[Task: <id>] `, or a role-handoff envelope containing that tag, to the outgoing message,
-  3. emits `TASK_ID=<id> TASK_TARGET=<t> TASK_TTL_SEC=<n> TASK_SENT_AT=<epoch>` on stderr when the send is delivered or accepted into the deferred queue,
-  4. invokes the normal send path.
+  3. emits `TASK_ID=<id> TASK_TARGET=<t> TASK_TTL_SEC=<n> TASK_SENT_AT=<epoch>` plus structural metadata (`TASK_KIND`, exact-user-auth flag, intent hash, role epoch, orchestrator) on stderr when the send is delivered or accepted into the deferred queue,
+  4. may shadow-write the DB task row immediately, but cache insertion remains D4-hook only,
+  5. invokes the normal send path.
 
 Rationale: adds are rare (one per delegation) and pass through a single hook. State transitions serialize under the same per-target lock, while the sole remove follows durable USER_REPORTED. This avoids competing read-modify-write add paths without treating ACK as completion.
 
@@ -144,6 +163,7 @@ Rationale: adds are rare (one per delegation) and pass through a single hook. St
 - `TPROJ_HOOK_ENABLED != "1"` → D4/D5 hooks exit 0 immediately. In that mode, `tproj-msg --new-task` still generates IDs and sends, but no cache file is ever written.
 - `tproj-msg` calls with no `--new-task` flag behave byte-identically to pre-Lane-D.
 - `tproj-msg --role-handoff --new-task` uses the same cache record and lifecycle.
+- `tproj-msg --new-task --user-authorized ...` records only structural metadata / hashes; no delegated body or prompt text is persisted in task storage.
 - `tproj-msg --read` still returns capture output and exits 0 when any ACK/ACK-PROGRESS/DONE/BLOCK marker is detected. Its lifecycle side effect is state advancement, never close.
 
 Consumers that depend on `--read` exit code being 0 unconditionally must be audited; none are known inside the tproj workspace at Lane D implementation time (regression floor).
@@ -289,6 +309,7 @@ Expected: `PASS: stale lock recovered` within ~50–100 ms (not full 5 s timeout
 - **2026-07-18 — v2.2**: independent-verification fixes. `tt_cache_init_dir` is fail-closed against a traversal owner (validates before any mkdir). DB task identity rebuilt to `UNIQUE(owner_session, owner_alias, target, task_id)` with a partial `UNIQUE(task_id) WHERE owner columns NULL` for legacy idempotency (schema v6); `tt_db_transition_task` also matches `target`. `generate_task_id` embeds a target-derived token (second collision-defense layer). `tproj-inbox-check` scopes its `notified_at` update to session + recipient + sender + task_id, not task_id alone.
 - **2026-07-18 — v2.3**: second-round verification fixes. The v6 tasks rebuild runs in a single `BEGIN IMMEDIATE ... COMMIT` and recovers rows from a survivor temp table left by an interrupted pre-atomic run (no history loss). `tproj-inbox-check`'s `notified_at` update is fail-CLOSED when the pane role is unresolved (the recipient predicate is mandatory, never dropped). `generate_task_id`'s target token is an **injective** lowercase hex encoding of the target bytes (`od -An -v -tx1`), so collapse-prone targets (`a-b`/`ab`/`a_b`/`a.b`) yield distinct ids.
 - **2026-08-06 — v3.0**: cache entries represent open delegations and close only at platform-observed USER_REPORTED. Added schema v7 lifecycle evidence, exact-owner verification/report commands, once-only staged escalation, ACK-PROGRESS, and symmetric Claude/Codex inbox + Stop hooks.
+- **2026-08-09 — v3.1**: added durable `cancel` / `freeze` tombstones, queued role-handoff epoch revalidation at flush, exact-task user-authorization metadata (`intent_hash` + flag only), one-shot receiver cancellation/freeze notices, and the symmetric mutation guard for Claude/Codex.
 
 ---
 
@@ -298,4 +319,5 @@ Authoritative references:
 - `extensions/messaging/tproj-msg` (D1 consumer — §3 single-writer rule binds this file)
 - `extensions/hooks/tproj-inbox-record` (D4 adder — exclusive `tt_cache_add` caller)
 - `extensions/hooks/tproj-inbox-check` (D5 once-only lifecycle notices)
+- `extensions/hooks/tproj-mutation-guard` (cancel/freeze mutation blocker)
 - `extensions/messaging/tproj-task` (D2 CLI)

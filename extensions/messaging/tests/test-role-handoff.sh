@@ -239,6 +239,9 @@ run_ordinary_unverified() {
   "$TPROJ_MSG" --session tproj-workspace --as "$sender" "$target" "$body" 2>&1
 }
 
+# shellcheck source=/dev/null
+source "$ROOT/extensions/messaging/tproj-task-cache.sh"
+
 run_ordinary_verified() {
   local sender="$1" target="$2" body="$3"
   local platform="claude"
@@ -364,6 +367,36 @@ if [[ "$log" == *'[Role-Handoff:'* && "$log" == *$'Role-Epoch: 9\nOrchestrator: 
   pass deferred_handoff_flushes_intact
 else
   fail deferred_handoff_flushes_intact "log=$log"
+fi
+
+reset_case
+set_state %2 typing
+printf '%s' '51' > "$FIXTURES/roleepoch_%2"
+out="$(run_handoff tproj.cc tproj.cdx 51 tproj.cdx 'stale-epoch-defers')"; rc=$?
+task_id="$(printf '%s\n' "$out" | sed -nE 's/.*TASK_ID=([^[:space:]]+).*/\1/p' | tail -n 1)"
+printf '%s' '119' > "$FIXTURES/roleepoch_%2"
+set_state %2 idle
+"$TPROJ_MSG" --session tproj-workspace --as tproj.cc --flush >/dev/null 2>&1
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+stale_state="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT state FROM tasks WHERE task_id='${task_id}' AND owner_session='tproj-workspace' AND owner_alias='tproj' AND target='tproj.cdx';" 2>/dev/null || true)"
+if [[ $rc -eq 0 && -n "$task_id" && "$log" != *"$task_id"* && ! -f "$WORK/queue/tproj.cdx.queue" && "$stale_state" == cancelled ]]; then
+  pass stale_epoch_handoff_is_cancelled_before_flush
+else
+  fail stale_epoch_handoff_is_cancelled_before_flush "rc=$rc task_id=$task_id state=$stale_state log=$log"
+fi
+
+reset_case
+set_state %2 idle
+out="$(run_as_verified_agent tproj.cc claude 7 worker tproj.cdx \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --role-handoff --new-task --user-authorized \
+  --role-epoch 7 --orchestrator tproj.cdx tproj.cdx 'git push origin main' 2>&1)"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+auth_task_id="$(printf '%s\n' "$out" | sed -nE 's/.*TASK_ID=([^[:space:]]+).*/\1/p' | tail -n 1)"
+auth_row="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT COALESCE(user_authorized_exact,0) || '|' || COALESCE(length(intent_hash),0) FROM tasks WHERE task_id='${auth_task_id}' AND owner_session='tproj-workspace' AND owner_alias='tproj' AND target='tproj.cdx';" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'Delegated-User-Authorization: exact'* && "$log" == *'Intent-Hash:'* && "$auth_row" =~ ^1\\|[1-9][0-9]*$ ]]; then
+  pass exact_user_authorization_reaches_worker_structurally
+else
+  fail exact_user_authorization_reaches_worker_structurally "rc=$rc task_id=$auth_task_id auth_row=$auth_row log=$log"
 fi
 
 if [[ "$HAS_SQLITE" -eq 1 ]]; then

@@ -157,7 +157,7 @@ fi
 # A newer parallel verified task must not prevent the explicit report marker
 # from closing this task.
 tt_cache_add "$OWNER" other.cc newer-verified 2100 1800 hash >/dev/null 2>&1 || true
-tt_cache_transition_state "$OWNER" other.cc newer-verified done 2101 >/dev/null 2>&1 || true
+tt_cache_transition_state "$OWNER" other.cc newer-verified "done" 2101 >/dev/null 2>&1 || true
 tt_cache_transition_state "$OWNER" other.cc newer-verified received 2102 >/dev/null 2>&1 || true
 tt_cache_transition_state "$OWNER" other.cc newer-verified verified 2103 >/dev/null 2>&1 || true
 invoke_guard "[COMPLETION-REPORT: $TASK] verified result" >/dev/null
@@ -183,6 +183,43 @@ if grep -q 'TT_TASK_NO_ACK_SEC=30' "$REPO/extensions/messaging/tproj-task-cache.
 fi
 check "escalation is once-only and keeps task open" test -n "$first_due" -a -z "$second_due" -a -n "$(tt_cache_get_task "$OWNER" "$TARGET" "$TASK" 2>/dev/null)" -a "$threshold_contract_ok" -eq 1
 
+# 9b. Exact-owner cancellation is durable, idempotent, and wrong-owner scoped.
+reset_state
+cancel_reason="deadbeefcafefeed"
+cancel_rc=0
+TT_CACHE_OWNER="$OWNER" "$REPO/extensions/messaging/tproj-task" cancel "$TASK" "$TARGET" "$cancel_reason" >/dev/null 2>&1 || cancel_rc=$?
+cancel_repeat_rc=0
+TT_CACHE_OWNER="$OWNER" "$REPO/extensions/messaging/tproj-task" cancel "$TASK" "$TARGET" "$cancel_reason" >/dev/null 2>&1 || cancel_repeat_rc=$?
+cancel_wrong_rc=0
+TT_CACHE_OWNER="unit/intruder" "$REPO/extensions/messaging/tproj-task" cancel "$TASK" "$TARGET" "$cancel_reason" >/dev/null 2>&1 || cancel_wrong_rc=$?
+cancel_state="$(tt_cache_get_task "$OWNER" "$TARGET" "$TASK" 2>/dev/null | jq -r '.state // ""')"
+cancel_db="$(db_value "SELECT state || '|' || COALESCE(tombstone_reason_hash,'') FROM tasks WHERE task_id='$TASK' AND owner_session='unit' AND owner_alias='owner' AND target='$TARGET';")"
+check "cancel is exact-owner scoped and idempotent" test "$cancel_rc" -eq 0 -a "$cancel_repeat_rc" -eq 0 -a "$cancel_wrong_rc" -ne 0 -a "$cancel_state" = cancelled -a "$cancel_db" = "cancelled|$cancel_reason"
+
+# 9c. Cancelled tasks reject later progress/terminal evidence and stay tombstoned.
+reset_state
+tt_cache_apply_reply "$OWNER" "$TARGET" "$TASK" ACK >/dev/null 2>&1 || true
+TT_CACHE_OWNER="$OWNER" "$REPO/extensions/messaging/tproj-task" cancel "$TASK" "$TARGET" "$cancel_reason" >/dev/null 2>&1 || true
+progress_after_cancel_rc=0
+tt_cache_apply_reply "$OWNER" "$TARGET" "$TASK" ACK-PROGRESS >/dev/null 2>&1 || progress_after_cancel_rc=$?
+late_done_id="$(seed_terminal_evidence "$TASK" DONE a1b2c3d4e5f60708)"
+late_done_rc=0
+tt_cache_apply_reply "$OWNER" "$TARGET" "$TASK" DONE "$late_done_id" a1b2c3d4e5f60708 owner.cdx >/dev/null 2>&1 || late_done_rc=$?
+cancelled_state="$(tt_cache_get_task "$OWNER" "$TARGET" "$TASK" 2>/dev/null | jq -r '.state // ""')"
+check "cancelled tasks cannot reopen on late ACK-PROGRESS or DONE" test "$progress_after_cancel_rc" -ne 0 -a "$late_done_rc" -ne 0 -a "$cancelled_state" = cancelled
+
+# 9d. Receiver sees a cancellation notice exactly once.
+find "$TT_CACHE_DIR" -mindepth 1 -delete 2>/dev/null || true
+find "$TMP" -maxdepth 1 -name 'messages.db*' -delete 2>/dev/null || true
+seed_inbound_task worker-cancel-01
+tt_db_tombstone_task worker-cancel-01 cancelled unit peer owner.cdx 0011aabbccddeeff >/dev/null 2>&1 || true
+notice_once="$(TPROJ_HOOK_ENABLED=1 TT_CACHE_OWNER="$OWNER" TT_OWNER_ROLE=cdx "$REPO/extensions/hooks/tproj-inbox-check" --platform codex 2>/dev/null || true)"
+notice_twice="$(TPROJ_HOOK_ENABLED=1 TT_CACHE_OWNER="$OWNER" TT_OWNER_ROLE=cdx "$REPO/extensions/hooks/tproj-inbox-check" --platform codex 2>/dev/null || true)"
+check "receiver cancellation notice injects exactly once" sh -c "grep -q 'task-cancelled' <<'EOF1'
+$notice_once
+EOF1
+test -z '$notice_twice'"
+
 # 10. Installer produces symmetric Claude/Codex task hooks.
 claude_hooks="$TMP/claude-hooks.json"
 codex_hooks="$TMP/codex-hooks.json"
@@ -195,6 +232,7 @@ install_rc=0
   >/dev/null 2>&1 || install_rc=$?
 cat > "$TMP/hooks-list.json" <<EOF
 {"result":{"data":[{"hooks":[
+  {"key":"task-mutation","sourcePath":"$codex_hooks","command":"$HOME/bin/tproj-mutation-guard --platform codex","currentHash":"sha256:abc000"},
   {"key":"task-record","sourcePath":"$codex_hooks","command":"$HOME/bin/tproj-inbox-record","currentHash":"sha256:abc001"},
   {"key":"task-check","sourcePath":"$codex_hooks","command":"$HOME/bin/tproj-inbox-check --platform codex","currentHash":"sha256:abc002"},
   {"key":"task-stop","sourcePath":"$codex_hooks","command":"$HOME/bin/tproj-completion-guard --platform codex","currentHash":"sha256:abcdef"}
@@ -205,6 +243,7 @@ mkdir -p "$TMP/installed-hooks"
 cp "$REPO/extensions/hooks/tproj-inbox-record" "$TMP/installed-hooks/"
 cp "$REPO/extensions/hooks/tproj-inbox-check" "$TMP/installed-hooks/"
 cp "$REPO/extensions/hooks/tproj-completion-guard" "$TMP/installed-hooks/"
+cp "$REPO/extensions/hooks/tproj-mutation-guard" "$TMP/installed-hooks/"
 "$REPO/extensions/hooks/install-tproj-hooks" --claude-settings "$claude_hooks" --codex-hooks "$codex_hooks" \
   --codex-config "$codex_config" --trust-response "$TMP/hooks-list.json" \
   --canonical-hooks-dir "$REPO/extensions/hooks" --installed-hooks-dir "$TMP/installed-hooks" \
@@ -222,9 +261,15 @@ codex_commands="$(jq -r '.. | objects | .command? // empty' "$codex_hooks" 2>/de
 check "Claude and Codex install lifecycle hooks symmetrically" sh -c "test '$install_rc' -eq 0 && test '$mismatch_rc' -ne 0 && test '$before_mismatch' = '$after_mismatch' && grep -q tproj-completion-guard <<'EOF1'
 $claude_commands
 EOF1
+grep -q tproj-mutation-guard <<'EOF0'
+$claude_commands
+EOF0
 grep -q tproj-completion-guard <<'EOF2'
 $codex_commands
 EOF2
+grep -q tproj-mutation-guard <<'EOF3'
+$codex_commands
+EOF3
 grep -q 'trusted_hash = \"sha256:abcdef\"' '$codex_config'"
 
 # 11. Codex nested functions.exec response metadata records a task.

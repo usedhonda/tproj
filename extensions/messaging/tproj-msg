@@ -17,6 +17,8 @@ set -euo pipefail
 #                                      One-time override for repeated Chi recovery dispatch
 #   tproj-msg --new-task [--ttl <spec>] <target> <message>
 #                                      Send message with Task ID tracking metadata
+#   tproj-msg --new-task --user-authorized <target> <message>
+#                                      Mark the delegated task as exact user-authorized
 #   tproj-msg --role-handoff --new-task [--role-epoch <n>] [--orchestrator <id>] ...
 #                                      Send a symmetric, typing-safe role handoff
 #   tproj-msg --list                     List available targets
@@ -69,6 +71,8 @@ Usage:
                                       One-time override for repeated Chi recovery dispatch
   tproj-msg --new-task [--ttl <spec>] <target> <message>
                                        Send message with Task ID tracking metadata
+  tproj-msg --new-task --user-authorized <target> <message>
+                                       Mark the delegated task as exact user-authorized
   tproj-msg --role-handoff --new-task [--role-epoch <n>] [--orchestrator <id>] ...
                                        Send a symmetric, typing-safe role handoff
   tproj-msg --list                     List available targets
@@ -109,6 +113,7 @@ Examples:
   tproj-msg --allow-fanout sync-1 tproj.cc "Please review this design"
   tproj-msg --allow-chi-retry current-user-approved-retry gate "Recover missed LINE id 11"
   tproj-msg --new-task --ttl 45m tproj.cc "Please take Lane D"
+  tproj-msg --new-task --user-authorized tproj.cc "Run exactly: git push origin main"
   tproj-msg --role-handoff --new-task --role-epoch 7 --orchestrator tproj.cc tproj.cdx "Take orchestration"
   tproj-msg gate "Send via session-first tmux lane"
   tproj-msg gate:session "Send via session tmux lane (explicit)"
@@ -236,6 +241,7 @@ ROLE_HANDOFF_MODE=false
 ROLE_HANDOFF_EPOCH=""
 ROLE_HANDOFF_ORCHESTRATOR=""
 TTL_SPEC=""
+USER_AUTHORIZED_EXACT=false
 ALLOW_RELAY=false
 ALLOW_RELAY_REASON=""
 ALLOW_FANOUT=false
@@ -314,6 +320,10 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -lt 1 ]] && { echo "Error: --ttl requires <spec>" >&2; exit 1; }
       TTL_SPEC="$1"
+      shift
+      ;;
+    --user-authorized)
+      USER_AUTHORIZED_EXACT=true
       shift
       ;;
     --fire)
@@ -433,6 +443,11 @@ fi
 
 if [[ -n "$TTL_SPEC" && "$NEW_TASK_MODE" != "true" ]]; then
   echo "Error: --ttl requires --new-task" >&2
+  exit 1
+fi
+
+if [[ "$USER_AUTHORIZED_EXACT" == "true" && "$NEW_TASK_MODE" != "true" ]]; then
+  echo "Error: --user-authorized requires --new-task" >&2
   exit 1
 fi
 
@@ -2891,6 +2906,20 @@ _flush_drain_queue() {
       continue
     fi
 
+    if stale_meta=$(queued_role_handoff_stale "$target_name" "$pane" "$msg" 2>/dev/null); then
+      IFS=$'\t' read -r stale_task stale_epoch current_epoch <<< "$stale_meta"
+      echo "  Cancelled stale role handoff ${stale_task} for $target_name (queued epoch ${stale_epoch}, current epoch ${current_epoch})" >&2
+      _flush_mark_dropped "$dbid" "dropped-policy" "stale-role-epoch ${stale_epoch}->${current_epoch}"
+      continue
+    fi
+
+    if suppressed_state=$(delegated_message_tombstone_state "$target_name" "$msg" 2>/dev/null); then
+      suppressed_task="$(task_id_from_message "$msg" 2>/dev/null || true)"
+      echo "  Suppressed ${suppressed_state} task message ${suppressed_task:-unknown} for $target_name" >&2
+      _flush_mark_dropped "$dbid" "dropped-policy" "${suppressed_state}-task"
+      continue
+    fi
+
     # Policy guard (drop queued relay-like messages unless explicitly allowed on this invocation)
     if enforce_send_policy "$target_name" "$msg"; then
       :
@@ -3581,7 +3610,7 @@ emit_task_tracking_metadata() {
   [[ -n "${TASK_ID:-}" ]] || return 0
   [[ -z "${TASK_SENT_AT:-}" ]] || return 0
   TASK_SENT_AT=$(date +%s)
-  echo "TASK_ID=${TASK_ID} TASK_TARGET=${TARGET} TASK_TTL_SEC=${TTL_SEC} TASK_SENT_AT=${TASK_SENT_AT}" >&2
+  echo "TASK_ID=${TASK_ID} TASK_TARGET=${TARGET} TASK_TTL_SEC=${TTL_SEC} TASK_SENT_AT=${TASK_SENT_AT} TASK_KIND=${TASK_KIND:-delegated} TASK_INTENT_HASH=${TASK_INTENT_HASH:-} TASK_USER_AUTHORIZED_EXACT=${TASK_USER_AUTHORIZED_EXACT:-0} TASK_ROLE_EPOCH=${ROLE_HANDOFF_EPOCH:-} TASK_ORCHESTRATOR=${ROLE_HANDOFF_ORCHESTRATOR:-}" >&2
 }
 
 current_pane_metadata() {
@@ -3616,6 +3645,72 @@ resolve_role_handoff_metadata() {
     echo "Error: resolved orchestrator identity contains unsupported characters" >&2
     exit 1
   fi
+}
+
+task_id_from_message() {
+  local msg="$1"
+  if [[ "$msg" =~ \[(Role-Handoff|Task|ACK-PROGRESS|ACK|DONE|BLOCK|BLOCKED):[[:space:]]*([A-Za-z0-9._-]+)\] ]]; then
+    printf '%s\n' "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  return 1
+}
+
+task_counterparty_alias() {
+  local target_name="$1"
+  case "$target_name" in
+    *.*) printf '%s\n' "${target_name%%.*}" ;;
+    cc|cdx) printf '%s\n' "${MY_ALIAS:-}" ;;
+    *) return 1 ;;
+  esac
+}
+
+delegated_message_tombstone_state() {
+  local target_name="$1" msg="$2"
+  [[ -n "${SESSION:-}" && -n "${MY_ALIAS:-}" && -n "${MY_ROLE:-}" ]] || return 1
+  declare -F tt_db_exec_safe >/dev/null 2>&1 || return 1
+  declare -F tt_db_quote >/dev/null 2>&1 || return 1
+  local task_id counterparty self_alias self_owner_q counterparty_q target_q self_q task_q
+  task_id=$(task_id_from_message "$msg" 2>/dev/null || true)
+  [[ -n "$task_id" ]] || return 1
+  counterparty=$(task_counterparty_alias "$target_name" 2>/dev/null || true)
+  [[ -n "$counterparty" ]] || return 1
+  self_alias="${MY_ALIAS}.${MY_ROLE}"
+  self_owner_q="$(tt_db_quote "$MY_ALIAS")"
+  counterparty_q="$(tt_db_quote "$counterparty")"
+  target_q="$(tt_db_quote "$target_name")"
+  self_q="$(tt_db_quote "$self_alias")"
+  task_q="$(tt_db_quote "$task_id")"
+  local state
+  state="$(tt_db_exec_safe "SELECT state FROM tasks WHERE owner_session='$(tt_db_quote "$SESSION")' AND task_id='${task_q}' AND state IN ('cancelled','frozen') AND ((owner_alias='${self_owner_q}' AND target='${target_q}') OR (owner_alias='${counterparty_q}' AND target='${self_q}')) ORDER BY COALESCE(frozen_at, cancelled_at, 0) DESC, sent_at DESC LIMIT 1;" 2>/dev/null || true)"
+  [[ -n "$state" ]] || return 1
+  printf '%s\n' "$state"
+}
+
+cancel_sender_task_tombstone() {
+  local target_name="$1" task_id="$2" reason_hash="$3"
+  [[ -n "${SESSION:-}" && -n "${MY_ALIAS:-}" ]] || return 1
+  if tt_cache_tombstone_task "${SESSION}/${MY_ALIAS}" "$target_name" "$task_id" cancelled "$reason_hash" >/dev/null 2>&1; then
+    return 0
+  fi
+  declare -F tt_db_tombstone_task >/dev/null 2>&1 || return 1
+  tt_db_tombstone_task "$task_id" cancelled "$SESSION" "$MY_ALIAS" "$target_name" "$reason_hash" >/dev/null 2>&1
+}
+
+queued_role_handoff_stale() {
+  local target_name="$1" pane="$2" msg="$3"
+  [[ "$msg" == *"[Role-Handoff:"* ]] || return 1
+  local task_id queued_epoch current_epoch reason_hash
+  task_id=$(printf '%s\n' "$msg" | sed -nE 's/^\[Role-Handoff:[[:space:]]*([A-Za-z0-9._-]+)\].*/\1/p' | head -n 1)
+  queued_epoch=$(printf '%s\n' "$msg" | sed -nE 's/^Role-Epoch:[[:space:]]*([0-9]+).*/\1/p' | head -n 1)
+  [[ -n "$task_id" && "$queued_epoch" =~ ^[0-9]+$ ]] || return 1
+  current_epoch=$(tmux show-options -p -t "$pane" -v @role_epoch 2>/dev/null || true)
+  [[ "$current_epoch" =~ ^[0-9]+$ ]] || return 1
+  [[ "$queued_epoch" == "$current_epoch" ]] && return 1
+  reason_hash="$(sha256_hash "stale-role-epoch:${queued_epoch}:${current_epoch}")"
+  cancel_sender_task_tombstone "$target_name" "$task_id" "$reason_hash" || true
+  printf '%s\t%s\t%s\n' "$task_id" "$queued_epoch" "$current_epoch"
+  return 0
 }
 
 # === Send helpers ===
@@ -3715,7 +3810,7 @@ do_read() {
   fi
   OWN_TASK_IDS=""
   if [[ -n "$READ_OWNER" ]] && tt_cache_valid_owner "$READ_OWNER" 2>/dev/null; then
-    OWN_TASK_IDS="$(tt_cache_list_tasks "$READ_OWNER" "$TARGET" 2>/dev/null | awk -F '\t' 'NF {print $1}')"
+    OWN_TASK_IDS="$(tt_cache_list_open_tasks "$READ_OWNER" "$TARGET" 2>/dev/null | awk -F '\t' 'NF {print $1}')"
   fi
   while IFS= read -r reply_id; do
     [[ -n "$reply_id" ]] || continue
@@ -3803,10 +3898,18 @@ fi
 
 TASK_ID=""
 TASK_SENT_AT=""
+TASK_KIND="delegated"
+TASK_INTENT_HASH=""
+TASK_USER_AUTHORIZED_EXACT=0
 
 if [[ "$NEW_TASK_MODE" == "true" ]]; then
   TASK_ID=$(generate_task_id)
+  if [[ "$USER_AUTHORIZED_EXACT" == "true" ]]; then
+    TASK_USER_AUTHORIZED_EXACT=1
+    TASK_INTENT_HASH="$(sha256_hash "$MESSAGE")"
+  fi
   if [[ "$ROLE_HANDOFF_MODE" == "true" ]]; then
+    TASK_KIND="role_handoff"
     # R2 Stage 1 — fail-closed gate. A --role-handoff send from a caller
     # whose --as claim could not be bound to the live model-role-router
     # registry is refused outright: no tmux send-keys, no messages.db row
@@ -3882,9 +3985,13 @@ if [[ "$NEW_TASK_MODE" == "true" ]]; then
         exit 1
       fi
     fi
+    _delegated_auth_lines=""
+    if [[ "$TASK_USER_AUTHORIZED_EXACT" == 1 ]]; then
+      _delegated_auth_lines=$'\n'"Intent-Hash: ${TASK_INTENT_HASH}"$'\n'"Delegated-User-Authorization: exact"
+    fi
     MESSAGE="[Role-Handoff: ${TASK_ID}]
 Role-Epoch: ${ROLE_HANDOFF_EPOCH}
-Orchestrator: ${ROLE_HANDOFF_ORCHESTRATOR}
+Orchestrator: ${ROLE_HANDOFF_ORCHESTRATOR}${_delegated_auth_lines}
 [Task: ${TASK_ID}] ${MESSAGE}"
     audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 1 "" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
   fi
@@ -3897,6 +4004,9 @@ Orchestrator: ${ROLE_HANDOFF_ORCHESTRATOR}
       # audit too. No [Task:] prepend -- that is an --as-only convention.
       audit_log_caller_decision "$TARGET" "${AS_CLAIMED_IDENTITY:-${MY_ALIAS:+${MY_ALIAS}.}${MY_ROLE}}" 1 "" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
     fi
+  fi
+  if declare -F tt_db_upsert_task >/dev/null 2>&1 && [[ -n "${SESSION:-}" && -n "${MY_ALIAS:-}" ]]; then
+    tt_db_upsert_task "$TASK_ID" "$TARGET" "$(date +%s)" "$TTL_SEC" "" "$MY_ALIAS" "$SESSION" "$TASK_KIND" "$TASK_INTENT_HASH" "$TASK_USER_AUTHORIZED_EXACT" "${ROLE_HANDOFF_EPOCH:-}" "${ROLE_HANDOFF_ORCHESTRATOR:-}" >/dev/null 2>&1 || true
   fi
 elif [[ -n "${EXPLICIT_AS:-}" ]]; then
   audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 1 "" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
@@ -3920,6 +4030,12 @@ else
   [[ $rc -eq 12 ]] && exit 12
   echo "Error: control dedup check failed (rc=$rc)" >&2
   exit "$rc"
+fi
+
+if suppressed_state=$(delegated_message_tombstone_state "$TARGET" "$MESSAGE" 2>/dev/null); then
+  suppressed_task="$(task_id_from_message "$MESSAGE" 2>/dev/null || true)"
+  echo "Error: suppressed ${suppressed_state} task message ${suppressed_task:-unknown} for $TARGET" >&2
+  exit 1
 fi
 
 # === --force: bypass typing/running, but never press selection screens ===

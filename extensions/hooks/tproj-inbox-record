@@ -37,8 +37,15 @@ task_id="$(printf '%s\n' "$meta_line" | sed -nE 's/.*TASK_ID=([^[:space:]]+).*/\
 task_target="$(printf '%s\n' "$meta_line" | sed -nE 's/.*TASK_TARGET=([^[:space:]]+).*/\1/p')"
 task_ttl_sec="$(printf '%s\n' "$meta_line" | sed -nE 's/.*TASK_TTL_SEC=([0-9]+).*/\1/p')"
 task_sent_at="$(printf '%s\n' "$meta_line" | sed -nE 's/.*TASK_SENT_AT=([0-9]+).*/\1/p')"
+task_kind="$(printf '%s\n' "$meta_line" | sed -nE 's/.*TASK_KIND=([^[:space:]]+).*/\1/p')"
+task_intent_hash="$(printf '%s\n' "$meta_line" | sed -nE 's/.*TASK_INTENT_HASH=([^[:space:]]+).*/\1/p')"
+task_user_authorized_exact="$(printf '%s\n' "$meta_line" | sed -nE 's/.*TASK_USER_AUTHORIZED_EXACT=([01]).*/\1/p')"
+task_role_epoch="$(printf '%s\n' "$meta_line" | sed -nE 's/.*TASK_ROLE_EPOCH=([0-9]+).*/\1/p')"
+task_orchestrator="$(printf '%s\n' "$meta_line" | sed -nE 's/.*TASK_ORCHESTRATOR=([^[:space:]]+).*/\1/p')"
 
 [[ -n "$task_id" && -n "$task_target" && -n "$task_ttl_sec" && -n "$task_sent_at" ]] || exit 0
+task_kind="${task_kind:-delegated}"
+task_user_authorized_exact="${task_user_authorized_exact:-0}"
 
 # shellcheck source=/dev/null
 source "$CACHE_HELPER"
@@ -66,11 +73,11 @@ tt_cache_valid_owner "$OWNER" || exit 0
 # target never reaches the cache path (nor a DB row for consistency).
 tt_cache_valid_component "$task_target" || exit 0
 
-tt_cache_add "$OWNER" "$task_target" "$task_id" "$task_sent_at" "$task_ttl_sec" ""
+tt_cache_add "$OWNER" "$task_target" "$task_id" "$task_sent_at" "$task_ttl_sec" "" "$task_kind" "$task_intent_hash" "$task_user_authorized_exact" "$task_role_epoch" "$task_orchestrator"
 # R1' Stage 4: redundant DB shadow write so hook-only path stays self-sufficient
 # even if tt_cache_add internals change. INSERT OR REPLACE -> idempotent.
 # owner_alias (issuing column) recorded for query/audit.
 if declare -F tt_db_upsert_task >/dev/null 2>&1; then
-  tt_db_upsert_task "$task_id" "$task_target" "$task_sent_at" "$task_ttl_sec" "" "${OWNER##*/}" "${OWNER%%/*}" 2>/dev/null || true
+  tt_db_upsert_task "$task_id" "$task_target" "$task_sent_at" "$task_ttl_sec" "" "${OWNER##*/}" "${OWNER%%/*}" "$task_kind" "$task_intent_hash" "$task_user_authorized_exact" "$task_role_epoch" "$task_orchestrator" 2>/dev/null || true
 fi
 exit 0

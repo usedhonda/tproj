@@ -134,7 +134,9 @@ tmux ワークスペース内の他 AI ペイン（CC, Cdx, Agent）と通信す
 - `--role-handoff --new-task` は入力中でもユーザー確認を求めず、通常の deferred queue に積む
 - `--force` は使用禁止（CLI 自体も組み合わせを拒否する）
 - `--role-epoch` / `--orchestrator` が省略された場合は現在ペインの role metadata から解決する
+- queue された handoff は flush 時に target の最新 `Role-Epoch` を再検証する。ずれた handoff は stale tombstone にして注入しない
 - この例外は router による対称な orchestration handoff だけに適用し、通常メッセージの Typing Safety は変更しない
+- `--user-authorized` が付いた exact task は「その exact one-shot は既にユーザー承認済み」の意味。receiver は target/scope が変わらない限りユーザーへ再確認してはいけない
 
 ## Plan Mode 互換ルール（Cdx/CC 共通）
 
@@ -148,6 +150,8 @@ tmux ワークスペース内の他 AI ペイン（CC, Cdx, Agent）と通信す
 - 送信後は**即 exit**する。応答は `[from:<sender>]` プレフィックスで自動配信される
 - 返信を待つためにポーリングする必要はない。**そのまま作業を続ける**
 - `--new-task` 委任の往復は PostToolUse / UserPromptSubmit / Stop hook が自動追跡する（Task ID cache 登録 → ACK/DONE evidence → orchestrator verify → platform-observed `[COMPLETION-REPORT:]` でのみ close）。詳細は extensions/messaging/tproj-task-cache.contract.md
+- owner は `tproj-task cancel <id> <target> <reason-hash>` / `tproj-task freeze <id> <target> <reason-hash>` で task を tombstone 化できる。cancel/freeze 済み ID の返信や lifecycle tag は reopen されず、orchestrator へ再通知されない
+- cancel/freeze を受けた receiver は Claude/Codex 共通の mutation guard で source edit / staging / commit / reset / revert / stash / checkout / build / test / restart / deploy / 曖昧 shell write が止まる。read-only incident whitelist だけ許可
 - hook 追跡が効くのは `--new-task` 送信のみ。ID なし送信 or `TPROJ_HOOK_ENABLED` 未設定では手動 `--read`（目視確認）で往復を閉じる
 - `--read` はターミナル出力を目視確認するためのツール。受信待ち目的では使わない
 
@@ -165,6 +169,7 @@ tmux ワークスペース内の他 AI ペイン（CC, Cdx, Agent）と通信す
 | relay-like 文面を単発で許可（理由必須） | `tproj-msg --allow-relay <reason> --force <target> "msg"` |
 | 同一文面の多重配信を単発で許可（理由必須） | `tproj-msg --allow-fanout <reason> <target> "msg"` |
 | 別セッション/ペイン外からの送信（CC/Cdx 共通） | `tproj-msg --session <sess> [--as <alias.role>] <target> "msg"` |
+| exact user-authorized delegated task | `tproj-msg --new-task --user-authorized <target> "Run exactly: ..."` |
 | orchestration role handoff | `tproj-msg --role-handoff --new-task [--role-epoch <n>] [--orchestrator <id>] <target> "msg"` |
 | queue 内メッセージを全配信 | `tproj-msg --flush` |
 
