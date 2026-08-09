@@ -56,10 +56,35 @@ check "ambiguous shell pipeline is blocked" sh -c "grep -q 'read-only incident s
 $ambiguous_out
 EOF"
 
+find_delete_out="$(invoke_guard Bash 'find . -delete')"
+check "find -delete is blocked" sh -c "grep -q 'read-only incident shell commands' <<'EOF'
+$find_delete_out
+EOF"
+
+find_exec_out="$(invoke_guard Bash 'find . -exec rm {} ;')"
+check "find -exec is blocked" sh -c "grep -q 'read-only incident shell commands' <<'EOF'
+$find_exec_out
+EOF"
+
+git_diff_output_eq_out="$(invoke_guard Bash 'git diff --output=x')"
+check "git diff --output=x is blocked" sh -c "grep -q 'read-only incident shell commands' <<'EOF'
+$git_diff_output_eq_out
+EOF"
+
+git_diff_output_sep_out="$(invoke_guard Bash 'git diff --output x')"
+check "git diff --output x is blocked" sh -c "grep -q 'read-only incident shell commands' <<'EOF'
+$git_diff_output_sep_out
+EOF"
+
+git_config_diff_out="$(invoke_guard Bash 'git -c core.pager=cat diff')"
+check "git -c core.pager=cat diff is blocked" sh -c "grep -q 'read-only incident shell commands' <<'EOF'
+$git_config_diff_out
+EOF"
+
 allow_status="$(invoke_guard Bash 'git status --short --branch')"
 allow_diff="$(invoke_guard Bash 'git diff --cached')"
 allow_show="$(invoke_guard Bash 'git show HEAD')"
-allow_find="$(invoke_guard Bash 'find . -type f')"
+allow_find="$(invoke_guard Bash 'find . -maxdepth 2 -type f -name '\''*.sh'\''')"
 allow_hash="$(invoke_guard Bash 'shasum -a 256 README.md')"
 check "strict read-only incident commands are allowed" sh -c "test -z '$allow_status' && test -z '$allow_diff' && test -z '$allow_show' && test -z '$allow_find' && test -z '$allow_hash'"
 

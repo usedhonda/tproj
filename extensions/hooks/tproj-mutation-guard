@@ -31,6 +31,113 @@ READONLY_TOOL_NAMES = {
     "Grep",
 }
 AMBIGUOUS_SHELL_RE = re.compile(r"[|&;><`$()]|\\n")
+FIND_DANGEROUS_ACTIONS = {
+    "-delete",
+    "-exec",
+    "-execdir",
+    "-ok",
+    "-okdir",
+    "-fprint",
+    "-fprintf",
+    "-fprint0",
+    "-fls",
+    "-files0-from",
+}
+FIND_SAFE_NOARG = {
+    "-H",
+    "-L",
+    "-P",
+    "-xdev",
+    "-mount",
+    "-print",
+    "-print0",
+    "-ls",
+    "-true",
+    "-false",
+    "-empty",
+    "-readable",
+    "-writable",
+    "-executable",
+    "-nouser",
+    "-nogroup",
+    "-a",
+    "-and",
+    "-o",
+    "-or",
+    "!",
+    "-not",
+    "--",
+}
+FIND_SAFE_WITH_ARG = {
+    "-maxdepth",
+    "-mindepth",
+    "-name",
+    "-iname",
+    "-path",
+    "-ipath",
+    "-type",
+    "-mtime",
+    "-mmin",
+    "-ctime",
+    "-cmin",
+    "-atime",
+    "-amin",
+    "-size",
+    "-user",
+    "-group",
+    "-perm",
+    "-newer",
+    "-samefile",
+    "-links",
+    "-uid",
+    "-gid",
+    "-printf",
+}
+GIT_SAFE_GLOBAL_NOARG = {"--no-pager"}
+GIT_SAFE_GLOBAL_WITH_ARG = {"-C", "--git-dir", "--work-tree"}
+GIT_DIFF_SAFE_NOARG = {
+    "--cached",
+    "--staged",
+    "--stat",
+    "--numstat",
+    "--shortstat",
+    "--summary",
+    "--name-only",
+    "--name-status",
+    "--check",
+    "--patch",
+    "-p",
+    "--no-patch",
+    "-s",
+    "--color",
+    "--no-color",
+    "--quiet",
+    "--exit-code",
+    "--raw",
+    "--word-diff",
+    "--no-ext-diff",
+    "--no-textconv",
+}
+GIT_DIFF_SAFE_WITH_ARG = {
+    "-U",
+    "--unified",
+    "--relative",
+    "--diff-filter",
+    "--src-prefix",
+    "--dst-prefix",
+}
+GIT_DIFF_SAFE_PREFIXES = (
+    "-U",
+    "--unified=",
+    "--relative=",
+    "--diff-filter=",
+    "--src-prefix=",
+    "--dst-prefix=",
+    "--word-diff=",
+    "--color=",
+)
+GIT_DIFF_DANGEROUS_EXACT = {"--output", "--no-index", "--ext-diff", "--textconv"}
+GIT_DIFF_DANGEROUS_PREFIXES = ("--output=",)
 
 
 def block(reason: str) -> int:
@@ -117,6 +224,89 @@ def parse_command(payload: dict[str, Any]) -> tuple[str, str]:
     return tool_name, ""
 
 
+def is_nonempty_arg(token: str) -> bool:
+    return bool(token and token != "--")
+
+
+def is_readonly_find(argv: list[str]) -> bool:
+    if not argv or argv[0] != "find":
+        return False
+    idx = 1
+    expression_started = False
+    while idx < len(argv):
+        token = argv[idx]
+        if token in FIND_DANGEROUS_ACTIONS:
+            return False
+        if not expression_started and not token.startswith("-") and token not in {"!", "-not"}:
+            idx += 1
+            continue
+        expression_started = True
+        if token in FIND_SAFE_NOARG:
+            idx += 1
+            continue
+        if token in FIND_SAFE_WITH_ARG:
+            if idx + 1 >= len(argv) or not is_nonempty_arg(argv[idx + 1]):
+                return False
+            idx += 2
+            continue
+        if token.startswith("-"):
+            return False
+        idx += 1
+    return True
+
+
+def is_readonly_git_diff(argv: list[str]) -> bool:
+    if not argv or argv[0] != "git":
+        return False
+    idx = 1
+    while idx < len(argv):
+        token = argv[idx]
+        if token == "diff":
+            idx += 1
+            break
+        if token in GIT_SAFE_GLOBAL_NOARG:
+            idx += 1
+            continue
+        if token in GIT_SAFE_GLOBAL_WITH_ARG:
+            if idx + 1 >= len(argv) or not is_nonempty_arg(argv[idx + 1]):
+                return False
+            idx += 2
+            continue
+        if token.startswith("-C") and token != "-C":
+            idx += 1
+            continue
+        if token.startswith("--git-dir=") or token.startswith("--work-tree="):
+            idx += 1
+            continue
+        if token == "-c" or token.startswith("-c") or token == "--config-env" or token.startswith("--config-env="):
+            return False
+        return False
+    else:
+        return False
+
+    while idx < len(argv):
+        token = argv[idx]
+        if token in GIT_DIFF_DANGEROUS_EXACT:
+            return False
+        if any(token.startswith(prefix) for prefix in GIT_DIFF_DANGEROUS_PREFIXES):
+            return False
+        if token in GIT_DIFF_SAFE_NOARG or token == "--":
+            idx += 1
+            continue
+        if token in GIT_DIFF_SAFE_WITH_ARG:
+            if idx + 1 >= len(argv) or not is_nonempty_arg(argv[idx + 1]):
+                return False
+            idx += 2
+            continue
+        if any(token.startswith(prefix) for prefix in GIT_DIFF_SAFE_PREFIXES):
+            idx += 1
+            continue
+        if token.startswith("-"):
+            return False
+        idx += 1
+    return True
+
+
 def is_readonly_shell(command: str) -> bool:
     stripped = command.strip()
     if not stripped:
@@ -131,12 +321,14 @@ def is_readonly_shell(command: str) -> bool:
         return False
     cmd = argv[0]
     if cmd == "git":
-        if len(argv) < 2 or argv[1] not in READONLY_GIT_SUBCOMMANDS:
+        if len(argv) < 2:
             return False
-        if argv[1] == "diff" and any(flag in {"--no-index", "--output"} for flag in argv[2:]):
-            return False
-        return True
-    if cmd in {"find", "stat"}:
+        if argv[1] == "diff" or "diff" in argv[1:]:
+            return is_readonly_git_diff(argv)
+        return argv[1] in READONLY_GIT_SUBCOMMANDS
+    if cmd == "find":
+        return is_readonly_find(argv)
+    if cmd == "stat":
         return True
     if cmd in READONLY_HASH_COMMANDS:
         return True
