@@ -31,6 +31,22 @@ targeting `~/.codex/memories`. Root cause and full exploit-chain
 file:line trace: `oc-general` project journal, task
 `oc-general-29736303-01`.
 
+## Target resolution and liveness boundary
+
+Target identity is independently fail-closed from sender identity. For an
+explicit `<alias>.<role>` target, `tproj-msg` requires exactly one live pane in
+the exact `=<session>:dev` window whose alias and normalized role occur on that
+same pane. It does not derive a column from one alias pane and then search the
+whole workspace for a role match. Dead panes, duplicate live candidates, and a
+missing exact session are rejected; a similarly named prefix session is never
+used.
+
+`pane_current_command` being non-shell is not liveness evidence. Direct sends
+require a native prompt marker, a fresh pane-bound prompt-state signal, or a
+fresh pane-bound WebSocket session record. A stale, absent, or unknown signal
+leaves the target offline/unsendable. Queue, flush, status, and direct send all
+use the same resolver and liveness gate.
+
 ## What is transport-generated vs payload pass-through
 
 | Field | Source | Authenticated? |

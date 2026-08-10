@@ -942,7 +942,7 @@ DIRECT_CALLER_START=$(pid_start_epoch_bash "$DIRECT_CALLER_PID")
 DESKTOP_TARGET_REASON=""
 _desktop_target_resolves() {
   local session="$1" target="$2"
-  local target_alias="" target_role="" pane_list found_col="" role_pattern
+  local target_alias="" target_role="" pane_list role_pattern requested_role
   local pid prole palias pcol pdead match_count=0
   DESKTOP_TARGET_REASON="desktop_target_unresolved"
   case "$target" in
@@ -956,24 +956,21 @@ _desktop_target_resolves() {
   pane_list=$(tmux list-panes -t "=${session}:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}:#{pane_dead}' 2>/dev/null)
   [[ -n "$pane_list" ]] || return 1
   if [[ -n "$target_alias" ]]; then
-    # Resolve the alias to a single column. A canonical workspace shares one
-    # @alias across a column's cc+cdx panes, so the alias maps to a column, not
-    # a pane. If the same alias appears on more than one column the column is
-    # ambiguous -> fail closed instead of first-match break. Dead panes never
-    # contribute a candidate column.
+    # Explicit alias.role targets bind alias and role on the SAME live pane.
+    # Never derive a column from one pane and then search another alias globally.
+    requested_role=$(role_to_short "$target_role")
     while IFS=: read -r pid prole palias pcol pdead; do
       [[ "$pdead" == "1" ]] && continue
-      if [[ "$palias" == "$target_alias" ]]; then
-        if [[ -z "$found_col" ]]; then
-          found_col="$pcol"
-        elif [[ "$pcol" != "$found_col" ]]; then
-          DESKTOP_TARGET_REASON="desktop_target_ambiguous"
-          return 1
-        fi
-      fi
+      [[ "$palias" == "$target_alias" ]] || continue
+      [[ "$(role_to_short "$prole")" == "$requested_role" ]] || continue
+      match_count=$((match_count+1))
     done <<< "$pane_list"
-    [[ -n "$found_col" ]] || return 1
-    role_pattern=$(short_to_role_pattern "$target_role" "$found_col")
+    if [[ "$match_count" -eq 1 ]]; then
+      return 0
+    elif [[ "$match_count" -gt 1 ]]; then
+      DESKTOP_TARGET_REASON="desktop_target_ambiguous"
+    fi
+    return 1
   else
     role_pattern=$(short_to_role_pattern "$target_role")
   fi
@@ -2300,15 +2297,13 @@ is_shell_command() {
   return 1
 }
 
-# Returns 0 if target pane appears to be running an AI process, 1 otherwise.
-# Offline heuristic:
-#   - no prompt marker for target type, and
-#   - pane_current_command is a plain shell (zsh/bash/sh/fish)
+# Returns 0 if target pane has fresh, target-bound AI evidence, 1 otherwise.
+# A non-shell pane_current_command is not evidence: stale processes and crashed
+# agents can leave a non-shell command behind after the session disappears.
 is_target_online() {
   local pane="$1"
-  local target_type pane_cmd
+  local target_type
   target_type=$(get_target_type "$pane")
-  pane_cmd=$(tmux display-message -t "$pane" -p '#{pane_current_command}' 2>/dev/null || true)
 
   case "$target_type" in
     cc|agent)
@@ -2323,11 +2318,25 @@ is_target_online() {
       ;;
   esac
 
-  if is_shell_command "$pane_cmd"; then
-    return 1
+  # A fresh local prompt-state signal is bound to this pane and is sufficient
+  # even when capture-pane is unavailable (for example a minimal Codex pane).
+  if read_prompt_state_signal "$pane"; then
+    case "$PROMPT_SIGNAL_STATE" in
+      idle|typing|suggestion) return 0 ;;
+    esac
   fi
 
-  return 0
+  # WS state is valid only when it matched this pane's tty and its timestamp is
+  # fresh. Stopped/unknown records do not authorize direct delivery.
+  if get_ws_session_state_for_pane "$pane" \
+      && [[ "$WS_SESSION_TTY_MATCH" == "true" ]] \
+      && [[ "$WS_SESSION_FRESHNESS" == "fresh" ]]; then
+    case "$WS_SESSION_STATUS" in
+      running|waiting_input) return 0 ;;
+    esac
+  fi
+
+  return 1
 }
 
 get_liveness_status() {
@@ -2591,6 +2600,11 @@ send_block_reason() {
 send_block_detail_for_status() {
   local pane="$1"
 
+  if ! is_target_online "$pane"; then
+    echo "offline:stale_or_missing_evidence"
+    return 0
+  fi
+
   send_block_reason "$pane"
   case "$SEND_BLOCK_REASON" in
     typing_draft)
@@ -2608,7 +2622,9 @@ send_block_detail_for_status() {
     return 0
   fi
 
-  if get_ws_session_state_for_pane "$pane" && [[ "${WS_SESSION_STATUS:-}" == "running" ]]; then
+  if get_ws_session_state_for_pane "$pane" \
+      && [[ "${WS_SESSION_STATUS:-}" == "running" ]] \
+      && [[ "${WS_SESSION_FRESHNESS:-}" == "fresh" ]]; then
     echo "sendable_running:ws_status:status=running,waiting_reason=${WS_SESSION_WAITING_REASON:-unknown},freshness=${WS_SESSION_FRESHNESS}"
     return 0
   fi
@@ -3411,6 +3427,7 @@ gate_health() {
 resolve_target() {
   local target="$1"
   local target_alias="" target_role="" target_col=""
+  TARGET_RESOLVE_REASON="unresolved"
 
   # Parse target format
   if [[ "$target" == agent-* ]]; then
@@ -3426,7 +3443,13 @@ resolve_target() {
   fi
 
   local pane_list list_status
-  pane_list=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null)
+  # Bind both probes to the exact session. A missing session must never fall
+  # through to a similarly named prefix session.
+  if ! tmux has-session -t "=$SESSION" 2>/dev/null; then
+    TARGET_RESOLVE_REASON="session_not_found"
+    return "$RT_NOT_FOUND"
+  fi
+  pane_list=$(tmux list-panes -t "=$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}:#{pane_dead}' 2>/dev/null)
   list_status=$?
 
   # Classify a lookup miss (M-D6): a populated list means the target is genuinely
@@ -3437,10 +3460,12 @@ resolve_target() {
   local rt_fail=$RT_NOT_FOUND
   if [[ $list_status -ne 0 || -z "$pane_list" ]]; then
     rt_fail=$RT_TRANSIENT
+    TARGET_RESOLVE_REASON="pane_list_unavailable"
   fi
 
   if [[ "$target" == agent-* ]]; then
-    echo "$pane_list" | while IFS=: read -r pid prole palias pcol; do
+    echo "$pane_list" | while IFS=: read -r pid prole palias pcol pdead; do
+      [[ "$pdead" == "1" ]] && continue
       if [[ "$prole" == "$target_role" ]]; then
         echo "$pid"
         return 0
@@ -3451,48 +3476,64 @@ resolve_target() {
 
   if [[ "$IS_WORKSPACE" == "true" ]]; then
     if [[ -n "$target_alias" ]]; then
-      local role_pattern
-      local found_col=""
-      while IFS=: read -r pid prole palias pcol; do
-        if [[ "$palias" == "$target_alias" ]]; then
-          found_col="$pcol"
-          break
-        fi
+      local requested_role match_count=0 matched_pane=""
+      requested_role=$(role_to_short "$target_role")
+      while IFS=: read -r pid prole palias pcol pdead; do
+        [[ "$pdead" == "1" ]] && continue
+        [[ "$palias" == "$target_alias" ]] || continue
+        [[ "$(role_to_short "$prole")" == "$requested_role" ]] || continue
+        match_count=$((match_count+1))
+        matched_pane="$pid"
       done <<< "$pane_list"
-
-      if [[ -z "$found_col" ]]; then
-        echo "Error: alias '$target_alias' not found" >&2
-        return $rt_fail
+      if [[ "$match_count" -eq 1 ]]; then
+        echo "$matched_pane"
+        return 0
+      elif [[ "$match_count" -gt 1 ]]; then
+        TARGET_RESOLVE_REASON="ambiguous_alias_role"
+        echo "Error: target '$target' is ambiguous (multiple live panes with exact alias and role)" >&2
+        return "$AMBIGUOUS_BARE_EXIT"
       fi
-
-      role_pattern=$(short_to_role_pattern "$target_role" "$found_col")
-      while IFS=: read -r pid prole palias pcol; do
-        if [[ "$prole" == "$role_pattern" ]]; then
-          echo "$pid"
-          return 0
-        fi
-      done <<< "$pane_list"
+      TARGET_RESOLVE_REASON="alias_role_not_found"
+      echo "Error: target '$target' not found with exact alias and role" >&2
+      return $rt_fail
     else
-      local role_pattern
+      local role_pattern match_count=0 matched_pane=""
       role_pattern=$(short_to_role_pattern "$target_role" "$MY_COLUMN")
-      while IFS=: read -r pid prole palias pcol; do
+      while IFS=: read -r pid prole palias pcol pdead; do
+        [[ "$pdead" == "1" ]] && continue
         if [[ "$prole" == "$role_pattern" ]]; then
-          echo "$pid"
-          return 0
+          match_count=$((match_count+1))
+          matched_pane="$pid"
         fi
       done <<< "$pane_list"
+      if [[ "$match_count" -eq 1 ]]; then
+        echo "$matched_pane"
+        return 0
+      elif [[ "$match_count" -gt 1 ]]; then
+        TARGET_RESOLVE_REASON="ambiguous_bare_role"
+        return "$AMBIGUOUS_BARE_EXIT"
+      fi
     fi
   else
-    local role_pattern
+    local role_pattern match_count=0 matched_pane=""
     role_pattern=$(short_to_role_pattern "$target_role")
-    while IFS=: read -r pid prole palias pcol; do
+    while IFS=: read -r pid prole palias pcol pdead; do
+      [[ "$pdead" == "1" ]] && continue
       if [[ "$prole" == "$role_pattern" ]]; then
-        echo "$pid"
-        return 0
+        match_count=$((match_count+1))
+        matched_pane="$pid"
       fi
     done <<< "$pane_list"
+    if [[ "$match_count" -eq 1 ]]; then
+      echo "$matched_pane"
+      return 0
+    elif [[ "$match_count" -gt 1 ]]; then
+      TARGET_RESOLVE_REASON="ambiguous_role"
+      return "$AMBIGUOUS_BARE_EXIT"
+    fi
   fi
 
+  TARGET_RESOLVE_REASON="target_not_found"
   return $rt_fail
 }
 
@@ -3506,12 +3547,14 @@ check_bare_target_unambiguous() {
   local target="$1"
   [[ "$target" == "cc" || "$target" == "cdx" ]] || return 0
   [[ "$IS_WORKSPACE" == "true" ]] || return 0
+  tmux has-session -t "=$SESSION" 2>/dev/null || return 0
   local pane_list
-  pane_list=$(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null)
+  pane_list=$(tmux list-panes -t "=$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}:#{pane_dead}' 2>/dev/null)
   [[ -n "$pane_list" ]] || return 0   # transient tmux hiccup: let resolve_target handle
   local pid prole palias pcol pshort tname
   local candidates="" ccount=0 same_col=0
-  while IFS=: read -r pid prole palias pcol; do
+  while IFS=: read -r pid prole palias pcol pdead; do
+    [[ "$pdead" == "1" ]] && continue
     pshort=$(role_to_short "$prole")
     [[ "$pshort" == "$target" ]] || continue
     [[ -z "$palias" || "$palias" == "null" ]] && palias="col${pcol}"
@@ -4243,8 +4286,9 @@ if [[ "$LIST_MODE" == "true" ]]; then
   echo ""
 
   if [[ "$IS_WORKSPACE" == "true" ]]; then
-    tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null | \
-    while IFS=: read -r pane_id role pane_alias col; do
+    tmux list-panes -t "=$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}:#{pane_dead}' 2>/dev/null | \
+    while IFS=: read -r pane_id role pane_alias col pane_dead; do
+      [[ "$pane_dead" == "1" ]] && continue
       [[ -z "$role" || "$role" == "null" ]] && continue
       short=$(role_to_short "$role")
       case "$role" in yazi|yazi-p*) continue ;; esac
@@ -4252,8 +4296,9 @@ if [[ "$LIST_MODE" == "true" ]]; then
       printf "  %-20s  %s (col %s)\n" "${pane_alias}.${short}" "$role" "$col"
     done
   else
-    tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}' 2>/dev/null | \
-    while IFS=: read -r pane_id role pane_alias; do
+    tmux list-panes -t "=$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{pane_dead}' 2>/dev/null | \
+    while IFS=: read -r pane_id role pane_alias pane_dead; do
+      [[ "$pane_dead" == "1" ]] && continue
       [[ -z "$role" || "$role" == "null" ]] && continue
       short=$(role_to_short "$role")
       case "$role" in yazi|yazi-p*) continue ;; esac
@@ -4334,8 +4379,9 @@ if [[ "$STATUS_MODE" == "true" ]]; then
     print_monitor_diagnostic
   else
     if [[ "$IS_WORKSPACE" == "true" ]]; then
-      tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}' 2>/dev/null | \
-      while IFS=: read -r pane_id role pane_alias col; do
+      tmux list-panes -t "=$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{@column}:#{pane_dead}' 2>/dev/null | \
+      while IFS=: read -r pane_id role pane_alias col pane_dead; do
+        [[ "$pane_dead" == "1" ]] && continue
         [[ -z "$role" || "$role" == "null" ]] && continue
         short=$(role_to_short "$role")
         case "$role" in yazi|yazi-p*) continue ;; esac
@@ -4347,8 +4393,9 @@ if [[ "$STATUS_MODE" == "true" ]]; then
         printf "%-20s  %s/%s  (queued: %s)\n" "$tname" "$local_live" "$local_status" "$local_qcount"
       done
     else
-      tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}' 2>/dev/null | \
-      while IFS=: read -r pane_id role pane_alias; do
+      tmux list-panes -t "=$SESSION:dev" -F '#{pane_id}:#{@role}:#{@alias}:#{pane_dead}' 2>/dev/null | \
+      while IFS=: read -r pane_id role pane_alias pane_dead; do
+        [[ "$pane_dead" == "1" ]] && continue
         [[ -z "$role" || "$role" == "null" ]] && continue
         short=$(role_to_short "$role")
         case "$role" in yazi|yazi-p*) continue ;; esac

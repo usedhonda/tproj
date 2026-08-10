@@ -107,6 +107,17 @@ exit 0
 WS
 chmod +x "$BIN_DIR/websocat"
 
+# Exercise the fresh WebSocket liveness evidence on hosts without GNU timeout
+# (macOS CI/dev machines commonly lack timeout/gtimeout).
+for timeout_name in timeout gtimeout; do
+  cat > "$BIN_DIR/$timeout_name" <<'TIMEOUT'
+#!/usr/bin/env bash
+[[ "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] && shift
+exec "$@"
+TIMEOUT
+  chmod +x "$BIN_DIR/$timeout_name"
+done
+
 export FAKE_DIR_ENV="$FAKE_DIR"
 export PATH="$BIN_DIR:$PATH"
 export HARNESS_PANE_PID=$$
@@ -122,8 +133,11 @@ printf '%s' "codex-p1"  > "$FAKE_DIR/role_%2"
 now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf '{"type":"sessions.list","sessions":[{"tty":"/dev/ttys001","status":"running","updated_at":"%s"},{"tty":"/dev/ttys002","status":"running","updated_at":"%s"}]}\n' \
   "$now_iso" "$now_iso" > "$FAKE_DIR/ws.json"
-printf '%s' "...generating output..." > "$FAKE_DIR/capture_%1"
-printf '%s' "...generating output..." > "$FAKE_DIR/capture_%2"
+# The liveness contract now requires fresh target-bound evidence; native prompt
+# markers keep these caller-auth tests focused on sender verification rather
+# than the stale-process rejection path.
+printf '%s' $'...generating output...\n❯ ' > "$FAKE_DIR/capture_%1"
+printf '%s' $'...generating output...\n› ' > "$FAKE_DIR/capture_%2"
 
 # A live but non-ancestor pid (reparent/disown proxy).
 sleep 600 & SLEEP_PID=$!
