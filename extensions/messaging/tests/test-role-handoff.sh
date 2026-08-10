@@ -87,10 +87,26 @@ printf '%s\n' '{"type":"host_info","host":"test"}'
 cat "$FAKE_DIR_ENV/ws.json" 2>/dev/null || true
 WS
 chmod +x "$BIN/websocat"
+
+# macos-14 does not provide timeout/gtimeout by default. Keep the fresh
+# pane-bound WS evidence path identical on CI and developer machines.
+for timeout_name in timeout gtimeout; do
+  cat > "$BIN/$timeout_name" <<'TIMEOUT'
+#!/usr/bin/env bash
+set -uo pipefail
+[[ "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] && shift
+exec "$@"
+TIMEOUT
+  chmod +x "$BIN/$timeout_name"
+done
 ln -s "$TPROJ_MSG" "$BIN/tproj-msg"
 
 export FAKE_DIR_ENV="$FIXTURES"
 export PATH="$BIN:$PATH"
+if [[ "$(command -v tmux)" != "$BIN/tmux" ]]; then
+  echo "FATAL: role-handoff fixture did not select its fake tmux" >&2
+  exit 2
+fi
 # The pane-derived caller check requires the selected pane's pane_pid to be a
 # real ancestor of the in-tmux caller. Expose this test process's pid so the fake
 # tmux can return it as pane_pid for the current_pane_metadata_fallback case.
@@ -197,7 +213,8 @@ FAIL=0
 
 reset_case() {
   rm -f "$FIXTURES/sendkeys.log" "$FIXTURES"/promptstate_* "$FIXTURES"/promptstate_ts_* \
-    "$FIXTURES"/promptstate_src_* "$FIXTURES"/capture_* "$WORK/queue"/*.queue
+    "$FIXTURES"/promptstate_src_* "$FIXTURES"/capture_* "$FIXTURES/ws.json" \
+    "$WORK/queue"/*.queue
 }
 
 set_state() {
@@ -507,6 +524,7 @@ if [[ "$HAS_SQLITE" -eq 1 ]]; then
   before_id="$(db_last_claimed_id tproj.cc 0)"
 fi
 reset_case
+set_state %2 idle
 out="$(run_as_verified_agent_wrapped tproj.cc 1 worker tproj.cc 8 999999 1 \
   2>&1 \
   "$TPROJ_MSG" --session tproj-workspace --as tproj.cc tproj.cdx 'wrapped-mismatch')"; rc=$?
@@ -519,6 +537,7 @@ fi
 # Unverified ordinary (non-role-handoff) --as send is refused: no
 # tmux send-keys, and the reject audit row carries no body content.
 reset_case
+set_state %2 idle
 if [[ "$HAS_SQLITE" -eq 1 ]]; then
   before_id="$(db_last_claimed_id tproj.cc 0)"
 fi
@@ -535,6 +554,7 @@ fi
 
 # Unverified --role-handoff send is refused the same way.
 reset_case
+set_state %2 idle
 if [[ "$HAS_SQLITE" -eq 1 ]]; then
   before_id="$(db_last_claimed_id tproj.cc 0)"
 fi
@@ -801,6 +821,7 @@ fi
 # and body_hash are empty, and only a payload_sha256 reference is kept.
 if [[ "$HAS_SQLITE" -eq 1 ]]; then
   reset_case
+  set_state %2 idle
   before_id="$(db_last_claimed_id tproj.cc 0)"
   out="$(run_ordinary_unverified tproj.cc tproj.cdx 'must-not-be-persisted-anywhere')"
   assert_caller_event_once tproj.cc 0 require-non-empty "reject_audit_body_never_persisted" "$before_id"
