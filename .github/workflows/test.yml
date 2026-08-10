@@ -12,6 +12,8 @@ jobs:
         run: bash tests/smoke-bin.sh
       - name: Messaging sendability
         run: bash extensions/messaging/tests/test-sendability-gate.sh
+      - name: Target resolution and liveness hardening
+        run: bash extensions/messaging/tests/test-target-resolution-hardening.sh
       - name: Role handoff
         run: bash extensions/messaging/tests/test-role-handoff.sh
       - name: Desktop mailbox
