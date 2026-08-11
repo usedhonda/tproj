@@ -154,6 +154,12 @@ project_meta_path() {
   printf '%s/%s.vertical.json' "$(project_cache_dir "$project")" "$role"
 }
 
+generation_status_path() {
+  local project="$1"
+  local role="$2"
+  printf '%s/.generation-status.%s.json' "$(project_cache_dir "$project")" "$role"
+}
+
 project_prompt_override_path() {
   local project="$1"
   printf '%s/prompt.local.json' "$(project_cache_dir "$project")"
@@ -1605,16 +1611,78 @@ full_prompt = (
     + "\n表情と肩と手の動きを必ず入れる。無表情な証明写真や静止 bust にしない。"
 )
 
-last_error = None
 response = None
+attempts = []
 
-def write_error(kind, message, *, code=None, status=None, exception_type=None):
+def redact(value):
+    text = str(value)
+    if api_key:
+        text = text.replace(api_key, "[REDACTED]")
+    return text
+
+def classify_error(code, status, message, exception_type):
+    haystack = " ".join(
+        str(value or "") for value in (code, status, message, exception_type)
+    ).upper()
+    if str(code) == "404" and str(status).upper() == "NOT_FOUND" and any(
+        token in haystack for token in ("MODEL", "PUBLISHER")
+    ) and any(token in haystack for token in ("NOT FOUND", "UNAVAILABLE")):
+        return "model_unavailable"
+    if any(token in haystack for token in (
+        "API_KEY_INVALID",
+        "UNAUTHENTICATED",
+        "PERMISSION_DENIED",
+        "INVALID API KEY",
+        "INVALID_API_KEY",
+    )):
+        return "permanent_auth"
+    if code == 429 or status == "RESOURCE_EXHAUSTED" or any(token in haystack for token in (
+        "RESOURCE_EXHAUSTED",
+        "TIMEOUT",
+        "TIMED OUT",
+        "CONNECTIONRESET",
+        "CONNECTION RESET",
+        "TEMPORARY",
+        "UNAVAILABLE",
+    )):
+        return "transient"
+    return "unknown"
+
+def error_record(provider, auth_mode, exc):
+    status_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    live_status = getattr(exc, "status", None)
+    response_json = getattr(exc, "response_json", None)
+    error_status = live_status
+    error_code = status_code
+    if isinstance(response_json, dict):
+        error_body = response_json.get("error") or {}
+        error_status = error_status or error_body.get("status")
+        error_code = error_body.get("code") or error_code
+    message = redact(exc)
+    exception_type = type(exc).__name__
+    return {
+        "provider": provider,
+        "auth_mode": auth_mode,
+        "kind": "request_timeout" if isinstance(exc, RequestTimedOut) else "api_error",
+        "message": message,
+        "code": error_code,
+        "status": error_status,
+        "exception_type": exception_type,
+        "retry_class": classify_error(error_code, error_status, message, exception_type),
+    }
+
+def write_error(kind, message, *, code=None, status=None, exception_type=None, retry_class=None):
+    safe_message = redact(message)
+    if retry_class is None:
+        retry_class = classify_error(code, status, safe_message, exception_type)
     payload = {
         "kind": kind,
-        "message": message,
+        "message": safe_message,
         "code": code,
         "status": status,
         "exception_type": exception_type,
+        "retry_class": retry_class,
+        "attempts": attempts,
     }
     with open(error_path, "w", encoding="utf-8") as f:
         json.dump(payload, f)
@@ -1657,7 +1725,7 @@ if vertex_project:
             },
         )
     except Exception as exc:
-        last_error = exc
+        attempts.append(error_record("vertex", "adc", exc))
 
 if response is None and api_key:
     try:
@@ -1671,26 +1739,31 @@ if response is None and api_key:
             },
         )
     except Exception as exc:
-        last_error = exc
+        attempts.append(error_record("api_key", "api_key", exc))
 
 if response is None:
-    if last_error is not None:
-        status_code = getattr(last_error, "status_code", None)
-        response_json = getattr(last_error, "response_json", None)
-        error_status = None
-        if isinstance(response_json, dict):
-            error_status = ((response_json.get("error") or {}).get("status"))
-        error_kind = "request_timeout" if isinstance(last_error, RequestTimedOut) else "api_error"
+    if attempts:
+        retry_classes = [attempt.get("retry_class") for attempt in attempts]
+        if "model_unavailable" in retry_classes:
+            overall_retry_class = "model_unavailable"
+        elif all(retry_class == "permanent_auth" for retry_class in retry_classes):
+            overall_retry_class = "permanent_auth"
+        elif "transient" in retry_classes:
+            overall_retry_class = "transient"
+        else:
+            overall_retry_class = "unknown"
+        last_attempt = attempts[-1]
         write_error(
-            error_kind,
-            str(last_error),
-            code=status_code,
-            status=error_status,
-            exception_type=type(last_error).__name__,
+            "provider_errors",
+            last_attempt.get("message", "image generation failed"),
+            code=last_attempt.get("code"),
+            status=last_attempt.get("status"),
+            exception_type=last_attempt.get("exception_type"),
+            retry_class=overall_retry_class,
         )
-        raise last_error
+        raise SystemExit(last_attempt.get("message", "image generation failed"))
     message = "No usable Vertex AI ADC or API key auth path for image generation"
-    write_error("auth_unavailable", message, exception_type="SystemExit")
+    write_error("auth_unavailable", message, exception_type="SystemExit", retry_class="permanent_auth")
     raise SystemExit(message)
 
 preview = {"predictions": []}
@@ -1727,7 +1800,7 @@ with open(response_path, "w", encoding="utf-8") as f:
     json.dump(preview, f)
 
 with open(error_path, "w", encoding="utf-8") as f:
-    json.dump({"kind": "none", "message": ""}, f)
+    json.dump({"kind": "none", "message": "", "retry_class": "none", "attempts": []}, f)
 PY
 }
 
@@ -1738,6 +1811,50 @@ load_generation_error_json() {
   else
     LAST_GENERATION_ERROR_JSON='null'
   fi
+}
+
+generation_error_is_permanent_auth() {
+  jq -e '
+    (.retry_class // "") == "permanent_auth"
+  ' >/dev/null 2>&1 <<<"${LAST_GENERATION_ERROR_JSON:-null}"
+}
+
+generation_error_has_model_unavailable() {
+  jq -e '
+    (.retry_class // "") == "model_unavailable" or
+    any((.attempts // [])[]; (.retry_class // "") == "model_unavailable")
+  ' >/dev/null 2>&1 <<<"${LAST_GENERATION_ERROR_JSON:-null}"
+}
+
+write_generation_status() {
+  local project="$1"
+  local role="$2"
+  local status_path="$(generation_status_path "$project" "$role")"
+  mkdir -p "$(dirname "$status_path")"
+  jq -n \
+    --arg project "$project" \
+    --arg role "$role" \
+    --arg recorded_at "$(now_utc)" \
+    --argjson error "${LAST_GENERATION_ERROR_JSON:-null}" \
+    '{version:1, project:$project, role:$role, retry_class:($error.retry_class // "unknown"), error:$error, recorded_at:$recorded_at}' \
+    > "${status_path}.tmp"
+  mv "${status_path}.tmp" "$status_path"
+}
+
+generation_status_is_permanent_auth() {
+  local project="$1"
+  local role="$2"
+  local status_path="$(generation_status_path "$project" "$role")"
+  [[ -s "$status_path" ]] || return 1
+  jq -e '.retry_class == "permanent_auth"' "$status_path" >/dev/null 2>&1
+}
+
+generation_status_is_permanent_failure() {
+  local project="$1"
+  local role="$2"
+  local status_path="$(generation_status_path "$project" "$role")"
+  [[ -s "$status_path" ]] || return 1
+  jq -e '.retry_class == "permanent_auth" or .retry_class == "model_unavailable"' "$status_path" >/dev/null 2>&1
 }
 
 generation_error_is_quota_429() {
@@ -2156,6 +2273,9 @@ generate_style_image() {
     rm -f "$error_file"
     if ! request_imagen "$prompt" "$negative_prompt" "$response_file" "$api_key_value" "$model_name" "$vertex_project" "$vertex_location" "$error_file"; then
       load_generation_error_json "$error_file"
+      if generation_error_is_permanent_auth; then
+        return 1
+      fi
       attempt=$((attempt + 1))
       continue
     fi
@@ -2416,6 +2536,8 @@ generate_background() {
   vertex_project="$(vertex_project_or_empty)"
   vertex_location="$(vertex_location_or_default)"
   if [[ -z "$vertex_project" && -z "$api_key_value" ]]; then
+    LAST_GENERATION_ERROR_JSON="$(jq -cn '{kind:"auth_unavailable", message:"No usable Vertex AI ADC or API key auth path for image generation", retry_class:"permanent_auth", attempts:[]}')"
+    write_generation_status "$project" "$role"
     rm -rf "$generation_lock"
     die "no Vertex project or API key available for image generation"
   fi
@@ -2425,11 +2547,27 @@ generate_background() {
 
   style_mode="$STYLE_MODE_NAMED"
   if ! generate_style_image "$named_prompt" "$negative_prompt" "$response_file" "$api_key_value" "$image_path" "$tmp_dir" "$generation_model" "$vertex_project" "$vertex_location"; then
-    if [[ "$generation_model" == "$PRO_MODEL_NAME" ]] && generation_error_is_flash_recoverable; then
+    if [[ "$generation_model" == "$PRO_MODEL_NAME" ]] && generation_error_has_model_unavailable; then
+      generation_model="$FLASH_MODEL_NAME"
+      prepare_generation_prompts "$generation_model" "$role"
+      selection_reason="${selection_reason}_flash_fallback_model_unavailable"
+      if ! generate_style_image "$named_prompt" "$negative_prompt" "$response_file" "$api_key_value" "$image_path" "$tmp_dir" "$generation_model" "$vertex_project" "$vertex_location"; then
+        write_generation_status "$project" "$role"
+        rm -rf "$tmp_dir"
+        rm -rf "$generation_lock"
+        die "image generation stopped after Vertex model-unavailable fallback failed"
+      fi
+    elif generation_error_is_permanent_auth; then
+      write_generation_status "$project" "$role"
+      rm -rf "$tmp_dir"
+      rm -rf "$generation_lock"
+      die "image generation stopped after permanent provider authentication failure"
+    elif [[ "$generation_model" == "$PRO_MODEL_NAME" ]] && generation_error_is_flash_recoverable; then
       generation_model="$FLASH_MODEL_NAME"
       prepare_generation_prompts "$generation_model" "$role"
       selection_reason="${selection_reason}_flash_fallback"
       generate_style_image "$named_prompt" "$negative_prompt" "$response_file" "$api_key_value" "$image_path" "$tmp_dir" "$generation_model" "$vertex_project" "$vertex_location" || {
+        write_generation_status "$project" "$role"
         rm -rf "$tmp_dir"
         rm -rf "$generation_lock"
         die "image generation did not produce a usable text-free image"
@@ -2443,11 +2581,13 @@ generate_background() {
           prepare_generation_prompts "$generation_model" "$role"
           selection_reason="${selection_reason}_flash_fallback"
           generate_style_image "$fallback_prompt" "$negative_prompt" "$response_file" "$api_key_value" "$image_path" "$tmp_dir" "$generation_model" "$vertex_project" "$vertex_location" || {
+            write_generation_status "$project" "$role"
             rm -rf "$tmp_dir"
             rm -rf "$generation_lock"
             die "image generation did not produce a usable text-free image"
           }
         else
+          write_generation_status "$project" "$role"
           rm -rf "$tmp_dir"
           rm -rf "$generation_lock"
           die "image generation did not produce a usable text-free image"
@@ -2462,6 +2602,7 @@ generate_background() {
     write_sidecar "$meta_path" "$project" "$role" "$style_mode" "$fallback_prompt" "$negative_prompt" "$persona_line" "$image_path" "$response_file" "$gender_desc" "$age_desc" "$generation_model" "$generation_prompt_version" "$generation_prompt_schema" "$selection_reason"
   fi
 
+  rm -f "$(generation_status_path "$project" "$role")"
   rm -rf "$tmp_dir"
   rm -rf "$generation_lock"
   printf '%s\n' "$image_path"
@@ -2655,6 +2796,11 @@ retry_generate_background() {
 
   trap "rm -rf '${lock_dir}'" EXIT
 
+  if generation_status_is_permanent_failure "$project" "$role"; then
+    warn "retry worker: permanent provider failure for ${project} (${role}); stopping retries"
+    return 0
+  fi
+
   for delay in "${retry_delays[@]}"; do
     sleep "$delay"
 
@@ -2672,6 +2818,11 @@ retry_generate_background() {
         warn "retry worker: generated ${project} (${role}) and refreshed manifest"
         return 0
       fi
+    fi
+
+    if generation_status_is_permanent_failure "$project" "$role"; then
+      warn "retry worker: permanent provider failure for ${project} (${role}); stopping retries"
+      return 0
     fi
 
     warn "retry worker: image generation failed for ${project} (${role}); next retry pending"

@@ -17,6 +17,22 @@ tmux pane 背景画像を Gemini で生成する。各ペインの persona（職
 - `--refresh`: 既存キャッシュ無視、強制再生成
 - 出力: `<repo>/.local/tproj-pane-bg/<role>.vertical.png` と `.json` sidecar
 
+## 生成失敗の診断と retry
+
+Vertex AI と API key の両方を試した場合、失敗情報は provider ごとの
+`attempts` として `<repo>/.local/tproj-pane-bg/.generation-status.<role>.json`
+に保存される。エラー本文は secret を含まない形に redaction されるため、
+ログや status artifact に API key の値を貼らない。
+
+`API_KEY_INVALID`、`UNAUTHENTICATED`、`PERMISSION_DENIED` は
+`retry_class: permanent_auth` として扱い、内部の追加試行と retry-worker の
+10/30/90 秒 retry を止める。quota、timeout、transport 系は
+`retry_class: transient` として従来どおり retry する。Vertex の PRO model が
+`404` / `NOT_FOUND` かつ publisher/model unavailable を示す場合は
+FLASH model へ一度だけ fallback し、FLASH も unavailable なら
+`retry_class: model_unavailable` として追加 retry を止める。Vertex が成功した
+場合は API key fallback を呼ばず、status artifact は成功時に削除される。
+
 ## instruction 二層契約
 
 `project-bootstrap` は shared instruction と local runtime artifact を別の
