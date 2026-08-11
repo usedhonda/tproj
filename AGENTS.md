@@ -101,15 +101,25 @@ layers are tool- or machine-local and do not reach the other agent.
 
 A change is complete when all of the following hold:
 
-1. The relevant focused tests above pass (run the smallest covering set; run
-   the full suite set defined in `.github/workflows/test.yml` for any
-   `extensions/messaging` or `extensions/hooks` change).
-2. The installed copy is refreshed for artifacts that `install.sh` distributes
+1. During iteration, run syntax/static checks and the smallest existing
+   focused check only when the change could affect it. Do not create a new
+   test for every intermediate patch, run heavy/full suites after every
+   change, rerun an unchanged green test at the same revision/environment, or
+   duplicate worker full-suite evidence in orchestrator verification. Add or
+   modify one minimal regression test only after behavior or the contract
+   stabilizes, and only for a real bug, externally observable behavior, or an
+   uncovered protected contract.
+2. Immediately before final output or publish, run the broad suite set defined
+   in `.github/workflows/test.yml` once for `extensions/messaging` or
+   `extensions/hooks` changes. Rerun it only after a relevant code, test, or
+   environment change, or when explicitly required by the user, release, or
+   CI. CI may continue to run all suites on push/PR.
+3. The installed copy is refreshed for artifacts that `install.sh` distributes
    (verify with `install.sh --check`; avoid running `install.sh` while a tmux
    workspace is live). GUI changes are verified through `dev-app.sh` only.
-3. The change is committed with an English conventional commit
+4. The change is committed with an English conventional commit
    (`feat:`/`fix:`/`docs:`/`test:`/`chore:`), one logical substep per commit.
-4. Contract-sensitive changes (startup, installer, messaging, runtime
+5. Contract-sensitive changes (startup, installer, messaging, runtime
    contracts) include their focused test updates in the same commit.
 
 ## Handoff
