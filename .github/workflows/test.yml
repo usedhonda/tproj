@@ -10,12 +10,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Guard iteration efficiency contract
         run: |
-          if rg -n -F 'full suite set defined in `.github/workflows/test.yml` for any' AGENTS.md; then
+          if grep -n -F 'full suite set defined in `.github/workflows/test.yml` for any' AGENTS.md; then
             echo 'stale blanket per-change full-suite rule found' >&2
             exit 1
           fi
-          rg -q 'During iteration, run syntax/static checks' AGENTS.md
-          rg -q 'Immediately before final output or publish' AGENTS.md
+          grep -q -F 'During iteration, run syntax/static checks' AGENTS.md
+          grep -q -F 'Immediately before final output or publish' AGENTS.md
       - name: Smoke
         run: bash tests/smoke-bin.sh
       - name: Messaging sendability
