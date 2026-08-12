@@ -335,6 +335,31 @@ def is_readonly_shell(command: str) -> bool:
     return False
 
 
+def is_exact_user_unfreeze(command: str) -> bool:
+    """Allow only the installed one-shot override CLI through a frozen guard."""
+    if not command.strip() or AMBIGUOUS_SHELL_RE.search(command):
+        return False
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    if len(argv) != 5 or argv[1] != "unfreeze":
+        return False
+    expected = (Path.home() / "bin/tproj-task").resolve(strict=False)
+    try:
+        actual = Path(argv[0]).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+    component = re.compile(r"^[A-Za-z0-9._-]+$")
+    confirmation = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
+    return (
+        actual == expected
+        and component.fullmatch(argv[2]) is not None
+        and component.fullmatch(argv[3]) is not None
+        and confirmation.fullmatch(argv[4]) is not None
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--platform", choices=("claude", "codex"), default="claude")
@@ -367,6 +392,8 @@ def main() -> int:
     if tool_name in MUTATING_TOOL_NAMES:
         return block(f"Delegated task {task_id} from {owner_alias} is {state} (reason_hash={reason_hash}); edits are blocked")
     if command:
+        if state == "frozen" and is_exact_user_unfreeze(command):
+            return 0
         if is_readonly_shell(command):
             return 0
         return block(

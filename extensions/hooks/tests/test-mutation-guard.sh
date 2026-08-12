@@ -29,9 +29,10 @@ check() {
 
 seed_frozen_task() {
   find "$TMP" -maxdepth 1 -name 'messages.db*' -delete 2>/dev/null || true
+  find "$HOME/.cache/tproj-expect-reply" -depth -delete 2>/dev/null || true
   tt_db_ensure_init >/dev/null 2>&1 || true
-  tt_db_upsert_task worker-freeze-01 worker.cdx 1000 1800 hash worker unit >/dev/null 2>&1 || true
-  tt_db_tombstone_task worker-freeze-01 frozen unit worker worker.cdx 1122aabbccddeeff >/dev/null 2>&1 || true
+  tt_cache_add unit/worker worker.cdx worker-freeze-01 1000 1800 hash delegated >/dev/null 2>&1 || true
+  tt_cache_tombstone_task unit/worker worker.cdx worker-freeze-01 frozen 1122aabbccddeeff >/dev/null 2>&1 || true
 }
 
 invoke_guard() {
@@ -87,6 +88,19 @@ allow_show="$(invoke_guard Bash 'git show HEAD')"
 allow_find="$(invoke_guard Bash 'find . -maxdepth 2 -type f -name '\''*.sh'\''')"
 allow_hash="$(invoke_guard Bash 'shasum -a 256 README.md')"
 check "strict read-only incident commands are allowed" sh -c "test -z '$allow_status' && test -z '$allow_diff' && test -z '$allow_show' && test -z '$allow_find' && test -z '$allow_hash'"
+
+unfreeze_cmd="$HOME/bin/tproj-task unfreeze worker-freeze-01 worker.cdx aabbccddeeff0011"
+unfreeze_guard_out="$(invoke_guard Bash "$unfreeze_cmd")"
+check "exact installed unfreeze command is allowed through frozen guard" test -z "$unfreeze_guard_out"
+TT_CACHE_OWNER="$TT_CACHE_OWNER" "$REPO/extensions/messaging/tproj-task" unfreeze worker-freeze-01 worker.cdx aabbccddeeff0011 >/dev/null
+post_override_edit_out="$(invoke_guard Edit '')"
+check "direct user override releases mutation guard without reopening frozen cache task" sh -c "test -z '$post_override_edit_out' && test \"\$(jq -r '.[\"worker-freeze-01\"].state' '$HOME/.cache/tproj-expect-reply/unit/worker/worker.cdx.json')\" = frozen && test \"\$(jq -r '.[\"worker-freeze-01\"].user_override_hash' '$HOME/.cache/tproj-expect-reply/unit/worker/worker.cdx.json')\" = aabbccddeeff0011"
+
+seed_frozen_task
+wrong_path_out="$(invoke_guard Bash "/tmp/tproj-task unfreeze worker-freeze-01 worker.cdx aabbccddeeff0011")"
+check "lookalike unfreeze command remains blocked" sh -c "grep -q 'read-only incident shell commands' <<'EOF'
+$wrong_path_out
+EOF"
 
 printf '%s\n' "----" "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -377,6 +377,45 @@ tt_cache_tombstone_task() {
   return $rc
 }
 
+tt_cache_user_override_frozen_task() {
+  # Arguments: owner target task_id confirmation_hash [now_epoch]
+  # Keep the cache entry frozen so stale task replies remain suppressed, but
+  # mark the durable DB row user_overridden so the receiver mutation guard no
+  # longer applies after a direct user confirmation.
+  tt_cache_require_jq || return $?
+  local owner="$1" target="$2" task_id="$3" confirmation_hash="$4"
+  local now="${5:-$(date +%s)}"
+  tt_cache_valid_owner "$owner" || return 2
+  tt_cache_valid_component "$target" || return 2
+  [[ "$confirmation_hash" =~ ^[A-Za-z0-9._:-]{8,128}$ && "$now" =~ ^[0-9]+$ ]] || return 2
+  local path lock rc=0 updated
+  path="$(tt_cache_path_for_target "$owner" "$target")"
+  lock="$(tt_cache_lock_for_target "$owner" "$target")"
+  [[ -s "$path" ]] || return 1
+  tt_cache_acquire_lock "$lock" 5 || return 1
+  updated=$(jq -c --arg id "$task_id" --arg confirmation "$confirmation_hash" --argjson now "$now" '
+    if .[$id] == null then error("missing task")
+    elif .[$id].state != "frozen" then error("task is not frozen")
+    else
+      .[$id].user_override_at //= $now
+      | .[$id].user_override_hash = $confirmation
+    end' "$path" 2>/dev/null) || rc=2
+  if [[ $rc -eq 0 ]]; then
+    printf '%s\n' "$updated" > "${path}.tmp" && mv "${path}.tmp" "$path" || rc=1
+  fi
+  tt_cache_release_lock "$lock"
+  if [[ $rc -eq 0 ]] && declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_quote >/dev/null 2>&1; then
+    local task_q session_q owner_q target_q confirmation_q
+    task_q="$(tt_db_quote "$task_id")"
+    session_q="$(tt_db_quote "${owner%%/*}")"
+    owner_q="$(tt_db_quote "${owner##*/}")"
+    target_q="$(tt_db_quote "$target")"
+    confirmation_q="$(tt_db_quote "$confirmation_hash")"
+    tt_db_exec_safe "UPDATE tasks SET state='user_overridden', worker_notice_state='user_overridden:${confirmation_q}', worker_notice_at=${now} WHERE task_id='${task_q}' AND owner_session='${session_q}' AND owner_alias='${owner_q}' AND target='${target_q}' AND state IN ('frozen','user_overridden');" >/dev/null
+  fi
+  return $rc
+}
+
 tt_cache_mark_notice() {
   # Arguments: owner target task_id notice [now_epoch]
   # Returns 0 only when the notice was newly recorded; 1 means already emitted.

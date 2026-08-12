@@ -30,6 +30,7 @@ Usage:
   tproj-task status <id>
   tproj-task cancel <id> <target> <reason-hash>
   tproj-task freeze <id> <target> <reason-hash>
+  tproj-task unfreeze <id> <target> <confirmation-hash>
   tproj-task verify <id> <target> <summary> <done-body-hash>
   tproj-task report <id> <target>
   tproj-task gc
@@ -122,6 +123,27 @@ case "$cmd" in
     tombstone_state="cancelled"
     [[ "$cmd" == freeze ]] && tombstone_state="frozen"
     apply_tombstone "$tombstone_state" "$2" "$3" "$4"
+    ;;
+  unfreeze)
+    [[ $# -eq 4 ]] || { echo "Error: unfreeze requires <id> <target> <confirmation-hash>" >&2; exit 1; }
+    require_owner
+    task_id="$2"; target="$3"; confirmation_hash="$4"
+    entry="$(require_exact_task "$task_id" "$target")" || exit 1
+    [[ "$(printf '%s' "$entry" | jq -r '.state // ""')" == frozen ]] || {
+      echo "Error: task '$task_id' is not frozen" >&2
+      exit 1
+    }
+    [[ "$confirmation_hash" =~ ^[A-Za-z0-9._:-]{8,128}$ ]] || {
+      echo "Error: invalid confirmation hash" >&2
+      exit 1
+    }
+    tt_cache_user_override_frozen_task "$OWNER" "$target" "$task_id" "$confirmation_hash" >/dev/null
+    lifecycle="$(tt_db_task_lifecycle "$task_id" "${OWNER%%/*}" "${OWNER##*/}" "$target" 2>/dev/null || true)"
+    [[ "${lifecycle%%|*}" == user_overridden ]] || {
+      echo "Error: user override was not durably recorded" >&2
+      exit 1
+    }
+    echo "user_overridden $task_id ($target)"
     ;;
   verify)
     [[ $# -eq 5 ]] || { echo "Error: verify requires <id> <target> <summary> <done-body-hash>" >&2; exit 1; }

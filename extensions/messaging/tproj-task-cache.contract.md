@@ -134,6 +134,7 @@ Owner-side tombstones branch to durable terminal states:
 - CANCELLED/FROZEN retain the cache + DB tombstone instead of deleting the task. Only hashed structural reason metadata is stored.
 - `tproj-task verify <id> <target> <summary> <done-body-hash>` is exact owner/target scoped and rejects a mismatched hash.
 - `tproj-task cancel <id> <target> <reason-hash>` and `tproj-task freeze <id> <target> <reason-hash>` are exact owner/target scoped and idempotent.
+- A freeze never outranks the user. After an explicit user confirmation, the receiver runs `tproj-task unfreeze <id> <target> <confirmation-hash>`. The exact installed command is the only mutation allowed through the frozen guard. It records durable DB state `user_overridden` and releases the guard immediately, while the cache entry remains `frozen` so stale task replies still cannot reopen. Without explicit user confirmation, the freeze remains fail-closed.
 - `[COMPLETION-REPORT: <id>]` in platform-observed final assistant text invokes `tproj-task report`; only that transition records `user_reported_at` and removes the cache entry. It means the platform observed the report marker, not that a human read it.
 - `tproj-task close` is retired and fails closed.
 - While an exact inbound task is active, the Claude/Codex Stop hook requires exactly one matching lifecycle tag that was already sent to the exact owner. Untagged local success is blocked with the required tag forms. The parser accepts Claude's top-level and Codex's nested `raw_event.last_assistant_message` Stop payloads.
