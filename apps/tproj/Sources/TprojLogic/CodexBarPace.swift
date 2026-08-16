@@ -144,30 +144,48 @@ public enum CodexBarPace {
     }
 
     private struct Entry: Decodable {
-        let capturedAt: String
-        let resetsAt: String
-        let usedPercent: Double
+        let capturedAt: String?
+        let resetsAt: String?
+        let usedPercent: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case capturedAt, resetsAt, usedPercent
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            capturedAt = try? container.decode(String.self, forKey: .capturedAt)
+            resetsAt = try? container.decode(String.self, forKey: .resetsAt)
+            usedPercent = try? container.decode(Double.self, forKey: .usedPercent)
+        }
     }
 
     public static func latestWeeklySnapshot(from data: Data, provider: String) -> WeeklyPaceSnapshot? {
         guard let history = try? JSONDecoder().decode(History.self, from: data),
               let key = history.preferredAccountKey,
               let windows = history.accounts[key],
-              let weekly = windows.first(where: { $0.windowMinutes == 10_080 || $0.name == "weekly" }),
-              let entry = weekly.entries.last,
-              let capturedAt = parseDate(entry.capturedAt),
-              let resetsAt = parseDate(entry.resetsAt),
-              resetsAt > capturedAt,
-              (0...100).contains(entry.usedPercent) else {
+              let weekly = windows.first(where: { $0.windowMinutes == 10_080 || $0.name == "weekly" }) else {
             return nil
         }
-        return WeeklyPaceSnapshot(
-            provider: provider,
-            capturedAt: capturedAt,
-            resetsAt: resetsAt,
-            usedPercent: entry.usedPercent,
-            windowMinutes: weekly.windowMinutes
-        )
+        for entry in weekly.entries.reversed() {
+            guard let capturedAtValue = entry.capturedAt,
+                  let resetsAtValue = entry.resetsAt,
+                  let usedPercent = entry.usedPercent,
+                  let capturedAt = parseDate(capturedAtValue),
+                  let resetsAt = parseDate(resetsAtValue),
+                  resetsAt > capturedAt,
+                  (0...100).contains(usedPercent) else {
+                continue
+            }
+            return WeeklyPaceSnapshot(
+                provider: provider,
+                capturedAt: capturedAt,
+                resetsAt: resetsAt,
+                usedPercent: usedPercent,
+                windowMinutes: weekly.windowMinutes
+            )
+        }
+        return nil
     }
 
     public static func noticeState(

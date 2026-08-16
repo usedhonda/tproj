@@ -93,7 +93,11 @@ final class RoleModeTests: XCTestCase {
         func history(usedPercent: Int) -> Data {
             Data("""
             {"preferredAccountKey":"active","accounts":{"active":[
+              {"name":"session","windowMinutes":300,"entries":[
+                {"capturedAt":"legacy-bad","usedPercent":"unknown"}
+              ]},
               {"name":"weekly","windowMinutes":10080,"entries":[
+                {"capturedAt":"2026-08-13T23:00:00Z","usedPercent":"unknown"},
                 {"capturedAt":"2026-08-14T00:00:00Z","resetsAt":"2026-08-17T00:00:00Z","usedPercent":\(usedPercent)}
               ]}
             ]}}
