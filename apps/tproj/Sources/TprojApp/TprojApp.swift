@@ -5245,21 +5245,29 @@ struct ContentView: View {
                     }
                 }
                 if let paceAdvisory {
-                    Section("Weekly pace") {
+                    Section("週の利用枠") {
                         Label(
-                            weeklyPaceMenuLine(
+                            weeklyPaceCurrentLine(
                                 side: paceAdvisory.main,
-                                projectedPercent: paceAdvisory.mainProjectedPercent,
-                                resetsAt: paceAdvisory.mainResetsAt,
+                                remainingPercent: paceAdvisory.mainRemainingPercent,
                                 isMain: true
                             ),
                             systemImage: "exclamationmark.triangle.fill"
                         )
-                        Text(weeklyPaceMenuLine(
+                        Text(weeklyPaceForecastLine(
+                            resetsAt: paceAdvisory.mainResetsAt,
+                            projectedRemainingPercent: paceAdvisory.mainProjectedRemainingPercent,
+                            reachesLimit: paceAdvisory.reason == .exhaustion
+                        ))
+                        Text(weeklyPaceCurrentLine(
                             side: paceAdvisory.other,
-                            projectedPercent: paceAdvisory.otherProjectedPercent,
-                            resetsAt: paceAdvisory.otherResetsAt,
+                            remainingPercent: paceAdvisory.otherRemainingPercent,
                             isMain: false
+                        ))
+                        Text(weeklyPaceForecastLine(
+                            resetsAt: paceAdvisory.otherResetsAt,
+                            projectedRemainingPercent: paceAdvisory.otherProjectedRemainingPercent,
+                            reachesLimit: false
                         ))
                         Text(weeklyPaceMenuGuidance(paceAdvisory))
                     }
@@ -5295,16 +5303,28 @@ struct ContentView: View {
         }
     }
 
-    private func weeklyPaceMenuLine(
+    private func weeklyPaceCurrentLine(
         side: String,
-        projectedPercent: Int,
-        resetsAt: Date,
+        remainingPercent: Int,
         isMain: Bool
     ) -> String {
         let name = side == "cc" ? "CC" : "Cdx"
-        let formatter = DateFormatter()
-        formatter.dateFormat = "M/d H:mm"
-        return "\(isMain ? "主" : "")\(name) \(projectedPercent)% · \(formatter.string(from: resetsAt))"
+        return "\(isMain ? "主" : "")\(name) · 週\(remainingPercent)%残り"
+    }
+
+    private func weeklyPaceForecastLine(
+        resetsAt: Date,
+        projectedRemainingPercent: Int,
+        reachesLimit: Bool
+    ) -> String {
+        let seconds = max(0, Int(resetsAt.timeIntervalSinceNow))
+        let days = seconds / 86_400
+        let hours = (seconds % 86_400) / 3_600
+        let countdown = days > 0 ? "\(days)日\(hours)時間後" : "\(max(1, hours))時間後"
+        if reachesLimit {
+            return "\(countdown)リセット · その前に使い切る予測"
+        }
+        return "\(countdown)リセット · 予測\(projectedRemainingPercent)%残り"
     }
 
     private func weeklyPaceMenuGuidance(_ advisory: WeeklyPaceAdvisory) -> String {

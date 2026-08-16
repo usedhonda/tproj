@@ -631,7 +631,7 @@ usage_other_reset=$((usage_now + 7200))
 usage_state="$TMP/weekly-pace.json"
 usage_ledger="$TMP/usage-notice.json"
 cat > "$usage_state" <<JSON
-{"version":1,"generated_at":$usage_now,"sides":{"cdx":{"status":"alert","main":"cdx","other":"cc","severity":"advisory","reason":"peer-headroom","main_projected_percent":85,"other_projected_percent":45,"main_resets_at":$usage_main_reset,"other_resets_at":$usage_other_reset}}}
+{"version":1,"generated_at":$usage_now,"sides":{"cdx":{"status":"alert","main":"cdx","other":"cc","severity":"advisory","reason":"peer-headroom","main_remaining_percent":20,"other_remaining_percent":70,"main_projected_percent":85,"other_projected_percent":45,"main_resets_at":$usage_main_reset,"other_resets_at":$usage_other_reset}}}
 JSON
 usage_first="$(TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cdx TPROJ_USAGE_NOW="$usage_now" \
   TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \
@@ -640,10 +640,12 @@ usage_duplicate="$(TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cdx TPROJ_USAGE_NOW="$u
   TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \
   "$TMP/tproj-inbox-check" --platform codex 2>/dev/null || true)"
 assert_contains "$usage_first" "[usage-notice]" "first provider-balanced notice is injected"
+assert_contains "$usage_first" "週20%残り" "notice explains current weekly allowance remaining"
+assert_contains "$usage_first" "1時間後リセット" "notice explains time until reset"
 assert_not_contains "$usage_duplicate" "usage-notice" "CC/Cdx share one cooldown ledger"
 
 cat > "$usage_state" <<JSON
-{"version":1,"generated_at":$usage_now,"sides":{"cdx":{"status":"alert","main":"cdx","other":"cc","severity":"critical","reason":"exhaustion","main_projected_percent":105,"other_projected_percent":45,"main_resets_at":$usage_main_reset,"other_resets_at":$usage_other_reset}}}
+{"version":1,"generated_at":$usage_now,"sides":{"cdx":{"status":"alert","main":"cdx","other":"cc","severity":"critical","reason":"exhaustion","main_remaining_percent":15,"other_remaining_percent":70,"main_projected_percent":105,"other_projected_percent":45,"main_resets_at":$usage_main_reset,"other_resets_at":$usage_other_reset}}}
 JSON
 usage_escalated="$(TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cdx TPROJ_USAGE_NOW="$usage_now" \
   TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \
@@ -652,7 +654,7 @@ usage_escalated_context="$(printf '%s' "$usage_escalated" | jq -r '.hookSpecific
 assert_contains "$usage_escalated_context" "利用枠警告" "critical escalation bypasses cooldown"
 
 cat > "$usage_state" <<JSON
-{"version":1,"generated_at":$usage_now,"sides":{"cdx":{"status":"healthy","main":"cdx","other":"cc","severity":null,"reason":null,"main_projected_percent":60,"other_projected_percent":55,"main_resets_at":$usage_main_reset,"other_resets_at":$usage_other_reset}}}
+{"version":1,"generated_at":$usage_now,"sides":{"cdx":{"status":"healthy","main":"cdx","other":"cc","severity":null,"reason":null,"main_remaining_percent":40,"other_remaining_percent":50,"main_projected_percent":60,"other_projected_percent":55,"main_resets_at":$usage_main_reset,"other_resets_at":$usage_other_reset}}}
 JSON
 usage_recovery="$(TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cdx TPROJ_USAGE_NOW="$usage_now" \
   TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \

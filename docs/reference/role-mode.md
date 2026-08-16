@@ -135,6 +135,10 @@ derived lead. `--main derived` clears the preference.
   from Application Support every five minutes. For each provider, it derives the
   window start from that provider's own next reset minus seven days, calculates the
   average burn since that start, and projects usage at that provider's next reset.
+  User-facing GUI and conversation notices follow CodexBar's remaining-capacity
+  vocabulary: current weekly percentage remaining, time until reset, and projected
+  percentage remaining at reset. The projected-used percentage remains internal to
+  alert evaluation and is not shown as an unexplained standalone number.
   Assessment starts only after one hour and 10% actual use, and requires both
   provider snapshots to be no more than 30 minutes old. Red means the main projects
   100% usage; yellow means either 90% projected usage or a meaningful allocation gap

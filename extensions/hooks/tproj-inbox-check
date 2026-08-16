@@ -45,11 +45,19 @@ source "$CACHE_HELPER"
 # writes a sanitized global state (no account identifiers or arbitrary text),
 # while this hook owns one cross-project delivery ledger so CC and Cdx do not
 # repeat the same notice in every column.
-usage_format_reset() {
-  local epoch="$1"
-  date -r "$epoch" '+%m/%d %H:%M' 2>/dev/null \
-    || date -d "@$epoch" '+%m/%d %H:%M' 2>/dev/null \
-    || return 1
+usage_format_until_reset() {
+  local epoch="$1" now="$2" delta days hours
+  delta=$((epoch - now))
+  (( delta > 0 )) || return 1
+  days=$((delta / 86400))
+  hours=$(((delta % 86400) / 3600))
+  if (( days > 0 )); then
+    printf '%s日%s時間後' "$days" "$hours"
+  elif (( hours > 0 )); then
+    printf '%s時間後' "$hours"
+  else
+    printf '1時間以内'
+  fi
 }
 
 usage_resolve_main() {
@@ -111,9 +119,10 @@ emit_weekly_usage_notice() {
   local state_path="${TPROJ_USAGE_STATE_PATH:-$HOME/.local/state/tproj/weekly-pace.json}"
   local ledger_path="${TPROJ_USAGE_LEDGER_PATH:-$HOME/.local/state/tproj/usage-notice.json}"
   local ledger_dir lock_dir now generated age main side_values
-  local status severity reason main_pct other_pct main_reset other_reset
+  local status severity reason main_remaining other_remaining main_pct other_pct main_reset other_reset
   local prev_values prev_state prev_severity prev_reason prev_bucket prev_main_reset prev_other_reset prev_at
-  local current_bucket elapsed cooldown due=false display_main display_other main_label other_label message instruction
+  local current_bucket elapsed cooldown due=false display_main display_other main_label other_label
+  local main_projected_remaining other_projected_remaining message instruction
 
   [[ -s "$state_path" ]] || return 0
   main="$(usage_resolve_main 2>/dev/null || true)"
@@ -131,14 +140,16 @@ emit_weekly_usage_notice() {
   ' "$state_path" >/dev/null 2>&1 || return 0
   side_values="$(jq -r --arg main "$main" '.sides[$main] |
     [(.status // ""), (.severity // "-"), (.reason // "-"),
+     (.main_remaining_percent // -1), (.other_remaining_percent // -1),
      (.main_projected_percent // -1), (.other_projected_percent // -1),
      (.main_resets_at // 0), (.other_resets_at // 0)] | @tsv' "$state_path" 2>/dev/null || true)"
-  IFS=$'\t' read -r status severity reason main_pct other_pct main_reset other_reset <<< "$side_values"
+  IFS=$'\t' read -r status severity reason main_remaining other_remaining main_pct other_pct main_reset other_reset <<< "$side_values"
   [[ "$severity" == "-" ]] && severity=""
   [[ "$reason" == "-" ]] && reason=""
   [[ "$status" == "hold" || "$status" == "unavailable" ]] && return 0
+  [[ "$main_remaining" =~ ^[0-9]+$ && "$other_remaining" =~ ^[0-9]+$ ]] || return 0
   [[ "$main_pct" =~ ^[0-9]+$ && "$other_pct" =~ ^[0-9]+$ && "$main_reset" =~ ^[0-9]+$ && "$other_reset" =~ ^[0-9]+$ ]] || return 0
-  (( main_pct <= 999 && other_pct <= 999 && main_reset > now && other_reset > now )) || return 0
+  (( main_remaining <= 100 && other_remaining <= 100 && main_pct <= 999 && other_pct <= 999 && main_reset > now && other_reset > now )) || return 0
   if [[ "$status" == "alert" ]]; then
     [[ "$severity" == "advisory" || "$severity" == "critical" ]] || return 0
     [[ "$reason" == "exhaustion" || "$reason" == "absolute-high" || "$reason" == "peer-headroom" ]] || return 0
@@ -192,23 +203,28 @@ emit_weekly_usage_notice() {
 
   [[ "$main" == "cc" ]] && display_main="CC" || display_main="Cdx"
   [[ "$main" == "cc" ]] && display_other="Cdx" || display_other="CC"
-  main_label="$(usage_format_reset "$main_reset" 2>/dev/null || true)"
-  other_label="$(usage_format_reset "$other_reset" 2>/dev/null || true)"
+  main_label="$(usage_format_until_reset "$main_reset" "$now" 2>/dev/null || true)"
+  other_label="$(usage_format_until_reset "$other_reset" "$now" 2>/dev/null || true)"
   if [[ -z "$main_label" || -z "$other_label" ]]; then
     rmdir "$lock_dir" 2>/dev/null || true
     return 0
   fi
 
+  main_projected_remaining=$((100 - main_pct))
+  other_projected_remaining=$((100 - other_pct))
+  (( main_projected_remaining < 0 )) && main_projected_remaining=0
+  (( other_projected_remaining < 0 )) && other_projected_remaining=0
+
   if [[ "$status" == "healthy" ]]; then
-    message="利用ペースは正常域へ戻りました。主${display_main}は${main_label}のリセット時に約${main_pct}%、${display_other}は${other_label}に約${other_pct}%予測です。現在の主のままで問題ありません。"
+    message="利用ペースは正常域へ戻りました。主${display_main}は週${main_remaining}%残り、${main_label}リセット時に約${main_projected_remaining}%残る予測です。${display_other}は週${other_remaining}%残り、${other_label}リセット時に約${other_projected_remaining}%残る予測です。現在の主のままで問題ありません。"
     severity=""
     reason=""
   elif [[ "$reason" == "exhaustion" ]]; then
-    message="利用枠警告: 主${display_main}は${main_label}のリセット時に約${main_pct}%となり、リセット前に利用枠へ達する予測です。${display_other}は${other_label}に約${other_pct}%予測です。長い作業を続ける前に利用先の変更を検討してください。"
+    message="利用枠警告: 主${display_main}は週${main_remaining}%残り、${main_label}リセットですが、このペースではリセット前に使い切る予測です。${display_other}は週${other_remaining}%残り、${other_label}リセット時に約${other_projected_remaining}%残る予測です。長い作業は${display_other}を検討してください。"
   elif [[ "$reason" == "peer-headroom" ]]; then
-    message="利用配分のご案内: 主${display_main}は${main_label}に約${main_pct}%、${display_other}は${other_label}に約${other_pct}%予測です。${display_other}側の利用枠に余裕があるため、次の長い作業では主の変更を推奨します。"
+    message="利用配分のご案内: 主${display_main}は週${main_remaining}%残り、${main_label}リセット時に約${main_projected_remaining}%残る予測です。${display_other}は週${other_remaining}%残り、${other_label}リセット時に約${other_projected_remaining}%残る予測です。次の長い作業は${display_other}を推奨します。"
   else
-    message="利用ペース補足: 主${display_main}は${main_label}のリセット時に約${main_pct}%、${display_other}は${other_label}に約${other_pct}%予測です。短い作業は現在のままで問題ありませんが、長い作業では余裕のある側を使うと安全です。"
+    message="利用ペース補足: 主${display_main}は週${main_remaining}%残り、${main_label}リセット時に約${main_projected_remaining}%残る予測です。${display_other}は週${other_remaining}%残り、${other_label}リセット時に約${other_projected_remaining}%残る予測です。長い作業は${display_other}を検討してください。"
   fi
 
   if ! usage_write_ledger "$ledger_path" "$main" "$status" "$severity" "$reason" \

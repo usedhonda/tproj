@@ -116,6 +116,8 @@ final class RoleModeTests: XCTestCase {
             WeeklyPaceAdvisory(
                 main: "cdx",
                 other: "cc",
+                mainRemainingPercent: 20,
+                otherRemainingPercent: 50,
                 mainProjectedPercent: 140,
                 otherProjectedPercent: 88,
                 mainResetsAt: resetsAt,
@@ -131,8 +133,11 @@ final class RoleModeTests: XCTestCase {
         let state = CodexBarPace.noticeState(snapshots: snapshots, now: freshNow)
         XCTAssertEqual(state.sides["cdx"]?.status, .alert)
         XCTAssertEqual(state.sides["cdx"]?.reason, .exhaustion)
+        XCTAssertEqual(state.sides["cdx"]?.mainRemainingPercent, 20)
+        XCTAssertEqual(state.sides["cdx"]?.otherRemainingPercent, 50)
         let encoded = try XCTUnwrap(CodexBarPace.encodedNoticeState(snapshots: snapshots, now: freshNow))
         let encodedText = String(decoding: encoded, as: UTF8.self)
+        XCTAssertTrue(encodedText.contains("main_remaining_percent"))
         XCTAssertFalse(encodedText.contains("preferredAccountKey"))
         XCTAssertFalse(encodedText.contains("active"))
 

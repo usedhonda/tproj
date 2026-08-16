@@ -50,6 +50,8 @@ public struct WeeklyPaceNoticeSide: Codable, Equatable, Sendable {
     public let other: String
     public let severity: WeeklyPaceSeverity?
     public let reason: WeeklyPaceReason?
+    public let mainRemainingPercent: Int?
+    public let otherRemainingPercent: Int?
     public let mainProjectedPercent: Int?
     public let otherProjectedPercent: Int?
     public let mainResetsAt: Int?
@@ -57,6 +59,8 @@ public struct WeeklyPaceNoticeSide: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case status, main, other, severity, reason
+        case mainRemainingPercent = "main_remaining_percent"
+        case otherRemainingPercent = "other_remaining_percent"
         case mainProjectedPercent = "main_projected_percent"
         case otherProjectedPercent = "other_projected_percent"
         case mainResetsAt = "main_resets_at"
@@ -78,6 +82,8 @@ public struct WeeklyPaceNoticeState: Codable, Equatable, Sendable {
 public struct WeeklyPaceAdvisory: Equatable, Sendable {
     public let main: String
     public let other: String
+    public let mainRemainingPercent: Int
+    public let otherRemainingPercent: Int
     public let mainProjectedPercent: Int
     public let otherProjectedPercent: Int
     public let mainResetsAt: Date
@@ -88,6 +94,8 @@ public struct WeeklyPaceAdvisory: Equatable, Sendable {
     public init(
         main: String,
         other: String,
+        mainRemainingPercent: Int,
+        otherRemainingPercent: Int,
         mainProjectedPercent: Int,
         otherProjectedPercent: Int,
         mainResetsAt: Date,
@@ -97,6 +105,8 @@ public struct WeeklyPaceAdvisory: Equatable, Sendable {
     ) {
         self.main = main
         self.other = other
+        self.mainRemainingPercent = mainRemainingPercent
+        self.otherRemainingPercent = otherRemainingPercent
         self.mainProjectedPercent = mainProjectedPercent
         self.otherProjectedPercent = otherProjectedPercent
         self.mainResetsAt = mainResetsAt
@@ -107,27 +117,33 @@ public struct WeeklyPaceAdvisory: Equatable, Sendable {
 
     public var signature: String { "\(main):\(severity.rawValue):\(reason.rawValue)" }
 
+    public var mainProjectedRemainingPercent: Int { max(0, 100 - mainProjectedPercent) }
+    public var otherProjectedRemainingPercent: Int { max(0, 100 - otherProjectedPercent) }
+
     public var message: String {
         let mainName = displayName(main)
         let otherName = displayName(other)
-        let mainReset = resetDescription(mainResetsAt)
-        let otherReset = resetDescription(otherResetsAt)
+        let mainReset = resetCountdown(mainResetsAt)
+        let otherReset = resetCountdown(otherResetsAt)
         switch reason {
         case .exhaustion:
-            return "利用枠警告: 主\(mainName)は\(mainReset)のリセット時に約\(mainProjectedPercent)%となり、リセット前に利用枠へ達する予測です。\(otherName)は\(otherReset)に約\(otherProjectedPercent)%予測です。長い作業を続ける前に利用先の変更を検討してください。"
+            return "利用枠警告: 主\(mainName)は週\(mainRemainingPercent)%残り、\(mainReset)リセットですが、このペースではリセット前に使い切る予測です。\(otherName)は週\(otherRemainingPercent)%残り、\(otherReset)リセットです。長い作業は\(otherName)を検討してください。"
         case .absoluteHigh:
-            return "利用ペース補足: 主\(mainName)は\(mainReset)のリセット時に約\(mainProjectedPercent)%、\(otherName)は\(otherReset)に約\(otherProjectedPercent)%予測です。短い作業は現在のままで問題ありませんが、長い作業では余裕のある側を使うと安全です。"
+            return "利用ペース補足: 主\(mainName)は週\(mainRemainingPercent)%残り、\(mainReset)リセット時に約\(mainProjectedRemainingPercent)%残る予測です。\(otherName)は週\(otherRemainingPercent)%残り、\(otherReset)リセット時に約\(otherProjectedRemainingPercent)%残る予測です。長い作業は\(otherName)を検討してください。"
         case .peerHeadroom:
-            return "利用配分のご案内: 主\(mainName)は\(mainReset)に約\(mainProjectedPercent)%、\(otherName)は\(otherReset)に約\(otherProjectedPercent)%予測です。\(otherName)側の利用枠に余裕があるため、次の長い作業では主の変更を推奨します。"
+            return "利用配分のご案内: 主\(mainName)は週\(mainRemainingPercent)%残り、\(mainReset)リセット時に約\(mainProjectedRemainingPercent)%残る予測です。\(otherName)は週\(otherRemainingPercent)%残り、\(otherReset)リセット時に約\(otherProjectedRemainingPercent)%残る予測です。次の長い作業は\(otherName)を推奨します。"
         }
     }
 
     private func displayName(_ side: String) -> String { side == "cc" ? "CC" : "Cdx" }
 
-    private func resetDescription(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "M/d H:mm"
-        return formatter.string(from: date)
+    private func resetCountdown(_ date: Date) -> String {
+        let seconds = max(0, Int(date.timeIntervalSinceNow))
+        let days = seconds / 86_400
+        let hours = (seconds % 86_400) / 3_600
+        if days > 0 { return "\(days)日\(hours)時間後" }
+        if hours > 0 { return "\(hours)時間後" }
+        return "1時間以内"
     }
 }
 
@@ -223,6 +239,8 @@ public enum CodexBarPace {
         guard value.status == .alert,
               let severity = value.severity,
               let reason = value.reason,
+              let mainRemaining = value.mainRemainingPercent,
+              let otherRemaining = value.otherRemainingPercent,
               let mainProjected = value.mainProjectedPercent,
               let otherProjected = value.otherProjectedPercent,
               let mainReset = value.mainResetsAt,
@@ -230,6 +248,8 @@ public enum CodexBarPace {
         return WeeklyPaceAdvisory(
             main: value.main,
             other: value.other,
+            mainRemainingPercent: mainRemaining,
+            otherRemainingPercent: otherRemaining,
             mainProjectedPercent: mainProjected,
             otherProjectedPercent: otherProjected,
             mainResetsAt: Date(timeIntervalSince1970: TimeInterval(mainReset)),
@@ -268,6 +288,8 @@ public enum CodexBarPace {
         let common = (
             main: main,
             other: other,
+            mainRemaining: max(0, min(100, Int((100 - mainSnapshot.usedPercent).rounded()))),
+            otherRemaining: max(0, min(100, Int((100 - otherSnapshot.usedPercent).rounded()))),
             mainProjected: min(999, Int(mainProjected.rounded())),
             otherProjected: min(999, Int(otherProjected.rounded())),
             mainReset: Int(mainSnapshot.resetsAt.timeIntervalSince1970),
@@ -298,6 +320,8 @@ public enum CodexBarPace {
             other: other,
             severity: nil,
             reason: nil,
+            mainRemainingPercent: nil,
+            otherRemainingPercent: nil,
             mainProjectedPercent: nil,
             otherProjectedPercent: nil,
             mainResetsAt: nil,
@@ -309,7 +333,16 @@ public enum CodexBarPace {
         status: WeeklyPaceNoticeStatus,
         severity: WeeklyPaceSeverity?,
         reason: WeeklyPaceReason?,
-        common: (main: String, other: String, mainProjected: Int, otherProjected: Int, mainReset: Int, otherReset: Int)
+        common: (
+            main: String,
+            other: String,
+            mainRemaining: Int,
+            otherRemaining: Int,
+            mainProjected: Int,
+            otherProjected: Int,
+            mainReset: Int,
+            otherReset: Int
+        )
     ) -> WeeklyPaceNoticeSide {
         WeeklyPaceNoticeSide(
             status: status,
@@ -317,6 +350,8 @@ public enum CodexBarPace {
             other: common.other,
             severity: severity,
             reason: reason,
+            mainRemainingPercent: common.mainRemaining,
+            otherRemainingPercent: common.otherRemaining,
             mainProjectedPercent: common.mainProjected,
             otherProjectedPercent: common.otherProjected,
             mainResetsAt: common.mainReset,
