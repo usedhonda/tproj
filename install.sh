@@ -16,7 +16,7 @@ ALL_EXTENSIONS=false
 CHECK_ONLY=false
 
 # Core scripts copied to ~/bin (single source of truth for install + --check).
-CORE_BINS=(tproj tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-focus-hook tproj-pane-clear-rank tproj-pane-autozoom tproj-tmux-state-notify tproj-mru-tracker tproj-respawn-guard tproj-postmortem tproj-mem-trace rebalance-workspace-columns sign-codex wait-for-pane-text)
+CORE_BINS=(tproj tproj-role tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-focus-hook tproj-pane-clear-rank tproj-pane-autozoom tproj-tmux-state-notify tproj-mru-tracker tproj-respawn-guard tproj-postmortem tproj-mem-trace rebalance-workspace-columns sign-codex wait-for-pane-text)
 PERSONA_BOOTSTRAP_LINK="$SCRIPT_DIR/extensions/persona/project-bootstrap"
 PERSONA_BOOTSTRAP_TARGET="../../../general/system/project-bootstrap/project-bootstrap"
 PERSONA_BOOTSTRAP_ERROR=""

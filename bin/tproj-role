@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Declare which way the two agents in a column work together.
+#
+#   tproj-role                  show the current mode
+#   tproj-role advisor          the side you prompt does the work, the other advises
+#   tproj-role solo             the side you prompt works alone
+#   tproj-role auto             back to the default, where model tier decides
+#
+# The mode covers the whole workspace, including columns opened later, and takes
+# effect on each pane's next prompt. `model-role-router mode` owns the state; this is
+# a front end for it so there is only ever one reader of that file.
+set -uo pipefail
+
+usage() {
+  cat <<'USAGE'
+usage: tproj-role [auto|advisor|solo] [--json]
+       tproj-role --status-segment
+
+  auto      model tier decides who leads (default)
+  advisor   the side you prompt leads; the other side advises only
+  solo      the side you prompt leads; the other side stays out
+
+  --json            machine readable state
+  --status-segment  short label for the tmux status line, empty under auto
+
+To return to auto you can also delete the state file:
+  rm ~/.config/tproj/role-mode.json
+USAGE
+}
+
+router=$(command -v model-role-router 2>/dev/null)
+if [ -z "$router" ]; then
+  echo "tproj-role: model-role-router is not on PATH" >&2
+  exit 1
+fi
+
+mode_json() {
+  "$router" mode --json 2>/dev/null
+}
+
+current_mode() {
+  mode_json | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  --status-segment)
+    # Nothing is shown under auto, so a workspace that never declares a mode keeps
+    # exactly the status line it had before. When a mode is on, it is worth the
+    # space: without it, an advising pane refusing to edit looks like a malfunction.
+    mode=$(current_mode)
+    if [ -n "$mode" ] && [ "$mode" != auto ]; then
+      printf ' role:%s' "$mode"
+    fi
+    exit 0
+    ;;
+  --json)
+    mode_json
+    exit 0
+    ;;
+  "")
+    "$router" mode
+    exit $?
+    ;;
+  auto|advisor|solo)
+    value="$1"
+    shift
+    if [ "${1:-}" = --json ]; then
+      "$router" mode "$value" --set-by user --source tproj-role >/dev/null && mode_json
+      exit $?
+    fi
+    "$router" mode "$value" --set-by user --source tproj-role
+    exit $?
+    ;;
+  *)
+    echo "tproj-role: unknown mode '$1'" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

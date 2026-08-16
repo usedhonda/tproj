@@ -97,6 +97,25 @@ else
   fail "exec:tproj-pane-autozoom" "not executable"
 fi
 
+# tproj-role reads the declared mode. Both invocations below are read-only: the
+# status segment is what the tmux status line calls many times an hour, so it has to
+# stay quiet and quick, and --help must not touch the state either.
+ROLE="$BIN_DIR/tproj-role"
+if [[ -x "$ROLE" ]]; then
+  if run_bounded 6 "$ROLE" --status-segment >/dev/null 2>&1; then
+    pass "exec:tproj-role --status-segment"
+  else
+    fail "exec:tproj-role --status-segment" "non-zero exit"
+  fi
+  if run_bounded 6 "$ROLE" --help >/dev/null 2>&1; then
+    pass "exec:tproj-role --help"
+  else
+    fail "exec:tproj-role --help" "non-zero exit"
+  fi
+else
+  fail "exec:tproj-role" "not executable"
+fi
+
 echo "----"
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
