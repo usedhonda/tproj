@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -195,6 +196,31 @@ def verified_cache_tasks(owner: str) -> list[tuple[int, str, str]]:
     return sorted(found, reverse=True)
 
 
+def declared_role_mode() -> str:
+    # The router owns the mode; ask it rather than reading its file. A second parser
+    # of the same state is a second thing to keep in step, and this guard is exactly
+    # where a disagreement would show up as a turn that cannot be ended. If the router
+    # is missing or unhappy, treat the workspace as auto so the guard keeps behaving
+    # the way it does today instead of quietly switching itself off.
+    command = shutil.which("model-role-router")
+    if not command:
+        return "auto"
+    try:
+        result = subprocess.run(
+            [command, "mode", "--json"], capture_output=True, text=True, timeout=3, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "auto"
+    if result.returncode != 0:
+        return "auto"
+    try:
+        document = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return "auto"
+    mode = str(document.get("mode", "auto")) if isinstance(document, dict) else "auto"
+    return mode or "auto"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--platform", choices=("claude", "codex"), default="claude")
@@ -213,6 +239,12 @@ def main() -> int:
         return 0
     identity = owner_identity()
     if identity is None:
+        return 0
+    # Under a declared mode there is no orchestrator handing work down, so the
+    # delegation lifecycle this guard enforces does not describe what is happening.
+    # Holding a turn open for a tag nobody is waiting on is the friction the mode was
+    # introduced to remove.
+    if declared_role_mode() != "auto":
         return 0
     session, alias, role = identity
     owner = f"{session}/{alias}"

@@ -352,5 +352,34 @@ check "marker sent to another column is still rejected" sh -c "grep -q 'must fir
 $cross_out
 EOF"
 
+# 19. A declared role mode suspends delegation lifecycle enforcement, because under
+#     it nobody delegated anything and no one is waiting for a tag.
+fresh_db
+seed_inbound_task mode-01
+mode_bin="$TMP/mode-bin"
+mkdir -p "$mode_bin"
+cat > "$mode_bin/model-role-router" <<'MRR'
+#!/usr/bin/env bash
+[ "${FAKE_ROLE_MODE:-auto}" = broken ] && exit 1
+printf '{"mode":"%s"}\n' "${FAKE_ROLE_MODE:-auto}"
+MRR
+chmod +x "$mode_bin/model-role-router"
+
+declared_out="$(PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=advisor invoke_guard 'Finished the work.')"
+check "declared mode suspends lifecycle enforcement" test -z "$declared_out"
+solo_out="$(PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=solo invoke_guard 'Finished the work.')"
+check "solo mode suspends lifecycle enforcement" test -z "$solo_out"
+
+auto_out="$(PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=auto invoke_guard 'Finished the work.')"
+check "auto still enforces the lifecycle" sh -c "grep -q '\[DONE: mode-01\]' <<'EOF'
+$auto_out
+EOF"
+
+# An unreadable router must not switch the guard off by accident.
+broken_out="$(PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=broken invoke_guard 'Finished the work.')"
+check "an unreadable mode falls back to enforcing" sh -c "grep -q '\[DONE: mode-01\]' <<'EOF'
+$broken_out
+EOF"
+
 printf '%s\n' "----" "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
