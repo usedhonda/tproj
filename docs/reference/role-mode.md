@@ -1,9 +1,9 @@
 # Role mode contract
 
 Roles between the Claude and Codex panes of a column are normally decided by model
-tier. A **role mode** lets the user override that: under a declared mode the side
-that receives the user's direct prompt does the work, and the other side only
-advises. This document is the contract for how that mode is stored, read, and
+tier. A **role mode** lets the user override that per project: under a declared mode
+the side that receives the user's direct prompt does the work, and the other side
+only advises. This document is the contract for how that mode is stored, read, and
 enforced.
 
 ## Modes
@@ -20,36 +20,53 @@ the user and a pane they are talking to.
 
 ## State
 
-- One file for the whole workspace: `~/.config/tproj/role-mode.json`
-  (override with `MODEL_ROLE_MODE_FILE`).
-- **Absent means `auto`.** So does an unreadable file and an unrecognized mode value.
-  A corrupt file can therefore never invent a restriction.
+- **One file per project**: `<project>/.local/role-mode.json`
+  (the relative location can be overridden with `MODEL_ROLE_MODE_FILE_NAME`).
+- The file's location is its scope. Declaring a mode in one project never affects a
+  neighbouring column, and two projects hold different modes at the same time.
+- **Absent means `auto`.** So does an unreadable file, an unrecognized mode value,
+  and a project that cannot be resolved to a local absolute root (remote `ssh://`
+  projects have no local state directory and always read as `auto`).
 - Declaring `auto` deletes the file, so the default and the escape hatch below reach
   one state rather than two that have to behave identically.
-- The file is **not** keyed by session or column, and is **not** cached into pane
-  options. Every hook reads it on every turn, which is what makes a mode apply to
-  columns and panes created after it was declared, with no registration step, and
-  what makes a change reach a pane that started before it.
+- The file is **not** cached into pane options. Every hook reads it on every turn,
+  which is what makes a mode apply to panes created after it was declared, with no
+  registration step, and what makes a change reach a pane that started before it.
+- The retired workspace-wide file (`~/.config/tproj/role-mode.json`) is **never read**.
+  A leftover copy cannot re-impose a mode on anything.
+- Living under `.local/` keeps the file out of version control and inside the Codex
+  work root, so either agent can act on "switch to solo" said in conversation.
 
 Shape:
 
 ```json
-{"mode": "advisor", "set_at": 1786400000, "set_by": "user", "source": "tproj-role"}
+{"mode": "advisor", "set_at": 1786400000, "set_by": "tproj.cc", "source": "tproj-role"}
 ```
 
-`set_at` and `set_by` are echoed in every injected `[Model Role Runtime]` block as
-`mode=advisor (set 2026-08-16 12:34 by user)`. An agent runs the user's shell and can
-always clear its own gate, so the provenance line is the mitigation: widening its own
-permissions leaves a trace the user can see.
+`set_by` records the **actual declarer**: an agent pane records its own alias
+(`tproj.cc`), a plain terminal records `user`. It is echoed in every injected
+`[Model Role Runtime]` block as `mode=advisor (set 2026-08-16 12:34 by tproj.cc)`.
+An agent runs the user's shell and can always clear its own gate, so this provenance
+line is the mitigation: widening its own permissions leaves a trace the user sees on
+every turn.
 
-## Reading the mode
+## Reading and declaring
 
-`model-role-router mode --json` is the **only** supported reader. Nothing else parses
-the file. A second parser is a second thing to keep in step, and the place a
-disagreement would surface is a turn that cannot be ended.
+`model-role-router mode [--project DIR] [--json]` is the **only** supported reader.
+Nothing else parses the file. The project defaults to `TPROJ_PROJECT`, then the
+pane's `@project` tag, then the caller's cwd.
 
-Callers must treat a missing router, a non-zero exit, or unparseable output as `auto`
-and keep their existing behaviour, never as "no mode, so no enforcement".
+`tproj-role` is the front end:
+
+```sh
+tproj-role                # this project's mode
+tproj-role advisor        # declare for this project
+tproj-role solo --project /path/to/other
+tproj-role auto --all     # every local project in workspace.yaml
+```
+
+Callers must treat a missing router, a non-zero exit, or unparseable output as
+`auto` and keep their existing behaviour, never as "no mode, so no enforcement".
 
 ## Enforcement
 
@@ -59,7 +76,7 @@ and keep their existing behaviour, never as "no mode, so no enforcement".
 | Role resolution | tier and message markers | the mode alone, resolved **before** any marker |
 | PreToolUse deny | orchestrator may not edit or run mutating git | the advising side may not; the leading side may |
 | Automatic role handoff | as before | suppressed |
-| Delegated-task lifecycle (`tproj-completion-guard`) | as before | suppressed |
+| Delegated-task lifecycle (`tproj-completion-guard`) | as before | suspended, **scoped to the guard's own project** |
 
 Role resolution happens before `[Role-Handoff:]`, `[Task:]`, and an `Orchestrator:`
 line in a message body are considered. Resolving it afterwards would let one stale
@@ -72,20 +89,31 @@ that role while handling a message from the other side. A direct prompt from the
 makes it the leading side on that turn, so the gate never blocks the user's own
 request.
 
+## Visibility
+
+- tmux status line: `tproj-role --status-segment` shows ` role:<mode>` for the
+  **focused pane's project**, and nothing under `auto`, so an undeclared workspace
+  keeps its old status line.
+- The tproj GUI shows a mode badge per project row and can cycle it by click; it
+  reads and writes the same per-project file.
+
 ## Escape hatch
 
 ```sh
-rm ~/.config/tproj/role-mode.json
+rm <project>/.local/role-mode.json
 ```
 
-The state is a single file, so this returns the workspace to `auto` even if the
-router itself is broken. `model-role-router mode auto` does the same thing.
+The state is one file per project, so this returns that project to `auto` even if
+the router itself is broken. `tproj-role auto` does the same thing.
 
 ## Tests
 
 - `general/system/model-role-router/test-model-role-router.sh` — state file defaults
-  and fallbacks, role resolution per mode, marker precedence, the advisor deny, and
-  the return to `auto`.
-- `extensions/hooks/tests/test-task-lifecycle.sh` — lifecycle enforcement is
-  suspended under a declared mode and preserved under `auto`, including the fallback
-  when the router cannot be read.
+  and fallbacks, per-project isolation, the legacy-file ban, remote-project refusal,
+  role resolution per mode, marker precedence, the advisor deny, and the return to
+  `auto`.
+- `extensions/hooks/tests/test-task-lifecycle.sh` — lifecycle enforcement suspended
+  under a declared mode, preserved under `auto`, the router-unreadable fallback, and
+  the project scoping of the guard's mode query.
+- `tests/smoke-bin.sh` — `tproj-role` read paths survive a checkout with no
+  installed router.
