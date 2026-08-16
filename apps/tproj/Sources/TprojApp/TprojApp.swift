@@ -1646,6 +1646,9 @@ final class AppViewModel: ObservableObject {
     @Published var memoryLastUpdatedAt: Date?
     @Published var pendingDropColumns: Set<Int> = []
     @Published var pendingSessionAction: SessionAction? = nil
+    // Per-project role mode, keyed by normalized (tilde-expanded) project path.
+    // Absent key == auto. Loaded from `<project>/.local/role-mode.json`.
+    @Published var roleModes: [String: RoleMode] = [:]
 
     enum SessionAction {
         case stop
@@ -1662,6 +1665,7 @@ final class AppViewModel: ObservableObject {
     private let monitorStatusPath = "/tmp/tproj-monitor-status.json"
     private let layoutLogPath = "/tmp/tproj-layout-actions.log"
     private var memoryPollTask: Task<Void, Never>?
+    private var roleModePollTask: Task<Void, Never>?
     private var workspaceWatcher: WorkspaceYamlWatcher?
 
     // MARK: - PATH & Dependency Resolution
@@ -1958,6 +1962,7 @@ final class AppViewModel: ObservableObject {
             await refreshAll()
             await refreshMemoryStatus()
             startMemoryPolling()
+            startRoleModePolling()
             startWorkspaceWatcher()
             startMIDIIfNeeded()
 
@@ -2032,6 +2037,7 @@ final class AppViewModel: ObservableObject {
 
     deinit {
         memoryPollTask?.cancel()
+        roleModePollTask?.cancel()
         workspaceWatcher?.cancel()
         midiActivator?.stop()
         startupRetryTask?.cancel()
@@ -2074,6 +2080,20 @@ final class AppViewModel: ObservableObject {
             statusText = detail
         } else {
             statusText = "UI synced: \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))"
+        }
+    }
+
+    // Light poll so an external `tproj-role` change (or a manual edit of
+    // role-mode.json) surfaces in the badge within a few seconds, independent of
+    // the workspace watcher / memory poll.
+    private func startRoleModePolling() {
+        guard roleModePollTask == nil else { return }
+        roleModePollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if Task.isCancelled { return }
+                await self?.loadRoleModes()
+            }
         }
     }
 
@@ -3475,6 +3495,93 @@ final class AppViewModel: ObservableObject {
             }
             return lhs.effectiveAlias.localizedCaseInsensitiveCompare(rhs.effectiveAlias) == .orderedAscending
         }
+
+        loadRoleModes()
+    }
+
+    // MARK: - Role mode (per-project .local/role-mode.json)
+
+    // Normalize a project path for use as the roleModes dictionary key.
+    // workspace.yaml paths and tmux projectPath tags may differ in form (tilde
+    // vs. absolute), so both the loader and the lookup normalize identically.
+    private func normalizedProjectKey(_ path: String) -> String {
+        (path as NSString).expandingTildeInPath
+    }
+
+    private func roleModeFileURL(forProjectPath path: String) -> URL {
+        URL(fileURLWithPath: normalizedProjectKey(path))
+            .appendingPathComponent(".local/role-mode.json")
+    }
+
+    // Current mode for a project; auto when unknown.
+    func roleMode(forProjectPath path: String) -> RoleMode {
+        guard !path.isEmpty else { return .auto }
+        return roleModes[normalizedProjectKey(path)] ?? .auto
+    }
+
+    // Re-read role-mode.json for every known local project. Cheap enough (a few
+    // small file reads) to run on the refresh path and a light poll so an
+    // external `tproj-role` change surfaces within a few seconds.
+    private func loadRoleModes() {
+        var paths = Set<String>()
+        for project in workspaceProjects where project.type != "remote" {
+            let trimmed = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { paths.insert(trimmed) }
+        }
+        for column in liveColumns where column.hostLabel == "local" {
+            if !column.projectPath.isEmpty { paths.insert(column.projectPath) }
+        }
+
+        var modes: [String: RoleMode] = [:]
+        for path in paths {
+            let key = normalizedProjectKey(path)
+            let data = try? Data(contentsOf: roleModeFileURL(forProjectPath: path))
+            let mode = RoleMode.parse(data)
+            if mode != .auto {
+                modes[key] = mode
+            }
+        }
+        if modes != roleModes {
+            roleModes = modes
+        }
+    }
+
+    // Cycle a project's mode (auto -> advisor -> solo -> auto). Updates the
+    // in-memory map first for immediate badge feedback, then writes/deletes the
+    // file; cycling to auto deletes the file (auto == absence).
+    func cycleRoleMode(forProjectPath path: String) {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let key = normalizedProjectKey(trimmed)
+        let mode = (roleModes[key] ?? .auto).next
+
+        if mode == .auto {
+            roleModes[key] = nil
+        } else {
+            roleModes[key] = mode
+        }
+
+        let fileURL = roleModeFileURL(forProjectPath: trimmed)
+        do {
+            if mode == .auto {
+                if fileManager.fileExists(atPath: fileURL.path) {
+                    try fileManager.removeItem(at: fileURL)
+                }
+            } else if let data = mode.fileContents(
+                setBy: "gui",
+                source: "tproj-gui",
+                setAt: Int(Date().timeIntervalSince1970)
+            ) {
+                try fileManager.createDirectory(
+                    at: fileURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try data.write(to: fileURL, options: .atomic)
+            }
+        } catch {
+            // Leave the optimistic in-memory value; the next poll reconciles.
+            statusText = "Role mode write failed: \(error.localizedDescription)"
+        }
     }
 
     private func loadLiveColumns() {
@@ -4441,10 +4548,7 @@ struct ContentView: View {
                     .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
                     .lineLimit(1)
-                Text(columnPaneCountsText(column))
-                    .font(GhosttyTheme.current.font(size: 9, weight: .semibold, monospaced: true))
-                    .foregroundStyle(GhosttyTheme.current.textTertiary)
-                    .lineLimit(1)
+                roleModeBadge(projectPath: column.projectPath, isLocal: column.hostLabel == "local")
                 Spacer()
             }
 
@@ -4541,6 +4645,7 @@ struct ContentView: View {
                     .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
                     .foregroundStyle(GhosttyTheme.current.foreground.opacity(0.5))
                     .lineLimit(1)
+                roleModeBadge(projectPath: project.path, isLocal: project.type != "remote")
                 Spacer()
             }
 
@@ -4950,8 +5055,33 @@ struct ContentView: View {
         return "lcl"
     }
 
-    private func columnPaneCountsText(_ column: LiveColumn) -> String {
-        "CC\(column.claudePaneIDs.count) Cdx\(column.codexPaneIDs.count) Ag\(column.agentPaneIDs.count)"
+    // Per-project role-mode badge, shown where the "CC1 Cdx1 Ag0" counters used
+    // to sit. Local projects: tap cycles auto -> advisor -> solo -> auto and
+    // writes/deletes `<project>/.local/role-mode.json`. Remote/empty projects:
+    // a dim, non-interactive "auto" badge (remote always reads as auto and has
+    // no local state dir to write).
+    @ViewBuilder
+    private func roleModeBadge(projectPath: String, isLocal: Bool) -> some View {
+        let canWrite = isLocal && !projectPath.isEmpty
+        let mode = canWrite ? vm.roleMode(forProjectPath: projectPath) : .auto
+        let tint: Color = {
+            switch mode {
+            case .auto: return GhosttyTheme.current.textTertiary
+            case .advisor: return GhosttyTheme.current.accentCyan
+            case .solo: return GhosttyTheme.current.accentRed
+            }
+        }()
+
+        pill(mode.rawValue, tint: canWrite ? tint : GhosttyTheme.current.textTertiary)
+            .opacity(canWrite ? 1.0 : 0.5)
+            .contentShape(Capsule())
+            .onTapGesture {
+                guard canWrite else { return }
+                vm.cycleRoleMode(forProjectPath: projectPath)
+            }
+            .help(canWrite
+                  ? "role mode: \(mode.rawValue) - click to cycle (auto -> advisor -> solo)"
+                  : "role mode: auto (remote)")
     }
 
     private func columnAgentNamesText(_ column: LiveColumn) -> String? {
