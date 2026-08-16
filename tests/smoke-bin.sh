@@ -112,6 +112,16 @@ if [[ -x "$ROLE" ]]; then
   else
     fail "exec:tproj-role --help" "non-zero exit"
   fi
+  # An installation without model-role-router has no declared mode, and the read-only
+  # entry points have to survive that: the status line calls the segment on every
+  # refresh, so an error would be painted into the status bar permanently.
+  # `env` narrows the PATH for the script alone; narrowing it for run_bounded would
+  # hide the timeout binary it resolved at startup.
+  if out=$(run_bounded 6 env PATH="/usr/bin:/bin" "$ROLE" --status-segment 2>&1) && [[ -z "$out" ]]; then
+    pass "exec:tproj-role --status-segment without the router"
+  else
+    fail "exec:tproj-role --status-segment without the router" "output: $(printf '%s' "$out" | tr '\n' '|')"
+  fi
 else
   fail "exec:tproj-role" "not executable"
 fi

@@ -30,6 +30,17 @@ USAGE
 
 router=$(command -v model-role-router 2>/dev/null)
 if [ -z "$router" ]; then
+  # Reading a mode without the router simply means there is no declared mode, and the
+  # two read-only entry points must survive that. The tmux status line calls
+  # --status-segment on every refresh, so an installation without the router would
+  # otherwise paint an error into the status bar forever, and --help should answer
+  # from the script itself. Declaring a mode genuinely needs the router, so that path
+  # still reports the problem.
+  case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    --status-segment) exit 0 ;;
+    --json) echo '{"mode": "auto"}'; exit 0 ;;
+  esac
   echo "tproj-role: model-role-router is not on PATH" >&2
   exit 1
 fi
