@@ -5246,7 +5246,22 @@ struct ContentView: View {
                 }
                 if let paceAdvisory {
                     Section("Weekly pace") {
-                        Label(paceAdvisory.message, systemImage: "exclamationmark.triangle.fill")
+                        Label(
+                            weeklyPaceMenuLine(
+                                side: paceAdvisory.main,
+                                projectedPercent: paceAdvisory.mainProjectedPercent,
+                                resetsAt: paceAdvisory.mainResetsAt,
+                                isMain: true
+                            ),
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        Text(weeklyPaceMenuLine(
+                            side: paceAdvisory.other,
+                            projectedPercent: paceAdvisory.otherProjectedPercent,
+                            resetsAt: paceAdvisory.otherResetsAt,
+                            isMain: false
+                        ))
+                        Text(weeklyPaceMenuGuidance(paceAdvisory))
                     }
                 }
             } label: {
@@ -5277,6 +5292,29 @@ struct ContentView: View {
         case .critical: return RoleVisualPalette.usageCritical
         case .advisory: return RoleVisualPalette.usageAdvisory
         case nil: return nil
+        }
+    }
+
+    private func weeklyPaceMenuLine(
+        side: String,
+        projectedPercent: Int,
+        resetsAt: Date,
+        isMain: Bool
+    ) -> String {
+        let name = side == "cc" ? "CC" : "Cdx"
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d H:mm"
+        return "\(isMain ? "主" : "")\(name) \(projectedPercent)% · \(formatter.string(from: resetsAt))"
+    }
+
+    private func weeklyPaceMenuGuidance(_ advisory: WeeklyPaceAdvisory) -> String {
+        let mainName = advisory.main == "cc" ? "CC" : "Cdx"
+        let otherName = advisory.other == "cc" ? "CC" : "Cdx"
+        switch advisory.reason {
+        case .exhaustion:
+            return "\(mainName)は枠到達予測 · \(otherName)を検討"
+        case .absoluteHigh, .peerHeadroom:
+            return "長い作業は\(otherName)を検討"
         }
     }
 
