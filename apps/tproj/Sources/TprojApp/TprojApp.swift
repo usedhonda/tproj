@@ -3627,8 +3627,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func emitWeeklyPaceAlertIfChanged() {
-        var paths = Set(workspaceProjects.filter { $0.type != "remote" }.map(\.path))
-        paths.formUnion(liveColumns.filter { $0.hostLabel == "local" }.map(\.projectPath))
+        let paths = Set(liveColumns.filter { $0.hostLabel == "local" }.map(\.projectPath))
         let advisories = paths.compactMap { weeklyPaceAdvisory(forProjectPath: $0) }
         let signature = Set(advisories.map(\.signature)).sorted().joined(separator: "|")
         guard signature != lastWeeklyPaceAlertSignature else { return }
@@ -4324,6 +4323,18 @@ struct ContentView: View {
         vm.liveColumns.count + vm.inactiveProjects.count
     }
 
+    private var liveWeeklyPaceAdvisory: WeeklyPaceAdvisory? {
+        vm.liveColumns
+            .filter { $0.hostLabel == "local" }
+            .compactMap { vm.weeklyPaceAdvisory(forProjectPath: $0.projectPath) }
+            .max { lhs, rhs in
+                if lhs.severity != rhs.severity {
+                    return lhs.severity == .advisory
+                }
+                return lhs.mainProjectedPercent < rhs.mainProjectedPercent
+            }
+    }
+
     @ViewBuilder
     private var workspaceControlHeader: some View {
         HStack(spacing: 4) {
@@ -4332,6 +4343,12 @@ struct ContentView: View {
                     .fill(GhosttyTheme.current.accentCyan)
                     .frame(width: 5, height: 5)
                     .shadow(color: GhosttyTheme.current.accentCyan.opacity(0.6), radius: 2)
+            }
+            if let advisory = liveWeeklyPaceAdvisory {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(weeklyPaceTint(advisory) ?? GhosttyTheme.current.accentYellow)
+                    .help(advisory.message)
             }
             Text(compactStatus(vm.statusText))
                 .font(GhosttyTheme.current.font(size: 11, weight: .medium))
@@ -5233,14 +5250,7 @@ struct ContentView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 3) {
-                    pill(roleModeBadgeLabel(mode: mode, main: main), tint: roleModeTint(mode))
-                    if paceAdvisory != nil {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(weeklyPaceTint(paceAdvisory) ?? GhosttyTheme.current.accentYellow)
-                    }
-                }
+                pill(roleModeBadgeLabel(mode: mode, main: main), tint: roleModeTint(mode))
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
