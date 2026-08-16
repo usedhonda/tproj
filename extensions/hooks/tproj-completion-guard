@@ -85,6 +85,12 @@ def activation_epoch() -> int:
 def latest_worker_task(
     db: sqlite3.Connection, session: str, self_alias: str
 ) -> tuple[str, str, str] | None:
+    # The inbound message must actually carry a body. A task row whose message
+    # arrived empty is an orphan: the agent was never told what the task is, yet the
+    # guard would still refuse to let it end a turn until it tagged that task. There
+    # is nothing truthful to answer with, so the only outcomes were a fabricated ACK
+    # or a stuck session. Requiring a body fails open on exactly that case and leaves
+    # every real delegation, which always has one, enforced as before.
     row = db.execute(
         """
         SELECT t.task_id, m.from_alias, t.state
@@ -97,6 +103,7 @@ def latest_worker_task(
            AND t.target=?
            AND t.state IN ('pending','acked')
            AND m.created_at>=?
+           AND trim(COALESCE(m.body, '')) != ''
            AND (m.from_alias=t.owner_alias || '.cc' OR m.from_alias=t.owner_alias || '.cdx')
          ORDER BY m.id DESC
          LIMIT 1
@@ -106,18 +113,35 @@ def latest_worker_task(
     return tuple(str(value) for value in row) if row else None
 
 
+def recipient_forms(sender: str, recipient: str) -> list[str]:
+    # `tproj-msg cdx "..."` addresses the counterpart in the caller's own column, and
+    # the bare form is what gets recorded. Reading only the full alias made a marker
+    # that had genuinely been delivered look unsent, and the agent was blocked until
+    # it resent to the long form. The bare form is accepted only when the recipient
+    # shares this sender's column, so it still cannot stand in for another column's
+    # pane, which is the case the strict match existed to prevent.
+    forms = [recipient]
+    sender_column, _, _ = sender.rpartition(".")
+    recipient_column, _, recipient_role = recipient.rpartition(".")
+    if recipient_role and recipient_column and recipient_column == sender_column:
+        forms.append(recipient_role)
+    return forms
+
+
 def marker_was_sent(
     db: sqlite3.Connection, sender: str, recipient: str, marker: str
 ) -> bool:
+    forms = recipient_forms(sender, recipient)
+    placeholders = ",".join("?" for _ in forms)
     row = db.execute(
-        """
+        f"""
         SELECT 1
           FROM messages
-         WHERE from_alias=? AND to_alias=? AND direction='outbound'
+         WHERE from_alias=? AND to_alias IN ({placeholders}) AND direction='outbound'
            AND instr(body, ?) > 0
          ORDER BY id DESC LIMIT 1
         """,
-        (sender, recipient, marker),
+        (sender, *forms, marker),
     ).fetchone()
     return row is not None
 

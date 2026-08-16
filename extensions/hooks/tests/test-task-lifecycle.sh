@@ -308,5 +308,49 @@ seed_outbound_marker worker-incident-01 ACK-PROGRESS
 progress_out="$(invoke_guard '[ACK-PROGRESS: worker-incident-01] tests running')"
 check "ACK-PROGRESS is nonterminal and allowed" sh -c "test -x '$REPO/extensions/hooks/tproj-completion-guard' && test -z '$progress_out'"
 
+fresh_db() {
+  find "$TT_CACHE_DIR" -mindepth 1 -delete 2>/dev/null || true
+  find "$TMP" -maxdepth 1 -name 'messages.db*' -delete 2>/dev/null || true
+  tt_db_ensure_init >/dev/null 2>&1 || true
+}
+
+# 15. A task whose message body never arrived cannot be answered truthfully, so it
+#     must not hold the turn hostage.
+fresh_db
+tt_db_upsert_task orphan-01 owner.cdx 1000 1800 hash peer unit >/dev/null 2>&1 || true
+tt_db_log_message unit peer.cc owner.cdx "" h "[from:peer.cc]" orphan-01 inbound send-keys cc tmux "" >/dev/null
+orphan_out="$(invoke_guard 'Finished an unrelated piece of work.')"
+check "body-less task does not block the turn" test -z "$orphan_out"
+
+# 16. A task that did arrive is still enforced exactly as before.
+seed_inbound_task delivered-01
+delivered_out="$(invoke_guard 'Finished an unrelated piece of work.')"
+check "delivered task still blocks without a tag" sh -c "grep -q '\[DONE: delivered-01\]' <<'EOF'
+$delivered_out
+EOF"
+
+# 17. Addressing the counterpart in one's own column by its bare role is the normal
+#     way to send, and the marker must count as sent.
+fresh_db
+tt_db_upsert_task short-01 owner.cdx 1000 1800 hash owner unit >/dev/null 2>&1 || true
+tt_db_log_message unit owner.cc owner.cdx "[Task: short-01] delegated" h "[from:owner.cc]" \
+  short-01 inbound send-keys cc tmux "" >/dev/null
+tt_db_log_message unit owner.cdx cc "[ACK: short-01] on it" bh "[from:owner.cdx]" "" \
+  outbound send-keys cc tmux "" >/dev/null
+short_out="$(invoke_guard '[ACK: short-01] on it')"
+check "marker sent to the bare same-column alias is accepted" test -z "$short_out"
+
+# 18. The bare form must not stand in for a different column's pane.
+fresh_db
+tt_db_upsert_task cross-01 owner.cdx 1000 1800 hash owner unit >/dev/null 2>&1 || true
+tt_db_log_message unit owner.cc owner.cdx "[Task: cross-01] delegated" h "[from:owner.cc]" \
+  cross-01 inbound send-keys cc tmux "" >/dev/null
+tt_db_log_message unit owner.cdx elsewhere.cc "[ACK: cross-01] on it" bh "[from:owner.cdx]" "" \
+  outbound send-keys cc tmux "" >/dev/null
+cross_out="$(invoke_guard '[ACK: cross-01] on it')"
+check "marker sent to another column is still rejected" sh -c "grep -q 'must first be sent' <<'EOF'
+$cross_out
+EOF"
+
 printf '%s\n' "----" "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
