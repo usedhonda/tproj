@@ -88,4 +88,30 @@ final class RoleModeTests: XCTestCase {
             ["mode", "advisor", "--main", "cc", "--json", "--project", "/project", "--set-by", "gui", "--source", "tproj-gui"]
         )
     }
+
+    func testWeeklyPaceAlertUsesFreshPreferredSnapshotsOnly() throws {
+        func history(usedPercent: Int) -> Data {
+            Data("""
+            {"preferredAccountKey":"active","accounts":{"active":[
+              {"name":"weekly","windowMinutes":10080,"entries":[
+                {"capturedAt":"2026-08-14T00:00:00Z","resetsAt":"2026-08-17T00:00:00Z","usedPercent":\(usedPercent)}
+              ]}
+            ]}}
+            """.utf8)
+        }
+
+        let codex = try XCTUnwrap(CodexBarPace.latestWeeklySnapshot(from: history(usedPercent: 80), provider: "codex"))
+        let claude = try XCTUnwrap(CodexBarPace.latestWeeklySnapshot(from: history(usedPercent: 50), provider: "claude"))
+        let snapshots = ["codex": codex, "claude": claude]
+        let freshNow = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-14T00:10:00Z"))
+        let staleNow = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-14T01:00:00Z"))
+
+        XCTAssertEqual(
+            CodexBarPace.advisory(main: "cdx", snapshots: snapshots, now: freshNow),
+            WeeklyPaceAdvisory(main: "cdx", other: "cc", gapPercent: 30)
+        )
+        XCTAssertNil(CodexBarPace.advisory(main: "cc", snapshots: snapshots, now: freshNow))
+        XCTAssertNil(CodexBarPace.advisory(main: "cdx", snapshots: snapshots, now: staleNow))
+        XCTAssertNil(CodexBarPace.latestWeeklySnapshot(from: Data("{}".utf8), provider: "codex"))
+    }
 }

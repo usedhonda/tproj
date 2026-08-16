@@ -122,6 +122,14 @@ derived lead. `--main derived` clears the preference.
   the detailed checked choices. The chosen conversation side's button is tinted
   with the mode colour. The GUI reads and writes only through
   `model-role-router mode`.
+- In every mode, the GUI reads CodexBar's selected-account weekly history snapshots
+  from Application Support every five minutes. When the selected main's usage is
+  at least 10 percentage points further ahead of its expected weekly pace than the
+  other provider, the badge shows a warning and its menu explains the difference.
+  The alert is emitted only when that warning state changes. Snapshots older than
+  30 minutes, future/reset windows, missing files, and unrecognized schemas produce
+  no warning and never block role-mode operation. The GUI does not fetch provider
+  usage, expose account identifiers, or switch the main automatically.
 
 ## Escape hatch
 

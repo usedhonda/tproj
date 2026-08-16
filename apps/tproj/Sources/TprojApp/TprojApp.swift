@@ -1650,6 +1650,7 @@ final class AppViewModel: ObservableObject {
     // (tilde-expanded) project path. Absent key == auto with no lead. Derived by
     // `model-role-router mode --json`, which owns `<project>/.local/role-mode.json`.
     @Published var roleModeStatuses: [String: RoleModeStatus] = [:]
+    @Published var weeklyPaceSnapshots: [String: WeeklyPaceSnapshot] = [:]
 
     enum SessionAction {
         case stop
@@ -1667,6 +1668,8 @@ final class AppViewModel: ObservableObject {
     private let layoutLogPath = "/tmp/tproj-layout-actions.log"
     private var memoryPollTask: Task<Void, Never>?
     private var roleModePollTask: Task<Void, Never>?
+    private var weeklyPacePollTask: Task<Void, Never>?
+    private var lastWeeklyPaceAlertSignature: String = ""
     private var workspaceWatcher: WorkspaceYamlWatcher?
 
     // MARK: - PATH & Dependency Resolution
@@ -1964,6 +1967,7 @@ final class AppViewModel: ObservableObject {
             await refreshMemoryStatus()
             startMemoryPolling()
             startRoleModePolling()
+            startWeeklyPacePolling()
             startWorkspaceWatcher()
             startMIDIIfNeeded()
 
@@ -2040,6 +2044,7 @@ final class AppViewModel: ObservableObject {
     deinit {
         memoryPollTask?.cancel()
         roleModePollTask?.cancel()
+        weeklyPacePollTask?.cancel()
         workspaceWatcher?.cancel()
         midiActivator?.stop()
         startupRetryTask?.cancel()
@@ -2053,7 +2058,9 @@ final class AppViewModel: ObservableObject {
         await loadLiveColumnsAsync()
         normalizeSelection()
         await loadRoleModes()
+        await refreshWeeklyPaceSnapshots()
         statusText = "Reloaded: \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))"
+        emitWeeklyPaceAlertIfChanged()
     }
 
     func syncUIAndRefreshAll() async {
@@ -2097,6 +2104,18 @@ final class AppViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 if Task.isCancelled { return }
                 await self?.loadRoleModes()
+            }
+        }
+    }
+
+    private func startWeeklyPacePolling() {
+        guard weeklyPacePollTask == nil else { return }
+        weeklyPacePollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 300_000_000_000)
+                if Task.isCancelled { return }
+                await self?.refreshWeeklyPaceSnapshots()
+                self?.emitWeeklyPaceAlertIfChanged()
             }
         }
     }
@@ -3538,6 +3557,45 @@ final class AppViewModel: ObservableObject {
         )
     }
 
+    func weeklyPaceAdvisory(forProjectPath path: String) -> WeeklyPaceAdvisory? {
+        CodexBarPace.advisory(
+            main: roleModeMain(forProjectPath: path),
+            snapshots: weeklyPaceSnapshots,
+            now: Date()
+        )
+    }
+
+    private func refreshWeeklyPaceSnapshots() async {
+        let historyRoot = "\(NSHomeDirectory())/Library/Application Support/com.steipete.codexbar/history"
+        let snapshots = await Task.detached(priority: .utility) {
+            var result: [String: WeeklyPaceSnapshot] = [:]
+            for provider in ["codex", "claude"] {
+                let url = URL(fileURLWithPath: "\(historyRoot)/\(provider).json")
+                guard let data = try? Data(contentsOf: url),
+                      let snapshot = CodexBarPace.latestWeeklySnapshot(from: data, provider: provider) else {
+                    continue
+                }
+                result[provider] = snapshot
+            }
+            return result
+        }.value
+        if snapshots != weeklyPaceSnapshots {
+            weeklyPaceSnapshots = snapshots
+        }
+    }
+
+    private func emitWeeklyPaceAlertIfChanged() {
+        var paths = Set(workspaceProjects.filter { $0.type != "remote" }.map(\.path))
+        paths.formUnion(liveColumns.filter { $0.hostLabel == "local" }.map(\.projectPath))
+        let messages = Set(paths.compactMap { weeklyPaceAdvisory(forProjectPath: $0)?.message }).sorted()
+        let signature = messages.joined(separator: "|")
+        guard signature != lastWeeklyPaceAlertSignature else { return }
+        lastWeeklyPaceAlertSignature = signature
+        if let message = messages.first {
+            statusText = message
+        }
+    }
+
     // Ask `model-role-router mode --json` for every known local project so mode
     // AND lead come from the single derived source. The router spawns a small
     // process, so the calls run off the main thread (runCommandAsync dispatches
@@ -3605,6 +3663,7 @@ final class AppViewModel: ObservableObject {
         } else {
             roleModeStatuses[key] = status
         }
+        emitWeeklyPaceAlertIfChanged()
     }
 
     private func loadLiveColumns() {
@@ -5089,6 +5148,7 @@ struct ContentView: View {
         let canWrite = isLocal && !projectPath.isEmpty
         let mode = canWrite ? vm.roleMode(forProjectPath: projectPath) : .auto
         let main = canWrite ? vm.roleModeMain(forProjectPath: projectPath) : ""
+        let paceAdvisory = canWrite ? vm.weeklyPaceAdvisory(forProjectPath: projectPath) : nil
 
         if canWrite {
             Menu {
@@ -5113,12 +5173,24 @@ struct ContentView: View {
                         Label("CC", systemImage: main == "cc" ? "checkmark" : "circle")
                     }
                 }
+                if let paceAdvisory {
+                    Section("Weekly pace") {
+                        Label(paceAdvisory.message, systemImage: "exclamationmark.triangle.fill")
+                    }
+                }
             } label: {
-                pill(roleModeBadgeLabel(mode: mode, main: main), tint: roleModeTint(mode))
+                HStack(spacing: 3) {
+                    pill(roleModeBadgeLabel(mode: mode, main: main), tint: roleModeTint(mode))
+                    if paceAdvisory != nil {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(GhosttyTheme.current.accentYellow)
+                    }
+                }
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help(roleModeBadgeLabel(mode: mode, main: main))
+            .help(paceAdvisory?.message ?? roleModeBadgeLabel(mode: mode, main: main))
         } else {
             pill(roleModeBadgeLabel(mode: .auto, main: ""), tint: roleModeTint(.auto))
                 .opacity(0.5)
