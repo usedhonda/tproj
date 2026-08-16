@@ -91,11 +91,12 @@ public struct RoleModeStatus: Equatable {
 }
 
 // The explicit conversation preference wins for display and pane choice. With
-// no preference, retain the existing derived-lead display behaviour.
+// no preference, use the derived lead, then Cdx as the GUI's stable default so
+// one conversation side is always selected.
 public func roleModeConversationMain(mode: RoleMode, main: String, lead: String) -> String {
     if main == "cc" || main == "cdx" { return main }
-    if mode != .auto && (lead == "cc" || lead == "cdx") { return lead }
-    return ""
+    if lead == "cc" || lead == "cdx" { return lead }
+    return "cdx"
 }
 
 // Keep command construction pure and testable. The router remains the only
@@ -122,19 +123,10 @@ public func roleModeLeadDisplay(_ lead: String) -> String {
     }
 }
 
-// Compose the GUI badge label from mode + lead: "auto·CC", "advisor·Cdx",
-// "solo·CC". When the lead is empty/unknown, the label is just the mode name.
+// Keep the always-visible badge compact: mode + selected conversation main.
+// The menu exposes the detailed mode/main choices when clicked.
 public func roleModeBadgeLabel(mode: RoleMode, main: String) -> String {
     let side = roleModeLeadDisplay(main)
-    guard !side.isEmpty else { return "\(mode.rawValue)\u{00B7}Main unset" }
-    switch mode {
-    case .auto:
-        return "Main \(side)\u{00B7}Auto"
-    case .advisor:
-        let advisor = side == "CC" ? "Cdx" : "CC"
-        return "Main \(side)\u{00B7}Advisor \(advisor)"
-    case .solo:
-        let inactive = side == "CC" ? "Cdx" : "CC"
-        return "Main \(side)\u{00B7}\(inactive) off"
-    }
+    let modeLabel = mode.rawValue.capitalized
+    return side.isEmpty ? "\(modeLabel)\u{00B7}主?" : "\(modeLabel)\u{00B7}主\(side)"
 }

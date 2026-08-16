@@ -114,12 +114,12 @@ derived lead. `--main derived` clears the preference.
   the **focused pane's project**, and nothing under `auto`, so an undeclared
   workspace keeps its old status line.
 - The tproj GUI shows a first-row menu per project. Its `Mode` section selects
-  auto/advisor/solo and its `Main conversation` section selects CC, Cdx, or derived.
-  The badge names both sides explicitly (`Main Cdx·Advisor CC`), so the selected
-  main cannot be mistaken for the advisor. The chosen conversation side's button
-  is tinted with the mode colour. Under auto, an unset main stays unset rather than
-  relabelling the tier-derived role lead as the conversation side. The GUI reads
-  and writes only through `model-role-router mode`.
+  auto/advisor/solo and its `Main conversation` section always selects CC or Cdx.
+  An unset stored preference displays the derived lead, or Cdx when no lead exists.
+  The compact badge shows only mode and main (`Advisor·主Cdx`); clicking it exposes
+  the detailed checked choices. The chosen conversation side's button is tinted
+  with the mode colour. The GUI reads and writes only through
+  `model-role-router mode`.
 
 ## Escape hatch
 

@@ -3538,11 +3538,6 @@ final class AppViewModel: ObservableObject {
         )
     }
 
-    func roleModeMainPreference(forProjectPath path: String) -> String {
-        guard !path.isEmpty else { return "" }
-        return roleModeStatuses[normalizedProjectKey(path)]?.main ?? ""
-    }
-
     // Ask `model-role-router mode --json` for every known local project so mode
     // AND lead come from the single derived source. The router spawns a small
     // process, so the calls run off the main thread (runCommandAsync dispatches
@@ -5094,14 +5089,13 @@ struct ContentView: View {
         let canWrite = isLocal && !projectPath.isEmpty
         let mode = canWrite ? vm.roleMode(forProjectPath: projectPath) : .auto
         let main = canWrite ? vm.roleModeMain(forProjectPath: projectPath) : ""
-        let mainPreference = canWrite ? vm.roleModeMainPreference(forProjectPath: projectPath) : ""
 
         if canWrite {
             Menu {
                 Section("Mode") {
                     ForEach(RoleMode.allCases, id: \.rawValue) { candidate in
                         Button {
-                            Task { await vm.setRoleMode(candidate, main: mainPreference, forProjectPath: projectPath) }
+                            Task { await vm.setRoleMode(candidate, main: main, forProjectPath: projectPath) }
                         } label: {
                             Label(candidate.rawValue.capitalized, systemImage: candidate == mode ? "checkmark" : "circle")
                         }
@@ -5111,17 +5105,12 @@ struct ContentView: View {
                     Button {
                         Task { await vm.setRoleMode(mode, main: "cdx", forProjectPath: projectPath) }
                     } label: {
-                        Label("Cdx", systemImage: mainPreference == "cdx" ? "checkmark" : "circle")
+                        Label("Cdx", systemImage: main == "cdx" ? "checkmark" : "circle")
                     }
                     Button {
                         Task { await vm.setRoleMode(mode, main: "cc", forProjectPath: projectPath) }
                     } label: {
-                        Label("CC", systemImage: mainPreference == "cc" ? "checkmark" : "circle")
-                    }
-                    Button {
-                        Task { await vm.setRoleMode(mode, main: "", forProjectPath: projectPath) }
-                    } label: {
-                        Label("Follow role lead", systemImage: mainPreference.isEmpty ? "checkmark" : "circle")
+                        Label("CC", systemImage: main == "cc" ? "checkmark" : "circle")
                     }
                 }
             } label: {
