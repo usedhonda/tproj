@@ -73,6 +73,9 @@ struct ActionButtonStyle: ButtonStyle {
     let isHovered: Bool
     let isEnabled: Bool
     let dense: Bool
+    // When set (e.g. the role-mode lead side), overrides the tone accent so the
+    // button glows in the mode colour. nil keeps the existing tone appearance.
+    var tint: Color? = nil
 
     func makeBody(configuration: Configuration) -> some View {
         let pressed = configuration.isPressed && isEnabled
@@ -99,6 +102,7 @@ struct ActionButtonStyle: ButtonStyle {
 
     private var foregroundColor: Color {
         let t = GhosttyTheme.current
+        if tint != nil { return t.textPrimary }
         switch tone {
         case .neutral:
             return t.textPrimary.opacity(0.92)
@@ -111,6 +115,10 @@ struct ActionButtonStyle: ButtonStyle {
 
     private func backgroundColor(pressed: Bool) -> Color {
         let t = GhosttyTheme.current
+        if let tint {
+            if pressed { return tint.opacity(0.75) }
+            return isHovered ? tint.opacity(0.62) : tint.opacity(0.46)
+        }
         switch tone {
         case .neutral:
             if pressed { return t.selectionBg.opacity(0.6) }
@@ -126,6 +134,9 @@ struct ActionButtonStyle: ButtonStyle {
 
     private func borderColor(pressed: Bool) -> Color {
         let t = GhosttyTheme.current
+        if let tint {
+            return pressed ? tint.opacity(0.95) : tint.opacity(isHovered ? 0.88 : 0.72)
+        }
         switch tone {
         case .neutral:
             return pressed ? t.foreground.opacity(0.55) : t.foreground.opacity(isHovered ? 0.44 : 0.20)
@@ -143,6 +154,7 @@ struct ActionButton: View {
     let isEnabled: Bool
     let expand: Bool
     let dense: Bool
+    let tint: Color?
     let action: () -> Void
 
     @State private var isHovered = false
@@ -153,6 +165,7 @@ struct ActionButton: View {
         isEnabled: Bool = true,
         expand: Bool = false,
         dense: Bool = false,
+        tint: Color? = nil,
         action: @escaping () -> Void
     ) {
         self.title = title
@@ -160,6 +173,7 @@ struct ActionButton: View {
         self.isEnabled = isEnabled
         self.expand = expand
         self.dense = dense
+        self.tint = tint
         self.action = action
     }
 
@@ -170,7 +184,7 @@ struct ActionButton: View {
                 .fixedSize(horizontal: true, vertical: false)
                 .frame(maxWidth: expand ? .infinity : nil)
         }
-        .buttonStyle(ActionButtonStyle(tone: tone, isHovered: isHovered, isEnabled: isEnabled, dense: dense))
+        .buttonStyle(ActionButtonStyle(tone: tone, isHovered: isHovered, isEnabled: isEnabled, dense: dense, tint: tint))
         .disabled(!isEnabled)
         .onHover { hover in
             isHovered = hover

@@ -1646,9 +1646,10 @@ final class AppViewModel: ObservableObject {
     @Published var memoryLastUpdatedAt: Date?
     @Published var pendingDropColumns: Set<Int> = []
     @Published var pendingSessionAction: SessionAction? = nil
-    // Per-project role mode, keyed by normalized (tilde-expanded) project path.
-    // Absent key == auto. Loaded from `<project>/.local/role-mode.json`.
-    @Published var roleModes: [String: RoleMode] = [:]
+    // Per-project role state (mode + which side leads), keyed by normalized
+    // (tilde-expanded) project path. Absent key == auto with no lead. Derived by
+    // `model-role-router mode --json`, which owns `<project>/.local/role-mode.json`.
+    @Published var roleModeStatuses: [String: RoleModeStatus] = [:]
 
     enum SessionAction {
         case stop
@@ -2033,6 +2034,7 @@ final class AppViewModel: ObservableObject {
         loadWorkspaceProjects()
         await loadLiveColumnsAsync()
         normalizeSelection()
+        await loadRoleModes()
     }
 
     deinit {
@@ -2050,6 +2052,7 @@ final class AppViewModel: ObservableObject {
         loadWorkspaceProjects()
         await loadLiveColumnsAsync()
         normalizeSelection()
+        await loadRoleModes()
         statusText = "Reloaded: \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))"
     }
 
@@ -2068,6 +2071,7 @@ final class AppViewModel: ObservableObject {
         loadWorkspaceProjects()
         await loadLiveColumnsAsync()
         normalizeSelection()
+        await loadRoleModes()
 
         if result.exitCode != 0 {
             let reason = trimmedError(result)
@@ -3495,13 +3499,11 @@ final class AppViewModel: ObservableObject {
             }
             return lhs.effectiveAlias.localizedCaseInsensitiveCompare(rhs.effectiveAlias) == .orderedAscending
         }
-
-        loadRoleModes()
     }
 
     // MARK: - Role mode (per-project .local/role-mode.json)
 
-    // Normalize a project path for use as the roleModes dictionary key.
+    // Normalize a project path for use as the roleModeStatuses dictionary key.
     // workspace.yaml paths and tmux projectPath tags may differ in form (tilde
     // vs. absolute), so both the loader and the lookup normalize identically.
     private func normalizedProjectKey(_ path: String) -> String {
@@ -3513,16 +3515,29 @@ final class AppViewModel: ObservableObject {
             .appendingPathComponent(".local/role-mode.json")
     }
 
+    private var roleModeRouterPath: String {
+        "\(NSHomeDirectory())/bin/model-role-router"
+    }
+
     // Current mode for a project; auto when unknown.
     func roleMode(forProjectPath path: String) -> RoleMode {
         guard !path.isEmpty else { return .auto }
-        return roleModes[normalizedProjectKey(path)] ?? .auto
+        return roleModeStatuses[normalizedProjectKey(path)]?.mode ?? .auto
     }
 
-    // Re-read role-mode.json for every known local project. Cheap enough (a few
-    // small file reads) to run on the refresh path and a light poll so an
-    // external `tproj-role` change surfaces within a few seconds.
-    private func loadRoleModes() {
+    // Which side leads a project ("cc" / "cdx" / "" when unknown).
+    func roleModeLead(forProjectPath path: String) -> String {
+        guard !path.isEmpty else { return "" }
+        return roleModeStatuses[normalizedProjectKey(path)]?.lead ?? ""
+    }
+
+    // Ask `model-role-router mode --json` for every known local project so mode
+    // AND lead come from the single derived source. The router spawns a small
+    // process, so the calls run off the main thread (runCommandAsync dispatches
+    // to a background queue) and in parallel; cheap enough to run on the refresh
+    // path and a light poll so an external `tproj-role` change surfaces within a
+    // few seconds.
+    private func loadRoleModes() async {
         var paths = Set<String>()
         for project in workspaceProjects where project.type != "remote" {
             let trimmed = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3532,33 +3547,46 @@ final class AppViewModel: ObservableObject {
             if !column.projectPath.isEmpty { paths.insert(column.projectPath) }
         }
 
-        var modes: [String: RoleMode] = [:]
-        for path in paths {
-            let key = normalizedProjectKey(path)
-            let data = try? Data(contentsOf: roleModeFileURL(forProjectPath: path))
-            let mode = RoleMode.parse(data)
-            if mode != .auto {
-                modes[key] = mode
+        let router = roleModeRouterPath
+        guard fileManager.isExecutableFile(atPath: router) else { return }
+
+        var statuses: [String: RoleModeStatus] = [:]
+        await withTaskGroup(of: (String, RoleModeStatus).self) { group in
+            for path in paths {
+                let key = normalizedProjectKey(path)
+                group.addTask { [weak self] in
+                    guard let self else { return (key, RoleModeStatus(mode: .auto, lead: "")) }
+                    let result = await self.runCommandAsync(router, ["mode", "--json", "--project", key])
+                    let data = result.exitCode == 0 ? Data(result.stdout.utf8) : nil
+                    return (key, RoleMode.parseStatus(data))
+                }
+            }
+            for await (key, status) in group {
+                if status.mode != .auto || !status.lead.isEmpty {
+                    statuses[key] = status
+                }
             }
         }
-        if modes != roleModes {
-            roleModes = modes
+        if statuses != roleModeStatuses {
+            roleModeStatuses = statuses
         }
     }
 
     // Cycle a project's mode (auto -> advisor -> solo -> auto). Updates the
     // in-memory map first for immediate badge feedback, then writes/deletes the
-    // file; cycling to auto deletes the file (auto == absence).
+    // file; cycling to auto deletes the file (auto == absence). The router picks
+    // the file up and the next poll refreshes the derived lead.
     func cycleRoleMode(forProjectPath path: String) {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let key = normalizedProjectKey(trimmed)
-        let mode = (roleModes[key] ?? .auto).next
+        let mode = (roleModeStatuses[key]?.mode ?? .auto).next
+        let lead = roleModeStatuses[key]?.lead ?? ""
 
         if mode == .auto {
-            roleModes[key] = nil
+            roleModeStatuses[key] = nil
         } else {
-            roleModes[key] = mode
+            roleModeStatuses[key] = RoleModeStatus(mode: mode, lead: lead)
         }
 
         let fileURL = roleModeFileURL(forProjectPath: trimmed)
@@ -4536,6 +4564,10 @@ struct ContentView: View {
 
     private func liveColumnRow(_ column: LiveColumn) -> some View {
         let isDragging = draggingColumnID == column.column
+        // Lead side + mode tint so the main pane's button glows in the mode
+        // colour (green auto / cyan advisor / red solo). Empty lead tints nothing.
+        let lead = column.hostLabel == "local" ? vm.roleModeLead(forProjectPath: column.projectPath) : ""
+        let leadTint = roleModeTint(vm.roleMode(forProjectPath: column.projectPath))
 
         return VStack(alignment: .leading, spacing: 3) {
             // Header row
@@ -4563,11 +4595,11 @@ struct ContentView: View {
             // Buttons row
             HStack(spacing: 1) {
                 Spacer()
-                ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
+                ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: lead == "cdx" ? leadTint : nil) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
                 }
                 .frame(width: 38)
-                ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
+                ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: lead == "cc" ? leadTint : nil) {
                     Task { await vm.toggleAIPane(role: "claude", for: column) }
                 }
                 .frame(width: 38)
@@ -5064,15 +5096,9 @@ struct ContentView: View {
     private func roleModeBadge(projectPath: String, isLocal: Bool) -> some View {
         let canWrite = isLocal && !projectPath.isEmpty
         let mode = canWrite ? vm.roleMode(forProjectPath: projectPath) : .auto
-        let tint: Color = {
-            switch mode {
-            case .auto: return GhosttyTheme.current.textTertiary
-            case .advisor: return GhosttyTheme.current.accentCyan
-            case .solo: return GhosttyTheme.current.accentRed
-            }
-        }()
+        let lead = canWrite ? vm.roleModeLead(forProjectPath: projectPath) : ""
 
-        pill(mode.rawValue, tint: canWrite ? tint : GhosttyTheme.current.textTertiary)
+        pill(roleModeBadgeLabel(mode: mode, lead: lead), tint: roleModeTint(mode))
             .opacity(canWrite ? 1.0 : 0.5)
             .contentShape(Capsule())
             .onTapGesture {
@@ -5082,6 +5108,16 @@ struct ContentView: View {
             .help(canWrite
                   ? "role mode: \(mode.rawValue) - click to cycle (auto -> advisor -> solo)"
                   : "role mode: auto (remote)")
+    }
+
+    // Accent color for a role mode: green (auto, the healthy everyday state),
+    // cyan (advisor), red (solo). Shared by the badge and the lead-side button.
+    private func roleModeTint(_ mode: RoleMode) -> Color {
+        switch mode {
+        case .auto: return GhosttyTheme.current.accentGreen
+        case .advisor: return GhosttyTheme.current.accentCyan
+        case .solo: return GhosttyTheme.current.accentRed
+        }
     }
 
     private func columnAgentNamesText(_ column: LiveColumn) -> String? {
