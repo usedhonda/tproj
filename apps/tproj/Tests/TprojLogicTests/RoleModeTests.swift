@@ -58,8 +58,8 @@ final class RoleModeTests: XCTestCase {
 
     // Router --json output parses into mode + lead; failures fall back to auto.
     func testParseStatus() {
-        let ok = Data(#"{"mode":"advisor","lead":"cdx","project":"/x"}"#.utf8)
-        XCTAssertEqual(RoleMode.parseStatus(ok), RoleModeStatus(mode: .advisor, lead: "cdx"))
+        let ok = Data(#"{"mode":"advisor","lead":"cc","main":"cdx","project":"/x"}"#.utf8)
+        XCTAssertEqual(RoleMode.parseStatus(ok), RoleModeStatus(mode: .advisor, lead: "cc", main: "cdx"))
         XCTAssertEqual(RoleMode.parseStatus(nil), RoleModeStatus(mode: .auto, lead: ""))
         XCTAssertEqual(RoleMode.parseStatus(Data("{".utf8)), RoleModeStatus(mode: .auto, lead: ""))
         let unknown = Data(#"{"mode":"bogus","lead":"cc"}"#.utf8)
@@ -68,14 +68,23 @@ final class RoleModeTests: XCTestCase {
 
     // Badge label for the six mode/lead combinations plus the empty-lead form.
     func testBadgeLabelComposition() {
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, lead: "cc"), "auto\u{00B7}CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, lead: "cdx"), "auto\u{00B7}Cdx")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, lead: "cc"), "advisor\u{00B7}CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, lead: "cdx"), "advisor\u{00B7}Cdx")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, lead: "cc"), "solo\u{00B7}CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, lead: "cdx"), "solo\u{00B7}Cdx")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cc"), "auto\u{00B7}CC")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cdx"), "auto\u{00B7}Cdx")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cc"), "advisor\u{00B7}CC")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cdx"), "advisor\u{00B7}Cdx")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cc"), "solo\u{00B7}CC")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cdx"), "solo\u{00B7}Cdx")
         // Empty / unknown lead collapses to just the mode name.
-        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, lead: ""), "solo")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, lead: "other"), "auto")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: ""), "solo")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "other"), "auto")
+    }
+
+    func testConversationMainIsIndependentAndBuildsCanonicalCommand() {
+        XCTAssertEqual(roleModeConversationMain(main: "cc", lead: "cdx"), "cc")
+        XCTAssertEqual(roleModeConversationMain(main: "", lead: "cdx"), "cdx")
+        XCTAssertEqual(
+            roleModeSetArguments(mode: .advisor, main: "cc", projectPath: "/project"),
+            ["mode", "advisor", "--main", "cc", "--json", "--project", "/project", "--set-by", "gui", "--source", "tproj-gui"]
+        )
     }
 }

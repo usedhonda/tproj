@@ -56,7 +56,7 @@ public enum RoleMode: String, CaseIterable {
         }
     }
 
-    // Parse `model-role-router mode --json` output into mode + lead. Any failure
+    // Parse `model-role-router mode --json` output into mode + lead + main. Any failure
     // (nil, corrupt, unrecognized mode) resolves to auto with no lead, matching
     // the "treat unreadable as auto" rule. `lead` is passed through verbatim
     // ("cc" / "cdx" / "" when no pane has resolved a role yet).
@@ -66,12 +66,14 @@ public enum RoleMode: String, CaseIterable {
             return RoleModeStatus(mode: .auto, lead: "")
         }
         let mode = RoleMode(rawValue: record.mode ?? "") ?? .auto
-        return RoleModeStatus(mode: mode, lead: record.lead ?? "")
+        let main = ["cc", "cdx"].contains(record.main ?? "") ? record.main ?? "" : ""
+        return RoleModeStatus(mode: mode, lead: record.lead ?? "", main: main)
     }
 
     private struct StatusRecord: Codable {
         var mode: String?
         var lead: String?
+        var main: String?
     }
 }
 
@@ -79,11 +81,35 @@ public enum RoleMode: String, CaseIterable {
 public struct RoleModeStatus: Equatable {
     public var mode: RoleMode
     public var lead: String   // "cc", "cdx", or "" (no pane resolved yet)
+    public var main: String   // User's preferred conversation side; never role authority.
 
-    public init(mode: RoleMode, lead: String) {
+    public init(mode: RoleMode, lead: String, main: String = "") {
         self.mode = mode
         self.lead = lead
+        self.main = main
     }
+}
+
+// The explicit conversation preference wins for display and pane choice. With
+// no preference, retain the existing derived-lead display behaviour.
+public func roleModeConversationMain(main: String, lead: String) -> String {
+    if main == "cc" || main == "cdx" { return main }
+    if lead == "cc" || lead == "cdx" { return lead }
+    return ""
+}
+
+// Keep command construction pure and testable. The router remains the only
+// writer/interpreter of the per-project role-mode document.
+public func roleModeSetArguments(mode: RoleMode, main: String, projectPath: String) -> [String] {
+    let mainValue = (main == "cc" || main == "cdx") ? main : "derived"
+    return [
+        "mode", mode.rawValue,
+        "--main", mainValue,
+        "--json",
+        "--project", projectPath,
+        "--set-by", "gui",
+        "--source", "tproj-gui",
+    ]
 }
 
 // Display form of a lead side, capitalized to match the row's CC / Cdx action
@@ -98,7 +124,7 @@ public func roleModeLeadDisplay(_ lead: String) -> String {
 
 // Compose the GUI badge label from mode + lead: "auto·CC", "advisor·Cdx",
 // "solo·CC". When the lead is empty/unknown, the label is just the mode name.
-public func roleModeBadgeLabel(mode: RoleMode, lead: String) -> String {
-    let side = roleModeLeadDisplay(lead)
+public func roleModeBadgeLabel(mode: RoleMode, main: String) -> String {
+    let side = roleModeLeadDisplay(main)
     return side.isEmpty ? mode.rawValue : "\(mode.rawValue)\u{00B7}\(side)"
 }

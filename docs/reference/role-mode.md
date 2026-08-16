@@ -14,9 +14,10 @@ enforced.
 | `advisor` | whichever side the user prompted directly | advises: read, search, review, answer when asked |
 | `solo` | whichever side the user prompted directly | stays out unless asked something directly |
 
-No side is ever named in a declaration. Moving the conversation to the other pane
-moves the lead with it, so `advisor` needs no re-declaration and cannot get between
-the user and a pane they are talking to.
+The GUI may also store `main: "cc" | "cdx"`: the pane the user intends to talk to.
+This is deliberately separate from role `lead`. It controls display/navigation only;
+moving the actual conversation still determines the working side under a declared
+mode, and tier still decides role authority under `auto`.
 
 ## State
 
@@ -24,11 +25,11 @@ the user and a pane they are talking to.
   (the relative location can be overridden with `MODEL_ROLE_MODE_FILE_NAME`).
 - The file's location is its scope. Declaring a mode in one project never affects a
   neighbouring column, and two projects hold different modes at the same time.
-- **Absent means `auto`.** So does an unreadable file, an unrecognized mode value,
+- **Absent means `auto` with no main preference.** So does an unreadable file, an unrecognized mode value,
   and a project that cannot be resolved to a local absolute root (remote `ssh://`
   projects have no local state directory and always read as `auto`).
-- Declaring `auto` deletes the file, so the default and the escape hatch below reach
-  one state rather than two that have to behave identically.
+- Declaring plain `auto` deletes the file. `auto --main cc|cdx` keeps a file only to
+  retain the conversation preference; role resolution remains ordinary `auto`.
 - The file is **not** cached into pane options. Every hook reads it on every turn,
   which is what makes a mode apply to panes created after it was declared, with no
   registration step, and what makes a change reach a pane that started before it.
@@ -40,7 +41,7 @@ the user and a pane they are talking to.
 Shape:
 
 ```json
-{"mode": "advisor", "set_at": 1786400000, "set_by": "tproj.cc", "source": "tproj-role"}
+{"mode": "advisor", "main": "cdx", "set_at": 1786400000, "set_by": "gui", "source": "tproj-gui"}
 ```
 
 `set_by` records the **actual declarer**: an agent pane records its own alias
@@ -63,6 +64,7 @@ tproj-role                # this project's mode
 tproj-role advisor        # declare for this project
 tproj-role solo --project /path/to/other
 tproj-role auto --all     # every local project in workspace.yaml
+model-role-router mode advisor --main cdx --project /path/to/project
 ```
 
 Callers must treat a missing router, a non-zero exit, or unparseable output as
@@ -99,15 +101,22 @@ interpreter of registry entries; the GUI and CLI ask it rather than parsing the
 cache themselves. An empty lead means no pane of the project has resolved a role
 yet.
 
+## Who the user talks to (`main`)
+
+`mode --json` reports an optional `"main": "cc" | "cdx" | ""`. Unlike `lead`, this
+is stored user preference and is never consulted by role resolution. The GUI uses it
+to mark the intended conversation pane; when empty it falls back to displaying the
+derived lead. `--main derived` clears the preference.
+
 ## Visibility
 
 - tmux status line: `tproj-role --status-segment` shows ` role:<mode>·<lead>` for
   the **focused pane's project**, and nothing under `auto`, so an undeclared
   workspace keeps its old status line.
-- The tproj GUI shows a badge per project row (`auto·CC` green / `advisor·Cdx`
-  cyan / `solo·CC` red), click to cycle; the lead side's CC/Cdx button is tinted
-  with the mode colour. The badge reads via `mode --json` and writes the same
-  per-project file.
+- The tproj GUI shows a first-row menu per project. Its `Mode` section selects
+  auto/advisor/solo and its `Main conversation` section selects CC, Cdx, or derived.
+  The chosen conversation side's button is tinted with the mode colour. The GUI
+  reads and writes only through `model-role-router mode`.
 
 ## Escape hatch
 

@@ -3510,11 +3510,6 @@ final class AppViewModel: ObservableObject {
         (path as NSString).expandingTildeInPath
     }
 
-    private func roleModeFileURL(forProjectPath path: String) -> URL {
-        URL(fileURLWithPath: normalizedProjectKey(path))
-            .appendingPathComponent(".local/role-mode.json")
-    }
-
     private var roleModeRouterPath: String {
         "\(NSHomeDirectory())/bin/model-role-router"
     }
@@ -3529,6 +3524,19 @@ final class AppViewModel: ObservableObject {
     func roleModeLead(forProjectPath path: String) -> String {
         guard !path.isEmpty else { return "" }
         return roleModeStatuses[normalizedProjectKey(path)]?.lead ?? ""
+    }
+
+    // User-selected conversation side. When unset, preserve the previous UI
+    // behaviour by following the router's derived role lead.
+    func roleModeMain(forProjectPath path: String) -> String {
+        guard !path.isEmpty else { return "" }
+        let status = roleModeStatuses[normalizedProjectKey(path)]
+        return roleModeConversationMain(main: status?.main ?? "", lead: status?.lead ?? "")
+    }
+
+    func roleModeMainPreference(forProjectPath path: String) -> String {
+        guard !path.isEmpty else { return "" }
+        return roleModeStatuses[normalizedProjectKey(path)]?.main ?? ""
     }
 
     // Ask `model-role-router mode --json` for every known local project so mode
@@ -3562,7 +3570,7 @@ final class AppViewModel: ObservableObject {
                 }
             }
             for await (key, status) in group {
-                if status.mode != .auto || !status.lead.isEmpty {
+                if status.mode != .auto || !status.lead.isEmpty || !status.main.isEmpty {
                     statuses[key] = status
                 }
             }
@@ -3572,43 +3580,31 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    // Cycle a project's mode (auto -> advisor -> solo -> auto). Updates the
-    // in-memory map first for immediate badge feedback, then writes/deletes the
-    // file; cycling to auto deletes the file (auto == absence). The router picks
-    // the file up and the next poll refreshes the derived lead.
-    func cycleRoleMode(forProjectPath path: String) {
+    // Set mode and the user's preferred conversation side through the canonical
+    // router. The preference is display/navigation state only; role authority
+    // continues to come from the router's independently derived `lead`.
+    func setRoleMode(_ mode: RoleMode, main: String, forProjectPath path: String) async {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let key = normalizedProjectKey(trimmed)
-        let mode = (roleModeStatuses[key]?.mode ?? .auto).next
-        let lead = roleModeStatuses[key]?.lead ?? ""
+        let previous = roleModeStatuses[key] ?? RoleModeStatus(mode: .auto, lead: "")
+        let mainValue = (main == "cc" || main == "cdx") ? main : ""
+        roleModeStatuses[key] = RoleModeStatus(mode: mode, lead: previous.lead, main: mainValue)
 
-        if mode == .auto {
+        let result = await runCommandAsync(
+            roleModeRouterPath,
+            roleModeSetArguments(mode: mode, main: mainValue, projectPath: key)
+        )
+        guard result.exitCode == 0 else {
+            roleModeStatuses[key] = previous
+            statusText = "Role mode write failed: \(trimmedError(result))"
+            return
+        }
+        let status = RoleMode.parseStatus(Data(result.stdout.utf8))
+        if status.mode == .auto && status.lead.isEmpty && status.main.isEmpty {
             roleModeStatuses[key] = nil
         } else {
-            roleModeStatuses[key] = RoleModeStatus(mode: mode, lead: lead)
-        }
-
-        let fileURL = roleModeFileURL(forProjectPath: trimmed)
-        do {
-            if mode == .auto {
-                if fileManager.fileExists(atPath: fileURL.path) {
-                    try fileManager.removeItem(at: fileURL)
-                }
-            } else if let data = mode.fileContents(
-                setBy: "gui",
-                source: "tproj-gui",
-                setAt: Int(Date().timeIntervalSince1970)
-            ) {
-                try fileManager.createDirectory(
-                    at: fileURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try data.write(to: fileURL, options: .atomic)
-            }
-        } catch {
-            // Leave the optimistic in-memory value; the next poll reconciles.
-            statusText = "Role mode write failed: \(error.localizedDescription)"
+            roleModeStatuses[key] = status
         }
     }
 
@@ -4564,9 +4560,9 @@ struct ContentView: View {
 
     private func liveColumnRow(_ column: LiveColumn) -> some View {
         let isDragging = draggingColumnID == column.column
-        // Lead side + mode tint so the main pane's button glows in the mode
-        // colour (green auto / cyan advisor / red solo). Empty lead tints nothing.
-        let lead = column.hostLabel == "local" ? vm.roleModeLead(forProjectPath: column.projectPath) : ""
+        // Conversation-main side + mode tint. This is the pane the user chose to
+        // talk to, not necessarily the higher-tier or orchestrating side.
+        let main = column.hostLabel == "local" ? vm.roleModeMain(forProjectPath: column.projectPath) : ""
         let leadTint = roleModeTint(vm.roleMode(forProjectPath: column.projectPath))
 
         return VStack(alignment: .leading, spacing: 3) {
@@ -4595,11 +4591,11 @@ struct ContentView: View {
             // Buttons row
             HStack(spacing: 1) {
                 Spacer()
-                ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: lead == "cdx" ? leadTint : nil) {
+                ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? leadTint : nil) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
                 }
                 .frame(width: 38)
-                ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: lead == "cc" ? leadTint : nil) {
+                ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cc" ? leadTint : nil) {
                     Task { await vm.toggleAIPane(role: "claude", for: column) }
                 }
                 .frame(width: 38)
@@ -5087,27 +5083,54 @@ struct ContentView: View {
         return "lcl"
     }
 
-    // Per-project role-mode badge, shown where the "CC1 Cdx1 Ag0" counters used
-    // to sit. Local projects: tap cycles auto -> advisor -> solo -> auto and
-    // writes/deletes `<project>/.local/role-mode.json`. Remote/empty projects:
-    // a dim, non-interactive "auto" badge (remote always reads as auto and has
-    // no local state dir to write).
+    // Per-project role-mode menu. Mode and conversation main are separate
+    // choices at the first level; the latter is UI preference, not role authority.
     @ViewBuilder
     private func roleModeBadge(projectPath: String, isLocal: Bool) -> some View {
         let canWrite = isLocal && !projectPath.isEmpty
         let mode = canWrite ? vm.roleMode(forProjectPath: projectPath) : .auto
-        let lead = canWrite ? vm.roleModeLead(forProjectPath: projectPath) : ""
+        let main = canWrite ? vm.roleModeMain(forProjectPath: projectPath) : ""
+        let mainPreference = canWrite ? vm.roleModeMainPreference(forProjectPath: projectPath) : ""
 
-        pill(roleModeBadgeLabel(mode: mode, lead: lead), tint: roleModeTint(mode))
-            .opacity(canWrite ? 1.0 : 0.5)
-            .contentShape(Capsule())
-            .onTapGesture {
-                guard canWrite else { return }
-                vm.cycleRoleMode(forProjectPath: projectPath)
+        if canWrite {
+            Menu {
+                Section("Mode") {
+                    ForEach(RoleMode.allCases, id: \.rawValue) { candidate in
+                        Button {
+                            Task { await vm.setRoleMode(candidate, main: mainPreference, forProjectPath: projectPath) }
+                        } label: {
+                            Label(candidate.rawValue.capitalized, systemImage: candidate == mode ? "checkmark" : "circle")
+                        }
+                    }
+                }
+                Section("Main conversation") {
+                    Button {
+                        Task { await vm.setRoleMode(mode, main: "cdx", forProjectPath: projectPath) }
+                    } label: {
+                        Label("Cdx", systemImage: mainPreference == "cdx" ? "checkmark" : "circle")
+                    }
+                    Button {
+                        Task { await vm.setRoleMode(mode, main: "cc", forProjectPath: projectPath) }
+                    } label: {
+                        Label("CC", systemImage: mainPreference == "cc" ? "checkmark" : "circle")
+                    }
+                    Button {
+                        Task { await vm.setRoleMode(mode, main: "", forProjectPath: projectPath) }
+                    } label: {
+                        Label("Follow role lead", systemImage: mainPreference.isEmpty ? "checkmark" : "circle")
+                    }
+                }
+            } label: {
+                pill(roleModeBadgeLabel(mode: mode, main: main), tint: roleModeTint(mode))
             }
-            .help(canWrite
-                  ? "role mode: \(mode.rawValue) - click to cycle (auto -> advisor -> solo)"
-                  : "role mode: auto (remote)")
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("role mode: \(mode.rawValue); main conversation: \(roleModeLeadDisplay(main))")
+        } else {
+            pill(roleModeBadgeLabel(mode: .auto, main: ""), tint: roleModeTint(.auto))
+                .opacity(0.5)
+                .help("role mode: auto (remote)")
+        }
     }
 
     // Accent color for a role mode: green (auto, the healthy everyday state),
