@@ -358,12 +358,21 @@ fresh_db
 seed_inbound_task mode-01
 mode_bin="$TMP/mode-bin"
 mkdir -p "$mode_bin"
+# The fake records its argv so the per-project scoping is provable: when the guard
+# runs inside a pane whose @project is known, the mode query must carry it.
 cat > "$mode_bin/model-role-router" <<'MRR'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_ROLE_MODE_ARGS:-/dev/null}"
 [ "${FAKE_ROLE_MODE:-auto}" = broken ] && exit 1
 printf '{"mode":"%s"}\n' "${FAKE_ROLE_MODE:-auto}"
 MRR
 chmod +x "$mode_bin/model-role-router"
+cat > "$mode_bin/tmux" <<'FTMUX'
+#!/usr/bin/env bash
+# The guard asks only for the pane's @project tag.
+printf '%s\n' "${FAKE_PANE_PROJECT:-}"
+FTMUX
+chmod +x "$mode_bin/tmux"
 
 declared_out="$(PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=advisor invoke_guard 'Finished the work.')"
 check "declared mode suspends lifecycle enforcement" test -z "$declared_out"
@@ -380,6 +389,18 @@ broken_out="$(PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=broken invoke_guard 'Finishe
 check "an unreadable mode falls back to enforcing" sh -c "grep -q '\[DONE: mode-01\]' <<'EOF'
 $broken_out
 EOF"
+
+# 20. The mode query is scoped to this pane's own project, so a mode declared for a
+#     neighbouring column can never silence this one's lifecycle.
+args_log="$TMP/mode-args.log"
+: > "$args_log"
+PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=auto FAKE_ROLE_MODE_ARGS="$args_log" \
+  FAKE_PANE_PROJECT="/work/projA" TMUX_PANE="%9" invoke_guard 'Finished the work.' >/dev/null
+check "mode query names the pane's own project" sh -c "grep -q -- '--project /work/projA' '$args_log'"
+: > "$args_log"
+PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=auto FAKE_ROLE_MODE_ARGS="$args_log" \
+  FAKE_PANE_PROJECT="" TMUX_PANE="" invoke_guard 'Finished the work.' >/dev/null
+check "no pane means no project argument" sh -c "grep -q 'mode --json' '$args_log' && ! grep -q -- '--project' '$args_log'"
 
 printf '%s\n' "----" "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

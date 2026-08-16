@@ -196,18 +196,40 @@ def verified_cache_tasks(owner: str) -> list[tuple[int, str, str]]:
     return sorted(found, reverse=True)
 
 
+def own_project() -> str:
+    # The project whose mode governs this guard. The pane's @project tag is how every
+    # other consumer scopes itself; asking tmux for this pane keeps the guard on the
+    # same project its hooks and messages belong to. Empty on any failure, which the
+    # router resolves from cwd -- the same fallback identity resolution uses.
+    pane = os.environ.get("TPROJ_PANE", "") or os.environ.get("TMUX_PANE", "")
+    if not pane:
+        return ""
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", pane, "-p", "#{@project}"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def declared_role_mode() -> str:
     # The router owns the mode; ask it rather than reading its file. A second parser
     # of the same state is a second thing to keep in step, and this guard is exactly
     # where a disagreement would show up as a turn that cannot be ended. If the router
-    # is missing or unhappy, treat the workspace as auto so the guard keeps behaving
+    # is missing or unhappy, treat the project as auto so the guard keeps behaving
     # the way it does today instead of quietly switching itself off.
     command = shutil.which("model-role-router")
     if not command:
         return "auto"
+    invocation = [command, "mode", "--json"]
+    project = own_project()
+    if project:
+        invocation.extend(["--project", project])
     try:
         result = subprocess.run(
-            [command, "mode", "--json"], capture_output=True, text=True, timeout=3, check=False
+            invocation, capture_output=True, text=True, timeout=3, check=False
         )
     except (OSError, subprocess.SubprocessError):
         return "auto"
