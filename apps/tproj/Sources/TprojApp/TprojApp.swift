@@ -3587,12 +3587,12 @@ final class AppViewModel: ObservableObject {
     private func emitWeeklyPaceAlertIfChanged() {
         var paths = Set(workspaceProjects.filter { $0.type != "remote" }.map(\.path))
         paths.formUnion(liveColumns.filter { $0.hostLabel == "local" }.map(\.projectPath))
-        let messages = Set(paths.compactMap { weeklyPaceAdvisory(forProjectPath: $0)?.message }).sorted()
-        let signature = messages.joined(separator: "|")
+        let advisories = paths.compactMap { weeklyPaceAdvisory(forProjectPath: $0) }
+        let signature = Set(advisories.map(\.signature)).sorted().joined(separator: "|")
         guard signature != lastWeeklyPaceAlertSignature else { return }
         lastWeeklyPaceAlertSignature = signature
-        if let message = messages.first {
-            statusText = message
+        if let advisory = advisories.first {
+            statusText = advisory.message
         }
     }
 
@@ -4622,6 +4622,9 @@ struct ContentView: View {
         // talk to, not necessarily the higher-tier or orchestrating side.
         let main = column.hostLabel == "local" ? vm.roleModeMain(forProjectPath: column.projectPath) : ""
         let leadTint = roleModeTint(vm.roleMode(forProjectPath: column.projectPath))
+        let paceAdvisory = column.hostLabel == "local" ? vm.weeklyPaceAdvisory(forProjectPath: column.projectPath) : nil
+        let paceTint = weeklyPaceTint(paceAdvisory)
+        let mainTint = paceTint ?? leadTint
 
         return VStack(alignment: .leading, spacing: 3) {
             // Header row
@@ -4649,11 +4652,11 @@ struct ContentView: View {
             // Buttons row
             HStack(spacing: 1) {
                 Spacer()
-                ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? leadTint : nil) {
+                ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
                 }
                 .frame(width: 38)
-                ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cc" ? leadTint : nil) {
+                ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cc" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "claude", for: column) }
                 }
                 .frame(width: 38)
@@ -4677,7 +4680,7 @@ struct ContentView: View {
         .background(
             RoundedRectangle(cornerRadius: 3, style: .continuous)
                 .fill(isDragging ? GhosttyTheme.current.accentCyan.opacity(0.15)
-                      : GhosttyTheme.current.foreground.opacity(0.05))
+                      : (paceTint?.opacity(0.12) ?? GhosttyTheme.current.foreground.opacity(0.05)))
         )
         .overlay(alignment: .leading) {
             RoundedRectangle(cornerRadius: 1)
@@ -5184,7 +5187,7 @@ struct ContentView: View {
                     if paceAdvisory != nil {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(GhosttyTheme.current.accentYellow)
+                            .foregroundStyle(weeklyPaceTint(paceAdvisory) ?? GhosttyTheme.current.accentYellow)
                     }
                 }
             }
@@ -5205,6 +5208,14 @@ struct ContentView: View {
         case .auto: return GhosttyTheme.current.accentGreen
         case .advisor: return GhosttyTheme.current.accentCyan
         case .solo: return GhosttyTheme.current.accentRed
+        }
+    }
+
+    private func weeklyPaceTint(_ advisory: WeeklyPaceAdvisory?) -> Color? {
+        switch advisory?.severity {
+        case .critical: return GhosttyTheme.current.accentRed
+        case .advisory: return GhosttyTheme.current.accentYellow
+        case nil: return nil
         }
     }
 

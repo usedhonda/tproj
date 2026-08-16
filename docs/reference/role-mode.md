@@ -123,13 +123,19 @@ derived lead. `--main derived` clears the preference.
   with the mode colour. The GUI reads and writes only through
   `model-role-router mode`.
 - In every mode, the GUI reads CodexBar's selected-account weekly history snapshots
-  from Application Support every five minutes. When the selected main's usage is
-  at least 10 percentage points further ahead of its expected weekly pace than the
-  other provider, the badge shows a warning and its menu explains the difference.
-  The alert is emitted only when that warning state changes. Snapshots older than
-  30 minutes, future/reset windows, missing files, and unrecognized schemas produce
-  no warning and never block role-mode operation. The GUI does not fetch provider
-  usage, expose account identifiers, or switch the main automatically.
+  from Application Support every five minutes. For each provider, it derives the
+  window start from that provider's own next reset minus seven days, calculates the
+  average burn since that start, and projects usage at that provider's next reset.
+  The badge warns when the main projects at least 10 percentage points above the
+  other provider, or projects exhaustion while the other does not. Yellow means a
+  relative disadvantage; red means the main projects 100% usage before reset. The
+  warning also tints the main button and the app's project-row background, while
+  its menu shows both reset-time projections. The alert is emitted only when its
+  main/severity state changes. A window younger than one hour, a snapshot older
+  than 30 minutes, a future/reset window, a missing file, or an unrecognized schema
+  produces no warning and never blocks role-mode operation. The GUI does not fetch
+  provider usage, expose account identifiers, change terminal pane backgrounds, or
+  switch the main automatically.
 
 ## Escape hatch
 

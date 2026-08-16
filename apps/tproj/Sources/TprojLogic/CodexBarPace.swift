@@ -7,30 +7,47 @@ public struct WeeklyPaceSnapshot: Equatable, Sendable {
     public let usedPercent: Double
     public let windowMinutes: Int
 
-    public var expectedUsedPercent: Double {
+    public var projectedUsedPercentAtReset: Double? {
         let windowSeconds = Double(windowMinutes) * 60
-        guard windowSeconds > 0 else { return 0 }
+        guard windowSeconds > 0 else { return nil }
         let startedAt = resetsAt.addingTimeInterval(-windowSeconds)
         let elapsed = capturedAt.timeIntervalSince(startedAt)
-        return min(100, max(0, elapsed / windowSeconds * 100))
+        guard elapsed >= 60 * 60, elapsed <= windowSeconds else { return nil }
+        if usedPercent == 0 { return 0 }
+        return usedPercent / (elapsed / windowSeconds)
     }
+}
 
-    public var paceDeltaPercent: Double {
-        usedPercent - expectedUsedPercent
-    }
+public enum WeeklyPaceSeverity: String, Equatable, Sendable {
+    case advisory
+    case critical
 }
 
 public struct WeeklyPaceAdvisory: Equatable, Sendable {
     public let main: String
     public let other: String
-    public let gapPercent: Int
+    public let mainProjectedPercent: Int
+    public let otherProjectedPercent: Int
+    public let mainResetsAt: Date
+    public let otherResetsAt: Date
+    public let severity: WeeklyPaceSeverity
+
+    public var signature: String {
+        "\(main):\(severity.rawValue)"
+    }
 
     public var message: String {
-        "週ペース: 主\(displayName(main))は\(displayName(other))より\(gapPercent)pt速い消費"
+        "週ペース: 主\(displayName(main)) \(resetDescription(mainResetsAt)) -> \(mainProjectedPercent)% / \(displayName(other)) \(resetDescription(otherResetsAt)) -> \(otherProjectedPercent)%"
     }
 
     private func displayName(_ side: String) -> String {
         side == "cc" ? "CC" : "Cdx"
+    }
+
+    private func resetDescription(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d H:mm"
+        return formatter.string(from: date)
     }
 }
 
@@ -78,7 +95,7 @@ public enum CodexBarPace {
         snapshots: [String: WeeklyPaceSnapshot],
         now: Date,
         staleAfter: TimeInterval = 30 * 60,
-        minimumGapPercent: Double = 10
+        minimumProjectedGapPercent: Double = 10
     ) -> WeeklyPaceAdvisory? {
         let mainProvider: String
         let otherProvider: String
@@ -103,9 +120,25 @@ public enum CodexBarPace {
             return nil
         }
 
-        let gap = mainSnapshot.paceDeltaPercent - otherSnapshot.paceDeltaPercent
-        guard gap >= minimumGapPercent else { return nil }
-        return WeeklyPaceAdvisory(main: main, other: other, gapPercent: Int(gap.rounded()))
+        guard let mainProjected = mainSnapshot.projectedUsedPercentAtReset,
+              let otherProjected = otherSnapshot.projectedUsedPercentAtReset else {
+            return nil
+        }
+        let mainExhausts = mainProjected >= 100
+        let otherExhausts = otherProjected >= 100
+        let gap = mainProjected - otherProjected
+        guard (mainExhausts && !otherExhausts) || gap >= minimumProjectedGapPercent else {
+            return nil
+        }
+        return WeeklyPaceAdvisory(
+            main: main,
+            other: other,
+            mainProjectedPercent: min(999, Int(mainProjected.rounded())),
+            otherProjectedPercent: min(999, Int(otherProjected.rounded())),
+            mainResetsAt: mainSnapshot.resetsAt,
+            otherResetsAt: otherSnapshot.resetsAt,
+            severity: mainExhausts ? .critical : .advisory
+        )
     }
 
     private static func isFresh(

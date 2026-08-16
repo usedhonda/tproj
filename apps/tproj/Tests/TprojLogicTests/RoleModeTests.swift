@@ -105,10 +105,19 @@ final class RoleModeTests: XCTestCase {
         let snapshots = ["codex": codex, "claude": claude]
         let freshNow = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-14T00:10:00Z"))
         let staleNow = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-14T01:00:00Z"))
+        let resetsAt = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-17T00:00:00Z"))
 
         XCTAssertEqual(
             CodexBarPace.advisory(main: "cdx", snapshots: snapshots, now: freshNow),
-            WeeklyPaceAdvisory(main: "cdx", other: "cc", gapPercent: 30)
+            WeeklyPaceAdvisory(
+                main: "cdx",
+                other: "cc",
+                mainProjectedPercent: 140,
+                otherProjectedPercent: 88,
+                mainResetsAt: resetsAt,
+                otherResetsAt: resetsAt,
+                severity: .critical
+            )
         )
         XCTAssertNil(CodexBarPace.advisory(main: "cc", snapshots: snapshots, now: freshNow))
         XCTAssertNil(CodexBarPace.advisory(main: "cdx", snapshots: snapshots, now: staleNow))
