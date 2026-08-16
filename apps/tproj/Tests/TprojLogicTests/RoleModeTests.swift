@@ -68,20 +68,21 @@ final class RoleModeTests: XCTestCase {
 
     // Badge label for the six mode/lead combinations plus the empty-lead form.
     func testBadgeLabelComposition() {
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cc"), "auto\u{00B7}CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cdx"), "auto\u{00B7}Cdx")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cc"), "advisor\u{00B7}CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cdx"), "advisor\u{00B7}Cdx")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cc"), "solo\u{00B7}CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cdx"), "solo\u{00B7}Cdx")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cc"), "Main CC\u{00B7}Auto")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cdx"), "Main Cdx\u{00B7}Auto")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cc"), "Main CC\u{00B7}Advisor Cdx")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cdx"), "Main Cdx\u{00B7}Advisor CC")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cc"), "Main CC\u{00B7}Cdx off")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cdx"), "Main Cdx\u{00B7}CC off")
         // Empty / unknown lead collapses to just the mode name.
-        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: ""), "solo")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "other"), "auto")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: ""), "solo\u{00B7}Main unset")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "other"), "auto\u{00B7}Main unset")
     }
 
     func testConversationMainIsIndependentAndBuildsCanonicalCommand() {
-        XCTAssertEqual(roleModeConversationMain(main: "cc", lead: "cdx"), "cc")
-        XCTAssertEqual(roleModeConversationMain(main: "", lead: "cdx"), "cdx")
+        XCTAssertEqual(roleModeConversationMain(mode: .advisor, main: "cc", lead: "cdx"), "cc")
+        XCTAssertEqual(roleModeConversationMain(mode: .advisor, main: "", lead: "cdx"), "cdx")
+        XCTAssertEqual(roleModeConversationMain(mode: .auto, main: "", lead: "cdx"), "")
         XCTAssertEqual(
             roleModeSetArguments(mode: .advisor, main: "cc", projectPath: "/project"),
             ["mode", "advisor", "--main", "cc", "--json", "--project", "/project", "--set-by", "gui", "--source", "tproj-gui"]

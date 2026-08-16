@@ -3531,7 +3531,11 @@ final class AppViewModel: ObservableObject {
     func roleModeMain(forProjectPath path: String) -> String {
         guard !path.isEmpty else { return "" }
         let status = roleModeStatuses[normalizedProjectKey(path)]
-        return roleModeConversationMain(main: status?.main ?? "", lead: status?.lead ?? "")
+        return roleModeConversationMain(
+            mode: status?.mode ?? .auto,
+            main: status?.main ?? "",
+            lead: status?.lead ?? ""
+        )
     }
 
     func roleModeMainPreference(forProjectPath path: String) -> String {
@@ -5125,7 +5129,7 @@ struct ContentView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("role mode: \(mode.rawValue); main conversation: \(roleModeLeadDisplay(main))")
+            .help(roleModeBadgeLabel(mode: mode, main: main))
         } else {
             pill(roleModeBadgeLabel(mode: .auto, main: ""), tint: roleModeTint(.auto))
                 .opacity(0.5)

@@ -92,9 +92,9 @@ public struct RoleModeStatus: Equatable {
 
 // The explicit conversation preference wins for display and pane choice. With
 // no preference, retain the existing derived-lead display behaviour.
-public func roleModeConversationMain(main: String, lead: String) -> String {
+public func roleModeConversationMain(mode: RoleMode, main: String, lead: String) -> String {
     if main == "cc" || main == "cdx" { return main }
-    if lead == "cc" || lead == "cdx" { return lead }
+    if mode != .auto && (lead == "cc" || lead == "cdx") { return lead }
     return ""
 }
 
@@ -126,5 +126,15 @@ public func roleModeLeadDisplay(_ lead: String) -> String {
 // "solo·CC". When the lead is empty/unknown, the label is just the mode name.
 public func roleModeBadgeLabel(mode: RoleMode, main: String) -> String {
     let side = roleModeLeadDisplay(main)
-    return side.isEmpty ? mode.rawValue : "\(mode.rawValue)\u{00B7}\(side)"
+    guard !side.isEmpty else { return "\(mode.rawValue)\u{00B7}Main unset" }
+    switch mode {
+    case .auto:
+        return "Main \(side)\u{00B7}Auto"
+    case .advisor:
+        let advisor = side == "CC" ? "Cdx" : "CC"
+        return "Main \(side)\u{00B7}Advisor \(advisor)"
+    case .solo:
+        let inactive = side == "CC" ? "Cdx" : "CC"
+        return "Main \(side)\u{00B7}\(inactive) off"
+    }
 }
