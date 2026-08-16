@@ -110,10 +110,13 @@ if $segment; then
   # once, exactly the right behaviour: the segment describes the project you are
   # looking at.
   seg_project=$(tmux display-message -p '#{@project}' 2>/dev/null)
-  mode=$("$router" mode --json ${seg_project:+--project "$seg_project"} 2>/dev/null \
-    | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  seg_json=$("$router" mode --json ${seg_project:+--project "$seg_project"} 2>/dev/null)
+  mode=$(printf '%s' "$seg_json" | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  lead=$(printf '%s' "$seg_json" | sed -n 's/.*"lead"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   if [ -n "$mode" ] && [ "$mode" != auto ]; then
-    printf ' role:%s' "$mode"
+    # The lead answers "which side is main right now", which is the question the
+    # segment exists to answer, so it rides along whenever it is known.
+    printf ' role:%s%s' "$mode" "${lead:+·$lead}"
   fi
   exit 0
 fi

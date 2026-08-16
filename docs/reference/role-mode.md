@@ -89,13 +89,25 @@ that role while handling a message from the other side. A direct prompt from the
 makes it the leading side on that turn, so the gate never blocks the user's own
 request.
 
+## Who leads (`lead`)
+
+`mode --json` also reports `"lead": "cc" | "cdx" | ""` — which side is main for the
+project right now. It is derived, not stored: the registry records that the last
+directly prompted side resolved to `solo-fallback` (declared modes) or that a side
+is `orchestrator` (auto), and the newest such entry wins. The router is the only
+interpreter of registry entries; the GUI and CLI ask it rather than parsing the
+cache themselves. An empty lead means no pane of the project has resolved a role
+yet.
+
 ## Visibility
 
-- tmux status line: `tproj-role --status-segment` shows ` role:<mode>` for the
-  **focused pane's project**, and nothing under `auto`, so an undeclared workspace
-  keeps its old status line.
-- The tproj GUI shows a mode badge per project row and can cycle it by click; it
-  reads and writes the same per-project file.
+- tmux status line: `tproj-role --status-segment` shows ` role:<mode>·<lead>` for
+  the **focused pane's project**, and nothing under `auto`, so an undeclared
+  workspace keeps its old status line.
+- The tproj GUI shows a badge per project row (`auto·CC` green / `advisor·Cdx`
+  cyan / `solo·CC` red), click to cycle; the lead side's CC/Cdx button is tinted
+  with the mode colour. The badge reads via `mode --json` and writes the same
+  per-project file.
 
 ## Escape hatch
 
