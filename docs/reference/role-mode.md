@@ -78,6 +78,7 @@ Callers must treat a missing router, a non-zero exit, or unparseable output as
 | Role resolution | tier and message markers | the mode alone, resolved **before** any marker |
 | PreToolUse deny | orchestrator may not edit or run mutating git | the advising side may not; the leading side may |
 | Automatic role handoff | as before | suppressed |
+| `tproj-msg --new-task` to the opposite same-column peer | allowed | rejected before task creation or delivery; ordinary consultation remains allowed |
 | Delegated-task lifecycle (`tproj-completion-guard`) | as before | suspended, **scoped to the guard's own project** |
 
 Role resolution happens before `[Role-Handoff:]`, `[Task:]`, and an `Orchestrator:`
@@ -90,6 +91,14 @@ The advising side's edit deny is a hard deny, which is safe because a pane only 
 that role while handling a message from the other side. A direct prompt from the user
 makes it the leading side on that turn, so the gate never blocks the user's own
 request.
+
+The messaging gate is deliberately narrower than a general communication ban. Under
+`advisor`, an ordinary message to the opposite peer is still a consultation. A
+`--new-task` (including `--role-handoff --new-task`) to that same-column peer is
+rejected with `advisor_peer_is_advice_only` before liveness checks, task-id creation,
+database writes, or `send-keys`. `--user-authorized` does not bypass the mode: the user
+can instead prompt the other pane directly or change the mode. Tasks to a distinct
+subagent are unaffected.
 
 ## Who leads (`lead`)
 
@@ -126,16 +135,25 @@ derived lead. `--main derived` clears the preference.
   from Application Support every five minutes. For each provider, it derives the
   window start from that provider's own next reset minus seven days, calculates the
   average burn since that start, and projects usage at that provider's next reset.
-  The badge warns when the main projects at least 10 percentage points above the
-  other provider, or projects exhaustion while the other does not. Yellow means a
-  relative disadvantage; red means the main projects 100% usage before reset. The
-  warning also tints the main button and the app's project-row background, while
-  its menu shows both reset-time projections. The alert is emitted only when its
-  main/severity state changes. A window younger than one hour, a snapshot older
-  than 30 minutes, a future/reset window, a missing file, or an unrecognized schema
-  produces no warning and never blocks role-mode operation. The GUI does not fetch
-  provider usage, expose account identifiers, change terminal pane backgrounds, or
-  switch the main automatically.
+  Assessment starts only after one hour and 10% actual use, and requires both
+  provider snapshots to be no more than 30 minutes old. Red means the main projects
+  100% usage; yellow means either 90% projected usage or a meaningful allocation gap
+  (main at least 75%, other at most 60%, and at least 20 points apart). Recovery uses
+  a lower band (main below 80% and the relative condition substantially cleared) to
+  avoid flapping.
+- The GUI writes only fixed enums, timestamps, and aggregate percentages to
+  `~/.local/state/tproj/weekly-pace.json`; no account key, email, or raw CodexBar
+  object is copied. `tproj-inbox-check` may inject a completed Japanese notice into
+  the next normal response. One machine-global ledger at
+  `~/.local/state/tproj/usage-notice.json` deduplicates across projects and CC/Cdx:
+  critical escalation is immediate, critical reminders are at most every four
+  hours, advisory reminders every twelve hours, and recovery is emitted once.
+  Missing, stale, malformed, or unwritable optional state is silent and fail-open.
+- The chosen conversation-main pane receives a subtle additive role-colour wash in
+  the existing background underlay; the other pane is never dimmed. A mode/main
+  change runs only the fast manifest sync and never regenerates persona images.
+  Warning yellow/red and conversation-main violet/cyan come from separate palette
+  entries. The GUI never fetches provider usage or switches main automatically.
 
 ## Escape hatch
 

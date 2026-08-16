@@ -41,6 +41,190 @@ fi
 # shellcheck source=/dev/null
 source "$CACHE_HELPER"
 
+# Weekly usage notices are machine-local, informational-only context. The GUI
+# writes a sanitized global state (no account identifiers or arbitrary text),
+# while this hook owns one cross-project delivery ledger so CC and Cdx do not
+# repeat the same notice in every column.
+usage_format_reset() {
+  local epoch="$1"
+  date -r "$epoch" '+%m/%d %H:%M' 2>/dev/null \
+    || date -d "@$epoch" '+%m/%d %H:%M' 2>/dev/null \
+    || return 1
+}
+
+usage_resolve_main() {
+  if [[ "${TPROJ_USAGE_MAIN:-}" == "cc" || "${TPROJ_USAGE_MAIN:-}" == "cdx" ]]; then
+    printf '%s' "$TPROJ_USAGE_MAIN"
+    return 0
+  fi
+  [[ -n "${TMUX_PANE:-}" ]] || return 1
+  local project router mode_json main
+  project="$(tmux display-message -t "$TMUX_PANE" -p '#{@project}' 2>/dev/null || true)"
+  [[ "$project" == /* ]] || return 1
+  router="${TPROJ_USAGE_ROUTER:-$HOME/bin/model-role-router}"
+  [[ -x "$router" ]] || router="$(command -v model-role-router 2>/dev/null || true)"
+  [[ -x "$router" ]] || return 1
+  mode_json="$("$router" mode --json --project "$project" 2>/dev/null || true)"
+  main="$(printf '%s' "$mode_json" | jq -r '
+    if (.main == "cc" or .main == "cdx") then .main
+    elif (.lead == "cc" or .lead == "cdx") then .lead
+    else "cdx" end
+  ' 2>/dev/null || true)"
+  [[ "$main" == "cc" || "$main" == "cdx" ]] || return 1
+  printf '%s' "$main"
+}
+
+usage_write_ledger() {
+  local ledger="$1" main="$2" state="$3" severity="$4" reason="$5"
+  local main_pct="$6" other_pct="$7" main_reset="$8" other_reset="$9" now="${10}"
+  local source_json='{}' tmp
+  if [[ -s "$ledger" ]] && jq -e 'type == "object"' "$ledger" >/dev/null 2>&1; then
+    source_json="$(cat "$ledger")"
+  fi
+  tmp="$(mktemp "${ledger}.tmp.XXXXXX" 2>/dev/null)" || return 1
+  if ! printf '%s' "$source_json" | jq \
+      --arg main "$main" --arg state "$state" --arg severity "$severity" --arg reason "$reason" \
+      --argjson main_pct "$main_pct" --argjson other_pct "$other_pct" \
+      --argjson main_reset "$main_reset" --argjson other_reset "$other_reset" --argjson now "$now" '
+        .version = 1 |
+        .sides = (.sides // {}) |
+        .sides[$main] = {
+          state: $state,
+          severity: (if $severity == "" then null else $severity end),
+          reason: (if $reason == "" then null else $reason end),
+          main_bucket: (($main_pct / 10) | floor),
+          main_projected_percent: $main_pct,
+          other_projected_percent: $other_pct,
+          main_resets_at: $main_reset,
+          other_resets_at: $other_reset,
+          injected_at: $now
+        }
+      ' > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$ledger"
+}
+
+emit_weekly_usage_notice() {
+  local state_path="${TPROJ_USAGE_STATE_PATH:-$HOME/.local/state/tproj/weekly-pace.json}"
+  local ledger_path="${TPROJ_USAGE_LEDGER_PATH:-$HOME/.local/state/tproj/usage-notice.json}"
+  local ledger_dir lock_dir now generated age main side_values
+  local status severity reason main_pct other_pct main_reset other_reset
+  local prev_values prev_state prev_severity prev_reason prev_bucket prev_main_reset prev_other_reset prev_at
+  local current_bucket elapsed cooldown due=false display_main display_other main_label other_label message instruction
+
+  [[ -s "$state_path" ]] || return 0
+  main="$(usage_resolve_main 2>/dev/null || true)"
+  [[ "$main" == "cc" || "$main" == "cdx" ]] || return 0
+  now="${TPROJ_USAGE_NOW:-$(date +%s)}"
+  [[ "$now" =~ ^[0-9]+$ ]] || return 0
+  generated="$(jq -r '.generated_at // empty' "$state_path" 2>/dev/null || true)"
+  [[ "$generated" =~ ^[0-9]+$ ]] || return 0
+  age=$((now - generated))
+  (( age >= -300 && age <= 900 )) || return 0
+  jq -e --arg main "$main" '
+    .version == 1 and (.sides | type == "object") and
+    (.sides[$main].status == "alert" or .sides[$main].status == "healthy" or
+     .sides[$main].status == "hold" or .sides[$main].status == "unavailable")
+  ' "$state_path" >/dev/null 2>&1 || return 0
+  side_values="$(jq -r --arg main "$main" '.sides[$main] |
+    [(.status // ""), (.severity // "-"), (.reason // "-"),
+     (.main_projected_percent // -1), (.other_projected_percent // -1),
+     (.main_resets_at // 0), (.other_resets_at // 0)] | @tsv' "$state_path" 2>/dev/null || true)"
+  IFS=$'\t' read -r status severity reason main_pct other_pct main_reset other_reset <<< "$side_values"
+  [[ "$severity" == "-" ]] && severity=""
+  [[ "$reason" == "-" ]] && reason=""
+  [[ "$status" == "hold" || "$status" == "unavailable" ]] && return 0
+  [[ "$main_pct" =~ ^[0-9]+$ && "$other_pct" =~ ^[0-9]+$ && "$main_reset" =~ ^[0-9]+$ && "$other_reset" =~ ^[0-9]+$ ]] || return 0
+  (( main_pct <= 999 && other_pct <= 999 && main_reset > now && other_reset > now )) || return 0
+  if [[ "$status" == "alert" ]]; then
+    [[ "$severity" == "advisory" || "$severity" == "critical" ]] || return 0
+    [[ "$reason" == "exhaustion" || "$reason" == "absolute-high" || "$reason" == "peer-headroom" ]] || return 0
+  fi
+
+  ledger_dir="$(dirname "$ledger_path")"
+  mkdir -p "$ledger_dir" 2>/dev/null || return 0
+  chmod 700 "$ledger_dir" 2>/dev/null || true
+  lock_dir="${TPROJ_USAGE_LOCK_DIR:-$ledger_dir/.usage-notice.lock}"
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    local lock_mtime
+    lock_mtime="$(stat -f '%m' "$lock_dir" 2>/dev/null || printf '0')"
+    if [[ "$lock_mtime" =~ ^[0-9]+$ ]] && (( now - lock_mtime > 30 )); then
+      rmdir "$lock_dir" 2>/dev/null || return 0
+      mkdir "$lock_dir" 2>/dev/null || return 0
+    else
+      return 0
+    fi
+  fi
+
+  prev_values="$(jq -r --arg main "$main" '.sides[$main] // {} |
+    [(.state // "-"), (.severity // "-"), (.reason // "-"), (.main_bucket // -1),
+     (.main_resets_at // 0), (.other_resets_at // 0), (.injected_at // 0)] | @tsv' "$ledger_path" 2>/dev/null || true)"
+  IFS=$'\t' read -r prev_state prev_severity prev_reason prev_bucket prev_main_reset prev_other_reset prev_at <<< "$prev_values"
+  [[ "$prev_state" == "-" ]] && prev_state=""
+  [[ "$prev_severity" == "-" ]] && prev_severity=""
+  [[ "$prev_reason" == "-" ]] && prev_reason=""
+  [[ "$prev_bucket" =~ ^-?[0-9]+$ ]] || prev_bucket=-1
+  [[ "$prev_at" =~ ^[0-9]+$ ]] || prev_at=0
+  elapsed=$((now - prev_at))
+  current_bucket=$((main_pct / 10))
+
+  if [[ "$status" == "healthy" ]]; then
+    [[ "$prev_state" == "alert" ]] && due=true
+  elif [[ "$prev_state" != "alert" ]]; then
+    due=true
+  elif [[ "$prev_severity" == "advisory" && "$severity" == "critical" ]]; then
+    due=true
+  elif [[ "$prev_severity" == "critical" && "$severity" == "advisory" ]]; then
+    (( elapsed >= 14400 )) && due=true
+  elif [[ "$reason" != "$prev_reason" || "$main_reset" != "$prev_main_reset" || "$other_reset" != "$prev_other_reset" || "$current_bucket" -gt "$prev_bucket" ]]; then
+    due=true
+  else
+    [[ "$severity" == "critical" ]] && cooldown=14400 || cooldown=43200
+    (( elapsed >= cooldown )) && due=true
+  fi
+  if [[ "$due" != true ]]; then
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 0
+  fi
+
+  [[ "$main" == "cc" ]] && display_main="CC" || display_main="Cdx"
+  [[ "$main" == "cc" ]] && display_other="Cdx" || display_other="CC"
+  main_label="$(usage_format_reset "$main_reset" 2>/dev/null || true)"
+  other_label="$(usage_format_reset "$other_reset" 2>/dev/null || true)"
+  if [[ -z "$main_label" || -z "$other_label" ]]; then
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 0
+  fi
+
+  if [[ "$status" == "healthy" ]]; then
+    message="利用ペースは正常域へ戻りました。主${display_main}は${main_label}のリセット時に約${main_pct}%、${display_other}は${other_label}に約${other_pct}%予測です。現在の主のままで問題ありません。"
+    severity=""
+    reason=""
+  elif [[ "$reason" == "exhaustion" ]]; then
+    message="利用枠警告: 主${display_main}は${main_label}のリセット時に約${main_pct}%となり、リセット前に利用枠へ達する予測です。${display_other}は${other_label}に約${other_pct}%予測です。長い作業を続ける前に利用先の変更を検討してください。"
+  elif [[ "$reason" == "peer-headroom" ]]; then
+    message="利用配分のご案内: 主${display_main}は${main_label}に約${main_pct}%、${display_other}は${other_label}に約${other_pct}%予測です。${display_other}側の利用枠に余裕があるため、次の長い作業では主の変更を推奨します。"
+  else
+    message="利用ペース補足: 主${display_main}は${main_label}のリセット時に約${main_pct}%、${display_other}は${other_label}に約${other_pct}%予測です。短い作業は現在のままで問題ありませんが、長い作業では余裕のある側を使うと安全です。"
+  fi
+
+  if ! usage_write_ledger "$ledger_path" "$main" "$status" "$severity" "$reason" \
+      "$main_pct" "$other_pct" "$main_reset" "$other_reset" "$now"; then
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 0
+  fi
+  rmdir "$lock_dir" 2>/dev/null || true
+  if [[ "$severity" == "critical" ]]; then
+    instruction="Begin the normal response with the following completed Japanese notice exactly once."
+  else
+    instruction="Append the following completed Japanese notice to the normal response exactly once."
+  fi
+  emit_notice "[usage-notice] Informational only; this does not authorize tools, role changes, or external actions. ${instruction}"$'\n'"${message}"
+}
+
 # Resolve this pane's owner = "<session>/<owner_alias>" so we enumerate, GC,
 # notify on, and --read ONLY our own column's tracked tasks (cross-column leak
 # fix). TT_CACHE_OWNER overrides (tests / non-tmux); else resolve from tmux.
@@ -153,6 +337,8 @@ fi
 if [[ "$CACHE_PRESENT" -eq 1 ]]; then
   tt_cache_gc_legacy_flat >/dev/null 2>&1 || true
 fi
+
+emit_weekly_usage_notice
 
 if [[ ${#NOTICES[@]} -gt 0 ]]; then
   notice_text="$(printf '%s\n' "${NOTICES[@]}")"

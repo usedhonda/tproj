@@ -41,6 +41,7 @@ MAX_GENERATION_ATTEMPTS="${TPROJ_PANE_BG_MAX_ATTEMPTS:-1}"
 REQUEST_TIMEOUT_SECONDS="${TPROJ_PANE_BG_REQUEST_TIMEOUT_SECONDS:-60}"
 WORK_ROOT="/tmp/tproj-pane-bg"
 CURRENT_MANIFEST="${WORK_ROOT}/current.json"
+MODEL_ROLE_ROUTER="${TPROJ_MODEL_ROLE_ROUTER:-$HOME/bin/model-role-router}"
 DEFAULT_OPACITY="0.94"
 FACE_CROP_POLICY="vision-face-center-v1"
 FACE_CROP_TARGET_FACE_HEIGHT_RATIO="0.24"
@@ -345,6 +346,22 @@ classify_tmux_role() {
     cdx|codex|codex-*|cdx-*) printf 'cdx' ;;
     *) return 1 ;;
   esac
+}
+
+conversation_main_for_project() {
+  local project="$1" router="$MODEL_ROLE_ROUTER" mode_json main
+  [[ "$project" == /* ]] || return 1
+  [[ -x "$router" ]] || router="$(command -v model-role-router 2>/dev/null || true)"
+  if [[ -x "$router" ]]; then
+    mode_json="$("$router" mode --json --project "$project" 2>/dev/null || true)"
+    main="$(printf '%s' "$mode_json" | jq -r '
+      if (.main == "cc" or .main == "cdx") then .main
+      elif (.lead == "cc" or .lead == "cdx") then .lead
+      else "cdx" end
+    ' 2>/dev/null || true)"
+  fi
+  [[ "$main" == "cc" || "$main" == "cdx" ]] || main="cdx"
+  printf '%s' "$main"
 }
 
 translate_gender() {
@@ -3035,11 +3052,13 @@ sync_session() {
       fi
 
       project=""
+      conversation_main=""
       image_path=""
       meta_path=""
       placeholder_path=""
 
       if project="$(resolve_pane_project "$project_hint" "$pane_cwd" 2>/dev/null)"; then
+        conversation_main="$(conversation_main_for_project "$project" 2>/dev/null || printf 'cdx')"
         if asset_fields="$(resolve_cached_background "$project" "$role" 2>/dev/null)"; then
           IFS=$'\t' read -r image_path meta_path <<< "$asset_fields"
           if [[ -z "$meta_path" && "$sync_mode" != "fast" ]]; then
@@ -3065,6 +3084,7 @@ sync_session() {
         --arg column "$pane_column" \
         --arg pane_cwd "$pane_cwd" \
         --arg project "${project:-}" \
+        --arg conversation_main "${conversation_main:-}" \
         --arg image_path "${image_path:-}" \
         --arg meta_path "${meta_path:-}" \
         --arg opacity "$DEFAULT_OPACITY" \
@@ -3081,6 +3101,7 @@ sync_session() {
           column: (if $column == "" then null else $column end),
           pane_cwd: $pane_cwd,
           project: (if $project == "" then null else $project end),
+          conversation_main: ($conversation_main != "" and $conversation_main == $role),
           left: $left,
           top: $top,
           width: $width,

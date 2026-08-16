@@ -620,6 +620,53 @@ else
   echo "  SKIP: tproj-inbox-record not found"
 fi
 
+# Case T: weekly usage notices use one global cross-platform ledger, escalate
+# immediately, and emit one recovery after returning to the healthy band.
+echo "Case T: weekly usage notice delivery is global, bounded, and fail-open"
+setup_tmp
+make_mock_msg "" ""
+usage_now="$(date +%s)"
+usage_main_reset=$((usage_now + 3600))
+usage_other_reset=$((usage_now + 7200))
+usage_state="$TMP/weekly-pace.json"
+usage_ledger="$TMP/usage-notice.json"
+cat > "$usage_state" <<JSON
+{"version":1,"generated_at":$usage_now,"sides":{"cdx":{"status":"alert","main":"cdx","other":"cc","severity":"advisory","reason":"peer-headroom","main_projected_percent":85,"other_projected_percent":45,"main_resets_at":$usage_main_reset,"other_resets_at":$usage_other_reset}}}
+JSON
+usage_first="$(TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cdx TPROJ_USAGE_NOW="$usage_now" \
+  TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \
+  "$TMP/tproj-inbox-check" 2>/dev/null || true)"
+usage_duplicate="$(TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cdx TPROJ_USAGE_NOW="$usage_now" \
+  TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \
+  "$TMP/tproj-inbox-check" --platform codex 2>/dev/null || true)"
+assert_contains "$usage_first" "[usage-notice]" "first provider-balanced notice is injected"
+assert_not_contains "$usage_duplicate" "usage-notice" "CC/Cdx share one cooldown ledger"
+
+cat > "$usage_state" <<JSON
+{"version":1,"generated_at":$usage_now,"sides":{"cdx":{"status":"alert","main":"cdx","other":"cc","severity":"critical","reason":"exhaustion","main_projected_percent":105,"other_projected_percent":45,"main_resets_at":$usage_main_reset,"other_resets_at":$usage_other_reset}}}
+JSON
+usage_escalated="$(TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cdx TPROJ_USAGE_NOW="$usage_now" \
+  TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \
+  "$TMP/tproj-inbox-check" --platform codex 2>/dev/null || true)"
+usage_escalated_context="$(printf '%s' "$usage_escalated" | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null)"
+assert_contains "$usage_escalated_context" "利用枠警告" "critical escalation bypasses cooldown"
+
+cat > "$usage_state" <<JSON
+{"version":1,"generated_at":$usage_now,"sides":{"cdx":{"status":"healthy","main":"cdx","other":"cc","severity":null,"reason":null,"main_projected_percent":60,"other_projected_percent":55,"main_resets_at":$usage_main_reset,"other_resets_at":$usage_other_reset}}}
+JSON
+usage_recovery="$(TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cdx TPROJ_USAGE_NOW="$usage_now" \
+  TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \
+  "$TMP/tproj-inbox-check" 2>/dev/null || true)"
+assert_contains "$usage_recovery" "正常域へ戻りました" "one recovery notice follows an active alert"
+
+printf '%s' '{not-json' > "$usage_state"
+malformed_rc=0
+TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cdx TPROJ_USAGE_NOW="$usage_now" \
+  TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \
+  "$TMP/tproj-inbox-check" >/dev/null 2>&1 || malformed_rc=$?
+if [[ "$malformed_rc" -eq 0 ]]; then PASS=$((PASS+1)); echo "  PASS: malformed optional state fails open"; else FAIL=$((FAIL+1)); echo "  FAIL: malformed optional state fails open (rc=$malformed_rc)"; fi
+teardown_tmp
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] || exit 1

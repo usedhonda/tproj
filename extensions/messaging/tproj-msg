@@ -3900,7 +3900,41 @@ do_read() {
   exit "$FOUND_REPLY"
 }
 
+advisor_mode_blocks_peer_task() {
+  [[ "${NEW_TASK_MODE:-false}" == "true" ]] || return 1
+  local peer project router mode_json mode
+  case "${MY_ROLE:-}" in
+    cc) peer="${MY_ALIAS}.cdx" ;;
+    cdx) peer="${MY_ALIAS}.cc" ;;
+    *) return 1 ;;
+  esac
+  [[ -n "${MY_ALIAS:-}" && "$TARGET" == "$peer" ]] || return 1
+
+  project="${VERIFIED_REG_PROJECT:-}"
+  if [[ -z "$project" && -n "${MY_PANE:-}" ]]; then
+    project="$(tmux display-message -t "$MY_PANE" -p '#{@project}' 2>/dev/null || true)"
+  fi
+  [[ "$project" == /* ]] || return 1
+
+  router="${TPROJ_MODEL_ROLE_ROUTER:-$HOME/bin/model-role-router}"
+  [[ -x "$router" ]] || router="$(command -v model-role-router 2>/dev/null || true)"
+  [[ -x "$router" ]] || return 1
+  mode_json="$("$router" mode --json --project "$project" 2>/dev/null || true)"
+  mode="$(printf '%s' "$mode_json" | jq -r '.mode // empty' 2>/dev/null || true)"
+  [[ "$mode" == "advisor" ]]
+}
+
 do_send_tmux() {
+# Advisor mode makes the side directly prompted by the user the working side.
+# The opposite same-column peer remains available for ordinary consultation,
+# but cannot receive a delegated task or role-handoff. Enforce this before
+# liveness checks, task-id creation, database writes, or send-keys so stale
+# role markers cannot silently reverse the user-selected ownership.
+if advisor_mode_blocks_peer_task; then
+  echo "Error: task delegation to '$TARGET' is disabled in Advisor mode (reason: advisor_peer_is_advice_only). Send an ordinary consultation message, prompt that pane directly, or change the mode." >&2
+  exit 1
+fi
+
 # For send modes, refuse to send if pane exists but AI is not running.
 if ! is_target_online "$TARGET_PANE"; then
   target_role=$(tmux display-message -t "$TARGET_PANE" -p '#{@role}' 2>/dev/null || true)

@@ -194,6 +194,7 @@ private struct PaneBackgroundPane: Identifiable, Decodable, Equatable {
     var imagePath: String
     var opacity: Double
     var isActive: Bool
+    var isConversationMain: Bool
 
     var id: String { paneID }
 
@@ -207,6 +208,7 @@ private struct PaneBackgroundPane: Identifiable, Decodable, Equatable {
         case imagePath = "image_path"
         case opacity
         case isActive = "active"
+        case isConversationMain = "conversation_main"
     }
 
     init(from decoder: Decoder) throws {
@@ -220,7 +222,20 @@ private struct PaneBackgroundPane: Identifiable, Decodable, Equatable {
         imagePath = try c.decodeIfPresent(String.self, forKey: .imagePath) ?? ""
         opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 0.24
         isActive = try c.decodeIfPresent(Bool.self, forKey: .isActive) ?? false
+        isConversationMain = try c.decodeIfPresent(Bool.self, forKey: .isConversationMain) ?? false
     }
+}
+
+private enum RoleVisualPalette {
+    static let conversationMainCC = Color(red: 0.52, green: 0.42, blue: 0.95)
+    static let conversationMainCdx = Color(red: 0.16, green: 0.78, blue: 0.84)
+
+    static func conversationMain(role: String) -> Color {
+        role == "cc" ? conversationMainCC : conversationMainCdx
+    }
+
+    static var usageAdvisory: Color { GhosttyTheme.current.accentYellow }
+    static var usageCritical: Color { GhosttyTheme.current.accentRed }
 }
 
 private struct PaneBackgroundManifest: Decodable, Equatable {
@@ -275,6 +290,7 @@ private struct PaneBackgroundUnderlayView: View {
     private let textReadabilityScrim = 0.07
     private let edgeFadePx: CGFloat = 3
     private let activeTopLineHeight: CGFloat = 4
+    private let conversationMainOpacity = 0.075
 
     private var edgeFadeMask: some View {
         VStack(spacing: 0) {
@@ -318,24 +334,32 @@ private struct PaneBackgroundUnderlayView: View {
             ZStack {
                 Color.clear
                 ForEach(manifest.panes) { pane in
-                    if let image = NSImage(contentsOfFile: pane.imagePath) {
-                        let rect = paneRect(for: pane, in: geo.size)
+                    let rect = paneRect(for: pane, in: geo.size)
+                    ZStack {
+                        if let image = NSImage(contentsOfFile: pane.imagePath) {
                         Image(nsImage: image)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
-                            .frame(width: rect.width, height: rect.height)
-                            .clipped()
                             .brightness(imageBrightness)
                             .saturation(imageSaturation)
                             .contrast(imageContrast)
                             .overlay {
                                 Color.black.opacity(textReadabilityScrim)
                             }
-                            .mask(edgeFadeMask)
-                            .overlay(activeTopLine(isActive: pane.isActive))
                             .opacity(pane.opacity)
-                            .position(x: rect.midX, y: rect.midY)
+                        }
+                        if pane.isConversationMain {
+                            RoleVisualPalette.conversationMain(role: pane.role)
+                                .opacity(conversationMainOpacity)
+                                .blendMode(.plusLighter)
+                        }
+                        activeTopLine(isActive: pane.isActive)
+                            .opacity(pane.opacity)
                     }
+                    .frame(width: rect.width, height: rect.height)
+                    .clipped()
+                    .mask(edgeFadeMask)
+                    .position(x: rect.midX, y: rect.midY)
                 }
             }
         }
@@ -458,7 +482,7 @@ final class PaneBackgroundUnderlayController: ObservableObject {
         }
 
         let usablePanes = manifest.panes.filter {
-            !$0.imagePath.isEmpty && fileManager.fileExists(atPath: $0.imagePath)
+            $0.isConversationMain || (!$0.imagePath.isEmpty && fileManager.fileExists(atPath: $0.imagePath))
         }
         guard !usablePanes.isEmpty else {
             hideUnderlay()
@@ -1666,6 +1690,7 @@ final class AppViewModel: ObservableObject {
                                    devWindow: TmuxTargets.devWindow)
     private let monitorStatusPath = "/tmp/tproj-monitor-status.json"
     private let layoutLogPath = "/tmp/tproj-layout-actions.log"
+    private let weeklyPaceStatePath = "\(NSHomeDirectory())/.local/state/tproj/weekly-pace.json"
     private var memoryPollTask: Task<Void, Never>?
     private var roleModePollTask: Task<Void, Never>?
     private var weeklyPacePollTask: Task<Void, Never>?
@@ -3582,6 +3607,23 @@ final class AppViewModel: ObservableObject {
         if snapshots != weeklyPaceSnapshots {
             weeklyPaceSnapshots = snapshots
         }
+        guard let stateData = CodexBarPace.encodedNoticeState(snapshots: snapshots, now: Date()) else { return }
+        let statePath = weeklyPaceStatePath
+        await Task.detached(priority: .utility) {
+            let manager = FileManager.default
+            let url = URL(fileURLWithPath: statePath)
+            do {
+                try manager.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                try stateData.write(to: url, options: .atomic)
+                try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: statePath)
+            } catch {
+                // Usage telemetry is optional. A write failure must not affect GUI operation.
+            }
+        }.value
     }
 
     private func emitWeeklyPaceAlertIfChanged() {
@@ -3662,6 +3704,15 @@ final class AppViewModel: ObservableObject {
             roleModeStatuses[key] = nil
         } else {
             roleModeStatuses[key] = status
+        }
+        if let sync = runtimeLaunchCommand(
+            commandName: "tproj-pane-bg",
+            arguments: ["sync", "--session", TmuxTargets.session, "--fast"]
+        ) ?? fallbackLaunchCommand(
+            commandName: "tproj-pane-bg",
+            arguments: ["sync", "--session", TmuxTargets.session, "--fast"]
+        ) {
+            _ = await runCommandAsync(sync.launchPath, sync.arguments)
         }
         emitWeeklyPaceAlertIfChanged()
     }
@@ -5213,8 +5264,8 @@ struct ContentView: View {
 
     private func weeklyPaceTint(_ advisory: WeeklyPaceAdvisory?) -> Color? {
         switch advisory?.severity {
-        case .critical: return GhosttyTheme.current.accentRed
-        case .advisory: return GhosttyTheme.current.accentYellow
+        case .critical: return RoleVisualPalette.usageCritical
+        case .advisory: return RoleVisualPalette.usageAdvisory
         case nil: return nil
         }
     }

@@ -116,11 +116,27 @@ final class RoleModeTests: XCTestCase {
                 otherProjectedPercent: 88,
                 mainResetsAt: resetsAt,
                 otherResetsAt: resetsAt,
-                severity: .critical
+                severity: .critical,
+                reason: .exhaustion
             )
         )
         XCTAssertNil(CodexBarPace.advisory(main: "cc", snapshots: snapshots, now: freshNow))
         XCTAssertNil(CodexBarPace.advisory(main: "cdx", snapshots: snapshots, now: staleNow))
         XCTAssertNil(CodexBarPace.latestWeeklySnapshot(from: Data("{}".utf8), provider: "codex"))
+
+        let state = CodexBarPace.noticeState(snapshots: snapshots, now: freshNow)
+        XCTAssertEqual(state.sides["cdx"]?.status, .alert)
+        XCTAssertEqual(state.sides["cdx"]?.reason, .exhaustion)
+        let encoded = try XCTUnwrap(CodexBarPace.encodedNoticeState(snapshots: snapshots, now: freshNow))
+        let encodedText = String(decoding: encoded, as: UTF8.self)
+        XCTAssertFalse(encodedText.contains("preferredAccountKey"))
+        XCTAssertFalse(encodedText.contains("active"))
+
+        let lowUse = try XCTUnwrap(CodexBarPace.latestWeeklySnapshot(from: history(usedPercent: 9), provider: "codex"))
+        let lowUseState = CodexBarPace.noticeState(
+            snapshots: ["codex": lowUse, "claude": claude],
+            now: freshNow
+        )
+        XCTAssertEqual(lowUseState.sides["cdx"]?.status, .unavailable)
     }
 }

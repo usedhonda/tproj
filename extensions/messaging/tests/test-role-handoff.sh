@@ -99,6 +99,16 @@ exec "$@"
 TIMEOUT
   chmod +x "$BIN/$timeout_name"
 done
+
+cat > "$BIN/model-role-router" <<'ROUTER'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "mode" ]]; then
+  printf '{"mode":"%s","main":"cdx","lead":"cdx"}\n' "${FAKE_ROLE_MODE:-auto}"
+  exit 0
+fi
+exit 1
+ROUTER
+chmod +x "$BIN/model-role-router"
 ln -s "$TPROJ_MSG" "$BIN/tproj-msg"
 
 export FAKE_DIR_ENV="$FIXTURES"
@@ -460,6 +470,30 @@ if [[ $rc -eq 0 && "$log" == *'[Task:'* && "$log" != *'[Role-Handoff:'* ]]; then
   pass legacy_new_task_unchanged
 else
   fail legacy_new_task_unchanged "rc=$rc out=$out log=$log"
+fi
+
+# Advisor mode keeps the opposite same-column peer available for consultation,
+# but mechanically rejects task delegation before task-id creation or delivery.
+reset_case
+set_state %1 idle
+export TPROJ_MODEL_ROLE_ROUTER="$BIN/model-role-router" FAKE_ROLE_MODE=advisor
+out="$(run_as_verified_agent_gated tproj.cdx codex 28 solo-fallback tproj.cdx \
+  "$ROOT" session-advisor "$ROOT" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cdx tproj.cc 'advisor-consultation' 2>&1)"; consult_rc=$?
+consult_log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+reset_case
+set_state %1 idle
+out="$(run_as_verified_agent_gated tproj.cdx codex 28 solo-fallback tproj.cdx \
+  "$ROOT" session-advisor "$ROOT" \
+  "$TPROJ_MSG" --session tproj-workspace --as tproj.cdx --new-task tproj.cc 'must-not-delegate' 2>&1)"; task_rc=$?
+task_log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+unset TPROJ_MODEL_ROLE_ROUTER FAKE_ROLE_MODE
+if [[ $consult_rc -eq 0 && "$consult_log" == *'advisor-consultation'* \
+      && $task_rc -ne 0 && "$out" == *'advisor_peer_is_advice_only'* && -z "$task_log" ]]; then
+  pass advisor_mode_consultation_allowed_task_rejected
+else
+  fail advisor_mode_consultation_allowed_task_rejected \
+    "consult_rc=$consult_rc consult_log=$consult_log task_rc=$task_rc out=$out task_log=$task_log"
 fi
 
 printf '%s\n' '[ACK: old-a]' '[DONE: old-d]' '[BLOCK: old-b] reason' > "$FIXTURES/capture_%2"
