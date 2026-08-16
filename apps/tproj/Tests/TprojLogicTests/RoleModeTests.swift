@@ -68,14 +68,14 @@ final class RoleModeTests: XCTestCase {
 
     // Badge stays compact while naming both the mode and conversation main.
     func testBadgeLabelComposition() {
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cc"), "Auto\u{00B7}主CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cdx"), "Auto\u{00B7}主Cdx")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cc"), "Team\u{00B7}主CC")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cdx"), "Team\u{00B7}主Cdx")
         XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cc"), "Advisor\u{00B7}主CC")
         XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cdx"), "Advisor\u{00B7}主Cdx")
         XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cc"), "Solo\u{00B7}主CC")
         XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cdx"), "Solo\u{00B7}主Cdx")
         XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: ""), "Solo\u{00B7}主?")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "other"), "Auto\u{00B7}主?")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "other"), "Team\u{00B7}主?")
     }
 
     func testConversationMainIsIndependentAndBuildsCanonicalCommand() {

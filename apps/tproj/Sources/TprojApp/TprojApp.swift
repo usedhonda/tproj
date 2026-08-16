@@ -5097,7 +5097,7 @@ struct ContentView: View {
                         Button {
                             Task { await vm.setRoleMode(candidate, main: main, forProjectPath: projectPath) }
                         } label: {
-                            Label(candidate.rawValue.capitalized, systemImage: candidate == mode ? "checkmark" : "circle")
+                            Label(candidate.displayName, systemImage: candidate == mode ? "checkmark" : "circle")
                         }
                     }
                 }

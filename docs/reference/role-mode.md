@@ -114,7 +114,9 @@ derived lead. `--main derived` clears the preference.
   the **focused pane's project**, and nothing under `auto`, so an undeclared
   workspace keeps its old status line.
 - The tproj GUI shows a first-row menu per project. Its `Mode` section selects
-  auto/advisor/solo and its `Main conversation` section always selects CC or Cdx.
+  Team/advisor/solo and its `Main conversation` section always selects CC or Cdx.
+  `Team` is the GUI name for the stored `auto` mode; CLI and file compatibility
+  keep using `auto`.
   An unset stored preference displays the derived lead, or Cdx when no lead exists.
   The compact badge shows only mode and main (`Advisor·主Cdx`); clicking it exposes
   the detailed checked choices. The chosen conversation side's button is tinted

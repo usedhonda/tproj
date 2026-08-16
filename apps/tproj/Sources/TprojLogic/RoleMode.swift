@@ -10,6 +10,10 @@ public enum RoleMode: String, CaseIterable {
     case advisor
     case solo
 
+    public var displayName: String {
+        self == .auto ? "Team" : rawValue.capitalized
+    }
+
     // Badge click cycle order: auto -> advisor -> solo -> auto.
     public var next: RoleMode {
         switch self {
@@ -127,6 +131,6 @@ public func roleModeLeadDisplay(_ lead: String) -> String {
 // The menu exposes the detailed mode/main choices when clicked.
 public func roleModeBadgeLabel(mode: RoleMode, main: String) -> String {
     let side = roleModeLeadDisplay(main)
-    let modeLabel = mode.rawValue.capitalized
+    let modeLabel = mode.displayName
     return side.isEmpty ? "\(modeLabel)\u{00B7}主?" : "\(modeLabel)\u{00B7}主\(side)"
 }
