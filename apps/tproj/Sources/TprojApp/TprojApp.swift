@@ -1059,6 +1059,7 @@ struct WorkspaceProject: Identifiable {
     var alias: String
     var enabled: Bool
     var lastActiveAt: Int = 0
+    var sourceOrder: Int = 0
 
     var effectiveAlias: String {
         if !alias.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1073,6 +1074,22 @@ struct WorkspaceProject: Identifiable {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return "(no-path)" }
         return URL(fileURLWithPath: trimmed).lastPathComponent
+    }
+}
+
+enum WorkspaceProjectOrder: String, CaseIterable, Identifiable {
+    case recent
+    case yaml
+    case name
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .recent: return "Recent"
+        case .yaml: return "YAML"
+        case .name: return "A-Z"
+        }
     }
 }
 
@@ -1773,16 +1790,27 @@ final class AppViewModel: ObservableObject {
         pendingDropColumns.contains(column)
     }
 
-    var inactiveProjects: [WorkspaceProject] {
+    func inactiveProjects(order: WorkspaceProjectOrder) -> [WorkspaceProject] {
         let livePaths = Set(liveColumns.map { $0.projectPath })
-        return workspaceProjects
-            .filter { !livePaths.contains($0.path) }
-            .sorted { lhs, rhs in
+        let projects = workspaceProjects.filter { !livePaths.contains($0.path) }
+        return projects.sorted { lhs, rhs in
+            switch order {
+            case .recent:
                 if lhs.lastActiveAt != rhs.lastActiveAt {
                     return lhs.lastActiveAt > rhs.lastActiveAt
                 }
                 return lhs.effectiveAlias.localizedCaseInsensitiveCompare(rhs.effectiveAlias) == .orderedAscending
+            case .yaml:
+                return lhs.sourceOrder < rhs.sourceOrder
+            case .name:
+                let comparison = lhs.effectiveAlias.localizedCaseInsensitiveCompare(rhs.effectiveAlias)
+                return comparison == .orderedSame ? lhs.sourceOrder < rhs.sourceOrder : comparison == .orderedAscending
             }
+        }
+    }
+
+    var inactiveProjects: [WorkspaceProject] {
+        inactiveProjects(order: .recent)
     }
 
     // MARK: - GUI Config & Dependency Check
@@ -3511,7 +3539,7 @@ final class AppViewModel: ObservableObject {
             .map(String.init)
 
         var parsed: [WorkspaceProject] = []
-        for row in rows {
+        for (sourceOrder, row) in rows.enumerated() {
             let parts = row.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
             if parts.count < 5 { continue }
 
@@ -3526,7 +3554,8 @@ final class AppViewModel: ObservableObject {
                     host: parts[2],
                     alias: parts[3],
                     enabled: enabled,
-                    lastActiveAt: lastActiveAt
+                    lastActiveAt: lastActiveAt,
+                    sourceOrder: sourceOrder
                 )
             )
         }
@@ -4275,6 +4304,8 @@ struct ContentView: View {
     @AppStorage("weeklyCapacitySectionCollapsed") private var weeklyCapacityCollapsed = false
     @AppStorage("memorySectionCollapsed") private var memoryCollapsed = false
     @AppStorage("ccCdxSectionCollapsed") private var ccCdxCollapsed = true
+    @AppStorage("workspaceYAMLSectionCollapsed") private var workspaceYAMLCollapsed = false
+    @AppStorage("workspaceProjectOrder") private var workspaceProjectOrderRaw = WorkspaceProjectOrder.recent.rawValue
     @AppStorage("autoZoomEnabled") private var autoZoomEnabled = false
     @State private var draggingColumnID: Int?
     @State private var dropInsertionIndex: Int?
@@ -4315,7 +4346,15 @@ struct ContentView: View {
     }
 
     private var workspaceRowCount: Int {
-        vm.liveColumns.count + vm.inactiveProjects.count
+        vm.liveColumns.count + orderedInactiveProjects.count
+    }
+
+    private var workspaceProjectOrder: WorkspaceProjectOrder {
+        WorkspaceProjectOrder(rawValue: workspaceProjectOrderRaw) ?? .recent
+    }
+
+    private var orderedInactiveProjects: [WorkspaceProject] {
+        vm.inactiveProjects(order: workspaceProjectOrder)
     }
 
     @ViewBuilder
@@ -4534,7 +4573,7 @@ struct ContentView: View {
                         )
                     )
             }
-            ForEach(vm.inactiveProjects) { project in
+            ForEach(orderedInactiveProjects) { project in
                 inactiveProjectRow(project)
             }
         }
@@ -4560,13 +4599,30 @@ struct ContentView: View {
     @ViewBuilder
     private var yamlFooter: some View {
         VStack(alignment: .leading, spacing: 4) {
-            SectionHeader(title: "Workspace YAML")
-            Card {
-                HStack(spacing: 0) {
-                    ActionButton("Open workspace.yaml", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                        vm.openWorkspaceYAML()
+            SectionHeader(title: "Workspace YAML", isCollapsed: $workspaceYAMLCollapsed)
+            if !workspaceYAMLCollapsed {
+                Card(compact: true) {
+                    HStack(spacing: 6) {
+                        ActionButton("Open workspace.yaml", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                            vm.openWorkspaceYAML()
+                        }
+                        .fixedSize()
+                        Spacer(minLength: 0)
+                        Menu {
+                            Picker("Order", selection: $workspaceProjectOrderRaw) {
+                                ForEach(WorkspaceProjectOrder.allCases) { order in
+                                    Text(order.title).tag(order.rawValue)
+                                }
+                            }
+                        } label: {
+                            Text("Order: \(workspaceProjectOrder.title)")
+                                .font(GhosttyTheme.current.font(size: 10, weight: .medium))
+                                .foregroundStyle(GhosttyTheme.current.textSecondary)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .help("Sort waiting projects; live panes keep tmux order")
                     }
-                    Spacer(minLength: 0)
                 }
             }
             // Bottom resize grip indicator
