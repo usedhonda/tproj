@@ -1710,6 +1710,19 @@ final class AppViewModel: ObservableObject {
     private var weeklyPacePollTask: Task<Void, Never>?
     private var workspaceWatcher: WorkspaceYamlWatcher?
 
+    private enum FableCacheKey {
+        static let capturedAt = "weeklyPace.fable.capturedAt"
+        static let resetsAt = "weeklyPace.fable.resetsAt"
+        static let usedPercent = "weeklyPace.fable.usedPercent"
+        static let windowMinutes = "weeklyPace.fable.windowMinutes"
+    }
+
+    init() {
+        if let fable = Self.cachedFableSnapshot() {
+            weeklyPaceSnapshots["fable"] = fable
+        }
+    }
+
     // MARK: - PATH & Dependency Resolution
 
     nonisolated private static let builtinExtraPaths: [String] = {
@@ -3609,6 +3622,36 @@ final class AppViewModel: ObservableObject {
         CodexBarPace.balance(snapshots: weeklyPaceSnapshots, now: Date())
     }
 
+    private static func cachedFableSnapshot(defaults: UserDefaults = .standard, now: Date = Date()) -> WeeklyPaceSnapshot? {
+        guard defaults.object(forKey: FableCacheKey.capturedAt) != nil,
+              defaults.object(forKey: FableCacheKey.resetsAt) != nil,
+              defaults.object(forKey: FableCacheKey.usedPercent) != nil,
+              defaults.object(forKey: FableCacheKey.windowMinutes) != nil else { return nil }
+
+        let capturedAt = Date(timeIntervalSince1970: defaults.double(forKey: FableCacheKey.capturedAt))
+        let resetsAt = Date(timeIntervalSince1970: defaults.double(forKey: FableCacheKey.resetsAt))
+        let usedPercent = defaults.double(forKey: FableCacheKey.usedPercent)
+        let windowMinutes = defaults.integer(forKey: FableCacheKey.windowMinutes)
+        guard capturedAt <= now.addingTimeInterval(5 * 60),
+              resetsAt > now,
+              windowMinutes > 0,
+              (0...100).contains(usedPercent) else { return nil }
+        return WeeklyPaceSnapshot(
+            provider: "fable",
+            capturedAt: capturedAt,
+            resetsAt: resetsAt,
+            usedPercent: usedPercent,
+            windowMinutes: windowMinutes
+        )
+    }
+
+    private static func cacheFableSnapshot(_ snapshot: WeeklyPaceSnapshot, defaults: UserDefaults = .standard) {
+        defaults.set(snapshot.capturedAt.timeIntervalSince1970, forKey: FableCacheKey.capturedAt)
+        defaults.set(snapshot.resetsAt.timeIntervalSince1970, forKey: FableCacheKey.resetsAt)
+        defaults.set(snapshot.usedPercent, forKey: FableCacheKey.usedPercent)
+        defaults.set(snapshot.windowMinutes, forKey: FableCacheKey.windowMinutes)
+    }
+
     private func refreshWeeklyPaceSnapshots() async {
         let historyRoot = "\(NSHomeDirectory())/Library/Application Support/com.steipete.codexbar/history"
         var snapshots = await Task.detached(priority: .utility) {
@@ -3623,6 +3666,12 @@ final class AppViewModel: ObservableObject {
             }
             return result
         }.value
+        if let fable = weeklyPaceSnapshots["fable"], fable.resetsAt > Date() {
+            snapshots["fable"] = fable
+        }
+        if snapshots != weeklyPaceSnapshots {
+            weeklyPaceSnapshots = snapshots
+        }
         let codexBarCLI = "/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI"
         if fileManager.isExecutableFile(atPath: codexBarCLI) {
             let result = await runCommandAsync(
@@ -3637,6 +3686,7 @@ final class AppViewModel: ObservableObject {
                    provider: "fable"
                ) {
                 snapshots["fable"] = fable
+                Self.cacheFableSnapshot(fable)
             }
         }
         if snapshots != weeklyPaceSnapshots {

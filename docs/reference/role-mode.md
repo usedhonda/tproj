@@ -136,7 +136,9 @@ derived lead. `--main derived` clears the preference.
   from Application Support every five minutes. It also reads the exact
   `claude-weekly-scoped-fable` window from CodexBar's local structured CLI output
   when available; it never reads provider credentials or stores the CLI's identity
-  fields. A missing or malformed optional CLI response simply omits the Fable row.
+  fields. The last valid aggregate Fable snapshot is cached in app preferences until
+  its reset, so a relaunch or a transient missing/malformed CLI response does not
+  remove the row. No account identifier or raw CLI object is cached.
   For each displayed window, it derives the
   window start from that provider's own next reset minus seven days, calculates the
   average burn since that start, and projects usage at that provider's next reset.
