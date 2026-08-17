@@ -4262,6 +4262,7 @@ struct ContentView: View {
     @AppStorage("windowWidth") private var persistedWidth: Double = 242
     @AppStorage("windowHeight") private var persistedHeight: Double = 585
     @AppStorage("workspaceSectionCollapsed") private var workspaceCollapsed = false
+    @AppStorage("weeklyCapacitySectionCollapsed") private var weeklyCapacityCollapsed = false
     @AppStorage("memorySectionCollapsed") private var memoryCollapsed = false
     @AppStorage("ccCdxSectionCollapsed") private var ccCdxCollapsed = true
     @AppStorage("autoZoomEnabled") private var autoZoomEnabled = false
@@ -4343,22 +4344,6 @@ struct ContentView: View {
     private var weeklyPaceBalanceCard: some View {
         if let balance = vm.weeklyPaceBalance() {
             VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 5) {
-                    if let recommended = balance.recommendedMain {
-                        Text("主のおすすめ")
-                            .font(GhosttyTheme.current.font(size: 10, weight: .semibold))
-                            .foregroundStyle(GhosttyTheme.current.textSecondary)
-                        Spacer(minLength: 4)
-                        Text(recommended == "cc" ? "CC" : "Cdx")
-                            .font(GhosttyTheme.current.font(size: 9, weight: .bold))
-                            .foregroundStyle(RoleVisualPalette.conversationMain(role: recommended))
-                    } else {
-                        Text("利用ペースは均衡")
-                            .font(GhosttyTheme.current.font(size: 9, weight: .semibold))
-                            .foregroundStyle(GhosttyTheme.current.textSecondary)
-                        Spacer(minLength: 4)
-                    }
-                }
                 weeklyPaceBalanceRow(balance.cdx)
                 weeklyPaceBalanceRow(balance.cc)
                 if let recommended = balance.recommendedMain {
@@ -4376,9 +4361,11 @@ struct ContentView: View {
     @ViewBuilder
     private var weeklyPaceBalanceSection: some View {
         if vm.weeklyPaceBalance() != nil {
-            SectionHeader(title: "Weekly Capacity")
-            Card(compact: true, chrome: false) {
-                weeklyPaceBalanceCard
+            SectionHeader(title: "Weekly Capacity", isCollapsed: $weeklyCapacityCollapsed)
+            if !weeklyCapacityCollapsed {
+                Card(compact: true, chrome: false) {
+                    weeklyPaceBalanceCard
+                }
             }
         }
     }
@@ -4386,42 +4373,58 @@ struct ContentView: View {
     private func weeklyPaceBalanceRow(_ side: WeeklyPaceBalanceSide) -> some View {
         let tint = RoleVisualPalette.conversationMain(role: side.side)
         let name = side.side == "cc" ? "CC" : "Cdx"
+        let usedPercent = 100 - side.remainingPercent
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
                 Text(name)
                     .font(GhosttyTheme.current.font(size: 10, weight: .bold))
                     .foregroundStyle(tint)
                     .frame(width: 24, alignment: .leading)
-                Text("\(side.remainingPercent)%残り")
-                    .font(GhosttyTheme.current.font(size: 10, weight: .semibold, monospaced: true))
-                    .foregroundStyle(GhosttyTheme.current.textPrimary)
                 Spacer(minLength: 4)
-                Text("あと\(weeklyPaceResetCountdown(side.resetsAt))")
+                Text("リセットまで\(weeklyPaceResetCountdown(side.resetsAt))")
                     .font(GhosttyTheme.current.font(size: 9, weight: .medium, monospaced: true))
                     .foregroundStyle(GhosttyTheme.current.textSecondary)
             }
             GeometryReader { geo in
                 let width = max(geo.size.width, 1)
-                let currentWidth = width * CGFloat(side.remainingPercent) / 100
-                let forecastX = min(max(1, width * CGFloat(side.projectedRemainingPercent) / 100), width - 1)
+                let usedWidth = width * CGFloat(usedPercent) / 100
+                let forecastUsedPercent = 100 - side.projectedRemainingPercent
+                let forecastX = min(max(1, width * CGFloat(forecastUsedPercent) / 100), width - 1)
                 ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(GhosttyTheme.current.foreground.opacity(0.09))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.72))
-                        .frame(width: currentWidth)
+                    HStack(spacing: 0) {
+                        Rectangle()
+                            .fill(GhosttyTheme.current.foreground.opacity(0.18))
+                            .frame(width: usedWidth)
+                        Rectangle()
+                            .fill(tint.opacity(0.72))
+                            .frame(width: max(0, width - usedWidth))
+                    }
+                    .clipShape(Capsule(style: .continuous))
                     Rectangle()
                         .fill(GhosttyTheme.current.textPrimary.opacity(0.9))
-                        .frame(width: 1, height: 8)
+                        .frame(width: 1, height: 15)
                         .offset(x: forecastX)
+                    HStack(spacing: 4) {
+                        Text("使用 \(usedPercent)%")
+                        Spacer(minLength: 4)
+                        Text("残り \(side.remainingPercent)%")
+                    }
+                    .font(GhosttyTheme.current.font(size: 8, weight: .bold, monospaced: true))
+                    .foregroundStyle(GhosttyTheme.current.textPrimary.opacity(0.92))
+                    .padding(.horizontal, 5)
                 }
             }
-            .frame(height: 6)
-            Text(side.projectedRemainingPercent == 0
-                 ? "リセット前に使い切る予測"
-                 : "リセット時 約\(side.projectedRemainingPercent)%残る予測")
-                .font(GhosttyTheme.current.font(size: 8, weight: .medium))
-                .foregroundStyle(GhosttyTheme.current.textTertiary)
+            .frame(height: 15)
+            HStack(spacing: 4) {
+                Rectangle()
+                    .fill(GhosttyTheme.current.textPrimary.opacity(0.9))
+                    .frame(width: 1, height: 7)
+                Text(side.projectedRemainingPercent == 0
+                     ? "リセット前に使い切る予測"
+                     : "リセット時予測 残り\(side.projectedRemainingPercent)%")
+                    .font(GhosttyTheme.current.font(size: 8, weight: .medium))
+                    .foregroundStyle(GhosttyTheme.current.textTertiary)
+            }
         }
     }
 

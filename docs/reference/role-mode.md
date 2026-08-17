@@ -139,10 +139,11 @@ derived lead. `--main derived` clears the preference.
   vocabulary: current weekly percentage remaining, time until reset, and projected
   percentage remaining at reset. The projected-used percentage remains internal to
   alert evaluation and is not shown as an unexplained standalone number.
-  This account-global comparison appears once below `Current Workspace`, not in
-  every project's role-mode menu. Two remaining-capacity bars show the current
-  balance, each provider's own reset countdown, and projected remaining capacity
-  at reset. When the projected headroom differs by at least 10 points, the panel
+  This account-global comparison appears once in a collapsible `Weekly Capacity`
+  section directly below `Current Workspace`, not in every project's role-mode
+  menu. Each provider gets one split bar: used capacity on the left, remaining
+  capacity on the right, plus a marker for projected usage at that provider's own
+  reset. When the projected headroom differs by at least 10 points, the panel
   names the side recommended for the next long task; it never switches `main`.
   Assessment starts only after one hour and 10% actual use, and requires both
   provider snapshots to be no more than 30 minutes old. Red means the main projects
