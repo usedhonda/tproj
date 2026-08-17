@@ -139,6 +139,11 @@ derived lead. `--main derived` clears the preference.
   vocabulary: current weekly percentage remaining, time until reset, and projected
   percentage remaining at reset. The projected-used percentage remains internal to
   alert evaluation and is not shown as an unexplained standalone number.
+  This account-global comparison appears once below `Current Workspace`, not in
+  every project's role-mode menu. Two remaining-capacity bars show the current
+  balance, each provider's own reset countdown, and projected remaining capacity
+  at reset. When the projected headroom differs by at least 10 points, the panel
+  names the side recommended for the next long task; it never switches `main`.
   Assessment starts only after one hour and 10% actual use, and requires both
   provider snapshots to be no more than 30 minutes old. Red means the main projects
   100% usage; yellow means either 90% projected usage or a meaningful allocation gap
@@ -154,7 +159,8 @@ derived lead. `--main derived` clears the preference.
   hours, advisory reminders every twelve hours, and recovery is emitted once.
   Missing, stale, malformed, or unwritable optional state is silent and fail-open.
 - The chosen conversation-main pane receives a subtle additive role-colour wash in
-  the existing background underlay; the other pane is never dimmed. A mode/main
+  the existing background underlay; the wash compensates for Ghostty transparency
+  so its effective on-screen strength remains visible, and the other pane is never dimmed. A mode/main
   change runs only the fast manifest sync and never regenerates persona images.
   Warning yellow/red and conversation-main violet/cyan come from separate palette
   entries. The GUI never fetches provider usage or switches main automatically.

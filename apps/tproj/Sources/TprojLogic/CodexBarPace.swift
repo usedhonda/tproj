@@ -26,6 +26,23 @@ public struct WeeklyPaceSnapshot: Equatable, Sendable {
     }
 }
 
+public struct WeeklyPaceBalanceSide: Equatable, Sendable {
+    public let side: String
+    public let remainingPercent: Int
+    public let projectedRemainingPercent: Int
+    public let resetsAt: Date
+}
+
+public struct WeeklyPaceBalance: Equatable, Sendable {
+    public let cdx: WeeklyPaceBalanceSide
+    public let cc: WeeklyPaceBalanceSide
+    public let recommendedMain: String?
+
+    public var recommendationGap: Int {
+        abs(cc.projectedRemainingPercent - cdx.projectedRemainingPercent)
+    }
+}
+
 public enum WeeklyPaceSeverity: String, Codable, Equatable, Sendable {
     case advisory
     case critical
@@ -259,6 +276,29 @@ public enum CodexBarPace {
         )
     }
 
+    public static func balance(
+        snapshots: [String: WeeklyPaceSnapshot],
+        now: Date,
+        staleAfter: TimeInterval = 30 * 60
+    ) -> WeeklyPaceBalance? {
+        guard let codex = snapshots["codex"],
+              let claude = snapshots["claude"],
+              isFresh(codex, now: now, staleAfter: staleAfter),
+              isFresh(claude, now: now, staleAfter: staleAfter),
+              codex.usedPercent >= 10,
+              claude.usedPercent >= 10,
+              let codexProjected = codex.projectedUsedPercentAtReset,
+              let claudeProjected = claude.projectedUsedPercentAtReset else {
+            return nil
+        }
+
+        let cdx = balanceSide(side: "cdx", snapshot: codex, projectedUsedPercent: codexProjected)
+        let cc = balanceSide(side: "cc", snapshot: claude, projectedUsedPercent: claudeProjected)
+        let delta = cc.projectedRemainingPercent - cdx.projectedRemainingPercent
+        let recommendedMain: String? = abs(delta) >= 10 ? (delta > 0 ? "cc" : "cdx") : nil
+        return WeeklyPaceBalance(cdx: cdx, cc: cc, recommendedMain: recommendedMain)
+    }
+
     private static func noticeSide(
         main: String,
         snapshots: [String: WeeklyPaceSnapshot],
@@ -326,6 +366,19 @@ public enum CodexBarPace {
             otherProjectedPercent: nil,
             mainResetsAt: nil,
             otherResetsAt: nil
+        )
+    }
+
+    private static func balanceSide(
+        side: String,
+        snapshot: WeeklyPaceSnapshot,
+        projectedUsedPercent: Double
+    ) -> WeeklyPaceBalanceSide {
+        WeeklyPaceBalanceSide(
+            side: side,
+            remainingPercent: max(0, min(100, Int((100 - snapshot.usedPercent).rounded()))),
+            projectedRemainingPercent: max(0, min(100, 100 - Int(projectedUsedPercent.rounded()))),
+            resetsAt: snapshot.resetsAt
         )
     }
 

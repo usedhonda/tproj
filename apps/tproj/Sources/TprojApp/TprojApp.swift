@@ -234,8 +234,6 @@ private enum RoleVisualPalette {
         role == "cc" ? conversationMainCC : conversationMainCdx
     }
 
-    static var usageAdvisory: Color { GhosttyTheme.current.accentYellow }
-    static var usageCritical: Color { GhosttyTheme.current.accentRed }
 }
 
 private struct PaneBackgroundManifest: Decodable, Equatable {
@@ -290,7 +288,12 @@ private struct PaneBackgroundUnderlayView: View {
     private let textReadabilityScrim = 0.07
     private let edgeFadePx: CGFloat = 3
     private let activeTopLineHeight: CGFloat = 4
-    private let conversationMainOpacity = 0.075
+    private var conversationMainOpacity: Double {
+        // This view sits below Ghostty, so only the terminal's transparent share
+        // reaches the screen. Target a visible-but-subtle 7% effective wash.
+        let visibleUnderlayShare = max(0.12, 1.0 - GhosttyTheme.current.backgroundOpacity)
+        return min(0.36, 0.07 / visibleUnderlayShare)
+    }
 
     private var edgeFadeMask: some View {
         VStack(spacing: 0) {
@@ -1694,7 +1697,6 @@ final class AppViewModel: ObservableObject {
     private var memoryPollTask: Task<Void, Never>?
     private var roleModePollTask: Task<Void, Never>?
     private var weeklyPacePollTask: Task<Void, Never>?
-    private var lastWeeklyPaceAlertSignature: String = ""
     private var workspaceWatcher: WorkspaceYamlWatcher?
 
     // MARK: - PATH & Dependency Resolution
@@ -2085,7 +2087,6 @@ final class AppViewModel: ObservableObject {
         await loadRoleModes()
         await refreshWeeklyPaceSnapshots()
         statusText = "Reloaded: \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))"
-        emitWeeklyPaceAlertIfChanged()
     }
 
     func syncUIAndRefreshAll() async {
@@ -2140,7 +2141,6 @@ final class AppViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 300_000_000_000)
                 if Task.isCancelled { return }
                 await self?.refreshWeeklyPaceSnapshots()
-                self?.emitWeeklyPaceAlertIfChanged()
             }
         }
     }
@@ -3582,12 +3582,8 @@ final class AppViewModel: ObservableObject {
         )
     }
 
-    func weeklyPaceAdvisory(forProjectPath path: String) -> WeeklyPaceAdvisory? {
-        CodexBarPace.advisory(
-            main: roleModeMain(forProjectPath: path),
-            snapshots: weeklyPaceSnapshots,
-            now: Date()
-        )
+    func weeklyPaceBalance() -> WeeklyPaceBalance? {
+        CodexBarPace.balance(snapshots: weeklyPaceSnapshots, now: Date())
     }
 
     private func refreshWeeklyPaceSnapshots() async {
@@ -3624,17 +3620,6 @@ final class AppViewModel: ObservableObject {
                 // Usage telemetry is optional. A write failure must not affect GUI operation.
             }
         }.value
-    }
-
-    private func emitWeeklyPaceAlertIfChanged() {
-        let paths = Set(liveColumns.filter { $0.hostLabel == "local" }.map(\.projectPath))
-        let advisories = paths.compactMap { weeklyPaceAdvisory(forProjectPath: $0) }
-        let signature = Set(advisories.map(\.signature)).sorted().joined(separator: "|")
-        guard signature != lastWeeklyPaceAlertSignature else { return }
-        lastWeeklyPaceAlertSignature = signature
-        if let advisory = advisories.first {
-            statusText = advisory.message
-        }
     }
 
     // Ask `model-role-router mode --json` for every known local project so mode
@@ -3713,7 +3698,6 @@ final class AppViewModel: ObservableObject {
         ) {
             _ = await runCommandAsync(sync.launchPath, sync.arguments)
         }
-        emitWeeklyPaceAlertIfChanged()
     }
 
     private func loadLiveColumns() {
@@ -4323,18 +4307,6 @@ struct ContentView: View {
         vm.liveColumns.count + vm.inactiveProjects.count
     }
 
-    private var liveWeeklyPaceAdvisory: WeeklyPaceAdvisory? {
-        vm.liveColumns
-            .filter { $0.hostLabel == "local" }
-            .compactMap { vm.weeklyPaceAdvisory(forProjectPath: $0.projectPath) }
-            .max { lhs, rhs in
-                if lhs.severity != rhs.severity {
-                    return lhs.severity == .advisory
-                }
-                return lhs.mainProjectedPercent < rhs.mainProjectedPercent
-            }
-    }
-
     @ViewBuilder
     private var workspaceControlHeader: some View {
         HStack(spacing: 4) {
@@ -4343,12 +4315,6 @@ struct ContentView: View {
                     .fill(GhosttyTheme.current.accentCyan)
                     .frame(width: 5, height: 5)
                     .shadow(color: GhosttyTheme.current.accentCyan.opacity(0.6), radius: 2)
-            }
-            if let advisory = liveWeeklyPaceAdvisory {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(weeklyPaceTint(advisory) ?? GhosttyTheme.current.accentYellow)
-                    .help(advisory.message)
             }
             Text(compactStatus(vm.statusText))
                 .font(GhosttyTheme.current.font(size: 11, weight: .medium))
@@ -4371,6 +4337,100 @@ struct ContentView: View {
             .frame(width: 38)
         }
         .padding(.trailing, 2)
+    }
+
+    @ViewBuilder
+    private var weeklyPaceBalanceCard: some View {
+        if let balance = vm.weeklyPaceBalance() {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 5) {
+                    if let recommended = balance.recommendedMain {
+                        Text("主のおすすめ")
+                            .font(GhosttyTheme.current.font(size: 10, weight: .semibold))
+                            .foregroundStyle(GhosttyTheme.current.textSecondary)
+                        Spacer(minLength: 4)
+                        Text(recommended == "cc" ? "CC" : "Cdx")
+                            .font(GhosttyTheme.current.font(size: 9, weight: .bold))
+                            .foregroundStyle(RoleVisualPalette.conversationMain(role: recommended))
+                    } else {
+                        Text("利用ペースは均衡")
+                            .font(GhosttyTheme.current.font(size: 9, weight: .semibold))
+                            .foregroundStyle(GhosttyTheme.current.textSecondary)
+                        Spacer(minLength: 4)
+                    }
+                }
+                weeklyPaceBalanceRow(balance.cdx)
+                weeklyPaceBalanceRow(balance.cc)
+                if let recommended = balance.recommendedMain {
+                    Text("\(recommended == "cc" ? "CC" : "Cdx")のほうが、リセット時に約\(balance.recommendationGap)pt多く残る予測")
+                        .font(GhosttyTheme.current.font(size: 9, weight: .medium))
+                        .foregroundStyle(GhosttyTheme.current.textSecondary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 6)
+        }
+    }
+
+    @ViewBuilder
+    private var weeklyPaceBalanceSection: some View {
+        if vm.weeklyPaceBalance() != nil {
+            SectionHeader(title: "Weekly Capacity")
+            Card(compact: true, chrome: false) {
+                weeklyPaceBalanceCard
+            }
+        }
+    }
+
+    private func weeklyPaceBalanceRow(_ side: WeeklyPaceBalanceSide) -> some View {
+        let tint = RoleVisualPalette.conversationMain(role: side.side)
+        let name = side.side == "cc" ? "CC" : "Cdx"
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Text(name)
+                    .font(GhosttyTheme.current.font(size: 10, weight: .bold))
+                    .foregroundStyle(tint)
+                    .frame(width: 24, alignment: .leading)
+                Text("\(side.remainingPercent)%残り")
+                    .font(GhosttyTheme.current.font(size: 10, weight: .semibold, monospaced: true))
+                    .foregroundStyle(GhosttyTheme.current.textPrimary)
+                Spacer(minLength: 4)
+                Text("あと\(weeklyPaceResetCountdown(side.resetsAt))")
+                    .font(GhosttyTheme.current.font(size: 9, weight: .medium, monospaced: true))
+                    .foregroundStyle(GhosttyTheme.current.textSecondary)
+            }
+            GeometryReader { geo in
+                let width = max(geo.size.width, 1)
+                let currentWidth = width * CGFloat(side.remainingPercent) / 100
+                let forecastX = min(max(1, width * CGFloat(side.projectedRemainingPercent) / 100), width - 1)
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(GhosttyTheme.current.foreground.opacity(0.09))
+                    Capsule(style: .continuous)
+                        .fill(tint.opacity(0.72))
+                        .frame(width: currentWidth)
+                    Rectangle()
+                        .fill(GhosttyTheme.current.textPrimary.opacity(0.9))
+                        .frame(width: 1, height: 8)
+                        .offset(x: forecastX)
+                }
+            }
+            .frame(height: 6)
+            Text(side.projectedRemainingPercent == 0
+                 ? "リセット前に使い切る予測"
+                 : "リセット時 約\(side.projectedRemainingPercent)%残る予測")
+                .font(GhosttyTheme.current.font(size: 8, weight: .medium))
+                .foregroundStyle(GhosttyTheme.current.textTertiary)
+        }
+    }
+
+    private func weeklyPaceResetCountdown(_ date: Date) -> String {
+        let seconds = max(0, Int(date.timeIntervalSinceNow))
+        let days = seconds / 86_400
+        let hours = (seconds % 86_400) / 3_600
+        if days > 0 { return "\(days)日\(hours)時間" }
+        return "\(max(1, hours))時間"
     }
 
     @ViewBuilder
@@ -4484,6 +4544,7 @@ struct ContentView: View {
                                 workspaceListContent
                             }
                         }
+                        weeklyPaceBalanceSection
                         upperRemainingSections
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -4494,7 +4555,7 @@ struct ContentView: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) { yamlFooter }
             } else {
                 GeometryReader { geo in
-                    let maxH = geo.size.height * 0.8
+                    let maxH = geo.size.height * (vm.weeklyPaceBalance() == nil ? 0.8 : 0.58)
                     VStack(alignment: .leading, spacing: 0) {
                         // -- Top: Current Workspace --
                         SectionHeader(title: "Current Workspace", isCollapsed: $workspaceCollapsed)
@@ -4510,7 +4571,7 @@ struct ContentView: View {
                                     }
                                 }
                             }
-                            .frame(height: workspaceHeight)
+                            .frame(height: min(workspaceHeight, maxH))
                             .padding(.horizontal, 4)
                             .clipped()
 
@@ -4520,6 +4581,7 @@ struct ContentView: View {
                         // -- Middle: Memory / CC & Codex (fills remaining space) --
                         ScrollView {
                             VStack(alignment: .leading, spacing: 4) {
+                                weeklyPaceBalanceSection
                                 upperRemainingSections
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -4690,9 +4752,7 @@ struct ContentView: View {
         // talk to, not necessarily the higher-tier or orchestrating side.
         let main = column.hostLabel == "local" ? vm.roleModeMain(forProjectPath: column.projectPath) : ""
         let leadTint = roleModeTint(vm.roleMode(forProjectPath: column.projectPath))
-        let paceAdvisory = column.hostLabel == "local" ? vm.weeklyPaceAdvisory(forProjectPath: column.projectPath) : nil
-        let paceTint = weeklyPaceTint(paceAdvisory)
-        let mainTint = paceTint ?? leadTint
+        let mainTint = leadTint
 
         return VStack(alignment: .leading, spacing: 3) {
             // Header row
@@ -4748,7 +4808,7 @@ struct ContentView: View {
         .background(
             RoundedRectangle(cornerRadius: 3, style: .continuous)
                 .fill(isDragging ? GhosttyTheme.current.accentCyan.opacity(0.15)
-                      : (paceTint?.opacity(0.12) ?? GhosttyTheme.current.foreground.opacity(0.05)))
+                      : GhosttyTheme.current.foreground.opacity(0.05))
         )
         .overlay(alignment: .leading) {
             RoundedRectangle(cornerRadius: 1)
@@ -5219,7 +5279,6 @@ struct ContentView: View {
         let canWrite = isLocal && !projectPath.isEmpty
         let mode = canWrite ? vm.roleMode(forProjectPath: projectPath) : .auto
         let main = canWrite ? vm.roleModeMain(forProjectPath: projectPath) : ""
-        let paceAdvisory = canWrite ? vm.weeklyPaceAdvisory(forProjectPath: projectPath) : nil
 
         if canWrite {
             Menu {
@@ -5244,40 +5303,12 @@ struct ContentView: View {
                         Label("CC", systemImage: main == "cc" ? "checkmark" : "circle")
                     }
                 }
-                if let paceAdvisory {
-                    Section("週の利用枠") {
-                        Label(
-                            weeklyPaceCurrentLine(
-                                side: paceAdvisory.main,
-                                remainingPercent: paceAdvisory.mainRemainingPercent,
-                                isMain: true
-                            ),
-                            systemImage: "exclamationmark.triangle.fill"
-                        )
-                        Text(weeklyPaceForecastLine(
-                            resetsAt: paceAdvisory.mainResetsAt,
-                            projectedRemainingPercent: paceAdvisory.mainProjectedRemainingPercent,
-                            reachesLimit: paceAdvisory.reason == .exhaustion
-                        ))
-                        Text(weeklyPaceCurrentLine(
-                            side: paceAdvisory.other,
-                            remainingPercent: paceAdvisory.otherRemainingPercent,
-                            isMain: false
-                        ))
-                        Text(weeklyPaceForecastLine(
-                            resetsAt: paceAdvisory.otherResetsAt,
-                            projectedRemainingPercent: paceAdvisory.otherProjectedRemainingPercent,
-                            reachesLimit: false
-                        ))
-                        Text(weeklyPaceMenuGuidance(paceAdvisory))
-                    }
-                }
             } label: {
                 pill(roleModeBadgeLabel(mode: mode, main: main), tint: roleModeTint(mode))
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help(paceAdvisory?.message ?? roleModeBadgeLabel(mode: mode, main: main))
+            .help(roleModeBadgeLabel(mode: mode, main: main))
         } else {
             pill(roleModeBadgeLabel(mode: .auto, main: ""), tint: roleModeTint(.auto))
                 .opacity(0.5)
@@ -5292,49 +5323,6 @@ struct ContentView: View {
         case .auto: return GhosttyTheme.current.accentGreen
         case .advisor: return GhosttyTheme.current.accentCyan
         case .solo: return GhosttyTheme.current.accentRed
-        }
-    }
-
-    private func weeklyPaceTint(_ advisory: WeeklyPaceAdvisory?) -> Color? {
-        switch advisory?.severity {
-        case .critical: return RoleVisualPalette.usageCritical
-        case .advisory: return RoleVisualPalette.usageAdvisory
-        case nil: return nil
-        }
-    }
-
-    private func weeklyPaceCurrentLine(
-        side: String,
-        remainingPercent: Int,
-        isMain: Bool
-    ) -> String {
-        let name = side == "cc" ? "CC" : "Cdx"
-        return "\(isMain ? "主" : "")\(name) · 週\(remainingPercent)%残り"
-    }
-
-    private func weeklyPaceForecastLine(
-        resetsAt: Date,
-        projectedRemainingPercent: Int,
-        reachesLimit: Bool
-    ) -> String {
-        let seconds = max(0, Int(resetsAt.timeIntervalSinceNow))
-        let days = seconds / 86_400
-        let hours = (seconds % 86_400) / 3_600
-        let countdown = days > 0 ? "\(days)日\(hours)時間後" : "\(max(1, hours))時間後"
-        if reachesLimit {
-            return "\(countdown)リセット · その前に使い切る予測"
-        }
-        return "\(countdown)リセット · 予測\(projectedRemainingPercent)%残り"
-    }
-
-    private func weeklyPaceMenuGuidance(_ advisory: WeeklyPaceAdvisory) -> String {
-        let mainName = advisory.main == "cc" ? "CC" : "Cdx"
-        let otherName = advisory.other == "cc" ? "CC" : "Cdx"
-        switch advisory.reason {
-        case .exhaustion:
-            return "\(mainName)は枠到達予測 · \(otherName)を検討"
-        case .absoluteHigh, .peerHeadroom:
-            return "長い作業は\(otherName)を検討"
         }
     }
 
