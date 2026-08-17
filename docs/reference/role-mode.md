@@ -150,12 +150,13 @@ derived lead. `--main derived` clears the preference.
   Each row gets one thin centered pace bar: the fixed middle line is the
   burn rate that would use exactly 100% at that provider's own reset, while the
   coloured marker shows the current linear burn rate. The shared English axis is
-  `Spare / Target / Over`; fixed-width `Left`, signed `Pace`, and compact `Reset`
+  `Over / Target / Spare`; fixed-width `Left`, signed `Margin`, and compact `Reset`
   columns avoid overlap in the narrow sidebar. Row labels retain provider identity
   colours, while the pace number, segment, and marker use the alert thresholds:
   green below 90% projected use, yellow from 90% through 99%, and red at 100%
-  or above. Left means capacity will remain, right means the limit will be reached
-  early. When projected headroom differs by at least 10 points, the panel
+  or above. Margin is `100 - projected use`: negative values appear left in red,
+  zero is the center target, and positive spare capacity appears right in green.
+  When projected headroom differs by at least 10 points, the panel
   names the side recommended for the next long task; it never switches `main`.
   Assessment starts only after one hour and 10% actual use, and requires both
   provider snapshots to be no more than 30 minutes old. Red means the main projects

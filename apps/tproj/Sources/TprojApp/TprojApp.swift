@@ -4413,7 +4413,7 @@ struct ContentView: View {
         HStack(spacing: 5) {
             Color.clear.frame(width: 46, height: 1)
             Text("Left").frame(width: 30, alignment: .trailing)
-            Text("Pace").frame(width: 40, alignment: .trailing)
+            Text("Margin").frame(width: 40, alignment: .trailing)
             Spacer(minLength: 2)
             Text("Reset").frame(width: 42, alignment: .trailing)
         }
@@ -4437,7 +4437,7 @@ struct ContentView: View {
                     .font(GhosttyTheme.current.font(size: 9, weight: .semibold, monospaced: true))
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
                     .frame(width: 30, alignment: .trailing)
-                Text(weeklyPaceDelta(side.pacePercent))
+                Text(weeklyPaceMargin(side.pacePercent))
                     .font(GhosttyTheme.current.font(size: 9, weight: .semibold, monospaced: true))
                     .foregroundStyle(statusTint)
                     .frame(width: 40, alignment: .trailing)
@@ -4450,8 +4450,8 @@ struct ContentView: View {
             GeometryReader { geo in
                 let width = max(geo.size.width, 1)
                 let targetX = width / 2
-                let boundedPace = min(max(side.pacePercent, 50), 150)
-                let actualX = width * CGFloat(boundedPace - 50) / 100
+                let boundedMargin = min(max(100 - side.pacePercent, -50), 50)
+                let actualX = width * CGFloat(boundedMargin + 50) / 100
                 let segmentX = min(actualX, targetX)
                 let segmentWidth = max(2, abs(actualX - targetX))
                 ZStack(alignment: .leading) {
@@ -4478,14 +4478,14 @@ struct ContentView: View {
 
     private var weeklyPaceAxisLegend: some View {
         HStack(spacing: 0) {
-            Text("Spare")
-                .foregroundStyle(GhosttyTheme.current.accentGreen)
+            Text("Over")
+                .foregroundStyle(GhosttyTheme.current.accentRed)
             Spacer()
             Text("Target")
                 .foregroundStyle(GhosttyTheme.current.textTertiary)
             Spacer()
-            Text("Over")
-                .foregroundStyle(GhosttyTheme.current.accentRed)
+            Text("Spare")
+                .foregroundStyle(GhosttyTheme.current.accentGreen)
         }
         .font(GhosttyTheme.current.font(size: 8, weight: .medium))
     }
@@ -4496,9 +4496,9 @@ struct ContentView: View {
         return GhosttyTheme.current.accentGreen
     }
 
-    private func weeklyPaceDelta(_ pacePercent: Int) -> String {
-        let delta = pacePercent - 100
-        return delta >= 0 ? "+\(delta)pt" : "\(delta)pt"
+    private func weeklyPaceMargin(_ pacePercent: Int) -> String {
+        let margin = 100 - pacePercent
+        return margin >= 0 ? "+\(margin)pt" : "\(margin)pt"
     }
 
     private func weeklyPaceResetCountdown(_ date: Date) -> String {
