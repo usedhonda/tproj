@@ -229,12 +229,7 @@ private struct PaneBackgroundPane: Identifiable, Decodable, Equatable {
 private enum RoleVisualPalette {
     static let conversationMainCC = Color(red: 0.52, green: 0.42, blue: 0.95)
     static let conversationMainCdx = Color(red: 0.16, green: 0.78, blue: 0.84)
-    static let conversationSub = Color(red: 0.34, green: 0.38, blue: 0.46)
-
-    static func conversationMain(role: String) -> Color {
-        role == "cc" ? conversationMainCC : conversationMainCdx
-    }
-
+    static let paneMain = conversationMainCC
 }
 
 private struct PaneBackgroundManifest: Decodable, Equatable {
@@ -298,7 +293,7 @@ private struct PaneBackgroundUnderlayView: View {
     }
     private var conversationSubOpacity: Double {
         let visibleUnderlayShare = max(0.12, 1.0 - GhosttyTheme.current.backgroundOpacity)
-        return min(0.22, 0.035 / visibleUnderlayShare)
+        return min(0.28, 0.045 / visibleUnderlayShare)
     }
 
     private var edgeFadeMask: some View {
@@ -357,19 +352,19 @@ private struct PaneBackgroundUnderlayView: View {
                             }
                             .opacity(pane.opacity)
                         }
-                        (pane.isConversationMain
-                            ? RoleVisualPalette.conversationMain(role: pane.role)
-                            : RoleVisualPalette.conversationSub)
-                            .opacity(pane.isConversationMain ? conversationMainOpacity : conversationSubOpacity)
-                            .blendMode(.plusLighter)
                         if pane.isConversationMain {
+                            RoleVisualPalette.paneMain
+                                .opacity(conversationMainOpacity)
+                                .blendMode(.plusLighter)
                             HStack(spacing: 0) {
-                                RoleVisualPalette.conversationMain(role: pane.role)
+                                RoleVisualPalette.paneMain
                                     .opacity(0.48)
                                     .frame(width: conversationMainEdgeWidth)
                                     .blendMode(.plusLighter)
                                 Spacer(minLength: 0)
                             }
+                        } else {
+                            Color.black.opacity(conversationSubOpacity)
                         }
                         activeTopLine(isActive: pane.isActive)
                             .opacity(pane.opacity)

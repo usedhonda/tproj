@@ -172,10 +172,11 @@ derived lead. `--main derived` clears the preference.
   critical escalation is immediate, critical reminders are at most every four
   hours, advisory reminders every twelve hours, and recovery is emitted once.
   Missing, stale, malformed, or unwritable optional state is silent and fail-open.
-- The chosen conversation-main pane receives a subtle additive role-colour wash and
-  a two-pixel role-colour edge in the existing background underlay. The other pane
-  receives a low-strength neutral slate wash rather than dimming. The wash
-  compensates for Ghostty transparency, while the edge remains the primary cue. A mode/main
+- The chosen conversation-main pane receives one shared warm-violet additive wash
+  and a two-pixel edge in the existing background underlay; CC and Cdx do not use
+  different pane hues. The other pane keeps its image but receives a slight dark
+  scrim. The wash compensates for Ghostty transparency, while the edge remains the
+  primary cue. A mode/main
   change runs only the fast manifest sync and never regenerates persona images.
   Warning yellow/red and conversation-main violet/cyan come from separate palette
   entries. The GUI never fetches provider usage directly or switches main automatically.
