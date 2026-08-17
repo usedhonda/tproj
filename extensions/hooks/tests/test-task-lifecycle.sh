@@ -48,11 +48,29 @@ db_value() {
   sqlite3 "$TPROJ_MSG_DB_PATH" "$1" 2>/dev/null
 }
 
+# The guard suspends itself under a declared role mode, and it resolves that mode
+# from the caller's own pane and project. Left unpinned, a mode the developer had
+# declared for this checkout silenced the guard and every blocking assertion here
+# failed for a reason that had nothing to do with the code under test.
+PINNED_BIN="$(mktemp -d)"
+cat > "$PINNED_BIN/model-role-router" <<'MRR'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_ROLE_MODE_ARGS:-/dev/null}"
+[ "${FAKE_ROLE_MODE:-auto}" = broken ] && exit 1
+printf '{"mode":"%s"}\n' "${FAKE_ROLE_MODE:-auto}"
+MRR
+cat > "$PINNED_BIN/tmux" <<'FTMUX'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_PANE_PROJECT:-}"
+FTMUX
+chmod +x "$PINNED_BIN/model-role-router" "$PINNED_BIN/tmux"
+trap 'rm -rf "$PINNED_BIN"' EXIT
+
 invoke_guard() {
   local text="$1"
   printf '{"session_id":"hook-session","raw_event":{"last_assistant_message":%s}}\n' \
     "$(jq -Rn --arg value "$text" '$value')" \
-    | TT_CACHE_OWNER="$OWNER" TT_OWNER_ROLE=cdx TPROJ_TASK_GUARD_SINCE=0 TPROJ_TASK_CLI="$REPO/extensions/messaging/tproj-task" \
+    | PATH="$PINNED_BIN:$PATH" TT_CACHE_OWNER="$OWNER" TT_OWNER_ROLE=cdx TPROJ_TASK_GUARD_SINCE=0 TPROJ_TASK_CLI="$REPO/extensions/messaging/tproj-task" \
       "$REPO/extensions/hooks/tproj-completion-guard" --platform codex 2>/dev/null
 }
 

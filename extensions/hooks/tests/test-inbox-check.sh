@@ -661,6 +661,39 @@ usage_recovery="$(TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cdx TPROJ_USAGE_NOW="$us
   "$TMP/tproj-inbox-check" 2>/dev/null || true)"
 assert_contains "$usage_recovery" "正常域へ戻りました" "one recovery notice follows an active alert"
 
+# The recommendation must name a side that still has budget. Observed live: the
+# main projected to 10% left while the other projected to 0%, and the notice
+# still told the user to move long work onto the exhausted side.
+cat > "$usage_state" <<JSON
+{"version":1,"generated_at":$usage_now,"sides":{"cc":{"status":"alert","main":"cc","other":"cdx","severity":"advisory","reason":"absolute-high","main_remaining_percent":74,"other_remaining_percent":25,"main_projected_percent":90,"other_projected_percent":100,"main_resets_at":$usage_main_reset,"other_resets_at":$usage_other_reset}}}
+JSON
+rm -f "$usage_ledger"
+usage_advice="$(TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cc TPROJ_USAGE_NOW="$usage_now" \
+  TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \
+  "$TMP/tproj-inbox-check" 2>/dev/null || true)"
+assert_not_contains "$usage_advice" "長い作業はCdxを検討" "an exhausted peer is never recommended"
+assert_contains "$usage_advice" "このままCCを使うほうが安全" "the side with more headroom is recommended instead"
+
+# When neither side will have budget, recommend waiting rather than either pane.
+cat > "$usage_state" <<JSON
+{"version":1,"generated_at":$usage_now,"sides":{"cc":{"status":"alert","main":"cc","other":"cdx","severity":"critical","reason":"exhaustion","main_remaining_percent":10,"other_remaining_percent":8,"main_projected_percent":100,"other_projected_percent":100,"main_resets_at":$usage_main_reset,"other_resets_at":$usage_other_reset}}}
+JSON
+rm -f "$usage_ledger"
+usage_both="$(TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cc TPROJ_USAGE_NOW="$usage_now" \
+  TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \
+  "$TMP/tproj-inbox-check" 2>/dev/null || true)"
+assert_contains "$usage_both" "どちらもリセット前に枯渇" "neither side is recommended when both are exhausted"
+
+# A genuinely healthier peer is still recommended, so the fix does not mute the feature.
+cat > "$usage_state" <<JSON
+{"version":1,"generated_at":$usage_now,"sides":{"cc":{"status":"alert","main":"cc","other":"cdx","severity":"advisory","reason":"peer-headroom","main_remaining_percent":30,"other_remaining_percent":80,"main_projected_percent":95,"other_projected_percent":40,"main_resets_at":$usage_main_reset,"other_resets_at":$usage_other_reset}}}
+JSON
+rm -f "$usage_ledger"
+usage_peer="$(TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cc TPROJ_USAGE_NOW="$usage_now" \
+  TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \
+  "$TMP/tproj-inbox-check" 2>/dev/null || true)"
+assert_contains "$usage_peer" "長い作業はCdxを検討" "a peer with real headroom is still recommended"
+
 printf '%s' '{not-json' > "$usage_state"
 malformed_rc=0
 TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cdx TPROJ_USAGE_NOW="$usage_now" \

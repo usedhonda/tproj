@@ -139,6 +139,28 @@ public struct WeeklyPaceAdvisory: Equatable, Sendable {
     public var mainProjectedRemainingPercent: Int { max(0, 100 - mainProjectedPercent) }
     public var otherProjectedRemainingPercent: Int { max(0, 100 - otherProjectedPercent) }
 
+    // A side is only worth recommending if this much of its week is still
+    // projected to remain at its own reset.
+    public static let adviceMinHeadroomPercent = 15
+
+    // Recommend a side that will actually still have budget. Naming the other
+    // side unconditionally told the user to move long work onto a pane projected
+    // to hit zero, which is worse than saying nothing: the notice exists to
+    // protect the week, not to shuffle work away from whichever pane is main.
+    public var advice: String {
+        let mainName = displayName(main)
+        let otherName = displayName(other)
+        let floor = Self.adviceMinHeadroomPercent
+        if otherProjectedRemainingPercent >= floor,
+           otherProjectedRemainingPercent > mainProjectedRemainingPercent {
+            return "長い作業は\(otherName)を検討してください。"
+        }
+        if mainProjectedRemainingPercent > 0 {
+            return "\(otherName)のほうが余力が乏しいため、このまま\(mainName)を使うほうが安全です。"
+        }
+        return "どちらもリセット前に枯渇する見込みです。長い作業は次のリセットまで待つか、範囲を絞ってください。"
+    }
+
     public var message: String {
         let mainName = displayName(main)
         let otherName = displayName(other)
@@ -146,11 +168,11 @@ public struct WeeklyPaceAdvisory: Equatable, Sendable {
         let otherReset = resetCountdown(otherResetsAt)
         switch reason {
         case .exhaustion:
-            return "利用枠警告: 主\(mainName)は週\(mainRemainingPercent)%残り、\(mainReset)リセットですが、このペースではリセット前に使い切る予測です。\(otherName)は週\(otherRemainingPercent)%残り、\(otherReset)リセットです。長い作業は\(otherName)を検討してください。"
+            return "利用枠警告: 主\(mainName)は週\(mainRemainingPercent)%残り、\(mainReset)リセットですが、このペースではリセット前に使い切る予測です。\(otherName)は週\(otherRemainingPercent)%残り、\(otherReset)リセットです。\(advice)"
         case .absoluteHigh:
-            return "利用ペース補足: 主\(mainName)は週\(mainRemainingPercent)%残り、\(mainReset)リセット時に約\(mainProjectedRemainingPercent)%残る予測です。\(otherName)は週\(otherRemainingPercent)%残り、\(otherReset)リセット時に約\(otherProjectedRemainingPercent)%残る予測です。長い作業は\(otherName)を検討してください。"
+            return "利用ペース補足: 主\(mainName)は週\(mainRemainingPercent)%残り、\(mainReset)リセット時に約\(mainProjectedRemainingPercent)%残る予測です。\(otherName)は週\(otherRemainingPercent)%残り、\(otherReset)リセット時に約\(otherProjectedRemainingPercent)%残る予測です。\(advice)"
         case .peerHeadroom:
-            return "利用配分のご案内: 主\(mainName)は週\(mainRemainingPercent)%残り、\(mainReset)リセット時に約\(mainProjectedRemainingPercent)%残る予測です。\(otherName)は週\(otherRemainingPercent)%残り、\(otherReset)リセット時に約\(otherProjectedRemainingPercent)%残る予測です。次の長い作業は\(otherName)を推奨します。"
+            return "利用配分のご案内: 主\(mainName)は週\(mainRemainingPercent)%残り、\(mainReset)リセット時に約\(mainProjectedRemainingPercent)%残る予測です。\(otherName)は週\(otherRemainingPercent)%残り、\(otherReset)リセット時に約\(otherProjectedRemainingPercent)%残る予測です。\(advice)"
         }
     }
 

@@ -45,6 +45,11 @@ source "$CACHE_HELPER"
 # writes a sanitized global state (no account identifiers or arbitrary text),
 # while this hook owns one cross-project delivery ledger so CC and Cdx do not
 # repeat the same notice in every column.
+# A side is only worth recommending if this much of its week is still projected
+# to be left at its own reset. Below that, pointing work at it just moves the
+# problem instead of solving it.
+USAGE_ADVICE_MIN_HEADROOM_PCT="${TPROJ_USAGE_ADVICE_MIN_HEADROOM_PCT:-15}"
+
 usage_format_until_reset() {
   local epoch="$1" now="$2" delta days hours
   delta=$((epoch - now))
@@ -215,16 +220,31 @@ emit_weekly_usage_notice() {
   (( main_projected_remaining < 0 )) && main_projected_remaining=0
   (( other_projected_remaining < 0 )) && other_projected_remaining=0
 
+  # Only recommend a side that will actually still have budget at its own reset.
+  # Naming the other side unconditionally told the user to move long work onto a
+  # pane projected to hit zero, which is worse advice than saying nothing: the
+  # point of the notice is to protect the week, not to shuffle work toward
+  # whichever pane happens not to be the main one.
+  local advice
+  if (( other_projected_remaining >= USAGE_ADVICE_MIN_HEADROOM_PCT \
+        && other_projected_remaining > main_projected_remaining )); then
+    advice="長い作業は${display_other}を検討してください。"
+  elif (( main_projected_remaining > 0 )); then
+    advice="${display_other}のほうが余力が乏しいため、このまま${display_main}を使うほうが安全です。"
+  else
+    advice="どちらもリセット前に枯渇する見込みです。長い作業は次のリセットまで待つか、範囲を絞ってください。"
+  fi
+
   if [[ "$status" == "healthy" ]]; then
     message="利用ペースは正常域へ戻りました。主${display_main}は週${main_remaining}%残り、${main_label}リセット時に約${main_projected_remaining}%残る予測です。${display_other}は週${other_remaining}%残り、${other_label}リセット時に約${other_projected_remaining}%残る予測です。現在の主のままで問題ありません。"
     severity=""
     reason=""
   elif [[ "$reason" == "exhaustion" ]]; then
-    message="利用枠警告: 主${display_main}は週${main_remaining}%残り、${main_label}リセットですが、このペースではリセット前に使い切る予測です。${display_other}は週${other_remaining}%残り、${other_label}リセット時に約${other_projected_remaining}%残る予測です。長い作業は${display_other}を検討してください。"
+    message="利用枠警告: 主${display_main}は週${main_remaining}%残り、${main_label}リセットですが、このペースではリセット前に使い切る予測です。${display_other}は週${other_remaining}%残り、${other_label}リセット時に約${other_projected_remaining}%残る予測です。${advice}"
   elif [[ "$reason" == "peer-headroom" ]]; then
-    message="利用配分のご案内: 主${display_main}は週${main_remaining}%残り、${main_label}リセット時に約${main_projected_remaining}%残る予測です。${display_other}は週${other_remaining}%残り、${other_label}リセット時に約${other_projected_remaining}%残る予測です。次の長い作業は${display_other}を推奨します。"
+    message="利用配分のご案内: 主${display_main}は週${main_remaining}%残り、${main_label}リセット時に約${main_projected_remaining}%残る予測です。${display_other}は週${other_remaining}%残り、${other_label}リセット時に約${other_projected_remaining}%残る予測です。${advice}"
   else
-    message="利用ペース補足: 主${display_main}は週${main_remaining}%残り、${main_label}リセット時に約${main_projected_remaining}%残る予測です。${display_other}は週${other_remaining}%残り、${other_label}リセット時に約${other_projected_remaining}%残る予測です。長い作業は${display_other}を検討してください。"
+    message="利用ペース補足: 主${display_main}は週${main_remaining}%残り、${main_label}リセット時に約${main_projected_remaining}%残る予測です。${display_other}は週${other_remaining}%残り、${other_label}リセット時に約${other_projected_remaining}%残る予測です。${advice}"
   fi
 
   if ! usage_write_ledger "$ledger_path" "$main" "$status" "$severity" "$reason" \
