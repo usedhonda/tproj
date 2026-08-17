@@ -284,16 +284,16 @@ private struct PaneBackgroundUnderlayView: View {
     private let textReadabilityScrim = 0.07
     private let edgeFadePx: CGFloat = 3
     private let activeTopLineHeight: CGFloat = 4
-    private let conversationMainEdgeWidth: CGFloat = 2
+    private let conversationMainEdgeWidth: CGFloat = 3
     private var conversationMainOpacity: Double {
         // This view sits below Ghostty, so only the terminal's transparent share
         // reaches the screen. The wash is atmosphere; the edge is the primary cue.
         let visibleUnderlayShare = max(0.12, 1.0 - GhosttyTheme.current.backgroundOpacity)
-        return min(0.42, 0.09 / visibleUnderlayShare)
+        return min(0.68, 0.16 / visibleUnderlayShare)
     }
     private var conversationSubOpacity: Double {
         let visibleUnderlayShare = max(0.12, 1.0 - GhosttyTheme.current.backgroundOpacity)
-        return min(0.28, 0.045 / visibleUnderlayShare)
+        return min(0.42, 0.08 / visibleUnderlayShare)
     }
 
     private var edgeFadeMask: some View {
@@ -358,7 +358,7 @@ private struct PaneBackgroundUnderlayView: View {
                                 .blendMode(.plusLighter)
                             HStack(spacing: 0) {
                                 RoleVisualPalette.paneMain
-                                    .opacity(0.48)
+                                    .opacity(0.85)
                                     .frame(width: conversationMainEdgeWidth)
                                     .blendMode(.plusLighter)
                                 Spacer(minLength: 0)
