@@ -4373,13 +4373,15 @@ struct ContentView: View {
     private func weeklyPaceBalanceRow(_ side: WeeklyPaceBalanceSide) -> some View {
         let tint = RoleVisualPalette.conversationMain(role: side.side)
         let name = side.side == "cc" ? "CC" : "Cdx"
-        let usedPercent = 100 - side.remainingPercent
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
                 Text(name)
                     .font(GhosttyTheme.current.font(size: 10, weight: .bold))
                     .foregroundStyle(tint)
                     .frame(width: 24, alignment: .leading)
+                Text("残り\(side.remainingPercent)%")
+                    .font(GhosttyTheme.current.font(size: 9, weight: .semibold, monospaced: true))
+                    .foregroundStyle(GhosttyTheme.current.textPrimary)
                 Spacer(minLength: 4)
                 Text("リセットまで\(weeklyPaceResetCountdown(side.resetsAt))")
                     .font(GhosttyTheme.current.font(size: 9, weight: .medium, monospaced: true))
@@ -4387,45 +4389,50 @@ struct ContentView: View {
             }
             GeometryReader { geo in
                 let width = max(geo.size.width, 1)
-                let usedWidth = width * CGFloat(usedPercent) / 100
-                let forecastUsedPercent = 100 - side.projectedRemainingPercent
-                let forecastX = min(max(1, width * CGFloat(forecastUsedPercent) / 100), width - 1)
+                let targetX = width / 2
+                let boundedPace = min(max(side.pacePercent, 50), 150)
+                let actualX = width * CGFloat(boundedPace - 50) / 100
+                let segmentX = min(actualX, targetX)
+                let segmentWidth = max(2, abs(actualX - targetX))
                 ZStack(alignment: .leading) {
-                    HStack(spacing: 0) {
-                        Rectangle()
-                            .fill(GhosttyTheme.current.foreground.opacity(0.18))
-                            .frame(width: usedWidth)
-                        Rectangle()
-                            .fill(tint.opacity(0.72))
-                            .frame(width: max(0, width - usedWidth))
-                    }
-                    .clipShape(Capsule(style: .continuous))
+                    Capsule(style: .continuous)
+                        .fill(GhosttyTheme.current.foreground.opacity(0.10))
+                    Capsule(style: .continuous)
+                        .fill(tint.opacity(0.58))
+                        .frame(width: segmentWidth)
+                        .offset(x: segmentX)
                     Rectangle()
                         .fill(GhosttyTheme.current.textPrimary.opacity(0.9))
                         .frame(width: 1, height: 15)
-                        .offset(x: forecastX)
-                    HStack(spacing: 4) {
-                        Text("使用 \(usedPercent)%")
-                        Spacer(minLength: 4)
-                        Text("残り \(side.remainingPercent)%")
-                    }
-                    .font(GhosttyTheme.current.font(size: 8, weight: .bold, monospaced: true))
-                    .foregroundStyle(GhosttyTheme.current.textPrimary.opacity(0.92))
-                    .padding(.horizontal, 5)
+                        .offset(x: targetX)
+                    Circle()
+                        .fill(tint)
+                        .overlay(Circle().stroke(GhosttyTheme.current.textPrimary.opacity(0.9), lineWidth: 1))
+                        .frame(width: 9, height: 9)
+                        .offset(x: actualX - 4.5)
                 }
             }
-            .frame(height: 15)
-            HStack(spacing: 4) {
-                Rectangle()
-                    .fill(GhosttyTheme.current.textPrimary.opacity(0.9))
-                    .frame(width: 1, height: 7)
-                Text(side.projectedRemainingPercent == 0
-                     ? "リセット前に使い切る予測"
-                     : "リセット時予測 残り\(side.projectedRemainingPercent)%")
-                    .font(GhosttyTheme.current.font(size: 8, weight: .medium))
-                    .foregroundStyle(GhosttyTheme.current.textTertiary)
+            .frame(height: 9)
+            HStack(spacing: 0) {
+                Text("余る")
+                Spacer()
+                Text("使い切る")
+                Spacer()
+                Text("先に枯渇")
             }
+            .font(GhosttyTheme.current.font(size: 8, weight: .medium))
+            .foregroundStyle(GhosttyTheme.current.textTertiary)
+            Text(weeklyPaceComparison(side.pacePercent))
+                .font(GhosttyTheme.current.font(size: 8, weight: .semibold))
+                .foregroundStyle(tint)
         }
+    }
+
+    private func weeklyPaceComparison(_ pacePercent: Int) -> String {
+        let delta = pacePercent - 100
+        if abs(delta) <= 3 { return "ほぼ使い切りペース（\(delta >= 0 ? "+" : "")\(delta)%）" }
+        if delta < 0 { return "使い切りペースより\(-delta)%ゆっくり" }
+        return "使い切りペースより\(delta)%速い"
     }
 
     private func weeklyPaceResetCountdown(_ date: Date) -> String {

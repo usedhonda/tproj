@@ -151,6 +151,7 @@ final class RoleModeTests: XCTestCase {
         let balance = try XCTUnwrap(CodexBarPace.balance(snapshots: snapshots, now: freshNow))
         XCTAssertEqual(balance.cdx.remainingPercent, 20)
         XCTAssertEqual(balance.cc.projectedRemainingPercent, 12)
+        XCTAssertEqual(balance.cdx.pacePercent, 140)
         XCTAssertEqual(balance.recommendedMain, "cc")
     }
 }

@@ -141,9 +141,11 @@ derived lead. `--main derived` clears the preference.
   alert evaluation and is not shown as an unexplained standalone number.
   This account-global comparison appears once in a collapsible `Weekly Capacity`
   section directly below `Current Workspace`, not in every project's role-mode
-  menu. Each provider gets one split bar: used capacity on the left, remaining
-  capacity on the right, plus a marker for projected usage at that provider's own
-  reset. When the projected headroom differs by at least 10 points, the panel
+  menu. Each provider gets one centered pace bar: the fixed middle line is the
+  burn rate that would use exactly 100% at that provider's own reset, while the
+  coloured marker shows the current linear burn rate. Left means capacity will
+  remain, right means the limit will be reached early; current remaining capacity
+  and reset countdown stay as context. When projected headroom differs by at least 10 points, the panel
   names the side recommended for the next long task; it never switches `main`.
   Assessment starts only after one hour and 10% actual use, and requires both
   provider snapshots to be no more than 30 minutes old. Red means the main projects

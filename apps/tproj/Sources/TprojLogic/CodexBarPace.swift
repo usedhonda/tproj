@@ -30,6 +30,7 @@ public struct WeeklyPaceBalanceSide: Equatable, Sendable {
     public let side: String
     public let remainingPercent: Int
     public let projectedRemainingPercent: Int
+    public let pacePercent: Int
     public let resetsAt: Date
 }
 
@@ -378,6 +379,7 @@ public enum CodexBarPace {
             side: side,
             remainingPercent: max(0, min(100, Int((100 - snapshot.usedPercent).rounded()))),
             projectedRemainingPercent: max(0, min(100, 100 - Int(projectedUsedPercent.rounded()))),
+            pacePercent: max(0, min(999, Int(projectedUsedPercent.rounded()))),
             resetsAt: snapshot.resetsAt
         )
     }
