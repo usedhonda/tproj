@@ -68,14 +68,14 @@ final class RoleModeTests: XCTestCase {
 
     // Badge stays compact while naming both the mode and conversation main.
     func testBadgeLabelComposition() {
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cc"), "Team\u{00B7}主CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cdx"), "Team\u{00B7}主Cdx")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cc"), "Advisor\u{00B7}主CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cdx"), "Advisor\u{00B7}主Cdx")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cc"), "Solo\u{00B7}主CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cdx"), "Solo\u{00B7}主Cdx")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: ""), "Solo\u{00B7}主?")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "other"), "Team\u{00B7}主?")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cc"), "Team\u{00B7}Main CC")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cdx"), "Team\u{00B7}Main Cdx")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cc"), "Advisor\u{00B7}Main CC")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cdx"), "Advisor\u{00B7}Main Cdx")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cc"), "Solo\u{00B7}Main CC")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cdx"), "Solo\u{00B7}Main Cdx")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: ""), "Solo\u{00B7}Main ?")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "other"), "Team\u{00B7}Main ?")
     }
 
     func testConversationMainIsIndependentAndBuildsCanonicalCommand() {
@@ -106,7 +106,17 @@ final class RoleModeTests: XCTestCase {
 
         let codex = try XCTUnwrap(CodexBarPace.latestWeeklySnapshot(from: history(usedPercent: 80), provider: "codex"))
         let claude = try XCTUnwrap(CodexBarPace.latestWeeklySnapshot(from: history(usedPercent: 50), provider: "claude"))
-        let snapshots = ["codex": codex, "claude": claude]
+        let scopedCLI = Data("""
+        [{"provider":"claude","usage":{"updatedAt":"2026-08-14T00:00:00Z","identity":{"email":"private@example.com"},"extraRateWindows":[
+          {"id":"claude-weekly-scoped-fable","title":"Fable only","window":{"usedPercent":40,"windowMinutes":10080,"resetsAt":"2026-08-17T00:00:00Z"}}
+        ]}}]
+        """.utf8)
+        let fable = try XCTUnwrap(CodexBarPace.latestScopedWeeklySnapshot(
+            fromCodexBarCLI: scopedCLI,
+            id: "claude-weekly-scoped-fable",
+            provider: "fable"
+        ))
+        let snapshots = ["codex": codex, "claude": claude, "fable": fable]
         let freshNow = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-14T00:10:00Z"))
         let staleNow = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-14T01:00:00Z"))
         let resetsAt = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-17T00:00:00Z"))
@@ -152,6 +162,7 @@ final class RoleModeTests: XCTestCase {
         XCTAssertEqual(balance.cdx.remainingPercent, 20)
         XCTAssertEqual(balance.cc.projectedRemainingPercent, 12)
         XCTAssertEqual(balance.cdx.pacePercent, 140)
+        XCTAssertEqual(balance.fable?.remainingPercent, 60)
         XCTAssertEqual(balance.recommendedMain, "cc")
     }
 }

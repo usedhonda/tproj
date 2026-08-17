@@ -37,6 +37,7 @@ public struct WeeklyPaceBalanceSide: Equatable, Sendable {
 public struct WeeklyPaceBalance: Equatable, Sendable {
     public let cdx: WeeklyPaceBalanceSide
     public let cc: WeeklyPaceBalanceSide
+    public let fable: WeeklyPaceBalanceSide?
     public let recommendedMain: String?
 
     public var recommendationGap: Int {
@@ -194,6 +195,26 @@ public enum CodexBarPace {
         }
     }
 
+    private struct CLIEnvelope: Decodable {
+        let usage: CLIUsage
+    }
+
+    private struct CLIUsage: Decodable {
+        let updatedAt: String?
+        let extraRateWindows: [CLIExtraWindow]?
+    }
+
+    private struct CLIExtraWindow: Decodable {
+        let id: String
+        let window: CLIWindow?
+    }
+
+    private struct CLIWindow: Decodable {
+        let usedPercent: Double?
+        let windowMinutes: Int?
+        let resetsAt: String?
+    }
+
     public static func latestWeeklySnapshot(from data: Data, provider: String) -> WeeklyPaceSnapshot? {
         guard let history = try? JSONDecoder().decode(History.self, from: data),
               let key = history.preferredAccountKey,
@@ -220,6 +241,36 @@ public enum CodexBarPace {
             )
         }
         return nil
+    }
+
+    public static func latestScopedWeeklySnapshot(
+        fromCodexBarCLI data: Data,
+        id: String,
+        provider: String
+    ) -> WeeklyPaceSnapshot? {
+        let decoder = JSONDecoder()
+        let envelope = (try? decoder.decode([CLIEnvelope].self, from: data))?.first
+            ?? (try? decoder.decode(CLIEnvelope.self, from: data))
+        guard let usage = envelope?.usage,
+              let capturedAtValue = usage.updatedAt,
+              let scoped = usage.extraRateWindows?.first(where: { $0.id == id })?.window,
+              let resetsAtValue = scoped.resetsAt,
+              let usedPercent = scoped.usedPercent,
+              let windowMinutes = scoped.windowMinutes,
+              let capturedAt = parseDate(capturedAtValue),
+              let resetsAt = parseDate(resetsAtValue),
+              resetsAt > capturedAt,
+              windowMinutes > 0,
+              (0...100).contains(usedPercent) else {
+            return nil
+        }
+        return WeeklyPaceSnapshot(
+            provider: provider,
+            capturedAt: capturedAt,
+            resetsAt: resetsAt,
+            usedPercent: usedPercent,
+            windowMinutes: windowMinutes
+        )
     }
 
     public static func noticeState(
@@ -295,9 +346,15 @@ public enum CodexBarPace {
 
         let cdx = balanceSide(side: "cdx", snapshot: codex, projectedUsedPercent: codexProjected)
         let cc = balanceSide(side: "cc", snapshot: claude, projectedUsedPercent: claudeProjected)
+        let fable = snapshots["fable"].flatMap { snapshot -> WeeklyPaceBalanceSide? in
+            guard isFresh(snapshot, now: now, staleAfter: staleAfter),
+                  snapshot.usedPercent >= 10,
+                  let projected = snapshot.projectedUsedPercentAtReset else { return nil }
+            return balanceSide(side: "fable", snapshot: snapshot, projectedUsedPercent: projected)
+        }
         let delta = cc.projectedRemainingPercent - cdx.projectedRemainingPercent
         let recommendedMain: String? = abs(delta) >= 10 ? (delta > 0 ? "cc" : "cdx") : nil
-        return WeeklyPaceBalance(cdx: cdx, cc: cc, recommendedMain: recommendedMain)
+        return WeeklyPaceBalance(cdx: cdx, cc: cc, fable: fable, recommendedMain: recommendedMain)
     }
 
     private static func noticeSide(

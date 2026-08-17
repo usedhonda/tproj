@@ -127,12 +127,16 @@ derived lead. `--main derived` clears the preference.
   `Team` is the GUI name for the stored `auto` mode; CLI and file compatibility
   keep using `auto`.
   An unset stored preference displays the derived lead, or Cdx when no lead exists.
-  The compact badge shows only mode and main (`Advisor·主Cdx`); clicking it exposes
+  The compact badge shows only mode and main (`Advisor·Main Cdx`); clicking it exposes
   the detailed checked choices. The chosen conversation side's button is tinted
   with the mode colour. The GUI reads and writes only through
   `model-role-router mode`.
 - In every mode, the GUI reads CodexBar's selected-account weekly history snapshots
-  from Application Support every five minutes. For each provider, it derives the
+  from Application Support every five minutes. It also reads the exact
+  `claude-weekly-scoped-fable` window from CodexBar's local structured CLI output
+  when available; it never reads provider credentials or stores the CLI's identity
+  fields. A missing or malformed optional CLI response simply omits the Fable row.
+  For each displayed window, it derives the
   window start from that provider's own next reset minus seven days, calculates the
   average burn since that start, and projects usage at that provider's next reset.
   User-facing GUI and conversation notices follow CodexBar's remaining-capacity
@@ -141,11 +145,14 @@ derived lead. `--main derived` clears the preference.
   alert evaluation and is not shown as an unexplained standalone number.
   This account-global comparison appears once in a collapsible `Weekly Capacity`
   section directly below `Current Workspace`, not in every project's role-mode
-  menu. Each provider gets one centered pace bar: the fixed middle line is the
+  menu. Cdx has one row; CC has a base `Weekly` row and an optional `Fable` row.
+  Headroom compares Cdx with CC Weekly because Fable is a model-scoped constraint.
+  Each row gets one thin centered pace bar: the fixed middle line is the
   burn rate that would use exactly 100% at that provider's own reset, while the
-  coloured marker shows the current linear burn rate. Left means capacity will
-  remain, right means the limit will be reached early; current remaining capacity
-  and reset countdown stay as context. When projected headroom differs by at least 10 points, the panel
+  coloured marker shows the current linear burn rate. The shared English axis is
+  `Spare / Target / Over`; fixed-width `Left`, signed `Pace`, and compact `Reset`
+  columns avoid overlap in the narrow sidebar. Left means capacity will remain,
+  right means the limit will be reached early. When projected headroom differs by at least 10 points, the panel
   names the side recommended for the next long task; it never switches `main`.
   Assessment starts only after one hour and 10% actual use, and requires both
   provider snapshots to be no more than 30 minutes old. Red means the main projects
@@ -161,12 +168,13 @@ derived lead. `--main derived` clears the preference.
   critical escalation is immediate, critical reminders are at most every four
   hours, advisory reminders every twelve hours, and recovery is emitted once.
   Missing, stale, malformed, or unwritable optional state is silent and fail-open.
-- The chosen conversation-main pane receives a subtle additive role-colour wash in
-  the existing background underlay; the wash compensates for Ghostty transparency
-  so its effective on-screen strength remains visible, and the other pane is never dimmed. A mode/main
+- The chosen conversation-main pane receives a subtle additive role-colour wash and
+  a two-pixel role-colour edge in the existing background underlay. The other pane
+  receives a low-strength neutral slate wash rather than dimming. The wash
+  compensates for Ghostty transparency, while the edge remains the primary cue. A mode/main
   change runs only the fast manifest sync and never regenerates persona images.
   Warning yellow/red and conversation-main violet/cyan come from separate palette
-  entries. The GUI never fetches provider usage or switches main automatically.
+  entries. The GUI never fetches provider usage directly or switches main automatically.
 
 ## Escape hatch
 

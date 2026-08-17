@@ -132,5 +132,5 @@ public func roleModeLeadDisplay(_ lead: String) -> String {
 public func roleModeBadgeLabel(mode: RoleMode, main: String) -> String {
     let side = roleModeLeadDisplay(main)
     let modeLabel = mode.displayName
-    return side.isEmpty ? "\(modeLabel)\u{00B7}主?" : "\(modeLabel)\u{00B7}主\(side)"
+    return side.isEmpty ? "\(modeLabel)\u{00B7}Main ?" : "\(modeLabel)\u{00B7}Main \(side)"
 }

@@ -229,6 +229,7 @@ private struct PaneBackgroundPane: Identifiable, Decodable, Equatable {
 private enum RoleVisualPalette {
     static let conversationMainCC = Color(red: 0.52, green: 0.42, blue: 0.95)
     static let conversationMainCdx = Color(red: 0.16, green: 0.78, blue: 0.84)
+    static let conversationSub = Color(red: 0.34, green: 0.38, blue: 0.46)
 
     static func conversationMain(role: String) -> Color {
         role == "cc" ? conversationMainCC : conversationMainCdx
@@ -288,11 +289,16 @@ private struct PaneBackgroundUnderlayView: View {
     private let textReadabilityScrim = 0.07
     private let edgeFadePx: CGFloat = 3
     private let activeTopLineHeight: CGFloat = 4
+    private let conversationMainEdgeWidth: CGFloat = 2
     private var conversationMainOpacity: Double {
         // This view sits below Ghostty, so only the terminal's transparent share
-        // reaches the screen. Target a visible-but-subtle 7% effective wash.
+        // reaches the screen. The wash is atmosphere; the edge is the primary cue.
         let visibleUnderlayShare = max(0.12, 1.0 - GhosttyTheme.current.backgroundOpacity)
-        return min(0.36, 0.07 / visibleUnderlayShare)
+        return min(0.42, 0.09 / visibleUnderlayShare)
+    }
+    private var conversationSubOpacity: Double {
+        let visibleUnderlayShare = max(0.12, 1.0 - GhosttyTheme.current.backgroundOpacity)
+        return min(0.22, 0.035 / visibleUnderlayShare)
     }
 
     private var edgeFadeMask: some View {
@@ -351,10 +357,19 @@ private struct PaneBackgroundUnderlayView: View {
                             }
                             .opacity(pane.opacity)
                         }
+                        (pane.isConversationMain
+                            ? RoleVisualPalette.conversationMain(role: pane.role)
+                            : RoleVisualPalette.conversationSub)
+                            .opacity(pane.isConversationMain ? conversationMainOpacity : conversationSubOpacity)
+                            .blendMode(.plusLighter)
                         if pane.isConversationMain {
-                            RoleVisualPalette.conversationMain(role: pane.role)
-                                .opacity(conversationMainOpacity)
-                                .blendMode(.plusLighter)
+                            HStack(spacing: 0) {
+                                RoleVisualPalette.conversationMain(role: pane.role)
+                                    .opacity(0.48)
+                                    .frame(width: conversationMainEdgeWidth)
+                                    .blendMode(.plusLighter)
+                                Spacer(minLength: 0)
+                            }
                         }
                         activeTopLine(isActive: pane.isActive)
                             .opacity(pane.opacity)
@@ -3588,7 +3603,7 @@ final class AppViewModel: ObservableObject {
 
     private func refreshWeeklyPaceSnapshots() async {
         let historyRoot = "\(NSHomeDirectory())/Library/Application Support/com.steipete.codexbar/history"
-        let snapshots = await Task.detached(priority: .utility) {
+        var snapshots = await Task.detached(priority: .utility) {
             var result: [String: WeeklyPaceSnapshot] = [:]
             for provider in ["codex", "claude"] {
                 let url = URL(fileURLWithPath: "\(historyRoot)/\(provider).json")
@@ -3600,6 +3615,22 @@ final class AppViewModel: ObservableObject {
             }
             return result
         }.value
+        let codexBarCLI = "/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI"
+        if fileManager.isExecutableFile(atPath: codexBarCLI) {
+            let result = await runCommandAsync(
+                codexBarCLI,
+                ["usage", "--provider", "claude", "--format", "json", "--no-color", "--log-level", "warning"]
+            )
+            if result.exitCode == 0,
+               let data = result.stdout.data(using: .utf8),
+               let fable = CodexBarPace.latestScopedWeeklySnapshot(
+                   fromCodexBarCLI: data,
+                   id: "claude-weekly-scoped-fable",
+                   provider: "fable"
+               ) {
+                snapshots["fable"] = fable
+            }
+        }
         if snapshots != weeklyPaceSnapshots {
             weeklyPaceSnapshots = snapshots
         }
@@ -4343,11 +4374,19 @@ struct ContentView: View {
     @ViewBuilder
     private var weeklyPaceBalanceCard: some View {
         if let balance = vm.weeklyPaceBalance() {
-            VStack(alignment: .leading, spacing: 7) {
-                weeklyPaceBalanceRow(balance.cdx)
-                weeklyPaceBalanceRow(balance.cc)
+            VStack(alignment: .leading, spacing: 6) {
+                weeklyPaceColumnHeader
+                weeklyPaceBalanceRow(balance.cdx, label: "Cdx", tint: RoleVisualPalette.conversationMainCdx)
+                Text("CC")
+                    .font(GhosttyTheme.current.font(size: 9, weight: .bold))
+                    .foregroundStyle(RoleVisualPalette.conversationMainCC)
+                weeklyPaceBalanceRow(balance.cc, label: "Weekly", tint: RoleVisualPalette.conversationMainCC)
+                if let fable = balance.fable {
+                    weeklyPaceBalanceRow(fable, label: "Fable", tint: RoleVisualPalette.conversationMainCC)
+                }
+                weeklyPaceAxisLegend
                 if let recommended = balance.recommendedMain {
-                    Text("\(recommended == "cc" ? "CC" : "Cdx")のほうが、リセット時に約\(balance.recommendationGap)pt多く残る予測")
+                    Text("Headroom  \(recommended == "cc" ? "CC" : "Cdx") +\(balance.recommendationGap)pt")
                         .font(GhosttyTheme.current.font(size: 9, weight: .medium))
                         .foregroundStyle(GhosttyTheme.current.textSecondary)
                         .lineLimit(1)
@@ -4370,22 +4409,42 @@ struct ContentView: View {
         }
     }
 
-    private func weeklyPaceBalanceRow(_ side: WeeklyPaceBalanceSide) -> some View {
-        let tint = RoleVisualPalette.conversationMain(role: side.side)
-        let name = side.side == "cc" ? "CC" : "Cdx"
+    private var weeklyPaceColumnHeader: some View {
+        HStack(spacing: 5) {
+            Color.clear.frame(width: 46, height: 1)
+            Text("Left").frame(width: 30, alignment: .trailing)
+            Text("Pace").frame(width: 40, alignment: .trailing)
+            Spacer(minLength: 2)
+            Text("Reset").frame(width: 42, alignment: .trailing)
+        }
+        .font(GhosttyTheme.current.font(size: 8, weight: .medium))
+        .foregroundStyle(GhosttyTheme.current.textTertiary)
+    }
+
+    private func weeklyPaceBalanceRow(
+        _ side: WeeklyPaceBalanceSide,
+        label: String,
+        tint: Color
+    ) -> some View {
         return VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Text(name)
+            HStack(spacing: 5) {
+                Text(label)
                     .font(GhosttyTheme.current.font(size: 10, weight: .bold))
                     .foregroundStyle(tint)
-                    .frame(width: 24, alignment: .leading)
-                Text("残り\(side.remainingPercent)%")
+                    .frame(width: 46, alignment: .leading)
+                Text("\(side.remainingPercent)%")
                     .font(GhosttyTheme.current.font(size: 9, weight: .semibold, monospaced: true))
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
-                Spacer(minLength: 4)
-                Text("リセットまで\(weeklyPaceResetCountdown(side.resetsAt))")
+                    .frame(width: 30, alignment: .trailing)
+                Text(weeklyPaceDelta(side.pacePercent))
+                    .font(GhosttyTheme.current.font(size: 9, weight: .semibold, monospaced: true))
+                    .foregroundStyle(tint)
+                    .frame(width: 40, alignment: .trailing)
+                Spacer(minLength: 2)
+                Text(weeklyPaceResetCountdown(side.resetsAt))
                     .font(GhosttyTheme.current.font(size: 9, weight: .medium, monospaced: true))
                     .foregroundStyle(GhosttyTheme.current.textSecondary)
+                    .frame(width: 42, alignment: .trailing)
             }
             GeometryReader { geo in
                 let width = max(geo.size.width, 1)
@@ -4403,44 +4462,42 @@ struct ContentView: View {
                         .offset(x: segmentX)
                     Rectangle()
                         .fill(GhosttyTheme.current.textPrimary.opacity(0.9))
-                        .frame(width: 1, height: 15)
+                        .frame(width: 1, height: 8)
                         .offset(x: targetX)
                     Circle()
                         .fill(tint)
                         .overlay(Circle().stroke(GhosttyTheme.current.textPrimary.opacity(0.9), lineWidth: 1))
-                        .frame(width: 9, height: 9)
-                        .offset(x: actualX - 4.5)
+                        .frame(width: 6, height: 6)
+                        .offset(x: actualX - 3)
                 }
             }
-            .frame(height: 9)
-            HStack(spacing: 0) {
-                Text("余る")
-                Spacer()
-                Text("使い切る")
-                Spacer()
-                Text("先に枯渇")
-            }
-            .font(GhosttyTheme.current.font(size: 8, weight: .medium))
-            .foregroundStyle(GhosttyTheme.current.textTertiary)
-            Text(weeklyPaceComparison(side.pacePercent))
-                .font(GhosttyTheme.current.font(size: 8, weight: .semibold))
-                .foregroundStyle(tint)
+            .frame(height: 6)
         }
     }
 
-    private func weeklyPaceComparison(_ pacePercent: Int) -> String {
+    private var weeklyPaceAxisLegend: some View {
+        HStack(spacing: 0) {
+            Text("Spare")
+            Spacer()
+            Text("Target")
+            Spacer()
+            Text("Over")
+        }
+        .font(GhosttyTheme.current.font(size: 8, weight: .medium))
+        .foregroundStyle(GhosttyTheme.current.textTertiary)
+    }
+
+    private func weeklyPaceDelta(_ pacePercent: Int) -> String {
         let delta = pacePercent - 100
-        if abs(delta) <= 3 { return "ほぼ使い切りペース（\(delta >= 0 ? "+" : "")\(delta)%）" }
-        if delta < 0 { return "使い切りペースより\(-delta)%ゆっくり" }
-        return "使い切りペースより\(delta)%速い"
+        return delta >= 0 ? "+\(delta)pt" : "\(delta)pt"
     }
 
     private func weeklyPaceResetCountdown(_ date: Date) -> String {
         let seconds = max(0, Int(date.timeIntervalSinceNow))
         let days = seconds / 86_400
         let hours = (seconds % 86_400) / 3_600
-        if days > 0 { return "\(days)日\(hours)時間" }
-        return "\(max(1, hours))時間"
+        if days > 0 { return "\(days)d\(hours)h" }
+        return "\(max(1, hours))h"
     }
 
     @ViewBuilder
