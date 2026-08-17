@@ -4426,6 +4426,7 @@ struct ContentView: View {
         label: String,
         tint: Color
     ) -> some View {
+        let statusTint = weeklyPaceStatusTint(side.pacePercent)
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
                 Text(label)
@@ -4438,7 +4439,7 @@ struct ContentView: View {
                     .frame(width: 30, alignment: .trailing)
                 Text(weeklyPaceDelta(side.pacePercent))
                     .font(GhosttyTheme.current.font(size: 9, weight: .semibold, monospaced: true))
-                    .foregroundStyle(tint)
+                    .foregroundStyle(statusTint)
                     .frame(width: 40, alignment: .trailing)
                 Spacer(minLength: 2)
                 Text(weeklyPaceResetCountdown(side.resetsAt))
@@ -4457,7 +4458,7 @@ struct ContentView: View {
                     Capsule(style: .continuous)
                         .fill(GhosttyTheme.current.foreground.opacity(0.10))
                     Capsule(style: .continuous)
-                        .fill(tint.opacity(0.58))
+                        .fill(statusTint.opacity(0.72))
                         .frame(width: segmentWidth)
                         .offset(x: segmentX)
                     Rectangle()
@@ -4465,7 +4466,7 @@ struct ContentView: View {
                         .frame(width: 1, height: 8)
                         .offset(x: targetX)
                     Circle()
-                        .fill(tint)
+                        .fill(statusTint)
                         .overlay(Circle().stroke(GhosttyTheme.current.textPrimary.opacity(0.9), lineWidth: 1))
                         .frame(width: 6, height: 6)
                         .offset(x: actualX - 3)
@@ -4478,13 +4479,21 @@ struct ContentView: View {
     private var weeklyPaceAxisLegend: some View {
         HStack(spacing: 0) {
             Text("Spare")
+                .foregroundStyle(GhosttyTheme.current.accentGreen)
             Spacer()
             Text("Target")
+                .foregroundStyle(GhosttyTheme.current.textTertiary)
             Spacer()
             Text("Over")
+                .foregroundStyle(GhosttyTheme.current.accentRed)
         }
         .font(GhosttyTheme.current.font(size: 8, weight: .medium))
-        .foregroundStyle(GhosttyTheme.current.textTertiary)
+    }
+
+    private func weeklyPaceStatusTint(_ pacePercent: Int) -> Color {
+        if pacePercent >= 100 { return GhosttyTheme.current.accentRed }
+        if pacePercent >= 90 { return GhosttyTheme.current.accentYellow }
+        return GhosttyTheme.current.accentGreen
     }
 
     private func weeklyPaceDelta(_ pacePercent: Int) -> String {
