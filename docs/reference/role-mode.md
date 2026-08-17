@@ -158,8 +158,10 @@ derived lead. `--main derived` clears the preference.
   or above. Margin is `100 - projected use`: negative values appear left in red,
   zero is the center target, and positive spare capacity appears right in green.
   The panel never switches `main`.
-  Assessment starts only after one hour and 10% actual use, and requires both
-  provider snapshots to be no more than 30 minutes old. Red means the main projects
+  The panel retains each last valid snapshot until that provider's reset so an
+  irregular CodexBar refresh cannot make the display disappear. Alert assessment
+  starts only after one hour and 10% actual use, and requires both provider
+  snapshots to be no more than 30 minutes old. Red means the main projects
   100% usage; yellow means either 90% projected usage or a meaningful allocation gap
   (main at least 75%, other at most 60%, and at least 20 points apart). Recovery uses
   a lower band (main below 80% and the relative condition substantially cleared) to

@@ -331,7 +331,7 @@ public enum CodexBarPace {
     public static func balance(
         snapshots: [String: WeeklyPaceSnapshot],
         now: Date,
-        staleAfter: TimeInterval = 30 * 60
+        staleAfter: TimeInterval = .infinity
     ) -> WeeklyPaceBalance? {
         guard let codex = snapshots["codex"],
               let claude = snapshots["claude"],
