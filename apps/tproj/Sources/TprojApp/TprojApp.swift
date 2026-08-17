@@ -5638,6 +5638,7 @@ struct TprojApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
+        migrateLegacyAutoZoomPreference()
         clearWindowFrameAutosave()
         loadAppIcon()
     }
@@ -5678,6 +5679,15 @@ struct TprojApp: App {
         if let icon = NSImage(contentsOfFile: devIcon.path) {
             NSApplication.shared.applicationIconImage = icon
         }
+    }
+
+    private func migrateLegacyAutoZoomPreference() {
+        let defaults = UserDefaults.standard
+        let key = "autoZoomEnabled"
+        guard defaults.object(forKey: key) == nil,
+              let legacy = UserDefaults(suiteName: "tproj"),
+              let enabled = legacy.object(forKey: key) as? Bool else { return }
+        defaults.set(enabled, forKey: key)
     }
 
     private func clearWindowFrameAutosave() {
