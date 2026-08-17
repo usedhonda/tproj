@@ -588,31 +588,15 @@ private enum SnapEdge {
     case left    // tproj is to the left of Ghostty
 }
 
-// Proxy that intercepts windowWillResize to lock width while snapped to Ghostty.
-// All other delegate calls are forwarded to the original SwiftUI-owned delegate.
+// Proxy that preserves SwiftUI's window delegate while the tracker is attached.
+// Resizing remains native even when snapped; the tracker re-anchors the window.
 @MainActor
 final class SnapResizeProxy: NSObject, NSWindowDelegate {
     weak var original: (any NSWindowDelegate)?
     weak var tracker: GhosttyWindowTracker?
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        let proposed = original?.windowWillResize?(sender, to: frameSize) ?? frameSize
-        guard let tracker = tracker, tracker.isSnapped else { return proposed }
-
-        // When snapped, make corners ungrabbable (block diagonal resize entirely)
-        let mouse = sender.mouseLocationOutsideOfEventStream
-        let frame = sender.frame
-        let cornerSize: CGFloat = 80
-        let nearLeft   = mouse.x < cornerSize
-        let nearRight  = mouse.x > frame.width - cornerSize
-        let nearBottom = mouse.y < cornerSize
-        let nearTop    = mouse.y > frame.height - cornerSize
-        let isCorner = (nearLeft || nearRight) && (nearBottom || nearTop)
-
-        if isCorner {
-            return frame.size
-        }
-        return proposed
+        original?.windowWillResize?(sender, to: frameSize) ?? frameSize
     }
 
     override func responds(to aSelector: Selector!) -> Bool {
