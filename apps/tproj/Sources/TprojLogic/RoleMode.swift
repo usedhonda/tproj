@@ -127,10 +127,8 @@ public func roleModeLeadDisplay(_ lead: String) -> String {
     }
 }
 
-// Keep the always-visible badge compact: mode + selected conversation main.
-// The menu exposes the detailed mode/main choices when clicked.
+// Keep the always-visible badge compact: the tinted CC/Cdx action buttons
+// already identify the selected conversation main.
 public func roleModeBadgeLabel(mode: RoleMode, main: String) -> String {
-    let side = roleModeLeadDisplay(main)
-    let modeLabel = mode.displayName
-    return side.isEmpty ? "\(modeLabel)\u{00B7}Main ?" : "\(modeLabel)\u{00B7}Main \(side)"
+    mode.displayName
 }

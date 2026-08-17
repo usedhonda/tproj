@@ -127,9 +127,10 @@ derived lead. `--main derived` clears the preference.
   `Team` is the GUI name for the stored `auto` mode; CLI and file compatibility
   keep using `auto`.
   An unset stored preference displays the derived lead, or Cdx when no lead exists.
-  The compact badge shows only mode and main (`Advisor·Main Cdx`); clicking it exposes
-  the detailed checked choices. The chosen conversation side's button is tinted
-  with the mode colour. The GUI reads and writes only through
+  The compact badge shows only the mode (`Team`, `Advisor`, or `Solo`); clicking
+  it exposes the detailed checked choices. The chosen conversation side's button
+  is the sole always-visible main indicator and is tinted with the mode colour.
+  The GUI reads and writes only through
   `model-role-router mode`.
 - In every mode, the GUI reads CodexBar's selected-account weekly history snapshots
   from Application Support every five minutes. It also reads the exact
@@ -156,8 +157,7 @@ derived lead. `--main derived` clears the preference.
   green below 90% projected use, yellow from 90% through 99%, and red at 100%
   or above. Margin is `100 - projected use`: negative values appear left in red,
   zero is the center target, and positive spare capacity appears right in green.
-  When projected headroom differs by at least 10 points, the panel
-  names the side recommended for the next long task; it never switches `main`.
+  The panel never switches `main`.
   Assessment starts only after one hour and 10% actual use, and requires both
   provider snapshots to be no more than 30 minutes old. Red means the main projects
   100% usage; yellow means either 90% projected usage or a meaningful allocation gap

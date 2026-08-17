@@ -4385,12 +4385,6 @@ struct ContentView: View {
                     weeklyPaceBalanceRow(fable, label: "Fable", tint: RoleVisualPalette.conversationMainCC)
                 }
                 weeklyPaceAxisLegend
-                if let recommended = balance.recommendedMain {
-                    Text("Headroom  \(recommended == "cc" ? "CC" : "Cdx") +\(balance.recommendationGap)pt")
-                        .font(GhosttyTheme.current.font(size: 9, weight: .medium))
-                        .foregroundStyle(GhosttyTheme.current.textSecondary)
-                        .lineLimit(1)
-                }
             }
             .padding(.horizontal, 7)
             .padding(.vertical, 6)

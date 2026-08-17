@@ -66,16 +66,16 @@ final class RoleModeTests: XCTestCase {
         XCTAssertEqual(RoleMode.parseStatus(unknown), RoleModeStatus(mode: .auto, lead: "cc"))
     }
 
-    // Badge stays compact while naming both the mode and conversation main.
+    // The badge names only the mode; button tint identifies conversation main.
     func testBadgeLabelComposition() {
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cc"), "Team\u{00B7}Main CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cdx"), "Team\u{00B7}Main Cdx")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cc"), "Advisor\u{00B7}Main CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cdx"), "Advisor\u{00B7}Main Cdx")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cc"), "Solo\u{00B7}Main CC")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cdx"), "Solo\u{00B7}Main Cdx")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: ""), "Solo\u{00B7}Main ?")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "other"), "Team\u{00B7}Main ?")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cc"), "Team")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cdx"), "Team")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cc"), "Advisor")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cdx"), "Advisor")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cc"), "Solo")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cdx"), "Solo")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: ""), "Solo")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "other"), "Team")
     }
 
     func testConversationMainIsIndependentAndBuildsCanonicalCommand() {
