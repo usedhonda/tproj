@@ -5519,6 +5519,12 @@ struct RowDropFallbackDelegate: DropDelegate {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var mainWindow: NSWindow?
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // tproj is controlled from its window and menu-bar item. Keeping it an
+        // accessory app prevents a disposable running-app icon in the Dock.
+        NSApp.setActivationPolicy(.accessory)
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }

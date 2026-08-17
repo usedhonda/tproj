@@ -69,6 +69,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <string>$BUNDLE_VERSION</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
+  <key>LSUIElement</key>
+  <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
 </dict>
