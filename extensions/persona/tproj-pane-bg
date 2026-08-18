@@ -50,6 +50,8 @@ FACE_CROP_CENTER_TOLERANCE="0.03"
 FACE_CROP_MAX_ABS_ROLL_RADIANS="0.7853981633974483"
 # Fraction of the source height kept, measured from the top edge. Empty keeps all.
 TOP_CROP_RATIO=""
+# Recentre the picture on the face before it is written. Providers opt in.
+FACE_CENTER_CROP="0"
 LAST_FACE_CROP_JSON='null'
 LAST_GENERATION_ERROR_JSON='null'
 
@@ -1082,11 +1084,11 @@ create an image of a vertical terminal wallpaper.
 ${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。セル画の人物と背景美術の組み合わせ。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
 $(prompt_style_guard_line_jp)
 FRAMING CONSTRAINT -- READ FIRST
-縦長の画面に、頭の上の余白から腰までを収める。上から順に、余白、頭と髪、首、両肩、胸、上腕、腰までを縦に並べる。
-画面の下端は腰のあたりで切る。太もも、膝、脚は写さない。全身像にはしない。
-髪の上には画面の高さの1割ほど余白を残し、髪の先まで画面に収める。両肩とも画面の中に入れる。人物の左右にも背景を残す。
+この絵は端末の背景に敷かれ、縦長にも横長にも切り取られる。切り取りはつねに画面の中心を基準に行われる。
+だから最優先の制約はただ一つ、**鼻のあたり、顔の中心を、画面のちょうど中央（縦も横も50パーセントの位置）に置く**こと。
+顔より上、頭と髪の上には背景を広く取ってよい。画面の下端は腰のあたりで切り、太もも、膝、脚は写さない。
+頭部の高さは画面の高さのおよそ5分の1。両肩とも画面の中に入れ、人物の左右にも背景を残す。
 顔だけを画面いっぱいに写した接写にはしない。映画的・ファッション誌的なトリミングは禁止。
-頭部の高さは画面の高さのおよそ5分の1。顔の中心は画面の上から4分の1あたりに置く。人物の身体で画面の幅の半分以上を占めさせる。
 手順:
 1. 顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
 2. 人物像は既存の persona データを最優先にする。${subject_jp}として自然に見せる。$(role_character_prompt_jp "$role")
@@ -1111,11 +1113,11 @@ create an image of a vertical terminal wallpaper.
 ${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。ただし説明的な模写ではなく、日本アニメ映画らしい顔立ちと線、セル画の人物と背景美術の組み合わせとして出す。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
 $(prompt_style_guard_line_jp)
 FRAMING CONSTRAINT -- READ FIRST
-縦長の画面に、頭の上の余白から腰までを収める。上から順に、余白、頭と髪、首、両肩、胸、上腕、腰までを縦に並べる。
-画面の下端は腰のあたりで切る。太もも、膝、脚は写さない。全身像にはしない。
-髪の上には画面の高さの1割ほど余白を残し、髪の先まで画面に収める。両肩とも画面の中に入れる。人物の左右にも背景を残す。
+この絵は端末の背景に敷かれ、縦長にも横長にも切り取られる。切り取りはつねに画面の中心を基準に行われる。
+だから最優先の制約はただ一つ、**鼻のあたり、顔の中心を、画面のちょうど中央（縦も横も50パーセントの位置）に置く**こと。
+顔より上、頭と髪の上には背景を広く取ってよい。画面の下端は腰のあたりで切り、太もも、膝、脚は写さない。
+頭部の高さは画面の高さのおよそ5分の1。両肩とも画面の中に入れ、人物の左右にも背景を残す。
 顔だけを画面いっぱいに写した接写にはしない。映画的・ファッション誌的なトリミングは禁止。
-頭部の高さは画面の高さのおよそ5分の1。顔の中心は画面の上から4分の1あたりに置く。人物の身体で画面の幅の半分以上を占めさせる。
 手順:
 1. 顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
 2. 人物像は既存の persona データを最優先にする。${subject_jp}として自然に見せる。$(role_character_prompt_jp "$role")
@@ -1635,7 +1637,7 @@ GPT_IMAGE_MODEL_NAME="gpt-image-2"
 # it composes a waist-up figure with room around it, and the existing centre crop
 # then takes the vertical band, so the subject lands at a sane size instead of
 # needing prompt wording to argue it smaller.
-GPT_IMAGE_SIZE="${TPROJ_PANE_BG_GPT_IMAGE_SIZE:-1024x2048}"
+GPT_IMAGE_SIZE="${TPROJ_PANE_BG_GPT_IMAGE_SIZE:-1024x1536}"
 GPT_IMAGE_AUTH_FILE="${TPROJ_PANE_BG_CODEX_AUTH:-$HOME/.codex/auth.json}"
 
 gpt_image_available() {
@@ -1788,7 +1790,8 @@ request_imagen() {
   local vertex_location="$7"
   local error_file="${8:-${response_file}.error.json}"
   if [[ "$model_name" == "$GPT_IMAGE_MODEL_NAME" ]]; then
-    TOP_CROP_RATIO="${TPROJ_PANE_BG_TOP_CROP_RATIO:-0.75}"
+    TOP_CROP_RATIO="${TPROJ_PANE_BG_TOP_CROP_RATIO:-}"
+    FACE_CENTER_CROP="${TPROJ_PANE_BG_FACE_CENTER_CROP:-1}"
     request_gpt_image "$prompt" "$negative_prompt" "$response_file" "$error_file"
     return $?
   fi
@@ -1809,7 +1812,7 @@ full_prompt = (
     + negative_prompt
     + "\n文字は一切入れない。読める文字、記号、ラベル、看板、背表紙、メモ、UI、数字、刻印を出さない。"
     + "\nNO READABLE TEXT ANYWHERE. NO TITLE. NO CAPTION. NO SUBTITLE. NO LETTERS. NO NUMBERS. NO SYMBOLS."
-    + "\nウエストアップの半身ポートレート。画面の下端は腰の上あたりで切り、太ももや脚は写さない。髪の上に少し余白を残し、頭部の高さは画面の高さのおよそ4分の1にする。顔だけの接写にも全身像にもしない。"
+    + "\n鼻のあたり、顔の中心を画面のちょうど中央に置く。頭の上には背景を広く取ってよい。下端は腰のあたりで切り、脚は写さない。顔だけの接写にも全身像にもしない。"
     + "\n表情と肩と手の動きを必ず入れる。無表情な証明写真や静止 bust にしない。"
 )
 
@@ -2094,6 +2097,150 @@ set_face_crop_fallback_json() {
     --arg detector "$detector" \
     --arg reason "$reason" \
     '{policy:$policy, detector:$detector, fallback_used:true, reason:$reason}')"
+}
+
+gpt_face_center_norm() {
+  local image_path="$1"
+
+  gpt_image_available || return 1
+  python3 - "$image_path" "$GPT_IMAGE_AUTH_FILE" "$REQUEST_TIMEOUT_SECONDS" <<'PY'
+import base64
+import json
+import re
+import sys
+import urllib.error
+import urllib.request
+
+image_path, auth_path, request_timeout = sys.argv[1:4]
+request_timeout = int(request_timeout)
+
+try:
+    with open(auth_path, encoding="utf-8") as handle:
+        auth = json.load(handle)
+    tokens = auth.get("tokens") or {}
+    access_token = tokens.get("access_token") or ""
+    account_id = tokens.get("account_id") or ""
+    with open(image_path, "rb") as handle:
+        encoded = base64.b64encode(handle.read()).decode("ascii")
+except (OSError, ValueError):
+    sys.exit(1)
+
+if not access_token:
+    sys.exit(1)
+
+# macOS Vision cannot find faces in flat cel art, so the nose is located with the
+# same account that already generates the picture.
+ask = (
+    "Locate the tip of the nose of the main person in this picture. "
+    "Answer with JSON only, no prose: {\"x\": <0..1>, \"y\": <0..1>} "
+    "where x is measured from the left edge and y from the top edge."
+)
+
+body = {
+    "model": "gpt-5.5",
+    "input": [{"role": "user", "content": [
+        {"type": "input_text", "text": ask},
+        {"type": "input_image", "image_url": f"data:image/png;base64,{encoded}", "detail": "auto"},
+    ]}],
+    "instructions": "You return only compact JSON.",
+    "stream": True,
+    "store": False,
+}
+
+request = urllib.request.Request(
+    "https://chatgpt.com/backend-api/codex/responses",
+    data=json.dumps(body).encode("utf-8"),
+    headers={
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "text/event-stream",
+        "Content-Type": "application/json",
+        "chatgpt-account-id": account_id,
+        "OpenAI-Beta": "responses=experimental",
+        "originator": "codex_cli_rs",
+        "User-Agent": "codex_cli_rs",
+    },
+    method="POST",
+)
+
+try:
+    response = urllib.request.urlopen(request, timeout=request_timeout)
+except Exception:
+    sys.exit(1)
+
+chunks = []
+for raw in response:
+    line = raw.decode("utf-8", "replace").strip()
+    if not line.startswith("data:"):
+        continue
+    payload = line[5:].strip()
+    if not payload or payload == "[DONE]":
+        continue
+    try:
+        event = json.loads(payload)
+    except ValueError:
+        continue
+    if isinstance(event.get("delta"), str):
+        chunks.append(event["delta"])
+    elif event.get("type") == "response.output_item.done":
+        item = event.get("item") or {}
+        for part in item.get("content") or []:
+            if isinstance(part.get("text"), str):
+                chunks.append(part["text"])
+
+text = "".join(chunks)
+match = re.search(r'"x"\s*:\s*([0-9.]+).*?"y"\s*:\s*([0-9.]+)', text, re.S)
+if not match:
+    sys.exit(1)
+
+try:
+    x = float(match.group(1))
+    y = float(match.group(2))
+except ValueError:
+    sys.exit(1)
+
+if not (0.0 < x < 1.0 and 0.0 < y < 1.0):
+    sys.exit(1)
+
+print(f"{x:.4f} {y:.4f}")
+PY
+}
+
+write_face_centered_image() {
+  local decoded_path="$1"
+  local cropped_path="$2"
+  local center=""
+  local geometry=""
+
+  [[ "$FACE_CENTER_CROP" == "1" ]] || return 1
+  command -v magick >/dev/null 2>&1 || return 1
+
+  center="$(gpt_face_center_norm "$decoded_path" 2>/dev/null || true)"
+  [[ -n "$center" ]] || return 1
+
+  # The pane background is drawn with a centre-anchored fill crop, so whatever sits
+  # at the middle of this file is what the reader sees. Put the nose there.
+  geometry="$(magick identify -format '%w %h' "$decoded_path" 2>/dev/null || true)" || return 1
+  geometry="$(awk -v dims="$geometry" -v center="$center" \
+    -v tw="$TARGET_WIDTH" -v th="$TARGET_HEIGHT" 'BEGIN {
+      split(dims, d, " ");
+      split(center, c, " ");
+      w = d[1]; h = d[2];
+      if (w <= 0 || h <= 0) exit 1;
+      cx = c[1] * w; cy = c[2] * h;
+      aspect = tw / th;
+      half_w = cx < (w - cx) ? cx : (w - cx);
+      half_h = cy < (h - cy) ? cy : (h - cy);
+      limit = half_w / aspect;
+      if (limit < half_h) half_h = limit;
+      crop_h = int(2 * half_h);
+      crop_w = int(2 * half_h * aspect);
+      if (crop_w < 16 || crop_h < 16) exit 1;
+      printf "%dx%d+%d+%d", crop_w, crop_h, int(cx - crop_w / 2), int(cy - crop_h / 2);
+    }')" || return 1
+  [[ -n "$geometry" ]] || return 1
+
+  magick "$decoded_path" -crop "$geometry" +repage "$cropped_path" || return 1
+  return 0
 }
 
 write_top_cropped_image() {
@@ -2411,7 +2558,9 @@ write_image_from_response() {
   # be taken later without spending another generation.
   cp "$decoded_path" "${image_path%.png}.raw.png" 2>/dev/null || true
 
-  if write_top_cropped_image "$decoded_path" "$top_cropped_path"; then
+  if write_face_centered_image "$decoded_path" "$top_cropped_path"; then
+    mv "$top_cropped_path" "$decoded_path"
+  elif write_top_cropped_image "$decoded_path" "$top_cropped_path"; then
     mv "$top_cropped_path" "$decoded_path"
   fi
 
