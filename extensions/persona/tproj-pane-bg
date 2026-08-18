@@ -48,6 +48,8 @@ FACE_CROP_TARGET_FACE_HEIGHT_RATIO="0.24"
 FACE_CROP_MAX_ZOOM="1.75"
 FACE_CROP_CENTER_TOLERANCE="0.03"
 FACE_CROP_MAX_ABS_ROLL_RADIANS="0.7853981633974483"
+# Fraction of the source height kept, measured from the top edge. Empty keeps all.
+TOP_CROP_RATIO=""
 LAST_FACE_CROP_JSON='null'
 LAST_GENERATION_ERROR_JSON='null'
 
@@ -1062,6 +1064,14 @@ apply_age_override() {
   printf '%s%s / %s / %s / %s' "$prefix" "$first" "$second" "$trimmed_age" "$rest"
 }
 
+prompt_output_size_line() {
+  local width="${GPT_IMAGE_SIZE%%x*}"
+  local height="${GPT_IMAGE_SIZE##*x}"
+
+  [[ "$width" =~ ^[0-9]+$ && "$height" =~ ^[0-9]+$ ]] || return 0
+  printf 'Output in exactly %spx x %spx resolution portrait format.' "$width" "$height"
+}
+
 build_flash_named_prompt() {
   local role="$1"
   local subject_jp
@@ -1072,11 +1082,11 @@ create an image of a vertical terminal wallpaper.
 ${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。セル画の人物と背景美術の組み合わせ。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
 $(prompt_style_guard_line_jp)
 FRAMING CONSTRAINT -- READ FIRST
-ウエストアップの半身ポートレート。画面の上端から下端まで、頭の上の余白、頭、髪、首、両肩、胸、上腕、そしてみぞおちから腰の上端までで埋める。
-画面の下端は腰の上あたりで切る。おへそより下、太もも、膝、脚は写さない。全身像にはしない。
+縦長の画面に、頭の上の余白から腰までを収める。上から順に、余白、頭と髪、首、両肩、胸、上腕、腰までを縦に並べる。
+画面の下端は腰のあたりで切る。太もも、膝、脚は写さない。全身像にはしない。
 髪の上には画面の高さの1割ほど余白を残し、髪の先まで画面に収める。両肩とも画面の中に入れる。人物の左右にも背景を残す。
 顔だけを画面いっぱいに写した接写にはしない。映画的・ファッション誌的なトリミングは禁止。
-頭部の高さは画面の高さのおよそ4分の1。人物の身体で画面の幅の半分以上を占めさせる。
+頭部の高さは画面の高さのおよそ5分の1。顔の中心は画面の上から4分の1あたりに置く。人物の身体で画面の幅の半分以上を占めさせる。
 手順:
 1. 顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
 2. 人物像は既存の persona データを最優先にする。${subject_jp}として自然に見せる。$(role_character_prompt_jp "$role")
@@ -1087,7 +1097,7 @@ FRAMING CONSTRAINT -- READ FIRST
 $(prompt_composition_extra_line_jp)
 7. 文字が生まれそうな物体は最初から置かない。壁、棚、布、道具、器具は無地にする。
 最終ルール: 画像の中に読める文字、数字、記号、タイトル、ロゴ、透かし、署名、字幕を一切入れない。もし文字が乗りそうなら、その物体を消すか、無地で blank にする。
-Output in exactly 1024px x 1536px (2:3 ratio) resolution portrait format.
+$(prompt_output_size_line)
 EOF
 }
 
@@ -1101,11 +1111,11 @@ create an image of a vertical terminal wallpaper.
 ${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。ただし説明的な模写ではなく、日本アニメ映画らしい顔立ちと線、セル画の人物と背景美術の組み合わせとして出す。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
 $(prompt_style_guard_line_jp)
 FRAMING CONSTRAINT -- READ FIRST
-ウエストアップの半身ポートレート。画面の上端から下端まで、頭の上の余白、頭、髪、首、両肩、胸、上腕、そしてみぞおちから腰の上端までで埋める。
-画面の下端は腰の上あたりで切る。おへそより下、太もも、膝、脚は写さない。全身像にはしない。
+縦長の画面に、頭の上の余白から腰までを収める。上から順に、余白、頭と髪、首、両肩、胸、上腕、腰までを縦に並べる。
+画面の下端は腰のあたりで切る。太もも、膝、脚は写さない。全身像にはしない。
 髪の上には画面の高さの1割ほど余白を残し、髪の先まで画面に収める。両肩とも画面の中に入れる。人物の左右にも背景を残す。
 顔だけを画面いっぱいに写した接写にはしない。映画的・ファッション誌的なトリミングは禁止。
-頭部の高さは画面の高さのおよそ4分の1。人物の身体で画面の幅の半分以上を占めさせる。
+頭部の高さは画面の高さのおよそ5分の1。顔の中心は画面の上から4分の1あたりに置く。人物の身体で画面の幅の半分以上を占めさせる。
 手順:
 1. 顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
 2. 人物像は既存の persona データを最優先にする。${subject_jp}として自然に見せる。$(role_character_prompt_jp "$role")
@@ -1116,7 +1126,7 @@ FRAMING CONSTRAINT -- READ FIRST
 $(prompt_composition_extra_line_jp)
 7. 文字が生まれそうな物体は最初から置かない。壁、棚、布、道具、器具は無地にする。
 最終ルール: 画像の中に読める文字、数字、記号、タイトル、ロゴ、透かし、署名、字幕を一切入れない。もし文字が乗りそうなら、その物体を消すか、無地で blank にする。
-Output in exactly 1024px x 1536px (2:3 ratio) resolution portrait format.
+$(prompt_output_size_line)
 EOF
 }
 
@@ -1625,7 +1635,7 @@ GPT_IMAGE_MODEL_NAME="gpt-image-2"
 # it composes a waist-up figure with room around it, and the existing centre crop
 # then takes the vertical band, so the subject lands at a sane size instead of
 # needing prompt wording to argue it smaller.
-GPT_IMAGE_SIZE="${TPROJ_PANE_BG_GPT_IMAGE_SIZE:-1024x1536}"
+GPT_IMAGE_SIZE="${TPROJ_PANE_BG_GPT_IMAGE_SIZE:-1024x2048}"
 GPT_IMAGE_AUTH_FILE="${TPROJ_PANE_BG_CODEX_AUTH:-$HOME/.codex/auth.json}"
 
 gpt_image_available() {
@@ -1778,6 +1788,7 @@ request_imagen() {
   local vertex_location="$7"
   local error_file="${8:-${response_file}.error.json}"
   if [[ "$model_name" == "$GPT_IMAGE_MODEL_NAME" ]]; then
+    TOP_CROP_RATIO="${TPROJ_PANE_BG_TOP_CROP_RATIO:-0.75}"
     request_gpt_image "$prompt" "$negative_prompt" "$response_file" "$error_file"
     return $?
   fi
@@ -2085,6 +2096,26 @@ set_face_crop_fallback_json() {
     '{policy:$policy, detector:$detector, fallback_used:true, reason:$reason}')"
 }
 
+write_top_cropped_image() {
+  local decoded_path="$1"
+  local cropped_path="$2"
+  local source_height=""
+  local keep_height=""
+
+  [[ -n "$TOP_CROP_RATIO" ]] || return 1
+  command -v magick >/dev/null 2>&1 || return 1
+
+  source_height="$(magick identify -format '%h' "$decoded_path" 2>/dev/null || true)"
+  [[ "$source_height" =~ ^[0-9]+$ ]] || return 1
+
+  keep_height="$(awk -v h="$source_height" -v r="$TOP_CROP_RATIO" 'BEGIN { printf "%d", h * r }')"
+  [[ "$keep_height" =~ ^[0-9]+$ ]] || return 1
+  (( keep_height > 0 && keep_height < source_height )) || return 1
+
+  magick "$decoded_path" -gravity north -crop "x${keep_height}+0+0" +repage "$cropped_path" || return 1
+  return 0
+}
+
 write_center_cropped_image() {
   local decoded_path="$1"
   local image_path="$2"
@@ -2343,6 +2374,7 @@ write_image_from_response() {
   local mime_type=""
   local raw_path="${tmp_dir}/raw-image.bin"
   local decoded_path="${tmp_dir}/decoded-image.png"
+  local top_cropped_path="${tmp_dir}/top-cropped-image.png"
   local current_face_crop_json=""
   local refined_output_path="${tmp_dir}/refined-image.png"
   local applied_passes=0
@@ -2370,8 +2402,17 @@ write_image_from_response() {
 
   if ! command -v magick >/dev/null 2>&1; then
     set_face_crop_fallback_json "magick_unavailable" "none"
+    cp "$decoded_path" "${image_path%.png}.raw.png" 2>/dev/null || true
     mv "$decoded_path" "$image_path"
     return 0
+  fi
+
+  # Keep the untouched generation next to the pane image so a different crop can
+  # be taken later without spending another generation.
+  cp "$decoded_path" "${image_path%.png}.raw.png" 2>/dev/null || true
+
+  if write_top_cropped_image "$decoded_path" "$top_cropped_path"; then
+    mv "$top_cropped_path" "$decoded_path"
   fi
 
   write_center_cropped_image "$decoded_path" "$image_path"
