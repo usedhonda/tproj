@@ -1072,12 +1072,12 @@ create an image of a vertical terminal wallpaper.
 ${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。セル画の人物と背景美術の組み合わせ。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
 $(prompt_style_guard_line_jp)
 手順:
-1. 古典的な肖像画のような半身ポートレートにする。顔と上半身が自然に画面の主役として大きく見える、均整の取れた構図にする。頭上の余白を少なくし、胸から上、必要でも腰上までに留める。顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
+1. 上半身をきちんと収めた半身ポートレートにする。頭のてっぺんから腰までが途切れず画面に入り、頭、首、両肩、胸、腕、腰の位置まで全部見えていること。頭上には少し余白を空ける。顔だけを画面いっぱいに写した接写にはしない。顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
 2. 人物像は既存の persona データを最優先にする。${subject_jp}として自然に見せる。$(role_character_prompt_jp "$role")
 3. $(role_costume_prompt_jp "$role")。$(persona_prof_costume_prompt_jp)
 4. $(role_scene_prompt_jp "$role")
 5. 服装、姿勢、表情、視線、手元の所作で「このペインはこういう人物だ」と一目で分かるようにする。性別、年代、時代、性格、関係性が、文字に頼らず見えるようにする。
-6. 背景は人物の後ろで静かに支える。背景は personality の補助に徹し、人物が主役で、視線が自然に顔へ集まる構図にする。上端に頭が寄りすぎない。下端に肩が切れすぎない。上下の余白は釣り合いを取る。
+6. 背景は人物の後ろで静かに支える。背景は personality の補助に徹し、視線が自然に顔へ集まる構図にする。上端に頭が寄りすぎない。腰より上で胴が切れない。人物の左右にも背景が見える。上下の余白は釣り合いを取る。
 $(prompt_composition_extra_line_jp)
 7. 文字が生まれそうな物体は最初から置かない。壁、棚、布、道具、器具は無地にする。
 最終ルール: 画像の中に読める文字、数字、記号、タイトル、ロゴ、透かし、署名、字幕を一切入れない。もし文字が乗りそうなら、その物体を消すか、無地で blank にする。
@@ -1094,12 +1094,12 @@ create an image of a vertical terminal wallpaper.
 ${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。ただし説明的な模写ではなく、日本アニメ映画らしい顔立ちと線、セル画の人物と背景美術の組み合わせとして出す。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
 $(prompt_style_guard_line_jp)
 手順:
-1. 古典的な肖像画のような半身ポートレートにする。顔と上半身が自然に画面の主役として大きく見える、均整の取れた構図にする。頭上の余白を少なくし、胸から上、必要でも腰上までに留める。顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
+1. 上半身をきちんと収めた半身ポートレートにする。頭のてっぺんから腰までが途切れず画面に入り、頭、首、両肩、胸、腕、腰の位置まで全部見えていること。頭上には少し余白を空ける。顔だけを画面いっぱいに写した接写にはしない。顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
 2. 人物像は既存の persona データを最優先にする。${subject_jp}として自然に見せる。$(role_character_prompt_jp "$role")
 3. $(role_costume_prompt_jp "$role")。$(persona_prof_costume_prompt_jp)
 4. $(role_scene_prompt_jp "$role")
 5. 服装、姿勢、表情、視線、手元の所作で「このペインはこういう人物だ」と一目で分かるようにする。性別、年代、時代、性格、関係性が、文字に頼らず見えるようにする。
-6. 背景は人物の後ろで静かに支える。背景は personality の補助に徹し、人物が主役で、視線が自然に顔へ集まる構図にする。上端に頭が寄りすぎない。下端に肩が切れすぎない。上下の余白は釣り合いを取る。
+6. 背景は人物の後ろで静かに支える。背景は personality の補助に徹し、視線が自然に顔へ集まる構図にする。上端に頭が寄りすぎない。腰より上で胴が切れない。人物の左右にも背景が見える。上下の余白は釣り合いを取る。
 $(prompt_composition_extra_line_jp)
 7. 文字が生まれそうな物体は最初から置かない。壁、棚、布、道具、器具は無地にする。
 最終ルール: 画像の中に読める文字、数字、記号、タイトル、ロゴ、透かし、署名、字幕を一切入れない。もし文字が乗りそうなら、その物体を消すか、無地で blank にする。
@@ -1137,6 +1137,7 @@ prompt_schema_for_model() {
 generation_tier_for_model() {
   case "$1" in
     "$PRO_MODEL_NAME") printf 'pro' ;;
+    "$GPT_IMAGE_MODEL_NAME") printf 'gpt-image' ;;
     *) printf 'flash' ;;
   esac
 }
@@ -1598,6 +1599,161 @@ cache_is_fresh() {
     ' "$meta_path" >/dev/null 2>&1
 }
 
+# Image generation through the ChatGPT account Codex already holds, rather than a
+# separate paid API key. Codex authenticates with the user's subscription, and the
+# same token reaches an image_generation tool on the Codex responses endpoint, so a
+# machine that can run Codex can render wallpapers with no extra credential. The
+# response is rewritten into the same shape the Gemini path produces, so everything
+# downstream (base64 extraction, face crop, refinement) stays untouched.
+GPT_IMAGE_MODEL_NAME="gpt-image-2"
+# Render on a large square canvas rather than straight into the tall target frame.
+# Asked for a tall portrait, the model reliably fills it with a face; given a square
+# it composes a waist-up figure with room around it, and the existing centre crop
+# then takes the vertical band, so the subject lands at a sane size instead of
+# needing prompt wording to argue it smaller.
+GPT_IMAGE_SIZE="${TPROJ_PANE_BG_GPT_IMAGE_SIZE:-2048x2048}"
+GPT_IMAGE_AUTH_FILE="${TPROJ_PANE_BG_CODEX_AUTH:-$HOME/.codex/auth.json}"
+
+gpt_image_available() {
+  [[ -r "$GPT_IMAGE_AUTH_FILE" ]] || return 1
+  jq -e '.tokens.access_token != null and .tokens.access_token != ""' \
+    "$GPT_IMAGE_AUTH_FILE" >/dev/null 2>&1
+}
+
+request_gpt_image() {
+  local prompt="$1"
+  local negative_prompt="$2"
+  local response_file="$3"
+  local error_file="${4:-${response_file}.error.json}"
+  python3 - "$prompt" "$negative_prompt" "$response_file" "$error_file" \
+    "$GPT_IMAGE_AUTH_FILE" "$GPT_IMAGE_MODEL_NAME" "$REQUEST_TIMEOUT_SECONDS" \
+    "${TPROJ_PANE_BG_REFERENCE_IMAGE:-}" "$GPT_IMAGE_SIZE" <<'PY'
+import base64
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+prompt, negative_prompt, response_path, error_path, auth_path, model_name, request_timeout, reference_path, image_size = sys.argv[1:10]
+request_timeout = int(request_timeout)
+
+# gpt-image takes no separate negative prompt, so the avoid-list is folded into the
+# prompt. Dropping it silently would quietly lose every composition guard the
+# Gemini path relies on.
+text = prompt if not negative_prompt.strip() else f"{prompt}\n\n避けること: {negative_prompt}"
+
+
+def fail(kind, message):
+    with open(error_path, "w", encoding="utf-8") as handle:
+        json.dump({"kind": kind, "message": str(message)[:800]}, handle)
+    sys.exit(1)
+
+
+try:
+    with open(auth_path, encoding="utf-8") as handle:
+        auth = json.load(handle)
+    tokens = auth.get("tokens") or {}
+    access_token = tokens.get("access_token") or ""
+    account_id = tokens.get("account_id") or ""
+except (OSError, ValueError) as exc:
+    fail("auth_unreadable", exc)
+
+if not access_token:
+    fail("permanent_auth_failure", "codex auth.json has no access_token")
+
+# An optional reference image anchors the character and the art style. Text alone
+# cannot hold a look steady across models: gpt-image drifts to glossy modern anime
+# and even changes hair colour, which reads as a different person. Showing it the
+# previous portrait keeps the same woman in the same world.
+content = [{"type": "input_text", "text": text}]
+if reference_path and os.path.isfile(reference_path):
+    try:
+        with open(reference_path, "rb") as handle:
+            reference_b64 = base64.b64encode(handle.read()).decode("ascii")
+        content.append({
+            "type": "input_image",
+            "image_url": f"data:image/png;base64,{reference_b64}",
+            "detail": "auto",
+        })
+    except OSError:
+        pass  # a missing reference must never block generation
+
+body = {
+    "model": "gpt-5.5",
+    "input": [{"role": "user", "content": content}],
+    "instructions": "You are an image generation assistant.",
+    "tools": [{"type": "image_generation", "model": model_name, "size": image_size}],
+    "tool_choice": {"type": "image_generation"},
+    "stream": True,
+    "store": False,
+}
+
+request = urllib.request.Request(
+    "https://chatgpt.com/backend-api/codex/responses",
+    data=json.dumps(body).encode("utf-8"),
+    headers={
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "text/event-stream",
+        "Content-Type": "application/json",
+        "chatgpt-account-id": account_id,
+        "OpenAI-Beta": "responses=experimental",
+        "originator": "codex_cli_rs",
+        "User-Agent": "codex_cli_rs",
+    },
+    method="POST",
+)
+
+try:
+    response = urllib.request.urlopen(request, timeout=request_timeout)
+except urllib.error.HTTPError as exc:
+    detail = exc.read()[:400].decode("utf-8", "replace")
+    # 401/403 mean the Codex login itself is stale; retrying cannot help.
+    kind = "permanent_auth_failure" if exc.code in (401, 403) else "http_error"
+    fail(kind, f"{exc.code} {detail}")
+except Exception as exc:  # network, timeout, TLS
+    fail("request_failed", exc)
+
+encoded = None
+partial = None
+for raw in response:
+    line = raw.decode("utf-8", "replace").strip()
+    if not line.startswith("data:"):
+        continue
+    payload = line[5:].strip()
+    if not payload or payload == "[DONE]":
+        continue
+    try:
+        event = json.loads(payload)
+    except ValueError:
+        continue
+    # The completed item carries the full-resolution image; partial_image events are
+    # previews at a smaller size and are only a fallback.
+    if event.get("type") == "response.output_item.done":
+        item = event.get("item") or {}
+        result = item.get("result")
+        if isinstance(result, str) and len(result) > 5000:
+            encoded = result
+    elif isinstance(event.get("partial_image_b64"), str):
+        partial = event["partial_image_b64"]
+
+encoded = encoded or partial
+if not encoded:
+    fail("empty_response", "no image payload in the responses stream")
+
+try:
+    base64.b64decode(encoded, validate=True)
+except Exception as exc:
+    fail("empty_response", f"undecodable image payload: {exc}")
+
+with open(response_path, "w", encoding="utf-8") as handle:
+    json.dump(
+        {"candidates": [{"content": {"parts": [{"inlineData": {"mimeType": "image/png", "data": encoded}}]}}]},
+        handle,
+    )
+PY
+}
+
 request_imagen() {
   local prompt="$1"
   local negative_prompt="$2"
@@ -1607,6 +1763,10 @@ request_imagen() {
   local vertex_project="$6"
   local vertex_location="$7"
   local error_file="${8:-${response_file}.error.json}"
+  if [[ "$model_name" == "$GPT_IMAGE_MODEL_NAME" ]]; then
+    request_gpt_image "$prompt" "$negative_prompt" "$response_file" "$error_file"
+    return $?
+  fi
   python3 - "$prompt" "$negative_prompt" "$response_file" "$api_key_value" "$ASPECT_RATIO" "$model_name" "$vertex_project" "$vertex_location" "$error_file" "$REQUEST_TIMEOUT_SECONDS" <<'PY'
 import base64
 import json
@@ -1624,7 +1784,7 @@ full_prompt = (
     + negative_prompt
     + "\n文字は一切入れない。読める文字、記号、ラベル、看板、背表紙、メモ、UI、数字、刻印を出さない。"
     + "\nNO READABLE TEXT ANYWHERE. NO TITLE. NO CAPTION. NO SUBTITLE. NO LETTERS. NO NUMBERS. NO SYMBOLS."
-    + "\n古典的な肖像画の構図。顔と上半身が自然に大きく見える、均整の取れた半身ポートレートにする。頭上の余白を少なくし、人物を一番大きく見せる。"
+    + "\n上半身をきちんと収めた半身ポートレート。頭のてっぺんから腰までが途切れず画面に入る構図にする。顔だけの接写にはしない。"
     + "\n表情と肩と手の動きを必ず入れる。無表情な証明写真や静止 bust にしない。"
 )
 
@@ -2533,18 +2693,30 @@ generate_background() {
 
   require_cmd python3
   require_cmd base64
-  python3 -c 'from google import genai' >/dev/null 2>&1 || die "python package google-genai is required"
 
-  if [[ "$refresh_flag" == "true" ]]; then
-    generation_model="$PRO_MODEL_NAME"
-    if [[ "$has_image" == "true" && "$has_meta" != "true" ]]; then
-      selection_reason="manual_refresh_unmanaged"
+  # The gpt-image route needs neither an API key nor google-genai: it borrows the
+  # ChatGPT login Codex already maintains. Prefer it when that login is present, so
+  # a machine with Codex signed in never has to hold a separate paid image key.
+  if [[ "${TPROJ_PANE_BG_IMAGE_PROVIDER:-gpt-image}" == "gpt-image" ]] && gpt_image_available; then
+    generation_model="$GPT_IMAGE_MODEL_NAME"
+    if [[ "$refresh_flag" == "true" ]]; then
+      selection_reason="manual_refresh_gpt_image"
     else
-      selection_reason="manual_refresh_pro"
+      selection_reason="cache_miss_gpt_image"
     fi
   else
-    generation_model="$PRO_MODEL_NAME"
-    selection_reason="cache_miss"
+    python3 -c 'from google import genai' >/dev/null 2>&1 || die "python package google-genai is required"
+    if [[ "$refresh_flag" == "true" ]]; then
+      generation_model="$PRO_MODEL_NAME"
+      if [[ "$has_image" == "true" && "$has_meta" != "true" ]]; then
+        selection_reason="manual_refresh_unmanaged"
+      else
+        selection_reason="manual_refresh_pro"
+      fi
+    else
+      generation_model="$PRO_MODEL_NAME"
+      selection_reason="cache_miss"
+    fi
   fi
 
   prepare_generation_prompts "$generation_model" "$role"
@@ -2552,7 +2724,9 @@ generate_background() {
   api_key_value="$(api_key_or_empty)"
   vertex_project="$(vertex_project_or_empty)"
   vertex_location="$(vertex_location_or_default)"
-  if [[ -z "$vertex_project" && -z "$api_key_value" ]]; then
+  # The gpt-image route carries its own credential, so the Vertex/API-key check
+  # applies only to the Gemini models.
+  if [[ "$generation_model" != "$GPT_IMAGE_MODEL_NAME" && -z "$vertex_project" && -z "$api_key_value" ]]; then
     LAST_GENERATION_ERROR_JSON="$(jq -cn '{kind:"auth_unavailable", message:"No usable Vertex AI ADC or API key auth path for image generation", retry_class:"permanent_auth", attempts:[]}')"
     write_generation_status "$project" "$role"
     rm -rf "$generation_lock"
