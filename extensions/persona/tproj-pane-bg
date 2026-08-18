@@ -55,6 +55,8 @@ FACE_CENTER_CROP="0"
 # >1 tightens the crop around the face. Costs resolution, so prefer a larger head
 # in the prompt and keep this near 1.
 FACE_CROP_ZOOM="${TPROJ_PANE_BG_FACE_ZOOM:-1.0}"
+# Share of the frame height the face should occupy after the crop.
+FACE_CROP_TARGET_FACE_RATIO="${TPROJ_PANE_BG_FACE_RATIO:-0.30}"
 LAST_FACE_CROP_JSON='null'
 LAST_GENERATION_ERROR_JSON='null'
 
@@ -2104,7 +2106,7 @@ set_face_crop_fallback_json() {
     '{policy:$policy, detector:$detector, fallback_used:true, reason:$reason}')"
 }
 
-gpt_face_center_norm() {
+gpt_face_box_norm() {
   local image_path="$1"
 
   gpt_image_available || return 1
@@ -2135,10 +2137,17 @@ if not access_token:
 
 # macOS Vision cannot find faces in flat cel art, so the nose is located with the
 # same account that already generates the picture.
+# The nose is a poor anchor: on a three-quarter view it sits off the visual centre
+# of the head, so centring it visibly shoves the face sideways. The face box is
+# orientation independent.
 ask = (
-    "Locate the tip of the nose of the main person in this picture. "
-    "Answer with JSON only, no prose: {\"x\": <0..1>, \"y\": <0..1>} "
-    "where x is measured from the left edge and y from the top edge."
+    "Find the face of the main person in this picture. "
+    "Report the bounding box of the face only: top edge at the hairline of the "
+    "forehead, bottom edge at the bottom of the chin, left and right edges at the "
+    "outer edges of the cheeks. Exclude hair, ears and headwear. "
+    "Answer with JSON only, no prose: "
+    "{\"x0\": <0..1>, \"y0\": <0..1>, \"x1\": <0..1>, \"y1\": <0..1>} "
+    "measured from the left and top edges of the picture."
 )
 
 body = {
@@ -2193,20 +2202,24 @@ for raw in response:
                 chunks.append(part["text"])
 
 text = "".join(chunks)
-match = re.search(r'"x"\s*:\s*([0-9.]+).*?"y"\s*:\s*([0-9.]+)', text, re.S)
+match = re.search(
+    r'"x0"\s*:\s*([0-9.]+).*?"y0"\s*:\s*([0-9.]+).*?"x1"\s*:\s*([0-9.]+).*?"y1"\s*:\s*([0-9.]+)',
+    text,
+    re.S,
+)
 if not match:
     sys.exit(1)
 
 try:
-    x = float(match.group(1))
-    y = float(match.group(2))
+    x0, y0, x1, y1 = (float(match.group(i)) for i in (1, 2, 3, 4))
 except ValueError:
     sys.exit(1)
 
-if not (0.0 < x < 1.0 and 0.0 < y < 1.0):
+if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
     sys.exit(1)
 
-print(f"{x:.4f} {y:.4f}")
+# centre of the face box, plus its height so the caller can size the crop
+print(f"{(x0 + x1) / 2:.4f} {(y0 + y1) / 2:.4f} {y1 - y0:.4f}")
 PY
 }
 
@@ -2219,24 +2232,31 @@ write_face_centered_image() {
   [[ "$FACE_CENTER_CROP" == "1" ]] || return 1
   command -v magick >/dev/null 2>&1 || return 1
 
-  center="$(gpt_face_center_norm "$decoded_path" 2>/dev/null || true)"
+  center="$(gpt_face_box_norm "$decoded_path" 2>/dev/null || true)"
   [[ -n "$center" ]] || return 1
 
   # The pane background is drawn with a centre-anchored fill crop, so whatever sits
   # at the middle of this file is what the reader sees. Put the nose there.
   geometry="$(magick identify -format '%w %h' "$decoded_path" 2>/dev/null || true)" || return 1
   geometry="$(awk -v dims="$geometry" -v center="$center" \
-    -v tw="$TARGET_WIDTH" -v th="$TARGET_HEIGHT" -v zoom="$FACE_CROP_ZOOM" 'BEGIN {
+    -v tw="$TARGET_WIDTH" -v th="$TARGET_HEIGHT" -v zoom="$FACE_CROP_ZOOM" -v ratio="$FACE_CROP_TARGET_FACE_RATIO" 'BEGIN {
       split(dims, d, " ");
       split(center, c, " ");
       w = d[1]; h = d[2];
       if (w <= 0 || h <= 0) exit 1;
       cx = c[1] * w; cy = c[2] * h;
+      face_h = c[3] * h;
       aspect = tw / th;
       half_w = cx < (w - cx) ? cx : (w - cx);
       half_h = cy < (h - cy) ? cy : (h - cy);
       limit = half_w / aspect;
       if (limit < half_h) half_h = limit;
+      # Size the crop so the face lands at the wanted share of the frame. Bounds
+      # still win, so a face near an edge simply stays larger than asked.
+      if (face_h > 0 && ratio > 0) {
+        want = face_h / ratio / 2;
+        if (want < half_h) half_h = want;
+      }
       if (zoom > 1) half_h = half_h / zoom;
       crop_h = int(2 * half_h);
       crop_w = int(2 * half_h * aspect);
