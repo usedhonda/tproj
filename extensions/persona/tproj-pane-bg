@@ -72,10 +72,12 @@ Usage:
   tproj-pane-bg --session <name> [--window <name>] [--mode <single|workspace>]
   tproj-pane-bg generate --project <path> --role cc|cdx [--prof <value>] [--era <value>] [--age <value>] [--refresh]
   tproj-pane-bg sync --session <name>
+  tproj-pane-bg recrop --project <path> --role cc|cdx [--zoom <n>]
 
 Commands:
   generate   Generate or reuse a cached vertical wallpaper for cc/cdx.
   sync       Collect tmux pane geometry, refresh the manifest, and install hooks.
+  recrop     Re-centre an existing pane image on the face without generating again.
   --prof     Override only the persona profession field for image generation.
   --era      Override only the persona era field for image generation.
   --age      Override only the persona age field for image generation.
@@ -3681,6 +3683,52 @@ cmd_hook() {
   sync_session "$session" "full"
 }
 
+cmd_recrop() {
+  local project=""
+  local role=""
+  local zoom=""
+  local dir=""
+  local source=""
+  local target=""
+  local backup=""
+  local tmp_out=""
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --project) project="${2:-}"; shift 2 ;;
+      --role) role="${2:-}"; shift 2 ;;
+      --zoom) zoom="${2:-}"; shift 2 ;;
+      *) die "unknown recrop option: $1" ;;
+    esac
+  done
+
+  [[ -n "$project" ]] || die "recrop needs --project"
+  [[ "$role" == "cc" || "$role" == "cdx" ]] || die "recrop needs --role cc|cdx"
+
+  dir="${project%/}/.local/tproj-pane-bg"
+  target="${dir}/${role}.vertical.png"
+  [[ -f "$target" ]] || die "no pane image at $target"
+
+  # Prefer the untouched generation so repeated recrops do not compound losses.
+  source="${dir}/${role}.vertical.raw.png"
+  [[ -f "$source" ]] || source="$target"
+
+  FACE_CENTER_CROP="1"
+  [[ -n "$zoom" ]] && FACE_CROP_ZOOM="$zoom"
+
+  tmp_out="$(mktemp -t tproj-pane-bg-recrop)" || die "mktemp failed"
+  if ! write_face_centered_image "$source" "$tmp_out"; then
+    rm -f "$tmp_out"
+    die "could not locate a face in $source"
+  fi
+
+  backup="${dir}/${role}.vertical.pre-recrop.png"
+  cp "$target" "$backup" 2>/dev/null || true
+  write_center_cropped_image "$tmp_out" "$target"
+  rm -f "$tmp_out"
+  printf '%s\n' "$target"
+}
+
 main() {
   mkdir -p "$WORK_ROOT"
   case "${1:-}" in
@@ -3691,6 +3739,10 @@ main() {
     sync)
       shift
       cmd_sync "$@"
+      ;;
+    recrop)
+      shift
+      cmd_recrop "$@"
       ;;
     retry-worker)
       shift
