@@ -1071,16 +1071,23 @@ build_flash_named_prompt() {
 create an image of a vertical terminal wallpaper.
 ${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。セル画の人物と背景美術の組み合わせ。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
 $(prompt_style_guard_line_jp)
+FRAMING CONSTRAINT -- READ FIRST
+半身ポートレート。頭のてっぺんから腰までを一枚に収める。頭、髪、首、両肩、胸、腕、手、腰の位置まで途切れずに見せる。
+髪の上に少し余白を残す。人物の左右にも背景を残す。
+顔だけを画面いっぱいに写した接写にはしない。映画的・ファッション誌的なトリミングは禁止。
+構図の優先順位は、見栄えよりも「頭も腰も切れていないこと」。
+頭か腰が入りきらないなら、入るまでカメラを引く。
 手順:
-1. 上半身をきちんと収めた半身ポートレートにする。頭のてっぺんから腰までが途切れず画面に入り、頭、首、両肩、胸、腕、腰の位置まで全部見えていること。頭上には少し余白を空ける。顔だけを画面いっぱいに写した接写にはしない。顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
+1. 顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
 2. 人物像は既存の persona データを最優先にする。${subject_jp}として自然に見せる。$(role_character_prompt_jp "$role")
-3. $(role_costume_prompt_jp "$role")。$(persona_prof_costume_prompt_jp)
+3. $(role_costume_prompt_jp "$role")。$(persona_prof_costume_prompt_jp) 襟元、肩、袖口、腰まわりの帯や留め具、手の位置と所作を、顔と同じ密度で具体的に描く。
 4. $(role_scene_prompt_jp "$role")
 5. 服装、姿勢、表情、視線、手元の所作で「このペインはこういう人物だ」と一目で分かるようにする。性別、年代、時代、性格、関係性が、文字に頼らず見えるようにする。
 6. 背景は人物の後ろで静かに支える。背景は personality の補助に徹し、視線が自然に顔へ集まる構図にする。上端に頭が寄りすぎない。腰より上で胴が切れない。人物の左右にも背景が見える。上下の余白は釣り合いを取る。
 $(prompt_composition_extra_line_jp)
 7. 文字が生まれそうな物体は最初から置かない。壁、棚、布、道具、器具は無地にする。
 最終ルール: 画像の中に読める文字、数字、記号、タイトル、ロゴ、透かし、署名、字幕を一切入れない。もし文字が乗りそうなら、その物体を消すか、無地で blank にする。
+Output in exactly 1024px x 1536px (2:3 ratio) resolution portrait format.
 EOF
 }
 
@@ -1093,16 +1100,23 @@ build_flash_fallback_prompt() {
 create an image of a vertical terminal wallpaper.
 ${STYLE_REF_EN} を強く思わせる、日本の手描き劇場アニメ映画の空気。ただし説明的な模写ではなく、日本アニメ映画らしい顔立ちと線、セル画の人物と背景美術の組み合わせとして出す。やわらかな自然光、落ち着いた色、上品で非オタク的な人物造形。水彩ファンタジー絵本風や海外アニメ風にはしない。
 $(prompt_style_guard_line_jp)
+FRAMING CONSTRAINT -- READ FIRST
+半身ポートレート。頭のてっぺんから腰までを一枚に収める。頭、髪、首、両肩、胸、腕、手、腰の位置まで途切れずに見せる。
+髪の上に少し余白を残す。人物の左右にも背景を残す。
+顔だけを画面いっぱいに写した接写にはしない。映画的・ファッション誌的なトリミングは禁止。
+構図の優先順位は、見栄えよりも「頭も腰も切れていないこと」。
+頭か腰が入りきらないなら、入るまでカメラを引く。
 手順:
-1. 上半身をきちんと収めた半身ポートレートにする。頭のてっぺんから腰までが途切れず画面に入り、頭、首、両肩、胸、腕、腰の位置まで全部見えていること。頭上には少し余白を空ける。顔だけを画面いっぱいに写した接写にはしない。顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
+1. 顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
 2. 人物像は既存の persona データを最優先にする。${subject_jp}として自然に見せる。$(role_character_prompt_jp "$role")
-3. $(role_costume_prompt_jp "$role")。$(persona_prof_costume_prompt_jp)
+3. $(role_costume_prompt_jp "$role")。$(persona_prof_costume_prompt_jp) 襟元、肩、袖口、腰まわりの帯や留め具、手の位置と所作を、顔と同じ密度で具体的に描く。
 4. $(role_scene_prompt_jp "$role")
 5. 服装、姿勢、表情、視線、手元の所作で「このペインはこういう人物だ」と一目で分かるようにする。性別、年代、時代、性格、関係性が、文字に頼らず見えるようにする。
 6. 背景は人物の後ろで静かに支える。背景は personality の補助に徹し、視線が自然に顔へ集まる構図にする。上端に頭が寄りすぎない。腰より上で胴が切れない。人物の左右にも背景が見える。上下の余白は釣り合いを取る。
 $(prompt_composition_extra_line_jp)
 7. 文字が生まれそうな物体は最初から置かない。壁、棚、布、道具、器具は無地にする。
 最終ルール: 画像の中に読める文字、数字、記号、タイトル、ロゴ、透かし、署名、字幕を一切入れない。もし文字が乗りそうなら、その物体を消すか、無地で blank にする。
+Output in exactly 1024px x 1536px (2:3 ratio) resolution portrait format.
 EOF
 }
 
@@ -1611,7 +1625,7 @@ GPT_IMAGE_MODEL_NAME="gpt-image-2"
 # it composes a waist-up figure with room around it, and the existing centre crop
 # then takes the vertical band, so the subject lands at a sane size instead of
 # needing prompt wording to argue it smaller.
-GPT_IMAGE_SIZE="${TPROJ_PANE_BG_GPT_IMAGE_SIZE:-2048x2048}"
+GPT_IMAGE_SIZE="${TPROJ_PANE_BG_GPT_IMAGE_SIZE:-1024x1536}"
 GPT_IMAGE_AUTH_FILE="${TPROJ_PANE_BG_CODEX_AUTH:-$HOME/.codex/auth.json}"
 
 gpt_image_available() {
@@ -1784,7 +1798,7 @@ full_prompt = (
     + negative_prompt
     + "\n文字は一切入れない。読める文字、記号、ラベル、看板、背表紙、メモ、UI、数字、刻印を出さない。"
     + "\nNO READABLE TEXT ANYWHERE. NO TITLE. NO CAPTION. NO SUBTITLE. NO LETTERS. NO NUMBERS. NO SYMBOLS."
-    + "\n上半身をきちんと収めた半身ポートレート。頭のてっぺんから腰までが途切れず画面に入る構図にする。顔だけの接写にはしない。"
+    + "\n半身ポートレート。頭のてっぺんから腰までを一枚に収め、髪の上に少し余白を残す。顔だけの接写にはしない。映画的・ファッション誌的なトリミングは禁止。頭か腰が入りきらないなら、入るまでカメラを引く。"
     + "\n表情と肩と手の動きを必ず入れる。無表情な証明写真や静止 bust にしない。"
 )
 
