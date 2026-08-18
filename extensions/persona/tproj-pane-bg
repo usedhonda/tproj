@@ -52,6 +52,9 @@ FACE_CROP_MAX_ABS_ROLL_RADIANS="0.7853981633974483"
 TOP_CROP_RATIO=""
 # Recentre the picture on the face before it is written. Providers opt in.
 FACE_CENTER_CROP="0"
+# >1 tightens the crop around the face. Costs resolution, so prefer a larger head
+# in the prompt and keep this near 1.
+FACE_CROP_ZOOM="${TPROJ_PANE_BG_FACE_ZOOM:-1.0}"
 LAST_FACE_CROP_JSON='null'
 LAST_GENERATION_ERROR_JSON='null'
 
@@ -1086,8 +1089,8 @@ $(prompt_style_guard_line_jp)
 FRAMING CONSTRAINT -- READ FIRST
 この絵は端末の背景に敷かれ、縦長にも横長にも切り取られる。切り取りはつねに画面の中心を基準に行われる。
 だから最優先の制約はただ一つ、**鼻のあたり、顔の中心を、画面のちょうど中央（縦も横も50パーセントの位置）に置く**こと。
-顔より上、頭と髪の上には背景を広く取ってよい。画面の下端は腰のあたりで切り、太もも、膝、脚は写さない。
-頭部の高さは画面の高さのおよそ5分の1。両肩とも画面の中に入れ、人物の左右にも背景を残す。
+顔より上、頭と髪の上には背景を広く取ってよい。画面の下端は胸から腰のあたりで切り、太もも、膝、脚は写さない。
+顔を大きく見せる。頭のてっぺんから顎までの高さを、画面の高さのおよそ3分の1にする。両肩とも画面の中に入れ、人物の左右にも背景を残す。
 顔だけを画面いっぱいに写した接写にはしない。映画的・ファッション誌的なトリミングは禁止。
 手順:
 1. 顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
@@ -1115,8 +1118,8 @@ $(prompt_style_guard_line_jp)
 FRAMING CONSTRAINT -- READ FIRST
 この絵は端末の背景に敷かれ、縦長にも横長にも切り取られる。切り取りはつねに画面の中心を基準に行われる。
 だから最優先の制約はただ一つ、**鼻のあたり、顔の中心を、画面のちょうど中央（縦も横も50パーセントの位置）に置く**こと。
-顔より上、頭と髪の上には背景を広く取ってよい。画面の下端は腰のあたりで切り、太もも、膝、脚は写さない。
-頭部の高さは画面の高さのおよそ5分の1。両肩とも画面の中に入れ、人物の左右にも背景を残す。
+顔より上、頭と髪の上には背景を広く取ってよい。画面の下端は胸から腰のあたりで切り、太もも、膝、脚は写さない。
+顔を大きく見せる。頭のてっぺんから顎までの高さを、画面の高さのおよそ3分の1にする。両肩とも画面の中に入れ、人物の左右にも背景を残す。
 顔だけを画面いっぱいに写した接写にはしない。映画的・ファッション誌的なトリミングは禁止。
 手順:
 1. 顔立ちは${STYLE_REF_JP}の劇場アニメ映画の主役級キャラクターに男女とも寄せる。感情移入できる目元、品のある輪郭、やわらかな表情、手描きセル画の落ち着いた造形。萌え絵・美少年美少女アニメ系・過度な写実・フォトリアル顔は避け、${STYLE_AUTHOR_JP}の主人公のような端正で自然な顔立ちにする。
@@ -1812,7 +1815,7 @@ full_prompt = (
     + negative_prompt
     + "\n文字は一切入れない。読める文字、記号、ラベル、看板、背表紙、メモ、UI、数字、刻印を出さない。"
     + "\nNO READABLE TEXT ANYWHERE. NO TITLE. NO CAPTION. NO SUBTITLE. NO LETTERS. NO NUMBERS. NO SYMBOLS."
-    + "\n鼻のあたり、顔の中心を画面のちょうど中央に置く。頭の上には背景を広く取ってよい。下端は腰のあたりで切り、脚は写さない。顔だけの接写にも全身像にもしない。"
+    + "\n鼻のあたり、顔の中心を画面のちょうど中央に置く。頭のてっぺんから顎までを画面の高さのおよそ3分の1にする。下端は胸から腰のあたりで切り、脚は写さない。全身像にはしない。"
     + "\n表情と肩と手の動きを必ず入れる。無表情な証明写真や静止 bust にしない。"
 )
 
@@ -2221,7 +2224,7 @@ write_face_centered_image() {
   # at the middle of this file is what the reader sees. Put the nose there.
   geometry="$(magick identify -format '%w %h' "$decoded_path" 2>/dev/null || true)" || return 1
   geometry="$(awk -v dims="$geometry" -v center="$center" \
-    -v tw="$TARGET_WIDTH" -v th="$TARGET_HEIGHT" 'BEGIN {
+    -v tw="$TARGET_WIDTH" -v th="$TARGET_HEIGHT" -v zoom="$FACE_CROP_ZOOM" 'BEGIN {
       split(dims, d, " ");
       split(center, c, " ");
       w = d[1]; h = d[2];
@@ -2232,6 +2235,7 @@ write_face_centered_image() {
       half_h = cy < (h - cy) ? cy : (h - cy);
       limit = half_w / aspect;
       if (limit < half_h) half_h = limit;
+      if (zoom > 1) half_h = half_h / zoom;
       crop_h = int(2 * half_h);
       crop_w = int(2 * half_h * aspect);
       if (crop_w < 16 || crop_h < 16) exit 1;
