@@ -314,14 +314,23 @@ def active_task_run(session: str, self_alias: str) -> str:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ""
-    for entry in (state.get("entries") or {}).values():
-        if not isinstance(entry, dict) or entry.get("status") != "active":
-            continue
-        if entry.get("owner_session") != session or entry.get("owner_alias") != self_alias:
-            continue
-        run = entry.get("task_run_id")
-        return run if isinstance(run, str) and run else ""  # pre-migration lock: no boundary
-    return ""
+    runs = [
+        entry["task_run_id"]
+        for entry in (state.get("entries") or {}).values()
+        if isinstance(entry, dict)
+        and entry.get("status") == "active"
+        and entry.get("owner_session") == session
+        and entry.get("owner_alias") == self_alias
+        and isinstance(entry.get("task_run_id"), str)
+        and entry["task_run_id"]
+    ]
+    # Exactly one, or nothing. `start` supersedes an owner's other active runs, so
+    # more than one means that invariant is broken here and there is no "current"
+    # run to gate against; taking the first would let whichever entry happened to be
+    # enumerated first decide, and an older run's consultation would release a newer
+    # task. A pre-migration lock carries no run id and so is not a candidate either.
+    # `tproj-msg --consult` selects the run the same way, so both sides agree.
+    return runs[0] if len(runs) == 1 else ""
 
 
 def consulted_in_run(db, session: str, self_alias: str, peer_alias: str, run: str) -> bool:

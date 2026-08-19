@@ -229,7 +229,15 @@ row as `messages.task_run_id`; the gate requires an exact match. Time cannot car
 that boundary: `created_at` has one-second resolution, so a consultation sent for the
 previous task would satisfy the next one whenever the two share a second. Sender and
 gate both find the run by owner (tmux session plus pane alias) rather than by project
-path, so neither has to agree with the other about a working directory. The older
+path, so neither has to agree with the other about a working directory.
+
+That lookup needs the owner to have exactly one run, which entries keyed by cwd do
+not give for free: starting a task from a second directory left the first one active
+under its own key, and a lookup by owner then had two candidates. `intent-guard
+start` therefore supersedes the other active entries that name the same owner, so one
+pane owner has one active run. Entries that name no owner are legacy and are left
+alone. Sender and gate both refuse to choose: zero or more than one match yields no
+run, and no run means no gate. The older
 `started_at` field is sticky across starts and cannot serve as a boundary at all.
 
 Anything the gate cannot determine — no lock, no reachable peer, no database, a lock

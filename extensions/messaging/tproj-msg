@@ -511,12 +511,16 @@ consult_task_run() {
   state="${INTENT_GUARD_DIR:-$HOME/.claude/intent-guard}/state.json"
   [[ -f "$state" ]] || return 0
   command -v jq >/dev/null 2>&1 || return 0
+  # Exactly one, or nothing: intent-guard start supersedes an owner's other active
+  # runs, so more than one means there is no single current run to attribute this
+  # consultation to. Picking the first would stamp an older run's id and release a
+  # gate the pane has not actually consulted for.
   jq -r --arg s "${SESSION:-}" --arg a "$from_alias" '
     [ (.entries // {})[]
       | select(.status == "active")
       | select((.owner_session // "") == $s and (.owner_alias // "") == $a)
       | (.task_run_id // "") ]
-    | map(select(. != "")) | first // ""' "$state" 2>/dev/null || true
+    | map(select(. != "")) | if length == 1 then .[0] else "" end' "$state" 2>/dev/null || true
 }
 
 if [[ ( -n "$ROLE_HANDOFF_EPOCH" || -n "$ROLE_HANDOFF_ORCHESTRATOR" ) && "$ROLE_HANDOFF_MODE" != "true" ]]; then

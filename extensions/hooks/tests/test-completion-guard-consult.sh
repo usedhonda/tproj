@@ -145,6 +145,27 @@ expect "a lock owned by another pane is not this pane's task" no
 write_lock - tproj.cc
 expect "a lock predating the run stamp is not gated" no
 
+# intent-guard start supersedes an owner's other active runs, so two of them means
+# the invariant is broken and there is no "current" run to gate against. Picking one
+# would let whichever entry enumerated first decide, and the older run's
+# consultation would release a task the pane never consulted for.
+python3 -c "
+import hashlib, json, sys
+entries = {}
+for cwd, run in ((sys.argv[1] + '/old', 'run-A'), (sys.argv[1], 'run-B')):
+    entries[hashlib.md5(cwd.encode('utf-8')).hexdigest()] = {
+        'cwd': cwd, 'intent': 'x', 'status': 'active', 'task_run_id': run,
+        'owner_session': 's1', 'owner_alias': 'tproj.cc'}
+json.dump({'version': 1, 'entries': entries}, open(sys.argv[2], 'w', encoding='utf-8'))
+" "$TMP/proj" "$TMP/ig/state.json"
+# Asserted with an empty message table on purpose: first-wins would pick run-A,
+# find no consultation for it, and block. Only refusing to choose leaves the turn
+# alone. (The harm Cdx reported -- run-A's old consultation releasing run-B -- shows
+# up as "not blocked" under both behaviours, so it cannot tell them apart here; the
+# supersede test in test-intent-guard.sh is what covers that direction.)
+sqlite3 "$DB" "DELETE FROM messages;"
+expect "two active runs for one owner leave the turn alone" no
+
 # The CLI contract behind the mark. `--consult` attests that this pane ASKED its
 # peer; every flag below either hands the work off instead of asking or overrides a
 # delivery policy, so allowing the combination would let a pane clear the gate
