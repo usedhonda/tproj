@@ -17,6 +17,10 @@ CHECK_ONLY=false
 
 # Core scripts copied to ~/bin (single source of truth for install + --check).
 CORE_BINS=(tproj tproj-role tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-focus-hook tproj-pane-clear-rank tproj-pane-autozoom tproj-tmux-state-notify tproj-mru-tracker tproj-respawn-guard tproj-postmortem tproj-mem-trace rebalance-workspace-columns sign-codex wait-for-pane-text)
+# Persona scripts copied verbatim to ~/bin (single source of truth for install +
+# --check, same as CORE_BINS). project-bootstrap is not here: it is a symlink into
+# the general checkout and has its own chain validation.
+PERSONA_BINS=(cc-persona tproj-pane-bg voicevox-alert voice-identity-sync)
 PERSONA_BOOTSTRAP_LINK="$SCRIPT_DIR/extensions/persona/project-bootstrap"
 PERSONA_BOOTSTRAP_TARGET="../../../general/system/project-bootstrap/project-bootstrap"
 PERSONA_BOOTSTRAP_ERROR=""
@@ -155,6 +159,15 @@ if $CHECK_ONLY; then
     elif ! cmp -s "$PERSONA_BOOTSTRAP_LINK" "$HOME/bin/project-bootstrap"; then
       drift+=("project-bootstrap (installed copy differs from canonical source)")
     fi
+    for bin_name in "${PERSONA_BINS[@]}"; do
+      repo_file="$SCRIPT_DIR/extensions/persona/$bin_name"
+      installed="$HOME/bin/$bin_name"
+      if [[ ! -f "$installed" ]]; then
+        drift+=("$bin_name (missing in ~/bin)")
+      elif ! diff -q "$repo_file" "$installed" >/dev/null 2>&1; then
+        drift+=("$bin_name (differs)")
+      fi
+    done
     if ! validate_model_role_router_source; then
       drift+=("$MODEL_ROLE_ROUTER_ERROR")
     elif [[ ! -f "$HOME/bin/model-role-router" ]]; then
@@ -514,21 +527,22 @@ if ! $CORE_ONLY; then
 
   # --- persona ---
   if [[ -d "$SCRIPT_DIR/extensions/persona" ]]; then
-    echo "  persona (project-bootstrap, cc-persona compat, tproj-pane-bg, voicevox-alert, voice-identity-sync)"
+    echo "  persona (project-bootstrap, ${PERSONA_BINS[*]})"
     if ! validate_persona_bootstrap_source; then
       echo "    [error] $PERSONA_BOOTSTRAP_ERROR" >&2
       exit 1
     fi
     if ! $DRY_RUN; then
-      rm -f ~/bin/project-bootstrap ~/bin/cc-persona ~/bin/tproj-pane-bg ~/bin/voicevox-alert ~/bin/voice-identity-sync  # remove stale symlinks
+      rm -f ~/bin/project-bootstrap  # remove stale symlink
       cp -L "$PERSONA_BOOTSTRAP_LINK" ~/bin/project-bootstrap
-      cp "$SCRIPT_DIR/extensions/persona/cc-persona" ~/bin/
-      cp "$SCRIPT_DIR/extensions/persona/tproj-pane-bg" ~/bin/
-      cp "$SCRIPT_DIR/extensions/persona/voicevox-alert" ~/bin/
-      cp "$SCRIPT_DIR/extensions/persona/voice-identity-sync" ~/bin/
-      chmod +x ~/bin/project-bootstrap ~/bin/cc-persona ~/bin/tproj-pane-bg ~/bin/voicevox-alert ~/bin/voice-identity-sync
+      chmod +x ~/bin/project-bootstrap
+      for bin_name in "${PERSONA_BINS[@]}"; do
+        rm -f "$HOME/bin/$bin_name"  # remove stale symlink
+        cp "$SCRIPT_DIR/extensions/persona/$bin_name" ~/bin/
+        chmod +x "$HOME/bin/$bin_name"
+      done
     else
-      echo "    [DRY-RUN] project-bootstrap, cc-persona, tproj-pane-bg, voicevox-alert, voice-identity-sync -> ~/bin/"
+      echo "    [DRY-RUN] project-bootstrap, ${PERSONA_BINS[*]} -> ~/bin/"
     fi
     # Check optional deps
     if ! command -v jq &>/dev/null; then
