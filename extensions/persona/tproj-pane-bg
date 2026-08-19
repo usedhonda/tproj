@@ -3129,25 +3129,67 @@ resolve_pane_project() {
   return 1
 }
 
+# The names and slot every sync hook is registered under. One list so the installer
+# and the health check cannot disagree about what "installed" means.
+SYNC_FAST_HOOKS=(window-layout-changed window-resized client-resized after-resize-pane after-resize-window after-select-layout after-select-pane after-swap-pane)
+SYNC_FULL_HOOKS=(after-split-window after-kill-pane)
+
+# True when every hook this script owns is registered and points at this script with
+# the right mode. A fast sync was invoked by one of these, so at least one is live --
+# but a partial clobber leaves the others silently dead, and re-registering all ten
+# on every resize to guard against that costs ~20 tmux round trips per resize. One
+# read is cheap enough to do every time.
+sync_hooks_stamp_path() {
+  printf '%s/hooks.%s.accepted' "$WORK_ROOT" "$(safe_name "$1")"
+}
+
+sync_hooks_are_current() {
+  local session="$1"
+  local hooks=""
+  local hook_name=""
+  local line=""
+  local needle=""
+  local stamp=""
+
+  # Only the hooks this tmux actually accepted are expected back. Not every build
+  # knows every hook name -- after-swap-pane is missing here -- and demanding one
+  # tmux silently refuses to store would fail the check on every single resize,
+  # reinstalling all ten every time and costing more than never checking at all.
+  stamp="$(sync_hooks_stamp_path "$session")"
+  [[ -s "$stamp" ]] || return 1
+
+  # Two scopes: window-layout-changed and window-resized are window hooks, so a
+  # session-only read never sees them and the check would demand hooks it cannot
+  # observe -- reinstalling on every single resize, which is what this avoids.
+  hooks="$(tmux show-hooks -t "$session" 2>/dev/null || true)"$'\n'"$(tmux show-hooks -w -t "$session" 2>/dev/null || true)"
+  # A match, not a substitution: bash 3.2 rebuilds the whole string for
+  # ${var//[[:space:]]/} and on a few KB of hook output that alone took over a
+  # second -- more than the reinstall this check exists to avoid.
+  [[ "$hooks" == *[![:space:]]* ]] || return 1
+  while IFS= read -r hook_name; do
+    [[ -n "$hook_name" ]] || continue
+    # Quoted: the slot suffix is [10], which is a glob character class if it reaches
+    # the pattern unquoted and would match a single '1' or '0' instead.
+    needle="${hook_name}[10] "
+    line="${hooks#*"$needle"}"
+    [[ "$line" != "$hooks" ]] || return 1
+    line="${line%%$'\n'*}"
+    [[ "$line" == *"$SCRIPT_PATH"* ]] || return 1
+    case " ${SYNC_FAST_HOOKS[*]} " in
+      *" $hook_name "*) [[ "$line" == *--fast* ]] || return 1 ;;
+      *)               [[ "$line" != *--fast* ]] || return 1 ;;
+    esac
+  done < "$stamp"
+  return 0
+}
+
 install_sync_hooks() {
   local session="$1"
   local fast_hook_cmd=""
   local full_hook_cmd=""
   local hook_log=""
-  local fast_hooks=(
-    window-layout-changed
-    window-resized
-    client-resized
-    after-resize-pane
-    after-resize-window
-    after-select-layout
-    after-select-pane
-    after-swap-pane
-  )
-  local full_hooks=(
-    after-split-window
-    after-kill-pane
-  )
+  local fast_hooks=("${SYNC_FAST_HOOKS[@]}")
+  local full_hooks=("${SYNC_FULL_HOOKS[@]}")
   local hook_name=""
 
   hook_log="$(hook_log_path "$session")"
@@ -3161,13 +3203,20 @@ install_sync_hooks() {
   # from older code (which target slot [0]) cannot overwrite us. Remove only
   # the stale [0] slot first; unsetting the bare hook name would wipe [20]/[30]
   # hooks owned by tproj's focus/autozoom stack.
+  local stamp=""
+  stamp="$(sync_hooks_stamp_path "$session")"
+  : > "$stamp"
   for hook_name in "${fast_hooks[@]}"; do
     tmux set-hook -u -t "$session" "${hook_name}[0]" >/dev/null 2>&1 || true
-    tmux set-hook -t "$session" "${hook_name}[10]" "run-shell -b \"${fast_hook_cmd}\"" >/dev/null 2>&1 || true
+    if tmux set-hook -t "$session" "${hook_name}[10]" "run-shell -b \"${fast_hook_cmd}\"" >/dev/null 2>&1; then
+      printf '%s\n' "$hook_name" >> "$stamp"
+    fi
   done
   for hook_name in "${full_hooks[@]}"; do
     tmux set-hook -u -t "$session" "${hook_name}[0]" >/dev/null 2>&1 || true
-    tmux set-hook -t "$session" "${hook_name}[10]" "run-shell -b \"${full_hook_cmd}\"" >/dev/null 2>&1 || true
+    if tmux set-hook -t "$session" "${hook_name}[10]" "run-shell -b \"${full_hook_cmd}\"" >/dev/null 2>&1; then
+      printf '%s\n' "$hook_name" >> "$stamp"
+    fi
   done
 }
 
@@ -3506,11 +3555,12 @@ sync_session() {
 
   manifest_path="${WORK_ROOT}/$(safe_name "$session").json"
 
-  # A fast sync was invoked BY these hooks, so they are live by definition and
-  # re-registering all ten of them costs ~20 tmux round trips per resize. Pane
-  # creation and destruction still run a full sync, which reinstalls them, and so
-  # does any explicit sync.
-  [[ "$sync_mode" == "fast" ]] || install_sync_hooks "$session"
+  # A full sync always reinstalls. A fast one reads the hooks once and only writes
+  # when something is missing or points somewhere else, so the common case costs one
+  # round trip instead of twenty.
+  if [[ "$sync_mode" != "fast" ]] || ! sync_hooks_are_current "$session"; then
+    install_sync_hooks "$session"
+  fi
   while true; do
     rm -f "$pending_file"
 
