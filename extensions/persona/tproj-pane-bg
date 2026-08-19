@@ -359,6 +359,33 @@ classify_tmux_role() {
   esac
 }
 
+# Answers are memoised for the life of the process. A sync asks this once per pane,
+# but both panes of a column share a project, and each miss costs a python start plus
+# a jq: on a twelve-pane workspace that was the single largest cost in a resize.
+# Bash 3.2 has no associative arrays, so the cache is a newline-delimited string read
+# with parameter expansion -- no subprocess of its own.
+CONVERSATION_MAIN_CACHE=$'\n'
+CONVERSATION_MAIN_RESULT=""
+
+# Sets CONVERSATION_MAIN_RESULT rather than printing, because the answer is cached
+# and a `$(...)` caller would run the whole thing in a subshell where the cache write
+# is discarded. That is not a micro-optimisation: a sync asks once per pane, each
+# miss starts the router (python, ~55ms), and on a twelve-pane workspace those calls
+# were essentially the entire cost of a resize.
+load_conversation_main() {
+  local project="$1" cached
+  CONVERSATION_MAIN_RESULT="cdx"
+  [[ "$project" == /* ]] || return 1
+  cached="${CONVERSATION_MAIN_CACHE#*$'\n'${project}=}"
+  if [[ "$cached" != "$CONVERSATION_MAIN_CACHE" ]]; then
+    CONVERSATION_MAIN_RESULT="${cached%%$'\n'*}"
+    return 0
+  fi
+  CONVERSATION_MAIN_RESULT="$(conversation_main_for_project "$project" 2>/dev/null || printf 'cdx')"
+  CONVERSATION_MAIN_CACHE="${CONVERSATION_MAIN_CACHE}${project}=${CONVERSATION_MAIN_RESULT}"$'\n'
+  return 0
+}
+
 conversation_main_for_project() {
   local project="$1" router="$MODEL_ROLE_ROUTER" mode_json main
   [[ "$project" == /* ]] || return 1
@@ -2867,6 +2894,10 @@ generate_background() {
   local generation_lock=""
   local lock_mtime=""
   local now_epoch=""
+  local seed_project=""
+  local seed_main=""
+  local manifest_mtime=""
+  local mode_mtime=""
 
   # Trust the explicit --project path; do NOT resolve to git root
   # (a non-git subdir inside a git repo would resolve to the wrong parent)
@@ -3405,14 +3436,17 @@ sync_session() {
   require_cmd tmux
   require_cmd jq
   require_cmd shasum
-
   tmux has-session -t "$session" >/dev/null 2>&1 || die "tmux session not found: $session"
   tmux list-windows -t "$target" >/dev/null 2>&1 || die "tmux window not found: ${target}"
-  prime_session_api_env "$session"
-  hydrate_api_env_from_session "$session"
-
+  # Credentials and placeholder assets only matter when this sync might generate an
+  # image, and the fast path never does. Reading them costs several tmux round trips
+  # on every resize, which is exactly the latency the fast path exists to avoid.
+  if [[ "$sync_mode" != "fast" ]]; then
+    prime_session_api_env "$session"
+    hydrate_api_env_from_session "$session"
+  fi
   mkdir -p "$WORK_ROOT"
-  ensure_all_runtime_placeholders
+  [[ "$sync_mode" == "fast" ]] || ensure_all_runtime_placeholders
   lock_dir="${WORK_ROOT}/lock.$(safe_name "$session")"
   pending_file="${WORK_ROOT}/pending.$(safe_name "$session")"
   if [[ -d "$lock_dir" ]]; then
@@ -3430,7 +3464,11 @@ sync_session() {
 
   manifest_path="${WORK_ROOT}/$(safe_name "$session").json"
 
-  install_sync_hooks "$session"
+  # A fast sync was invoked BY these hooks, so they are live by definition and
+  # re-registering all ten of them costs ~20 tmux round trips per resize. Pane
+  # creation and destruction still run a full sync, which reinstalls them, and so
+  # does any explicit sync.
+  [[ "$sync_mode" == "fast" ]] || install_sync_hooks "$session"
   while true; do
     rm -f "$pending_file"
 
@@ -3441,13 +3479,32 @@ sync_session() {
     pending_generate_file="${tmp_dir}/pending-generate.txt"
     : > "$panes_jsonl"
     : > "$pending_generate_file"
-
     dims="$(tmux display-message -p -t "$target" '#{window_width}	#{window_height}	#{window_name}	#{window_layout}	#{client_width}	#{client_height}')"
     IFS=$'\t' read -r window_width window_height window_name window_layout client_width client_height <<< "$dims"
     [[ -n "${client_width:-}" && "$client_width" =~ ^[0-9]+$ ]] || client_width="$window_width"
     [[ -n "${client_height:-}" && "$client_height" =~ ^[0-9]+$ ]] || client_height="$window_height"
 
     tmux list-panes -t "$target" -F '#{pane_id}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{pane_current_path}|#{@role}|#{@alias}|#{@column}|#{@project}|#{pane_active}' > "$pane_rows_file"
+    # Which side of a column is the conversation main cannot change because a pane
+    # was resized, and asking the router costs ~85ms of python per project -- on this
+    # workspace that single question was most of a fast sync. So the fast path seeds
+    # the answers from the manifest it wrote last time and only asks about projects it
+    # has not seen. A project whose role-mode file was written after that manifest is
+    # left out of the seed, so a main/sub flip is still picked up.
+    if [[ "$sync_mode" == "fast" && -s "$manifest_path" ]]; then
+      manifest_mtime="$(stat -f '%m' "$manifest_path" 2>/dev/null || printf '0')"
+      while IFS=$'\t' read -r seed_project seed_main; do
+        [[ -n "$seed_project" && -n "$seed_main" ]] || continue
+        mode_mtime="$(stat -f '%m' "${seed_project}/.local/role-mode.json" 2>/dev/null || printf '0')"
+        (( mode_mtime <= manifest_mtime )) || continue
+        CONVERSATION_MAIN_CACHE="${CONVERSATION_MAIN_CACHE}${seed_project}=${seed_main}"$'\n'
+      done < <(jq -r '
+        # conversation_main is stored per pane as a boolean -- "is this pane the main
+        # one" -- so the side is recovered from the role of the pane that says true.
+        [ .panes[]? | select((.project // "") != "" and .conversation_main == true) ]
+        | group_by(.project)[] | .[0] | "\(.project)\t\(.role)"
+      ' "$manifest_path" 2>/dev/null || true)
+    fi
 
     while IFS='|' read -r pane_id pane_left pane_top pane_width pane_height pane_cwd tmux_role pane_alias pane_column project_hint pane_active <&3; do
       [[ -n "$pane_id" ]] || continue
@@ -3460,9 +3517,9 @@ sync_session() {
       image_path=""
       meta_path=""
       placeholder_path=""
-
       if project="$(resolve_pane_project "$project_hint" "$pane_cwd" 2>/dev/null)"; then
-        conversation_main="$(conversation_main_for_project "$project" 2>/dev/null || printf 'cdx')"
+        load_conversation_main "$project" || true
+        conversation_main="$CONVERSATION_MAIN_RESULT"
         if asset_fields="$(resolve_cached_background "$project" "$role" 2>/dev/null)"; then
           IFS=$'\t' read -r image_path meta_path <<< "$asset_fields"
           if [[ -z "$meta_path" && "$sync_mode" != "fast" ]]; then
@@ -3479,7 +3536,6 @@ sync_session() {
       else
         warn "could not resolve project for pane ${pane_id}"
       fi
-
       jq -n \
         --arg pane_id "$pane_id" \
         --arg tmux_role "$tmux_role" \
@@ -3521,7 +3577,6 @@ sync_session() {
     write_manifest "$session" "$manifest_path" "$panes_array_file" "$window_name" "$window_layout" "$window_width" "$window_height" "$client_width" "$client_height"
     tmux set-environment -t "$session" TPROJ_PANE_BG_ENABLE 1
     tmux set-environment -t "$session" TPROJ_PANE_BG_MANIFEST "$manifest_path"
-
     if [[ "$sync_mode" != "fast" && -s "$pending_generate_file" ]]; then
       while IFS='|' read -r pending_pane_id pending_project pending_role; do
         [[ -n "$pending_pane_id" && -n "$pending_project" && -n "$pending_role" ]] || continue
