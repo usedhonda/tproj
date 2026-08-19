@@ -36,6 +36,7 @@ bash extensions/messaging/tests/test-role-handoff.sh
 bash extensions/hooks/tests/test-inbox-check.sh
 bash extensions/hooks/tests/test-completion-guard-consult.sh
 bash tests/test-install-check-persona.sh
+bash tests/test-pane-bg-style-layers.sh
 ```
 
 For Swift changes:

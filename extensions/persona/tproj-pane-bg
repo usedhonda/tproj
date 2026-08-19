@@ -31,6 +31,27 @@ STYLE_REFERENCE="$STYLE_REF_EN"
 STYLE_REFERENCE_FALLBACK="${TPROJ_PANE_BG_STYLE_FALLBACK_EN:-hand-painted theatrical anime}"
 PROMPT_OVERRIDE_PATH=""
 PROMPT_OVERRIDE_FINGERPRINT=""
+# Provider technical baseline. This is the tracked source of truth for HOW a frame is
+# rendered on a given image model -- not for WHICH house style it wears. gpt-image-2
+# reads a bare style name literally and drifts to glossy photo-real rendering, so the
+# cel-animation technique has to be spelled out or every project without a local
+# override gets the wrong picture. Keeping it here means a new project or a new
+# machine inherits it, and a change to it is reviewable in a diff instead of living
+# only in someone's ignored config. House and persona preferences stay in
+# ~/.config/tproj/pane-bg.local and the project's prompt.local.json, which both win
+# over this baseline.
+PANE_BG_GPT_IMAGE_STYLE_GUARD_JP="これはセル画時代の日本の手描き長編アニメーション映画から取り出した一コマである。35mm フィルムの上映用プリントからスキャンした映画のフレームで、わずかに退色しフィルムの粒子が乗っている。人物はアセテートのセルに不透明絵の具で塗られ、背景は水彩とガッシュで紙に描かれた背景美術である。陰影はセル画の常として2段階か3段階の平面で区切られ、境界は硬く、グラデーションによるぼかしは一切存在しない。主線はトレスされた均一な細い線で、色は黒ではなく濃い茶色。肌も髪も瞳もつや消しで、光沢のハイライトも逆光の縁取りも無い。色は彩度が低く、やや暖かく、コントラストは弱い。背景は水彩の紙目が見える手描きで、写真的なボケは無く全体にピントが合っている。光は柔らかく均一に拡散している。デジタルで描かれた現代のアニメ調イラストではなく、コンピュータ以前の手作業による映画のセル画である。"
+
+# Stamped into the sidecar when the baseline actually supplied a slot. An image made
+# before the baseline existed has no such stamp, and cache_is_fresh rebuilds ITS
+# prompt without the baseline -- otherwise every previously generated pane would
+# hash differently, look stale, and be regenerated on the next sync. Existing work
+# changes when someone asks for it with --refresh, not because this file grew.
+PANE_BG_STYLE_BASELINE_ID="gpt-image-cel-v1"
+STYLE_BASELINE_APPLIED=""
+
+PANE_BG_GPT_IMAGE_NEGATIVE_JP="つやつやした光沢、強い彩度、強いコントラスト、太く黒い輪郭線、なめらかなグラデーション陰影、写真的な背景のボケ、劇的な逆光やリムライトは避ける。フォトリアル、3DCG、実写写真、つやのある樹脂のような肌、一本ずつ描き分けた髪の毛、磨き上げたデジタルイラスト、現代的な光沢のあるアニメ調レンダリング、過度に painterly な筆致は禁止。 NO PHOTOREALISM. NO PHOTOGRAPH. NO 3D RENDER. NO CGI. NO HYPER REALISTIC SKIN. NO PLASTIC SKIN. NO SMOOTH BLENDING ONLY SHADING. NO INDIVIDUAL HAIR STRANDS. NO CLEAN DIGITAL ART. NO MODERN GLOSSY ANIME RENDERING. NO OVERLY POLISHED TEXTURES."
+
 PROMPT_STYLE_GUARD_JP="${TPROJ_PANE_BG_STYLE_GUARD_JP:-}"
 PROMPT_COMPOSITION_EXTRA_JP="${TPROJ_PANE_BG_COMPOSITION_EXTRA_JP:-}"
 PROMPT_NEGATIVE_EXTRA_JP="${TPROJ_PANE_BG_NEGATIVE_EXTRA_JP:-}"
@@ -80,11 +101,13 @@ Usage:
   tproj-pane-bg generate --project <path> --role cc|cdx [--prof <value>] [--era <value>] [--age <value>] [--refresh]
   tproj-pane-bg sync --session <name>
   tproj-pane-bg recrop --project <path> --role cc|cdx [--zoom <n>]
+  tproj-pane-bg style-layers [--project <path>] [--model <name>]
 
 Commands:
   generate   Generate or reuse a cached vertical wallpaper for cc/cdx.
   sync       Collect tmux pane geometry, refresh the manifest, and install hooks.
   recrop     Re-centre an existing pane image on the face without generating again.
+  style-layers  Report which layer supplied each style slot for a model/project.
   --prof     Override only the persona profession field for image generation.
   --era      Override only the persona era field for image generation.
   --age      Override only the persona age field for image generation.
@@ -1635,6 +1658,12 @@ cache_is_fresh() {
   meta_schema="$(jq -r '.prompt_schema // empty' "$meta_path" 2>/dev/null)"
   meta_schema="$(normalize_prompt_schema "$meta_schema" "$meta_model")"
   expected_prompt_version="$(prompt_version_for_model "$meta_model")"
+  # Rebuild the prompt the way THIS image was made. A sidecar with no baseline stamp
+  # predates the tracked provider default, so applying it here would make every such
+  # image hash stale and silently regenerate work nobody asked to redo.
+  if [[ -n "$(jq -r '.style_baseline // empty' "$meta_path" 2>/dev/null)" ]]; then
+    apply_provider_style_defaults "$meta_model"
+  fi
   negative_prompt="$(build_negative_prompt)"
   named_prompt="$(build_prompt_for_model "$meta_model" "$role" "$STYLE_MODE_NAMED")"
   fallback_prompt="$(build_prompt_for_model "$meta_model" "$role" "$STYLE_MODE_FALLBACK")"
@@ -2119,9 +2148,28 @@ generation_error_is_flash_recoverable() {
   ' >/dev/null 2>&1 <<<"${LAST_GENERATION_ERROR_JSON:-null}"
 }
 
+# Fills a style slot only when nothing above has claimed it. The layering is
+# tracked baseline < ~/.config house override < project prompt.local.json: an empty
+# slot means no one expressed a preference, so the provider default applies; a slot
+# someone set is theirs and is never overwritten here.
+apply_provider_style_defaults() {
+  local model_name="$1"
+  STYLE_BASELINE_APPLIED=""
+  [[ "$model_name" == "$GPT_IMAGE_MODEL_NAME" ]] || return 0
+  if [[ -z "$PROMPT_STYLE_GUARD_JP" ]]; then
+    PROMPT_STYLE_GUARD_JP="$PANE_BG_GPT_IMAGE_STYLE_GUARD_JP"
+    STYLE_BASELINE_APPLIED="$PANE_BG_STYLE_BASELINE_ID"
+  fi
+  if [[ -z "$PROMPT_NEGATIVE_EXTRA_JP" ]]; then
+    PROMPT_NEGATIVE_EXTRA_JP="$PANE_BG_GPT_IMAGE_NEGATIVE_JP"
+    STYLE_BASELINE_APPLIED="$PANE_BG_STYLE_BASELINE_ID"
+  fi
+}
+
 prepare_generation_prompts() {
   local model_name="$1"
   local role="$2"
+  apply_provider_style_defaults "$model_name"
   generation_prompt_schema="$(prompt_schema_for_model "$model_name")"
   generation_prompt_version="$(prompt_version_for_model "$model_name")"
   named_prompt="$(build_prompt_for_model "$model_name" "$role" "$STYLE_MODE_NAMED")"
@@ -2834,6 +2882,7 @@ write_sidecar() {
     --arg endpoint "google-genai://models/${model_name}" \
     --argjson face_crop "$LAST_FACE_CROP_JSON" \
     --argjson face_center_crop "$LAST_FACE_CENTER_CROP_JSON" \
+    --arg style_baseline "${STYLE_BASELINE_APPLIED:-}" \
     --slurpfile response_json "$response_file" \
     '{
       version: 1,
@@ -2888,6 +2937,7 @@ write_sidecar() {
         response_modalities: ["image"],
         aspect_ratio: $aspect_ratio
       },
+      style_baseline: (if $style_baseline == "" then null else $style_baseline end),
       postprocess: {
         face_crop: $face_crop,
         face_center_crop: $face_center_crop
@@ -2986,7 +3036,6 @@ generate_background() {
   set_persona_from_line "$persona_line" "$role"
   gender_desc="$(translate_gender "$PERSONA_GENDER_RAW")"
   age_desc="$(translate_age "$PERSONA_AGE_RAW")"
-  negative_prompt="$(build_negative_prompt)"
 
   if [[ "$refresh_flag" != "true" ]] && cache_is_fresh "$meta_path" "$image_path" "$project" "$role" "$persona_line"; then
     printf '%s\n' "$image_path"
@@ -3023,6 +3072,9 @@ generate_background() {
   fi
 
   prepare_generation_prompts "$generation_model" "$role"
+  # After the model is known, not before: the provider baseline can supply the
+  # technical negatives, and building this earlier would drop them.
+  negative_prompt="$(build_negative_prompt)"
 
   api_key_value="$(api_key_or_empty)"
   vertex_project="$(vertex_project_or_empty)"
@@ -3911,9 +3963,62 @@ cmd_recrop() {
   printf '%s\n' "$target"
 }
 
+# Prints which layer supplied each style slot. Without this the layering is only
+# observable by generating an image, which costs an API call and cannot be asserted
+# on in a test -- so the precedence would have no gate at all.
+cmd_style_layers() {
+  local project=""
+  local model="$GPT_IMAGE_MODEL_NAME"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project)
+        [[ $# -ge 2 ]] || die "missing value for --project"
+        project="$2"
+        shift 2
+        ;;
+      --model)
+        [[ $# -ge 2 ]] || die "missing value for --model"
+        model="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      *)
+        die "unknown option for style-layers: $1"
+        ;;
+    esac
+  done
+
+  if [[ -n "$project" ]]; then
+    load_project_prompt_override "$(normalize_dir "$project")"
+  fi
+  apply_provider_style_defaults "$model"
+
+  jq -n \
+    --arg model "$model" \
+    --arg style_ref "$STYLE_REF_EN" \
+    --arg guard "$PROMPT_STYLE_GUARD_JP" \
+    --arg guard_base "$PANE_BG_GPT_IMAGE_STYLE_GUARD_JP" \
+    --arg neg "$PROMPT_NEGATIVE_EXTRA_JP" \
+    --arg neg_base "$PANE_BG_GPT_IMAGE_NEGATIVE_JP" \
+    --arg baseline "${STYLE_BASELINE_APPLIED:-}" \
+    '{model: $model,
+      style_ref_en: $style_ref,
+      style_guard: (if $guard == "" then "empty" elif $guard == $guard_base then "baseline" else "override" end),
+      negative_extra: (if $neg == "" then "empty" elif $neg == $neg_base then "baseline" else "override" end),
+      style_baseline: (if $baseline == "" then null else $baseline end)}'
+}
+
 main() {
   mkdir -p "$WORK_ROOT"
   case "${1:-}" in
+    style-layers)
+      shift
+      cmd_style_layers "$@"
+      ;;
     generate)
       shift
       cmd_generate "$@"
