@@ -30,6 +30,7 @@ repository root are:
 
 ```bash
 bash tests/smoke-bin.sh
+bash tests/test-pane-autozoom.sh
 bash extensions/messaging/tests/test-sendability-gate.sh
 bash extensions/messaging/tests/test-role-handoff.sh
 bash extensions/hooks/tests/test-inbox-check.sh

@@ -225,6 +225,25 @@ done <<EOF_COLS
 $COLS
 EOF_COLS
 
+# Vertical target, derived the same way the horizontal one is: from the window
+# size and the number of panes sharing the axis. A fixed row count silently stops
+# doing anything once a pane already exceeds it -- focusing a pane that was
+# already at the 40-row default in a 73-row window produced no growth at all,
+# while the width still moved. TPROJ_AUTOZOOM_H_MIN keeps its documented meaning
+# as a floor, so an explicit override is never made smaller.
+PANES_IN_COL=$(tmux list-panes -t "$SESSION" -F '#{@column}' 2>/dev/null \
+  | awk -v c="$ACTIVE_COL" '$1==c { n++ } END { print n+0 }')
+case "$PANES_IN_COL" in (*[!0-9]*|"") PANES_IN_COL=1 ;; esac
+V_BORDERS=$(( PANES_IN_COL > 1 ? PANES_IN_COL - 1 : 0 ))
+if [ "$V_BORDERS" -gt 0 ]; then
+  V_BUDGET=$(( WIN_H - V_BORDERS ))
+  V_TOTAL_SHARES=$(( ACTIVE_SHARES + V_BORDERS ))
+  PROPORTIONAL_H=$(( V_BUDGET * ACTIVE_SHARES / V_TOTAL_SHARES ))
+  [ "$PROPORTIONAL_H" -gt "$TARGET_H" ] && TARGET_H=$PROPORTIONAL_H
+  [ "$TARGET_H" -gt "$WIN_H" ] && TARGET_H=$WIN_H
+fi
+dlog "vertical target=$TARGET_H panes_in_col=$PANES_IN_COL win_h=$WIN_H"
+
 # Vertical grow: enlarge whichever pane is focused, regardless of role.
 CURRENT_ACTIVE_H=$(tmux display-message -t "$ACTIVE" -p '#{pane_height}' 2>/dev/null || echo 0)
 case "$CURRENT_ACTIVE_H" in (*[!0-9]*|"") CURRENT_ACTIVE_H=0 ;; esac
