@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -269,6 +270,20 @@ def router_module():
     return ROUTER_MODULE_CACHE["m"]
 
 
+def pane_column() -> str:
+    pane = os.environ.get("TPROJ_PANE", "") or os.environ.get("TMUX_PANE", "")
+    if not pane:
+        return ""
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", pane, "-p", "#{@column}"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def consultable_peer(session: str, alias: str, role: str) -> str:
     # The peer alias, but only while it is genuinely reachable right now. A stored
     # peer_alias is not that: a peer can exit mid-task, and requiring a consultation
@@ -277,11 +292,7 @@ def consultable_peer(session: str, alias: str, role: str) -> str:
     if module is None:
         return ""
     try:
-        column = subprocess.run(
-            ["tmux", "display-message", "-t", os.environ.get("TPROJ_PANE", os.environ.get("TMUX_PANE", "")),
-             "-p", "#{@column}"],
-            capture_output=True, text=True, timeout=3, check=False,
-        ).stdout.strip()
+        column = pane_column()
         if not column:
             return ""
         identity = {"session": session, "column": column, "alias": f"{alias}.{role}", "pane_id": ""}
@@ -301,7 +312,8 @@ def active_task_run(project: str, session: str, self_alias: str) -> int:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return 0
-    entry = (state.get("entries") or {}).get(project)
+    # Entries are keyed by an md5 of the project path, not the path itself.
+    entry = (state.get("entries") or {}).get(hashlib.md5(project.encode("utf-8")).hexdigest())
     if not isinstance(entry, dict) or entry.get("status") != "active":
         return 0
     started = entry.get("started_at_epoch")
@@ -356,9 +368,14 @@ def consult_gate(session: str, alias: str, role: str) -> str:
     module = router_module()
     if module is None:
         return ""
+    # state_path scopes by column, so an empty one silently reads nothing and the
+    # gate would quietly never arm. Ask tmux for this pane's column.
+    column = pane_column()
+    if not column:
+        return ""
     try:
         own = module.read_json_file(
-            module.state_path({"session": session, "column": "", "alias": self_alias})
+            module.state_path({"session": session, "column": column, "alias": self_alias})
         )
     except Exception:
         own = {}

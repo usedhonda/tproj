@@ -66,8 +66,9 @@ printf '{"role":"solo-fallback"}' > "$TMP/cache/s1/3/tproj.cc.json"
 
 write_lock() {  # <started_at_epoch> <owner_alias>
   python3 -c "
-import json, sys
-state = {'version': 1, 'entries': {sys.argv[1]: {
+import hashlib, json, sys
+key = hashlib.md5(sys.argv[1].encode('utf-8')).hexdigest()  # same key intent-guard writes
+state = {'version': 1, 'entries': {key: {
     'cwd': sys.argv[1], 'intent': 'x', 'status': 'active',
     'started_at': '2020-01-01T00:00:00Z', 'started_at_epoch': int(sys.argv[2]),
     'owner_session': 's1', 'owner_alias': sys.argv[3]}}}
