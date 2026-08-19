@@ -230,6 +230,10 @@ private enum RoleVisualPalette {
     static let conversationMainCC = Color(red: 0.52, green: 0.42, blue: 0.95)
     static let conversationMainCdx = Color(red: 0.16, green: 0.78, blue: 0.84)
     static let paneMain = conversationMainCC
+    // There is no separate sub colour. Hue was tried twice (amber, teal) and a lower
+    // level once, and each made the sub portrait harder to read than the violet every
+    // pane was always washed in. Both panes now get the identical wash and the frame
+    // alone says which is which.
 }
 
 private struct PaneBackgroundManifest: Decodable, Equatable {
@@ -284,17 +288,29 @@ private struct PaneBackgroundUnderlayView: View {
     private let textReadabilityScrim = 0.07
     private let edgeFadePx: CGFloat = 3
     private let activeTopLineHeight: CGFloat = 4
-    private let conversationMainEdgeWidth: CGFloat = 3
-    private var conversationMainOpacity: Double {
-        // This view sits below Ghostty, so only the terminal's transparent share
-        // reaches the screen. The wash is atmosphere; the edge is the primary cue.
-        let visibleUnderlayShare = max(0.12, 1.0 - GhosttyTheme.current.backgroundOpacity)
-        return min(0.68, 0.16 / visibleUnderlayShare)
+    private let conversationMainEdgeWidth: CGFloat = 5
+    // Both washes are additive and lift the picture; neither darkens it. The additive
+    // wash is what makes a pane's portrait readable at all through the terminal's
+    // transparent quarter -- main was always washed and always visible, and it was
+    // the sub pane's black overlay that crushed it. Cutting the wash back, or
+    // removing it, takes that lift away and makes BOTH panes darker than before, so
+    // main keeps its original level and sub is brought up near it.
+    private var visibleUnderlayShare: Double {
+        max(0.12, 1.0 - GhosttyTheme.current.backgroundOpacity)
     }
     private var conversationSubOpacity: Double {
-        let visibleUnderlayShare = max(0.12, 1.0 - GhosttyTheme.current.backgroundOpacity)
-        return min(0.42, 0.08 / visibleUnderlayShare)
+        // The readable baseline every pane is entitled to. This wash is what makes a
+        // portrait legible through the terminal's transparent quarter, so lowering it
+        // for sub panes is just a quieter way of doing what the old black overlay did.
+        min(0.55, 0.1375 / visibleUnderlayShare)
     }
+    private var conversationMainOpacity: Double {
+        // Main is raised ABOVE that baseline rather than sub being pushed below it.
+        // Every earlier attempt separated the two by taking something away from sub,
+        // and each one cost readability; adding to main costs nothing.
+        min(0.88, 0.22 / visibleUnderlayShare)
+    }
+
 
     private var edgeFadeMask: some View {
         VStack(spacing: 0) {
@@ -352,19 +368,26 @@ private struct PaneBackgroundUnderlayView: View {
                             }
                             .opacity(pane.opacity)
                         }
+                        RoleVisualPalette.paneMain
+                            .opacity(pane.isConversationMain ? conversationMainOpacity : conversationSubOpacity)
+                            .blendMode(.plusLighter)
                         if pane.isConversationMain {
-                            RoleVisualPalette.paneMain
-                                .opacity(conversationMainOpacity)
-                                .blendMode(.plusLighter)
+                            // Both side rails, and wider than the old single bar. The
+                            // difference lives entirely off the picture: the frame is
+                            // at the pane's edges, where nothing is being read.
+                            // Top and bottom are left alone because edgeFadeMask
+                            // fades those few pixels away.
                             HStack(spacing: 0) {
                                 RoleVisualPalette.paneMain
-                                    .opacity(0.85)
+                                    .opacity(0.9)
                                     .frame(width: conversationMainEdgeWidth)
                                     .blendMode(.plusLighter)
                                 Spacer(minLength: 0)
+                                RoleVisualPalette.paneMain
+                                    .opacity(0.9)
+                                    .frame(width: conversationMainEdgeWidth)
+                                    .blendMode(.plusLighter)
                             }
-                        } else {
-                            Color.black.opacity(conversationSubOpacity)
                         }
                         activeTopLine(isActive: pane.isActive)
                             .opacity(pane.opacity)
