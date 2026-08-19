@@ -448,14 +448,19 @@ final class PaneBackgroundUnderlayController: ObservableObject {
     private var lastManifestDate: Date?
     private var cachedManifest: PaneBackgroundManifest?
     private var lastGhosttyWindowNumber: Int?
+    private var manifestWatch: DispatchSourceFileSystemObject?
+    private var manifestWatchDebounce: DispatchWorkItem?
+    private let manifestWatchQueue = DispatchQueue(label: "tproj.pane-bg-manifest-watch")
 
     func attach(to window: NSWindow) {
         guard hostWindow !== window else { return }
         hostWindow = window
         startPolling()
+        startWatchingManifest()
     }
 
     func detach() {
+        stopWatchingManifest()
         stopPolling()
         hideUnderlay()
         hostWindow = nil
@@ -463,6 +468,49 @@ final class PaneBackgroundUnderlayController: ObservableObject {
 
     deinit {
         pollTimer?.cancel()
+        manifestWatch?.cancel()
+    }
+
+    // The timer still runs: it is what follows the Ghostty window itself moving, which
+    // writes no file. This watcher exists only so a pane resize does not have to wait
+    // out a poll interval before the backgrounds follow it.
+    private func startWatchingManifest() {
+        guard manifestWatch == nil else { return }
+        let directory = (manifestPath as NSString).deletingLastPathComponent
+        let fd = open(directory, O_EVTONLY)
+        guard fd >= 0 else { return }
+        // The directory, not the file: the manifest is published by writing a
+        // temporary copy and renaming it over the old one, so current.json's inode is
+        // replaced on every update and a watch on the file itself would go deaf after
+        // the first one.
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write],
+            queue: manifestWatchQueue
+        )
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.manifestWatchDebounce?.cancel()
+            let work = DispatchWorkItem {
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self.tick() }
+                }
+            }
+            self.manifestWatchDebounce = work
+            // Short enough to feel immediate, long enough that the two writes of one
+            // publish coalesce into a single redraw.
+            self.manifestWatchQueue.asyncAfter(deadline: .now() + 0.02, execute: work)
+        }
+        source.setCancelHandler { close(fd) }
+        manifestWatch = source
+        source.resume()
+    }
+
+    private func stopWatchingManifest() {
+        manifestWatchDebounce?.cancel()
+        manifestWatchDebounce = nil
+        manifestWatch?.cancel()
+        manifestWatch = nil
     }
 
     private func startPolling() {
