@@ -304,6 +304,11 @@ private struct PaneBackgroundUnderlayView: View {
         // for sub panes is just a quieter way of doing what the old black overlay did.
         min(0.55, 0.1375 / visibleUnderlayShare)
     }
+    // A small, deliberate dim on sub panes. Raising main alone did not put it far
+    // enough forward, so a little is taken back from sub -- a fraction of the 0.32
+    // black that used to crush the portrait, applied over the wash rather than
+    // instead of it.
+    private let conversationSubDim: Double = 0.12
     private var conversationMainOpacity: Double {
         // Main is raised ABOVE that baseline rather than sub being pushed below it.
         // Every earlier attempt separated the two by taking something away from sub,
@@ -371,6 +376,9 @@ private struct PaneBackgroundUnderlayView: View {
                         RoleVisualPalette.paneMain
                             .opacity(pane.isConversationMain ? conversationMainOpacity : conversationSubOpacity)
                             .blendMode(.plusLighter)
+                        if !pane.isConversationMain {
+                            Color.black.opacity(conversationSubDim)
+                        }
                         if pane.isConversationMain {
                             // Both side rails, and wider than the old single bar. The
                             // difference lives entirely off the picture: the frame is
