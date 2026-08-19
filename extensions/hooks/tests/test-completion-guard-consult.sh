@@ -60,25 +60,26 @@ TMUX
 chmod +x "$TMP/bin/tmux"
 
 DB="$TMP/messages.db"
-sqlite3 "$DB" "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT, from_alias TEXT, to_alias TEXT, body TEXT, direction TEXT, delivery TEXT, msg_kind TEXT, created_at INTEGER);"
+sqlite3 "$DB" "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT, from_alias TEXT, to_alias TEXT, body TEXT, direction TEXT, delivery TEXT, msg_kind TEXT, task_run_id TEXT, created_at INTEGER);"
 
 printf '{"role":"solo-fallback"}' > "$TMP/cache/s1/3/tproj.cc.json"
 
-write_lock() {  # <started_at_epoch> <owner_alias>
+write_lock() {  # <task_run_id> <owner_alias>
   python3 -c "
 import hashlib, json, sys
 key = hashlib.md5(sys.argv[1].encode('utf-8')).hexdigest()  # same key intent-guard writes
-state = {'version': 1, 'entries': {key: {
+run = {} if sys.argv[2] == '-' else {'task_run_id': sys.argv[2]}
+state = {'version': 1, 'entries': {key: dict({
     'cwd': sys.argv[1], 'intent': 'x', 'status': 'active',
-    'started_at': '2020-01-01T00:00:00Z', 'started_at_epoch': int(sys.argv[2]),
-    'owner_session': 's1', 'owner_alias': sys.argv[3]}}}
+    'started_at': '2020-01-01T00:00:00Z', 'started_at_epoch': 1,
+    'owner_session': 's1', 'owner_alias': sys.argv[3]}, **run)}}
 json.dump(state, open(sys.argv[4], 'w', encoding='utf-8'))
 " "$TMP/proj" "$1" "$2" "$TMP/ig/state.json"
 }
 
-add_msg() {  # <kind> <created_at> [delivery] [body]
-  sqlite3 "$DB" "INSERT INTO messages (session, from_alias, to_alias, body, direction, delivery, msg_kind, created_at)
-                 VALUES ('s1','tproj.cc','tproj.cdx','${4-hello}','outbound','${3-send-keys}','$1',$2);"
+add_msg() {  # <kind> <task_run_id> [delivery] [body]
+  sqlite3 "$DB" "INSERT INTO messages (session, from_alias, to_alias, body, direction, delivery, msg_kind, task_run_id, created_at)
+                 VALUES ('s1','tproj.cc','tproj.cdx','${4-hello}','outbound','${3-send-keys}','$1','$2',$(date +%s));"
 }
 
 run_guard() {
@@ -105,32 +106,31 @@ expect() {  # <name> <expect-block:yes|no>
   else fail "$1" "expected block=$2 got=$blocked out=$(printf '%s' "$out" | tr '\n' '|' | cut -c1-100)"; fi
 }
 
-NOW=$(date +%s)
-
 printf '{"version":1,"entries":{}}' > "$TMP/ig/state.json"
 expect "a turn with no locked task is never gated" no
 
-write_lock "$((NOW - 60))" tproj.cc
+write_lock run-B tproj.cc
 expect "a locked task with no consultation is held open" yes
 
-add_msg consult "$((NOW - 30))"
+add_msg consult run-B
 expect "one consultation inside the task run releases it" no
 
-# The whole reason a fresh task_run stamp was needed: an older consultation must
-# not satisfy a task that started after it.
+# The whole reason the run id had to reach the message row: `created_at` has
+# one-second resolution, so a boundary made of time alone lets a consultation sent
+# for the previous task satisfy the next one when the two share a second.
 sqlite3 "$DB" "DELETE FROM messages;"
-add_msg consult "$((NOW - 600))"
-expect "a consultation from before the task run does not count" yes
+add_msg consult run-A
+expect "a consultation belonging to another task run does not count" yes
 
 # Ordinary traffic and the router's own pairing ping must not pass as consultation.
 sqlite3 "$DB" "DELETE FROM messages;"
-add_msg "" "$((NOW - 10))"
+add_msg "" run-B
 expect "an unmarked message does not count as consultation" yes
 sqlite3 "$DB" "DELETE FROM messages;"
-add_msg consult "$((NOW - 10))" rejected
+add_msg consult run-B rejected
 expect "a rejected consultation does not count" yes
 sqlite3 "$DB" "DELETE FROM messages;"
-add_msg consult "$((NOW - 10))" send-keys ""
+add_msg consult run-B send-keys ""
 expect "an empty-bodied audit row does not count" yes
 
 # Fail-open paths.
@@ -140,8 +140,35 @@ FAKE_MODE=auto expect "auto mode does not use this gate" no
 printf '{"role":"advisor"}' > "$TMP/cache/s1/3/tproj.cc.json"
 expect "the advising side owes nothing" no
 printf '{"role":"solo-fallback"}' > "$TMP/cache/s1/3/tproj.cc.json"
-write_lock "$((NOW - 60))" other.cc
+write_lock run-B other.cc
 expect "a lock owned by another pane is not this pane's task" no
+write_lock - tproj.cc
+expect "a lock predating the run stamp is not gated" no
+
+# The CLI contract behind the mark. `--consult` attests that this pane ASKED its
+# peer; every flag below either hands the work off instead of asking or overrides a
+# delivery policy, so allowing the combination would let a pane clear the gate
+# without ever consulting anyone.
+MSG="$SCRIPT_DIR/../../messaging/tproj-msg"
+reject() {  # <name> <flag...>
+  local name="$1"; shift
+  local out rc
+  # A target that cannot resolve, and the throwaway DB: if this rejection ever
+  # regresses, the test must fail rather than deliver a real message to a peer.
+  out=$(TPROJ_MSG_DB_PATH="$DB" "$MSG" "$@" no-such-peer.cdx "probe" 2>&1); rc=$?
+  if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q -- "--consult cannot be combined"; then
+    pass "$name"
+  else
+    fail "$name" "rc=$rc out=$(printf '%s' "$out" | tr '\n' '|' | cut -c1-120)"
+  fi
+}
+reject "--consult rejects --new-task"        --consult --new-task
+reject "--consult rejects --role-handoff"    --consult --role-handoff --new-task
+reject "--consult rejects --user-authorized" --consult --user-authorized --new-task
+reject "--consult rejects --force"           --consult --force
+reject "--consult rejects --fire"            --consult --fire
+reject "--consult rejects --allow-relay"     --consult --allow-relay why
+reject "--consult rejects --allow-fanout"    --consult --allow-fanout why
 
 printf -- '----\nPASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

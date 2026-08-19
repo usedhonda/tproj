@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -302,37 +301,35 @@ def consultable_peer(session: str, alias: str, role: str) -> str:
     return str(peer.get("alias", "")) if isinstance(peer, dict) else ""
 
 
-def active_task_run(project: str, session: str, self_alias: str) -> int:
-    # Start epoch of the task run this pane is currently locked into, or 0 when
-    # there is none to speak of. Only `intent-guard start` stamps a run, so a
-    # conversational turn is never gated. `started_at` is deliberately NOT used: it
-    # survives across starts, so one old consultation would satisfy every later task.
+def active_task_run(session: str, self_alias: str) -> str:
+    # Identifier of the task run this pane is currently locked into, or "" when there
+    # is none. Only `intent-guard start` stamps a run, so a conversational turn is
+    # never gated. The entry is found by owner rather than by project path: the
+    # sender of a consultation resolves the same run the same way, and neither side
+    # has to agree on a cwd. `started_at` is deliberately NOT used -- it survives
+    # across starts -- and neither is `started_at_epoch`: one-second resolution lets
+    # a consultation sent in the second a later task started satisfy that task.
     path = Path(os.environ.get("INTENT_GUARD_DIR", str(Path.home() / ".claude/intent-guard"))) / "state.json"
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return 0
-    # Entries are keyed by an md5 of the project path, not the path itself.
-    entry = (state.get("entries") or {}).get(hashlib.md5(project.encode("utf-8")).hexdigest())
-    if not isinstance(entry, dict) or entry.get("status") != "active":
-        return 0
-    started = entry.get("started_at_epoch")
-    if not isinstance(started, int) or started <= 0:
-        return 0  # pre-migration lock: no usable boundary, so do not gate
-    owner_session = entry.get("owner_session") or ""
-    owner_alias = entry.get("owner_alias") or ""
-    if owner_session and owner_session != session:
-        return 0
-    if owner_alias and owner_alias != self_alias:
-        return 0
-    return started
+        return ""
+    for entry in (state.get("entries") or {}).values():
+        if not isinstance(entry, dict) or entry.get("status") != "active":
+            continue
+        if entry.get("owner_session") != session or entry.get("owner_alias") != self_alias:
+            continue
+        run = entry.get("task_run_id")
+        return run if isinstance(run, str) and run else ""  # pre-migration lock: no boundary
+    return ""
 
 
-def consulted_since(db, session: str, self_alias: str, peer_alias: str, since: int) -> bool:
-    # Only a send that was marked as a consultation counts. Any outbound row would
-    # be satisfied by a status report or by the router's own pairing ping, which is
-    # not what "you asked someone" means. Caller-audit rows carry an empty body and
-    # rejected/error rows never reached anyone, so both are excluded.
+def consulted_in_run(db, session: str, self_alias: str, peer_alias: str, run: str) -> bool:
+    # Only a send that was marked as a consultation, and that belongs to THIS task
+    # run, counts. Any outbound row would be satisfied by a status report or by the
+    # router's own pairing ping, which is not what "you asked someone" means.
+    # Caller-audit rows carry an empty body and rejected/error rows never reached
+    # anyone, so both are excluded.
     forms = recipient_forms(self_alias, peer_alias)
     placeholders = ",".join("?" for _ in forms)
     try:
@@ -344,12 +341,12 @@ def consulted_since(db, session: str, self_alias: str, peer_alias: str, since: i
                AND to_alias IN ({placeholders})
                AND direction = 'outbound'
                AND msg_kind = 'consult'
+               AND task_run_id = ?
                AND TRIM(COALESCE(body, '')) != ''
                AND COALESCE(delivery, '') NOT IN ('rejected', 'error')
-               AND created_at >= ?
              LIMIT 1
             """,
-            (session, self_alias, *forms, since),
+            (session, self_alias, *forms, run),
         ).fetchone()
     except sqlite3.Error:
         return True  # cannot tell: never hold a turn open on a broken query
@@ -362,9 +359,6 @@ def consult_gate(session: str, alias: str, role: str) -> str:
     # the mode looks identical to solo. This is the one place that makes the
     # consultation real, and every unknown fails open.
     self_alias = f"{alias}.{role}"
-    project = own_project()
-    if not project:
-        return ""
     module = router_module()
     if module is None:
         return ""
@@ -381,8 +375,8 @@ def consult_gate(session: str, alias: str, role: str) -> str:
         own = {}
     if not isinstance(own, dict) or own.get("role") != "solo-fallback":
         return ""  # not the working side; advising panes owe nothing
-    since = active_task_run(project, session, self_alias)
-    if since <= 0:
+    run = active_task_run(session, self_alias)
+    if not run:
         return ""
     peer_alias = consultable_peer(session, alias, role)
     if not peer_alias:
@@ -391,7 +385,7 @@ def consult_gate(session: str, alias: str, role: str) -> str:
     if db is None:
         return ""
     try:
-        consulted = consulted_since(db, session, self_alias, peer_alias, since)
+        consulted = consulted_in_run(db, session, self_alias, peer_alias, run)
     finally:
         db.close()
     if consulted:

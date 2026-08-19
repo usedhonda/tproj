@@ -216,9 +216,21 @@ the router's own pairing ping, would otherwise satisfy an obligation that is sup
 to mean "you asked someone". Rows whose delivery was rejected or errored, and the
 empty-bodied caller-audit rows, are excluded too.
 
-The boundary is the task run's `started_at_epoch`, stamped fresh by every
-`intent-guard start` and never moved by `check`. The older `started_at` field is
-sticky across starts, so using it would let one consultation satisfy every later task.
+`--consult` is a plain send to the peer and nothing else. It is rejected together with
+`--new-task`, `--role-handoff`, `--user-authorized`, `--force`, `--fire`,
+`--allow-relay`, and `--allow-fanout`: each of those either hands the work off instead
+of asking about it, or overrides a delivery policy. Accepting the combination would
+let a pane clear the gate by delegating, or by shouting past a guard, without ever
+having consulted anyone.
+
+The boundary is the task run itself. `intent-guard start` stamps a fresh
+`task_run_id`, `check` leaves it, and `tproj-msg --consult` copies it onto the message
+row as `messages.task_run_id`; the gate requires an exact match. Time cannot carry
+that boundary: `created_at` has one-second resolution, so a consultation sent for the
+previous task would satisfy the next one whenever the two share a second. Sender and
+gate both find the run by owner (tmux session plus pane alias) rather than by project
+path, so neither has to agree with the other about a working directory. The older
+`started_at` field is sticky across starts and cannot serve as a boundary at all.
 
 Anything the gate cannot determine — no lock, no reachable peer, no database, a lock
 predating the run stamp, a lock owned by another pane — leaves the turn alone. A guard

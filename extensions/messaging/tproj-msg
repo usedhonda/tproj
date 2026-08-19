@@ -475,6 +475,50 @@ if [[ "$ROLE_HANDOFF_MODE" == "true" && "$FORCE_MODE" == "true" ]]; then
   exit 1
 fi
 
+# A consultation is an ordinary message to the peer and nothing else. Every flag
+# below either delegates instead of asking (--new-task, --role-handoff,
+# --user-authorized) or overrides a delivery policy (--force, --fire,
+# --allow-relay, --allow-fanout). Allowing any of them would let a pane satisfy the
+# advisor consultation gate while handing the work off or shouting past a guard,
+# which is the opposite of what the mark is supposed to attest.
+if [[ "$MSG_KIND" == "consult" ]]; then
+  if [[ "$SEND_MODE" != "true" ]]; then
+    echo "Error: --consult is only valid for send modes" >&2
+    exit 1
+  fi
+  _conflict=""
+  [[ "$NEW_TASK_MODE" == "true" ]]        && _conflict="--new-task" || true
+  [[ "$ROLE_HANDOFF_MODE" == "true" ]]    && _conflict="--role-handoff" || true
+  [[ "$USER_AUTHORIZED_EXACT" == "true" ]] && _conflict="--user-authorized" || true
+  [[ "$FORCE_MODE" == "true" ]]           && _conflict="--force" || true
+  [[ "$FIRE_MODE" == "true" ]]            && _conflict="--fire" || true
+  [[ "$ALLOW_RELAY" == "true" ]]          && _conflict="--allow-relay" || true
+  [[ "$ALLOW_FANOUT" == "true" ]]         && _conflict="--allow-fanout" || true
+  if [[ -n "$_conflict" ]]; then
+    echo "Error: --consult cannot be combined with ${_conflict}; a consultation is a plain send to the peer" >&2
+    exit 1
+  fi
+  unset _conflict
+fi
+
+# The intent-guard task run this consultation belongs to, or empty. Selected by
+# owner (tmux session + pane alias) rather than by project path, so the sender and
+# the completion gate land on the same run without having to agree on a cwd. Empty
+# for every non-consult send: only the consultation mark needs a run boundary.
+consult_task_run() {
+  [[ "${MSG_KIND:-}" == "consult" ]] || return 0
+  local from_alias="$1" state
+  state="${INTENT_GUARD_DIR:-$HOME/.claude/intent-guard}/state.json"
+  [[ -f "$state" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  jq -r --arg s "${SESSION:-}" --arg a "$from_alias" '
+    [ (.entries // {})[]
+      | select(.status == "active")
+      | select((.owner_session // "") == $s and (.owner_alias // "") == $a)
+      | (.task_run_id // "") ]
+    | map(select(. != "")) | first // ""' "$state" 2>/dev/null || true
+}
+
 if [[ ( -n "$ROLE_HANDOFF_EPOCH" || -n "$ROLE_HANDOFF_ORCHESTRATOR" ) && "$ROLE_HANDOFF_MODE" != "true" ]]; then
   echo "Error: --role-epoch and --orchestrator require --role-handoff" >&2
   exit 1
@@ -2782,7 +2826,7 @@ enqueue() {
   if declare -F tt_db_log_message >/dev/null 2>&1; then
     _hash=$(sha1_hash "$msg" 2>/dev/null)
     _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
-    _dbid=$(tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "${TASK_ID:-}" "outbound" "queued" "${MY_ROLE:-cc}" "tmux" "" "${MSG_KIND:-}" 2>/dev/null) || _dbid=""
+    _dbid=$(tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "${TASK_ID:-}" "outbound" "queued" "${MY_ROLE:-cc}" "tmux" "" "${MSG_KIND:-}" "$(consult_task_run "$_from")" 2>/dev/null) || _dbid=""
     [[ "$_dbid" =~ ^[0-9]+$ ]] || _dbid=""
   fi
   # M-D5c: append under the per-target queue lock so a concurrent flush's
@@ -2992,7 +3036,7 @@ _flush_drain_queue() {
       if [[ -n "$dbid" ]] && declare -F tt_db_set_flushed >/dev/null 2>&1; then
         tt_db_set_flushed "$dbid" 2>/dev/null
       else
-        _outid=$(tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "" "outbound" "flushed" "${MY_ROLE:-cc}" "tmux" "" "${MSG_KIND:-}" 2>/dev/null)
+        _outid=$(tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "" "outbound" "flushed" "${MY_ROLE:-cc}" "tmux" "" "${MSG_KIND:-}" "$(consult_task_run "$_from")" 2>/dev/null)
         [[ -n "$_outid" ]] && tt_db_set_delivered "$_outid" 2>/dev/null
       fi
       tt_db_mirror_inbound "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "" "flushed" "${MY_ROLE:-cc}" "tmux" "" >/dev/null 2>&1 || true
@@ -3776,7 +3820,7 @@ _raw_send_record_error() {
     local _hash _from _outid
     _hash=$(sha1_hash "$MESSAGE" 2>/dev/null)
     _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
-    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "error" "${MY_ROLE:-cc}" "tmux" "" "${MSG_KIND:-}" 2>/dev/null)
+    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "error" "${MY_ROLE:-cc}" "tmux" "" "${MSG_KIND:-}" "$(consult_task_run "$_from")" 2>/dev/null)
     if [[ -n "$_outid" ]] && declare -F tt_db_set_delivery_error >/dev/null 2>&1; then
       tt_db_set_delivery_error "$_outid" "$_reason" 2>/dev/null
     fi
@@ -3807,7 +3851,7 @@ raw_send() {
     local _hash _from _outid
     _hash=$(sha1_hash "$MESSAGE" 2>/dev/null)
     _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
-    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "send-keys" "${MY_ROLE:-cc}" "tmux" "" "${MSG_KIND:-}" 2>/dev/null)
+    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "send-keys" "${MY_ROLE:-cc}" "tmux" "" "${MSG_KIND:-}" "$(consult_task_run "$_from")" 2>/dev/null)
     [[ -n "$_outid" ]] && tt_db_set_delivered "$_outid" 2>/dev/null
     tt_db_mirror_inbound "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "send-keys" "${MY_ROLE:-cc}" "tmux" "" >/dev/null 2>&1 || true
   fi

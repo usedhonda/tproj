@@ -47,7 +47,7 @@
 # timestamps without persisting arbitrary response bodies.
 # Version 8 adds durable task contract metadata plus cancellation/freeze
 # tombstones and one-shot receiver notice bookkeeping.
-: "${TT_DB_SCHEMA_VERSION:=9}"
+: "${TT_DB_SCHEMA_VERSION:=10}"
 
 tt_db_path() { printf '%s\n' "$TPROJ_MSG_DB_PATH"; }
 tt_db_error_log() { printf '%s\n' "$TPROJ_MSG_DB_ERROR_LOG"; }
@@ -267,6 +267,7 @@ payload_sha256|TEXT
 auth_path|TEXT
 anchor_pid|INTEGER
 msg_kind|TEXT
+task_run_id|TEXT
 COLS
 }
 
@@ -435,11 +436,15 @@ tt_db_log_message() {
   # tell a deliberate consultation from a status report or an automatic pairing
   # ping; counting any outbound row would let either satisfy the obligation.
   local msg_kind=$(tt_db_quote "${13:-}")
+  # The intent-guard task run this send belongs to. Time alone cannot separate one
+  # task from the next: `created_at` has one-second resolution, so a consultation
+  # sent in the same second a later task started would satisfy that later task.
+  local task_run_id=$(tt_db_quote "${14:-}")
   local task_id_sql='NULL'
   [[ -n "$task_id_raw" ]] && task_id_sql="'$(tt_db_quote "$task_id_raw")'"
   local ext_id_sql='NULL'
   [[ -n "$external_id_raw" ]] && ext_id_sql="'$(tt_db_quote "$external_id_raw")'"
-  local sql="INSERT INTO messages (session, from_alias, to_alias, body, body_hash, header, task_id, direction, delivery, source_kind, bridge, external_id, msg_kind, created_at) VALUES ('${session}', '${from_a}', '${to_a}', '${body}', '${body_hash}', '${header}', ${task_id_sql}, '${direction}', '${delivery}', '${source_kind}', '${bridge}', ${ext_id_sql}, '${msg_kind}', strftime('%s','now')); SELECT last_insert_rowid();"
+  local sql="INSERT INTO messages (session, from_alias, to_alias, body, body_hash, header, task_id, direction, delivery, source_kind, bridge, external_id, msg_kind, task_run_id, created_at) VALUES ('${session}', '${from_a}', '${to_a}', '${body}', '${body_hash}', '${header}', ${task_id_sql}, '${direction}', '${delivery}', '${source_kind}', '${bridge}', ${ext_id_sql}, '${msg_kind}', '${task_run_id}', strftime('%s','now')); SELECT last_insert_rowid();"
   tt_db_exec_safe "$sql"
 }
 
