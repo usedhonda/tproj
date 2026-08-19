@@ -58,6 +58,11 @@ FACE_CROP_ZOOM="${TPROJ_PANE_BG_FACE_ZOOM:-1.0}"
 # Share of the frame height the face should occupy after the crop.
 FACE_CROP_TARGET_FACE_RATIO="${TPROJ_PANE_BG_FACE_RATIO:-0.30}"
 LAST_FACE_CROP_JSON='null'
+# What the face-centred crop actually did. The face_crop record beside it describes
+# the Vision pass, which reports no_face_detected on cel art and so says nothing
+# about whether the written image is centred: without this a badly framed portrait
+# is indistinguishable from a good one after the fact.
+LAST_FACE_CENTER_CROP_JSON='null'
 LAST_GENERATION_ERROR_JSON='null'
 
 if ! [[ "$MAX_GENERATION_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
@@ -2250,21 +2255,48 @@ print(f"{(x0 + x1) / 2:.4f} {(y0 + y1) / 2:.4f} {y1 - y0:.4f}")
 PY
 }
 
+set_face_center_crop_json() {  # <applied> <reason> [face_box] [geometry]
+  LAST_FACE_CENTER_CROP_JSON="$(jq -cn \
+    --argjson applied "$1" \
+    --arg reason "$2" \
+    --arg face_box "${3:-}" \
+    --arg geometry "${4:-}" \
+    --arg zoom "$FACE_CROP_ZOOM" \
+    --arg target_face_ratio "$FACE_CROP_TARGET_FACE_RATIO" \
+    '{applied: $applied, reason: $reason, detector: "gpt-image-face-box",
+      face_box_norm: (if $face_box == "" then null else $face_box end),
+      crop_geometry: (if $geometry == "" then null else $geometry end),
+      zoom: ($zoom | tonumber? // $zoom),
+      target_face_ratio: ($target_face_ratio | tonumber? // $target_face_ratio)}' 2>/dev/null || printf 'null')"
+}
+
 write_face_centered_image() {
   local decoded_path="$1"
   local cropped_path="$2"
   local center=""
   local geometry=""
 
-  [[ "$FACE_CENTER_CROP" == "1" ]] || return 1
-  command -v magick >/dev/null 2>&1 || return 1
+  if [[ "$FACE_CENTER_CROP" != "1" ]]; then
+    set_face_center_crop_json false "disabled"
+    return 1
+  fi
+  if ! command -v magick >/dev/null 2>&1; then
+    set_face_center_crop_json false "magick_unavailable"
+    return 1
+  fi
 
   center="$(gpt_face_box_norm "$decoded_path" 2>/dev/null || true)"
-  [[ -n "$center" ]] || return 1
+  if [[ -z "$center" ]]; then
+    set_face_center_crop_json false "face_box_unavailable"
+    return 1
+  fi
 
   # The pane background is drawn with a centre-anchored fill crop, so whatever sits
   # at the middle of this file is what the reader sees. Put the nose there.
-  geometry="$(magick identify -format '%w %h' "$decoded_path" 2>/dev/null || true)" || return 1
+  if ! geometry="$(magick identify -format '%w %h' "$decoded_path" 2>/dev/null || true)"; then
+    set_face_center_crop_json false "identify_failed" "$center"
+    return 1
+  fi
   geometry="$(awk -v dims="$geometry" -v center="$center" \
     -v tw="$TARGET_WIDTH" -v th="$TARGET_HEIGHT" -v zoom="$FACE_CROP_ZOOM" -v ratio="$FACE_CROP_TARGET_FACE_RATIO" 'BEGIN {
       split(dims, d, " ");
@@ -2289,10 +2321,17 @@ write_face_centered_image() {
       crop_w = int(2 * half_h * aspect);
       if (crop_w < 16 || crop_h < 16) exit 1;
       printf "%dx%d+%d+%d", crop_w, crop_h, int(cx - crop_w / 2), int(cy - crop_h / 2);
-    }')" || return 1
-  [[ -n "$geometry" ]] || return 1
+    }')" || { set_face_center_crop_json false "geometry_failed" "$center"; return 1; }
+  if [[ -z "$geometry" ]]; then
+    set_face_center_crop_json false "geometry_failed" "$center"
+    return 1
+  fi
 
-  magick "$decoded_path" -crop "$geometry" +repage "$cropped_path" || return 1
+  if ! magick "$decoded_path" -crop "$geometry" +repage "$cropped_path"; then
+    set_face_center_crop_json false "crop_failed" "$center" "$geometry"
+    return 1
+  fi
+  set_face_center_crop_json true "ok" "$center" "$geometry"
   return 0
 }
 
@@ -2581,6 +2620,7 @@ write_image_from_response() {
   local needs_refine=0
 
   LAST_FACE_CROP_JSON='null'
+  LAST_FACE_CENTER_CROP_JSON='null'
   encoded="$(extract_first_nonempty_json_string "$response_file")"
   [[ -n "$encoded" ]] || return 1
   mime_type="$(extract_first_mime_type "$response_file")"
@@ -2793,6 +2833,7 @@ write_sidecar() {
     --arg prompt_hash "$prompt_hash" \
     --arg endpoint "google-genai://models/${model_name}" \
     --argjson face_crop "$LAST_FACE_CROP_JSON" \
+    --argjson face_center_crop "$LAST_FACE_CENTER_CROP_JSON" \
     --slurpfile response_json "$response_file" \
     '{
       version: 1,
@@ -2848,7 +2889,8 @@ write_sidecar() {
         aspect_ratio: $aspect_ratio
       },
       postprocess: {
-        face_crop: $face_crop
+        face_crop: $face_crop,
+        face_center_crop: $face_center_crop
       },
       response_preview: (
         if ($response_json | length) > 0 then
@@ -3785,6 +3827,7 @@ cmd_recrop() {
   [[ -f "$target" ]] || die "no pane image at $target"
 
   # Prefer the untouched generation so repeated recrops do not compound losses.
+  local meta=""
   source="${dir}/${role}.vertical.raw.png"
   [[ -f "$source" ]] || source="$target"
 
@@ -3801,6 +3844,20 @@ cmd_recrop() {
   cp "$target" "$backup" 2>/dev/null || true
   write_center_cropped_image "$tmp_out" "$target"
   rm -f "$tmp_out"
+
+  # The sidecar describes the image that is on disk. Leaving the record of the
+  # generation's crop in place after replacing that image would describe a framing
+  # the file no longer has.
+  meta="${dir}/${role}.vertical.json"
+  if [[ -s "$meta" ]] && command -v jq >/dev/null 2>&1; then
+    if jq --argjson face_center_crop "$LAST_FACE_CENTER_CROP_JSON" \
+       '.postprocess.face_center_crop = ($face_center_crop + {via: "recrop"})' \
+       "$meta" > "${meta}.tmp" 2>/dev/null; then
+      mv "${meta}.tmp" "$meta"
+    else
+      rm -f "${meta}.tmp"
+    fi
+  fi
   printf '%s\n' "$target"
 }
 
