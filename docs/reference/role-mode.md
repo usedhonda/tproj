@@ -194,6 +194,36 @@ rm <project>/.local/role-mode.json
 The state is one file per project, so this returns that project to `auto` even if
 the router itself is broken. `tproj-role auto` does the same thing.
 
+## Consulting the peer in `advisor`
+
+`advisor` pairs the two panes correctly, but on its own it gives the working side no
+reason ever to use the other one: internally the working side is `solo-fallback`, and
+the duty attached to that role is to finish end to end. Left there, the mode is
+indistinguishable from `solo`.
+
+So the Stop hook holds a turn open until the working side has consulted its peer once
+for the current task. The gate arms only when all four hold:
+
+1. the project's declared mode is `advisor`
+2. this pane is the working side (`role` is `solo-fallback`)
+3. the peer is reachable **at that moment**, re-checked through the router rather
+   than trusted from a stored `peer_alias` — a peer can exit mid-task
+4. an `intent-guard` lock is active and owned by this pane
+
+A consultation is a send made with `tproj-msg --consult`, recorded as
+`messages.msg_kind = 'consult'`. Ordinary traffic does not count: a status report, or
+the router's own pairing ping, would otherwise satisfy an obligation that is supposed
+to mean "you asked someone". Rows whose delivery was rejected or errored, and the
+empty-bodied caller-audit rows, are excluded too.
+
+The boundary is the task run's `started_at_epoch`, stamped fresh by every
+`intent-guard start` and never moved by `check`. The older `started_at` field is
+sticky across starts, so using it would let one consultation satisfy every later task.
+
+Anything the gate cannot determine — no lock, no reachable peer, no database, a lock
+predating the run stamp, a lock owned by another pane — leaves the turn alone. A guard
+that wedges a session is worse than the problem it solves.
+
 ## Tests
 
 - `general/system/model-role-router/test-model-role-router.sh` — state file defaults
@@ -205,3 +235,8 @@ the router itself is broken. `tproj-role auto` does the same thing.
   the project scoping of the guard's mode query.
 - `tests/smoke-bin.sh` — `tproj-role` read paths survive a checkout with no
   installed router.
+- `extensions/hooks/tests/test-completion-guard-consult.sh` — the consultation gate:
+  what arms it, what counts as a consultation, the task-run boundary, and every
+  fail-open path.
+- `general/system/intent-guard/test-intent-guard.sh` — the task run identity is
+  stamped by `start`, left alone by `check`, and refreshed by the next `start`.

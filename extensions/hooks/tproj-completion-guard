@@ -243,6 +243,150 @@ def declared_role_mode() -> str:
     return mode or "auto"
 
 
+ROUTER_MODULE_CACHE: dict = {}
+
+
+def router_module():
+    # Reuse the router's own liveness helpers rather than reimplementing them here.
+    # This guard decides whether to hold a turn open; a second, drifting copy of
+    # "is that peer really there" is the last thing that should make that call.
+    if "m" in ROUTER_MODULE_CACHE:
+        return ROUTER_MODULE_CACHE["m"]
+    ROUTER_MODULE_CACHE["m"] = None
+    path = shutil.which("model-role-router")
+    if path:
+        try:
+            import importlib.machinery
+            import importlib.util
+
+            loader = importlib.machinery.SourceFileLoader("model_role_router", path)
+            spec = importlib.util.spec_from_loader("model_role_router", loader)
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            ROUTER_MODULE_CACHE["m"] = module
+        except Exception:
+            ROUTER_MODULE_CACHE["m"] = None
+    return ROUTER_MODULE_CACHE["m"]
+
+
+def consultable_peer(session: str, alias: str, role: str) -> str:
+    # The peer alias, but only while it is genuinely reachable right now. A stored
+    # peer_alias is not that: a peer can exit mid-task, and requiring a consultation
+    # with something that is gone would hold the turn open forever.
+    module = router_module()
+    if module is None:
+        return ""
+    try:
+        column = subprocess.run(
+            ["tmux", "display-message", "-t", os.environ.get("TPROJ_PANE", os.environ.get("TMUX_PANE", "")),
+             "-p", "#{@column}"],
+            capture_output=True, text=True, timeout=3, check=False,
+        ).stdout.strip()
+        if not column:
+            return ""
+        identity = {"session": session, "column": column, "alias": f"{alias}.{role}", "pane_id": ""}
+        peer = module.pane_peer(identity)
+    except Exception:
+        return ""
+    return str(peer.get("alias", "")) if isinstance(peer, dict) else ""
+
+
+def active_task_run(project: str, session: str, self_alias: str) -> int:
+    # Start epoch of the task run this pane is currently locked into, or 0 when
+    # there is none to speak of. Only `intent-guard start` stamps a run, so a
+    # conversational turn is never gated. `started_at` is deliberately NOT used: it
+    # survives across starts, so one old consultation would satisfy every later task.
+    path = Path(os.environ.get("INTENT_GUARD_DIR", str(Path.home() / ".claude/intent-guard"))) / "state.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    entry = (state.get("entries") or {}).get(project)
+    if not isinstance(entry, dict) or entry.get("status") != "active":
+        return 0
+    started = entry.get("started_at_epoch")
+    if not isinstance(started, int) or started <= 0:
+        return 0  # pre-migration lock: no usable boundary, so do not gate
+    owner_session = entry.get("owner_session") or ""
+    owner_alias = entry.get("owner_alias") or ""
+    if owner_session and owner_session != session:
+        return 0
+    if owner_alias and owner_alias != self_alias:
+        return 0
+    return started
+
+
+def consulted_since(db, session: str, self_alias: str, peer_alias: str, since: int) -> bool:
+    # Only a send that was marked as a consultation counts. Any outbound row would
+    # be satisfied by a status report or by the router's own pairing ping, which is
+    # not what "you asked someone" means. Caller-audit rows carry an empty body and
+    # rejected/error rows never reached anyone, so both are excluded.
+    forms = recipient_forms(self_alias, peer_alias)
+    placeholders = ",".join("?" for _ in forms)
+    try:
+        row = db.execute(
+            f"""
+            SELECT 1 FROM messages
+             WHERE session = ?
+               AND from_alias = ?
+               AND to_alias IN ({placeholders})
+               AND direction = 'outbound'
+               AND msg_kind = 'consult'
+               AND TRIM(COALESCE(body, '')) != ''
+               AND COALESCE(delivery, '') NOT IN ('rejected', 'error')
+               AND created_at >= ?
+             LIMIT 1
+            """,
+            (session, self_alias, *forms, since),
+        ).fetchone()
+    except sqlite3.Error:
+        return True  # cannot tell: never hold a turn open on a broken query
+    return row is not None
+
+
+def consult_gate(session: str, alias: str, role: str) -> str:
+    # Empty string when the turn may end. Advisor mode pairs the panes correctly but
+    # gives the working side no reason to ever use its peer, so it works alone and
+    # the mode looks identical to solo. This is the one place that makes the
+    # consultation real, and every unknown fails open.
+    self_alias = f"{alias}.{role}"
+    project = own_project()
+    if not project:
+        return ""
+    module = router_module()
+    if module is None:
+        return ""
+    try:
+        own = module.read_json_file(
+            module.state_path({"session": session, "column": "", "alias": self_alias})
+        )
+    except Exception:
+        own = {}
+    if not isinstance(own, dict) or own.get("role") != "solo-fallback":
+        return ""  # not the working side; advising panes owe nothing
+    since = active_task_run(project, session, self_alias)
+    if since <= 0:
+        return ""
+    peer_alias = consultable_peer(session, alias, role)
+    if not peer_alias:
+        return ""
+    db = open_db()
+    if db is None:
+        return ""
+    try:
+        consulted = consulted_since(db, session, self_alias, peer_alias, since)
+    finally:
+        db.close()
+    if consulted:
+        return ""
+    return (
+        f"Advisor mode: consult {peer_alias} once before finishing this task. "
+        f"Send a design question, an approach check, or a review request with "
+        f"`tproj-msg --consult {peer_alias} \"...\"`, then finish. "
+        "The reply arrives on its own; do not wait for it."
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--platform", choices=("claude", "codex"), default="claude")
@@ -262,13 +406,18 @@ def main() -> int:
     identity = owner_identity()
     if identity is None:
         return 0
-    # Under a declared mode there is no orchestrator handing work down, so the
-    # delegation lifecycle this guard enforces does not describe what is happening.
-    # Holding a turn open for a tag nobody is waiting on is the friction the mode was
-    # introduced to remove.
-    if declared_role_mode() != "auto":
-        return 0
     session, alias, role = identity
+    mode = declared_role_mode()
+    if mode == "advisor":
+        # Advisor pairs the panes but never makes the working side use its peer.
+        blocked = consult_gate(session, alias, role)
+        return block(blocked) if blocked else 0
+    # Under any other declared mode there is no orchestrator handing work down, so the
+    # delegation lifecycle below does not describe what is happening. Holding a turn
+    # open for a tag nobody is waiting on is the friction the mode was introduced to
+    # remove.
+    if mode != "auto":
+        return 0
     owner = f"{session}/{alias}"
     self_alias = f"{alias}.{role}"
     db = open_db()

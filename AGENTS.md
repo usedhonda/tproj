@@ -34,6 +34,7 @@ bash tests/test-pane-autozoom.sh
 bash extensions/messaging/tests/test-sendability-gate.sh
 bash extensions/messaging/tests/test-role-handoff.sh
 bash extensions/hooks/tests/test-inbox-check.sh
+bash extensions/hooks/tests/test-completion-guard-consult.sh
 ```
 
 For Swift changes:

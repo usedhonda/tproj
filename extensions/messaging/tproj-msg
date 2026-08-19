@@ -231,6 +231,7 @@ short_to_role_pattern() {
 # === Parse arguments ===
 FIRE_MODE=false
 FORCE_MODE=false
+MSG_KIND=""
 LIST_MODE=false
 READ_MODE=false
 FLUSH_MODE=false
@@ -324,6 +325,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --user-authorized)
       USER_AUTHORIZED_EXACT=true
+      shift
+      ;;
+    --consult)
+      # Marks this send as a deliberate consultation of the peer. Recorded in the
+      # message row so a completion gate can require one without accepting any
+      # outbound traffic -- a status report or an automatic pairing ping would
+      # otherwise satisfy an obligation meant to mean "you asked someone".
+      MSG_KIND="consult"
       shift
       ;;
     --fire)
@@ -2773,7 +2782,7 @@ enqueue() {
   if declare -F tt_db_log_message >/dev/null 2>&1; then
     _hash=$(sha1_hash "$msg" 2>/dev/null)
     _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
-    _dbid=$(tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "${TASK_ID:-}" "outbound" "queued" "${MY_ROLE:-cc}" "tmux" "" 2>/dev/null) || _dbid=""
+    _dbid=$(tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "${TASK_ID:-}" "outbound" "queued" "${MY_ROLE:-cc}" "tmux" "" "${MSG_KIND:-}" 2>/dev/null) || _dbid=""
     [[ "$_dbid" =~ ^[0-9]+$ ]] || _dbid=""
   fi
   # M-D5c: append under the per-target queue lock so a concurrent flush's
@@ -2983,7 +2992,7 @@ _flush_drain_queue() {
       if [[ -n "$dbid" ]] && declare -F tt_db_set_flushed >/dev/null 2>&1; then
         tt_db_set_flushed "$dbid" 2>/dev/null
       else
-        _outid=$(tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "" "outbound" "flushed" "${MY_ROLE:-cc}" "tmux" "" 2>/dev/null)
+        _outid=$(tt_db_log_message "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "" "outbound" "flushed" "${MY_ROLE:-cc}" "tmux" "" "${MSG_KIND:-}" 2>/dev/null)
         [[ -n "$_outid" ]] && tt_db_set_delivered "$_outid" 2>/dev/null
       fi
       tt_db_mirror_inbound "$SESSION" "$_from" "$target_name" "$msg" "$_hash" "$header" "" "flushed" "${MY_ROLE:-cc}" "tmux" "" >/dev/null 2>&1 || true
@@ -3767,7 +3776,7 @@ _raw_send_record_error() {
     local _hash _from _outid
     _hash=$(sha1_hash "$MESSAGE" 2>/dev/null)
     _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
-    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "error" "${MY_ROLE:-cc}" "tmux" "" 2>/dev/null)
+    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "error" "${MY_ROLE:-cc}" "tmux" "" "${MSG_KIND:-}" 2>/dev/null)
     if [[ -n "$_outid" ]] && declare -F tt_db_set_delivery_error >/dev/null 2>&1; then
       tt_db_set_delivery_error "$_outid" "$_reason" 2>/dev/null
     fi
@@ -3798,7 +3807,7 @@ raw_send() {
     local _hash _from _outid
     _hash=$(sha1_hash "$MESSAGE" 2>/dev/null)
     _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
-    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "send-keys" "${MY_ROLE:-cc}" "tmux" "" 2>/dev/null)
+    _outid=$(tt_db_log_message "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "outbound" "send-keys" "${MY_ROLE:-cc}" "tmux" "" "${MSG_KIND:-}" 2>/dev/null)
     [[ -n "$_outid" ]] && tt_db_set_delivered "$_outid" 2>/dev/null
     tt_db_mirror_inbound "$SESSION" "$_from" "$TARGET" "$MESSAGE" "$_hash" "$HEADER" "${TASK_ID:-}" "send-keys" "${MY_ROLE:-cc}" "tmux" "" >/dev/null 2>&1 || true
   fi

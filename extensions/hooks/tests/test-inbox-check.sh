@@ -304,7 +304,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   assert_contains "own=[$st_own]" "own=[done]" "owned row updates only via exact composite (wrong/owner-less ignored)"
   assert_contains "leg=[$st_leg]" "leg=[expired]" "legacy NULL-owner row transitionable by owner-less call"
   ver="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
-  assert_contains "ver=[$ver]" "ver=[8]" "tasks schema at user_version 8"
+  assert_contains "ver=[$ver]" "ver=[9]" "tasks schema at user_version 9"
   rm -rf "$L_TMP"
   unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
 else
@@ -433,7 +433,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   ver6="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
   assert_contains "collide=[$n_collide]" "collide=[2]" "same task_id, different owner/target -> distinct rows (no overwrite)"
   assert_contains "legrep=[$n_legrep]" "legrep=[1]" "repeated owner-less upsert is idempotent (no row growth)"
-  assert_contains "ver=[$ver6]" "ver=[8]" "fresh DB at user_version 8"
+  assert_contains "ver=[$ver6]" "ver=[9]" "fresh DB at user_version 9"
   rm -f "$TPROJ_MSG_DB_PATH"*
   # R4-1: TRUE v5 migration from a hand-crafted v5 schema (task_id PRIMARY KEY),
   # NOT `TT_DB_SCHEMA_VERSION=5 tt_db_init` (which would run the v6 migration
@@ -449,7 +449,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   mig_rows="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM tasks;" 2>/dev/null || true)"
   mig_idx="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM sqlite_master WHERE name IN ('idx_tasks_owner_identity','idx_tasks_legacy_identity');" 2>/dev/null || true)"
   mig_pk="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT pk FROM pragma_table_info('tasks') WHERE name='task_id';" 2>/dev/null || true)"
-  assert_contains "mv=[$mig_ver]" "mv=[8]" "hand-crafted v5 DB migrates to user_version 8"
+  assert_contains "mv=[$mig_ver]" "mv=[9]" "hand-crafted v5 DB migrates to user_version 9"
   assert_contains "mr=[$mig_rows]" "mr=[2]" "migration preserves existing task rows"
   assert_contains "mi=[$mig_idx]" "mi=[2]" "migration creates both composite/legacy identity indexes"
   assert_contains "pk=[$mig_pk]" "pk=[0]" "migration drops the task_id PRIMARY KEY"
@@ -472,7 +472,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   assert_contains "rr=[$rec_rows]" "rr=[2]" "interrupted-run survivor rows are recovered"
   assert_contains "rd=[$rec_data]" "rd=[s1,s2]" "recovered rows carry the original task ids"
   assert_contains "rs=[$rec_survivor]" "rs=[0]" "survivor temp table is dropped after recovery"
-  assert_contains "rv=[$rec_ver]" "rv=[8]" "recovered DB reaches user_version 8"
+  assert_contains "rv=[$rec_ver]" "rv=[9]" "recovered DB reaches user_version 9"
 
   # Blocker 1 (R4-1 cont.): a late-interrupted pre-atomic run created the owner
   # index but crashed before the legacy index (rebuilt no-PK table, owner index
@@ -494,7 +494,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   lc_leg_rows="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM tasks WHERE task_id='legX';" 2>/dev/null || true)"
   assert_contains "lo=[$lc_owner]" "lo=[1]" "late-crash: owner identity index present"
   assert_contains "ll=[$lc_legacy]" "ll=[1]" "late-crash: missing legacy identity index is repaired"
-  assert_contains "lv=[$lc_ver]" "lv=[8]" "late-crash: DB reaches user_version 8 after repair"
+  assert_contains "lv=[$lc_ver]" "lv=[9]" "late-crash: DB reaches user_version 9 after repair"
   assert_contains "lr=[$lc_leg_rows]" "lr=[1]" "late-crash: ownerless ON CONFLICT upsert now succeeds (idempotent)"
   rm -rf "$O_TMP"
   unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
