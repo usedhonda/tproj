@@ -4597,26 +4597,30 @@ struct ContentView: View {
             GeometryReader { geo in
                 let width = max(geo.size.width, 1)
                 let targetX = width / 2
-                let boundedMargin = min(max(100 - side.pacePercent, -50), 50)
-                let actualX = width * CGFloat(boundedMargin + 50) / 100
-                let segmentX = min(actualX, targetX)
-                let segmentWidth = max(2, abs(actualX - targetX))
+                let actualX = side.pacePercent.map { pacePercent in
+                    let boundedMargin = min(max(100 - pacePercent, -50), 50)
+                    return width * CGFloat(boundedMargin + 50) / 100
+                }
                 ZStack(alignment: .leading) {
                     Capsule(style: .continuous)
                         .fill(GhosttyTheme.current.foreground.opacity(0.10))
-                    Capsule(style: .continuous)
-                        .fill(statusTint.opacity(0.72))
-                        .frame(width: segmentWidth)
-                        .offset(x: segmentX)
+                    if let actualX {
+                        Capsule(style: .continuous)
+                            .fill(statusTint.opacity(0.72))
+                            .frame(width: max(2, abs(actualX - targetX)))
+                            .offset(x: min(actualX, targetX))
+                    }
                     Rectangle()
                         .fill(GhosttyTheme.current.textPrimary.opacity(0.9))
                         .frame(width: 1, height: 8)
                         .offset(x: targetX)
-                    Circle()
-                        .fill(statusTint)
-                        .overlay(Circle().stroke(GhosttyTheme.current.textPrimary.opacity(0.9), lineWidth: 1))
-                        .frame(width: 6, height: 6)
-                        .offset(x: actualX - 3)
+                    if let actualX {
+                        Circle()
+                            .fill(statusTint)
+                            .overlay(Circle().stroke(GhosttyTheme.current.textPrimary.opacity(0.9), lineWidth: 1))
+                            .frame(width: 6, height: 6)
+                            .offset(x: actualX - 3)
+                    }
                 }
             }
             .frame(height: 6)
@@ -4637,13 +4641,15 @@ struct ContentView: View {
         .font(GhosttyTheme.current.font(size: 8, weight: .medium))
     }
 
-    private func weeklyPaceStatusTint(_ pacePercent: Int) -> Color {
+    private func weeklyPaceStatusTint(_ pacePercent: Int?) -> Color {
+        guard let pacePercent else { return GhosttyTheme.current.textTertiary }
         if pacePercent >= 100 { return GhosttyTheme.current.accentRed }
         if pacePercent >= 90 { return GhosttyTheme.current.accentYellow }
         return GhosttyTheme.current.accentGreen
     }
 
-    private func weeklyPaceMargin(_ pacePercent: Int) -> String {
+    private func weeklyPaceMargin(_ pacePercent: Int?) -> String {
+        guard let pacePercent else { return "-" }
         let margin = 100 - pacePercent
         return margin >= 0 ? "+\(margin)pt" : "\(margin)pt"
     }

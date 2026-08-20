@@ -157,6 +157,16 @@ final class RoleModeTests: XCTestCase {
             now: freshNow
         )
         XCTAssertEqual(lowUseState.sides["cdx"]?.status, .unavailable)
+        let lowUseBalance = try XCTUnwrap(CodexBarPace.balance(
+            snapshots: ["codex": lowUse, "claude": claude],
+            now: freshNow
+        ))
+        XCTAssertEqual(lowUseBalance.cdx.remainingPercent, 91)
+        XCTAssertEqual(lowUseBalance.cdx.resetsAt, resetsAt)
+        XCTAssertNil(lowUseBalance.cdx.pacePercent)
+        XCTAssertEqual(lowUseBalance.cc.pacePercent, 88)
+        XCTAssertEqual(lowUseBalance.cc.resetsAt, resetsAt)
+        XCTAssertNil(lowUseBalance.recommendedMain)
 
         let balance = try XCTUnwrap(CodexBarPace.balance(snapshots: snapshots, now: freshNow))
         XCTAssertNotNil(CodexBarPace.balance(snapshots: snapshots, now: staleNow))

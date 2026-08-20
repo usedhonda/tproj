@@ -29,8 +29,8 @@ public struct WeeklyPaceSnapshot: Equatable, Sendable {
 public struct WeeklyPaceBalanceSide: Equatable, Sendable {
     public let side: String
     public let remainingPercent: Int
-    public let projectedRemainingPercent: Int
-    public let pacePercent: Int
+    public let projectedRemainingPercent: Int?
+    public let pacePercent: Int?
     public let resetsAt: Date
 }
 
@@ -40,8 +40,10 @@ public struct WeeklyPaceBalance: Equatable, Sendable {
     public let fable: WeeklyPaceBalanceSide?
     public let recommendedMain: String?
 
-    public var recommendationGap: Int {
-        abs(cc.projectedRemainingPercent - cdx.projectedRemainingPercent)
+    public var recommendationGap: Int? {
+        guard let ccRemaining = cc.projectedRemainingPercent,
+              let cdxRemaining = cdx.projectedRemainingPercent else { return nil }
+        return abs(ccRemaining - cdxRemaining)
     }
 }
 
@@ -358,24 +360,27 @@ public enum CodexBarPace {
         guard let codex = snapshots["codex"],
               let claude = snapshots["claude"],
               isFresh(codex, now: now, staleAfter: staleAfter),
-              isFresh(claude, now: now, staleAfter: staleAfter),
-              codex.usedPercent >= 10,
-              claude.usedPercent >= 10,
-              let codexProjected = codex.projectedUsedPercentAtReset,
-              let claudeProjected = claude.projectedUsedPercentAtReset else {
+              isFresh(claude, now: now, staleAfter: staleAfter) else {
             return nil
         }
 
+        let codexProjected = codex.usedPercent >= 10 ? codex.projectedUsedPercentAtReset : nil
+        let claudeProjected = claude.usedPercent >= 10 ? claude.projectedUsedPercentAtReset : nil
         let cdx = balanceSide(side: "cdx", snapshot: codex, projectedUsedPercent: codexProjected)
         let cc = balanceSide(side: "cc", snapshot: claude, projectedUsedPercent: claudeProjected)
         let fable = snapshots["fable"].flatMap { snapshot -> WeeklyPaceBalanceSide? in
-            guard isFresh(snapshot, now: now, staleAfter: staleAfter),
-                  snapshot.usedPercent >= 10,
-                  let projected = snapshot.projectedUsedPercentAtReset else { return nil }
+            guard isFresh(snapshot, now: now, staleAfter: staleAfter) else { return nil }
+            let projected = snapshot.usedPercent >= 10 ? snapshot.projectedUsedPercentAtReset : nil
             return balanceSide(side: "fable", snapshot: snapshot, projectedUsedPercent: projected)
         }
-        let delta = cc.projectedRemainingPercent - cdx.projectedRemainingPercent
-        let recommendedMain: String? = abs(delta) >= 10 ? (delta > 0 ? "cc" : "cdx") : nil
+        let recommendedMain: String?
+        if let ccRemaining = cc.projectedRemainingPercent,
+           let cdxRemaining = cdx.projectedRemainingPercent {
+            let delta = ccRemaining - cdxRemaining
+            recommendedMain = abs(delta) >= 10 ? (delta > 0 ? "cc" : "cdx") : nil
+        } else {
+            recommendedMain = nil
+        }
         return WeeklyPaceBalance(cdx: cdx, cc: cc, fable: fable, recommendedMain: recommendedMain)
     }
 
@@ -452,13 +457,17 @@ public enum CodexBarPace {
     private static func balanceSide(
         side: String,
         snapshot: WeeklyPaceSnapshot,
-        projectedUsedPercent: Double
+        projectedUsedPercent: Double?
     ) -> WeeklyPaceBalanceSide {
         WeeklyPaceBalanceSide(
             side: side,
             remainingPercent: max(0, min(100, Int((100 - snapshot.usedPercent).rounded()))),
-            projectedRemainingPercent: max(0, min(100, 100 - Int(projectedUsedPercent.rounded()))),
-            pacePercent: max(0, min(999, Int(projectedUsedPercent.rounded()))),
+            projectedRemainingPercent: projectedUsedPercent.map {
+                max(0, min(100, 100 - Int($0.rounded())))
+            },
+            pacePercent: projectedUsedPercent.map {
+                max(0, min(999, Int($0.rounded())))
+            },
             resetsAt: snapshot.resetsAt
         )
     }
