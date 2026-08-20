@@ -122,6 +122,31 @@ if [[ -x "$ROLE" ]]; then
   else
     fail "exec:tproj-role --status-segment without the router" "output: $(printf '%s' "$out" | tr '\n' '|')"
   fi
+  # The main side is what decides which pane the GUI treats as the one you talk to,
+  # and it was only reachable from the GUI: an agent asked to hand it over could
+  # declare a mode and leave `main` exactly where it was, which looks like nothing
+  # happened. Both spellings are validated before the router is ever needed, so this
+  # runs on an installation without one.
+  # Needs the router on PATH: without one the script reports that first, by design,
+  # so an installation that has no router simply does not exercise these.
+  if command -v model-role-router >/dev/null 2>&1; then
+    if out=$(run_bounded 6 "$ROLE" main bogus 2>&1); rc=$?; [[ "$rc" -eq 2 ]] \
+       && printf '%s' "$out" | grep -q "cc, cdx, or derived"; then
+      pass "exec:tproj-role rejects an unknown main side"
+    else
+      fail "exec:tproj-role rejects an unknown main side" "rc=$rc output: $(printf '%s' "$out" | tr '\n' '|')"
+    fi
+    if out=$(run_bounded 6 "$ROLE" --main bogus 2>&1); rc=$?; [[ "$rc" -eq 2 ]]; then
+      pass "exec:tproj-role rejects an unknown --main side"
+    else
+      fail "exec:tproj-role rejects an unknown --main side" "rc=$rc output: $(printf '%s' "$out" | tr '\n' '|')"
+    fi
+  fi
+  if printf '%s' "$($ROLE --help 2>&1)" | grep -q "main <side>"; then
+    pass "exec:tproj-role --help documents the main side"
+  else
+    fail "exec:tproj-role --help documents the main side" "not in usage"
+  fi
 else
   fail "exec:tproj-role" "not executable"
 fi

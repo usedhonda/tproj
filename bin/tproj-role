@@ -15,12 +15,15 @@ set -uo pipefail
 
 usage() {
   cat <<'USAGE'
-usage: tproj-role [auto|advisor|solo] [--project DIR | --all] [--json]
+usage: tproj-role [auto|advisor|solo] [main cc|cdx|derived] [--project DIR | --all] [--json]
        tproj-role --status-segment
 
   auto      model tier decides who leads (default)
   advisor   the side you prompt leads; the other side advises only
   solo      the side you prompt leads; the other side stays out
+
+  main <side>       hand the conversation main side to cc or cdx (derived clears it)
+  --main <side>     same, alongside a mode declaration
 
   --project DIR     act on that project instead of the current one
   --all             apply the declaration to every project in workspace.yaml
@@ -78,6 +81,7 @@ workspace_projects() {
 }
 
 value=""
+main_side=""
 project=""
 all=false
 json=false
@@ -94,6 +98,24 @@ while [ $# -gt 0 ]; do
       [ -n "$project" ] || { echo "tproj-role: --project needs a directory" >&2; exit 2; }
       ;;
     auto|advisor|solo) value="$1" ;;
+    --main)
+      shift
+      main_side="${1:-}"
+      case "$main_side" in
+        cc|cdx|derived) ;;
+        *) echo "tproj-role: --main needs cc, cdx, or derived" >&2; exit 2 ;;
+      esac
+      ;;
+    main)
+      # Bare form so the common ask -- "hand the main side to Cdx" -- is one short
+      # line to type or to say to an agent: tproj-role main cdx
+      shift
+      main_side="${1:-}"
+      case "$main_side" in
+        cc|cdx|derived) ;;
+        *) echo "tproj-role: main needs cc, cdx, or derived" >&2; exit 2 ;;
+      esac
+      ;;
     *)
       echo "tproj-role: unknown argument '$1'" >&2
       usage >&2
@@ -122,14 +144,17 @@ if $segment; then
 fi
 
 if $all; then
-  [ -n "$value" ] || { echo "tproj-role: --all needs a mode to apply" >&2; exit 2; }
+  if [ -z "$value" ] && [ -z "$main_side" ]; then
+    echo "tproj-role: --all needs a mode or --main to apply" >&2
+    exit 2
+  fi
   setter=$(declared_by)
   applied=0
   while IFS= read -r path; do
     [ -n "$path" ] || continue
-    if "$router" mode "$value" --project "$path" --set-by "$setter" --source tproj-role >/dev/null 2>&1; then
+    if "$router" mode $value --project "$path" ${main_side:+--main "$main_side"} --set-by "$setter" --source tproj-role >/dev/null 2>&1; then
       applied=$((applied + 1))
-      printf 'role mode: %s [%s]\n' "$value" "$path"
+      printf 'role mode: %s [%s]\n' "${value:-$main_side}" "$path"
     else
       printf 'tproj-role: skipped %s\n' "$path" >&2
     fi
@@ -138,14 +163,16 @@ if $all; then
   exit 0
 fi
 
-if [ -n "$value" ]; then
+if [ -n "$value" ] || [ -n "$main_side" ]; then
+  # Unquoted $value on purpose: it may be empty when only --main was given, and the
+  # router's mode argument is optional.
   setter=$(declared_by)
   if $json; then
-    "$router" mode "$value" ${project:+--project "$project"} --set-by "$setter" --source tproj-role >/dev/null \
+    "$router" mode $value ${project:+--project "$project"} ${main_side:+--main "$main_side"} --set-by "$setter" --source tproj-role >/dev/null \
       && "$router" mode --json ${project:+--project "$project"}
     exit $?
   fi
-  "$router" mode "$value" ${project:+--project "$project"} --set-by "$setter" --source tproj-role
+  "$router" mode $value ${project:+--project "$project"} ${main_side:+--main "$main_side"} --set-by "$setter" --source tproj-role
   exit $?
 fi
 
