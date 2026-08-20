@@ -4445,6 +4445,7 @@ struct ContentView: View {
     @State private var dropInsertionIndex: Int?
     @State private var isDragActive = false
     @State private var didRecoverWindowFrame = false
+    @State private var remainingSectionsHeight: CGFloat = 0
 
     private func setDragLock(_ locked: Bool) {
         ghosttyTracker.isDragSuspended = locked
@@ -4800,7 +4801,10 @@ struct ContentView: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) { bottomResizeFooter }
             } else {
                 GeometryReader { geo in
-                    let maxH = geo.size.height * (vm.weeklyPaceBalance() == nil ? 0.8 : 0.58)
+                    // Keep the workspace height stable while the window consumes unused
+                    // space below. Only compress it once the remaining sections need room.
+                    let fixedChromeHeight: CGFloat = 46
+                    let maxH = max(100, geo.size.height - remainingSectionsHeight - fixedChromeHeight)
                     VStack(alignment: .leading, spacing: 0) {
                         // -- Top: Current Workspace --
                         SectionHeader(title: "Current Workspace", isCollapsed: $workspaceCollapsed)
@@ -4832,8 +4836,19 @@ struct ContentView: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 4)
+                            .background {
+                                GeometryReader { content in
+                                    Color.clear.preference(
+                                        key: ContentHeightKey.self,
+                                        value: content.size.height
+                                    )
+                                }
+                            }
                         }
                         .frame(maxWidth: .infinity)
+                        .onPreferenceChange(ContentHeightKey.self) { height in
+                            remainingSectionsHeight = height
+                        }
                     }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) { bottomResizeFooter }
