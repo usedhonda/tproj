@@ -4585,7 +4585,11 @@ struct ContentView: View {
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
                     .frame(width: 30, alignment: .trailing)
                 Text(weeklyPaceMargin(side.pacePercent))
-                    .font(GhosttyTheme.current.font(size: 10, weight: .semibold, monospaced: true))
+                    .font(GhosttyTheme.current.font(
+                        size: side.pacePercent == nil ? 8 : 10,
+                        weight: .semibold,
+                        monospaced: true
+                    ))
                     .foregroundStyle(statusTint)
                     .frame(width: 40, alignment: .trailing)
                 Spacer(minLength: 2)
@@ -4649,7 +4653,7 @@ struct ContentView: View {
     }
 
     private func weeklyPaceMargin(_ pacePercent: Int?) -> String {
-        guard let pacePercent else { return "-" }
+        guard let pacePercent else { return "Sampling" }
         let margin = 100 - pacePercent
         return margin >= 0 ? "+\(margin)pt" : "\(margin)pt"
     }
