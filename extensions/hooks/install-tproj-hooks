@@ -77,12 +77,14 @@ def merge(document: dict[str, Any], platform: str) -> dict[str, Any]:
     if platform == "claude":
         home = "$HOME/bin"
         ensure_entry(hooks, "PreToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|apply_patch|functions.apply_patch", f"{home}/tproj-mutation-guard")
+        ensure_entry(hooks, "PreToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|apply_patch|functions.apply_patch", f"{home}/tproj-completion-guard --event pretool")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec", f"{home}/tproj-inbox-record")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check")
         ensure_entry(hooks, "Stop", "", f"{home}/tproj-completion-guard")
     else:
         home = str(Path("~/bin").expanduser())
         ensure_entry(hooks, "PreToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|apply_patch|functions.apply_patch", f"{home}/tproj-mutation-guard --platform codex")
+        ensure_entry(hooks, "PreToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|apply_patch|functions.apply_patch", f"{home}/tproj-completion-guard --platform codex --event pretool")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec", f"{home}/tproj-inbox-record")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check --platform codex")
         ensure_entry(hooks, "Stop", "", f"{home}/tproj-completion-guard --platform codex")

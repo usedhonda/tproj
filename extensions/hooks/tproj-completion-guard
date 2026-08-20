@@ -244,6 +244,7 @@ def declared_role_mode() -> str:
 
 
 ROUTER_MODULE_CACHE: dict = {}
+MUTATION_MODULE_CACHE: dict = {}
 
 
 def router_module():
@@ -267,6 +268,45 @@ def router_module():
         except Exception:
             ROUTER_MODULE_CACHE["m"] = None
     return ROUTER_MODULE_CACHE["m"]
+
+
+def mutation_guard_module():
+    # PreToolUse and the frozen-task guard must agree on what counts as a mutation.
+    # Load the installed sibling instead of maintaining a second shell parser here.
+    if "m" in MUTATION_MODULE_CACHE:
+        return MUTATION_MODULE_CACHE["m"]
+    MUTATION_MODULE_CACHE["m"] = None
+    path = Path(__file__).with_name("tproj-mutation-guard")
+    if path.is_file():
+        try:
+            import importlib.machinery
+            import importlib.util
+
+            loader = importlib.machinery.SourceFileLoader("tproj_mutation_guard", str(path))
+            spec = importlib.util.spec_from_loader("tproj_mutation_guard", loader)
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            MUTATION_MODULE_CACHE["m"] = module
+        except Exception:
+            MUTATION_MODULE_CACHE["m"] = None
+    return MUTATION_MODULE_CACHE["m"]
+
+
+def pretool_is_mutating(payload: dict[str, Any]) -> bool:
+    module = mutation_guard_module()
+    if module is None:
+        return False
+    try:
+        tool_name, command = module.parse_command(payload)
+        if tool_name in module.READONLY_TOOL_NAMES:
+            return False
+        if tool_name in module.MUTATING_TOOL_NAMES:
+            return True
+        if command:
+            return not module.is_readonly_shell(command)
+        return bool(tool_name)
+    except Exception:
+        return False
 
 
 def pane_column() -> str:
@@ -301,8 +341,9 @@ def consultable_peer(session: str, alias: str, role: str) -> str:
     return str(peer.get("alias", "")) if isinstance(peer, dict) else ""
 
 
-def active_task_run(session: str, self_alias: str) -> str:
-    # Identifier of the task run this pane is currently locked into, or "" when there
+def active_task_context(session: str, self_alias: str) -> tuple[str, str]:
+    # Identifier and Assist policy of the task run this pane is currently locked into,
+    # or ("", "legacy") when there is none. Only `intent-guard start` stamps a run, so a
     # is none. Only `intent-guard start` stamps a run, so a conversational turn is
     # never gated. The entry is found by owner rather than by project path: the
     # sender of a consultation resolves the same run the same way, and neither side
@@ -313,9 +354,9 @@ def active_task_run(session: str, self_alias: str) -> str:
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return ""
+        return "", "legacy"
     runs = [
-        entry["task_run_id"]
+        (entry["task_run_id"], str(entry.get("assist_consult_policy") or "legacy"))
         for entry in (state.get("entries") or {}).values()
         if isinstance(entry, dict)
         and entry.get("status") == "active"
@@ -330,10 +371,15 @@ def active_task_run(session: str, self_alias: str) -> str:
     # enumerated first decide, and an older run's consultation would release a newer
     # task. A pre-migration lock carries no run id and so is not a candidate either.
     # `tproj-msg --consult` selects the run the same way, so both sides agree.
-    return runs[0] if len(runs) == 1 else ""
+    if len(runs) != 1:
+        return "", "legacy"
+    run, policy = runs[0]
+    return run, policy if policy in {"wait", "send", "none", "legacy"} else "legacy"
 
 
-def consulted_in_run(db, session: str, self_alias: str, peer_alias: str, run: str) -> bool:
+def consultation_state(
+    db: sqlite3.Connection, session: str, self_alias: str, peer_alias: str, run: str
+) -> tuple[bool, bool]:
     # Only a send that was marked as a consultation, and that belongs to THIS task
     # run, counts. Any outbound row would be satisfied by a status report or by the
     # router's own pairing ping, which is not what "you asked someone" means.
@@ -342,9 +388,9 @@ def consulted_in_run(db, session: str, self_alias: str, peer_alias: str, run: st
     forms = recipient_forms(self_alias, peer_alias)
     placeholders = ",".join("?" for _ in forms)
     try:
-        row = db.execute(
+        rows = db.execute(
             f"""
-            SELECT 1 FROM messages
+            SELECT id, COALESCE(delivery, '') FROM messages
              WHERE session = ?
                AND from_alias = ?
                AND to_alias IN ({placeholders})
@@ -353,16 +399,45 @@ def consulted_in_run(db, session: str, self_alias: str, peer_alias: str, run: st
                AND task_run_id = ?
                AND TRIM(COALESCE(body, '')) != ''
                AND COALESCE(delivery, '') NOT IN ('rejected', 'error')
-             LIMIT 1
+             ORDER BY id
             """,
             (session, self_alias, *forms, run),
-        ).fetchone()
+        ).fetchall()
     except sqlite3.Error:
-        return True  # cannot tell: never hold a turn open on a broken query
-    return row is not None
+        return True, True  # cannot tell: never hold a turn open on a broken query
+    if not rows:
+        return False, False
+
+    peer_forms = recipient_forms(self_alias, peer_alias)
+    self_forms = recipient_forms(peer_alias, self_alias)
+    peer_placeholders = ",".join("?" for _ in peer_forms)
+    self_placeholders = ",".join("?" for _ in self_forms)
+    for consult_id, delivery in rows:
+        if delivery not in {"send-keys", "flushed"}:
+            continue
+        try:
+            reply = db.execute(
+                f"""
+                SELECT 1 FROM messages
+                 WHERE session = ?
+                   AND from_alias IN ({peer_placeholders})
+                   AND to_alias IN ({self_placeholders})
+                   AND direction = 'inbound'
+                   AND id > ?
+                   AND TRIM(COALESCE(body, '')) != ''
+                   AND COALESCE(delivery, '') NOT IN ('rejected', 'error')
+                 LIMIT 1
+                """,
+                (session, *peer_forms, *self_forms, consult_id),
+            ).fetchone()
+        except sqlite3.Error:
+            return True, True
+        if reply is not None:
+            return True, True
+    return True, False
 
 
-def consult_gate(session: str, alias: str, role: str) -> str:
+def consult_gate(session: str, alias: str, role: str, event: str) -> str:
     # Empty string when the turn may end. Assist mode pairs the panes correctly but
     # gives the working side no reason to ever use its peer, so it works alone and
     # the mode looks identical to solo. This is the one place that makes the
@@ -384,8 +459,10 @@ def consult_gate(session: str, alias: str, role: str) -> str:
         own = {}
     if not isinstance(own, dict) or own.get("role") != "solo-fallback":
         return ""  # not the working side; advising panes owe nothing
-    run = active_task_run(session, self_alias)
+    run, policy = active_task_context(session, self_alias)
     if not run:
+        return ""
+    if policy == "none" or (event == "pretool" and policy == "legacy"):
         return ""
     peer_alias = consultable_peer(session, alias, role)
     if not peer_alias:
@@ -394,23 +471,28 @@ def consult_gate(session: str, alias: str, role: str) -> str:
     if db is None:
         return ""
     try:
-        consulted = consulted_in_run(db, session, self_alias, peer_alias, run)
+        consulted, replied = consultation_state(db, session, self_alias, peer_alias, run)
     finally:
         db.close()
-    if consulted:
+    if not consulted:
+        timing = "before the first mutation" if event == "pretool" else "before finishing this task"
+        return (
+            f"Assist mode: consult {peer_alias} {timing}. Send a design question or approach check with "
+            f"`tproj-msg --consult {peer_alias} \"...\"`."
+        )
+    if policy != "wait" or replied:
         return ""
     return (
-        f"Assist mode: consult {peer_alias} once before finishing this task. "
-        f"Send a design question, an approach check, or a review request with "
-        f"`tproj-msg --consult {peer_alias} \"...\"`, then finish. "
-        "The reply arrives on its own; do not wait for it."
+        f"Assist mode: wait for {peer_alias}'s reply before mutating or finishing this high-impact task. "
+        "Continue with read-only investigation while the reply is pending."
     )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--platform", choices=("claude", "codex"), default="claude")
-    parser.parse_args()
+    parser.add_argument("--event", choices=("stop", "pretool"), default="stop")
+    args = parser.parse_args()
     try:
         payload: Any = json.load(sys.stdin)
     except (json.JSONDecodeError, OSError):
@@ -421,7 +503,7 @@ def main() -> int:
     if not isinstance(raw_event, dict):
         raw_event = {}
     text = payload.get("last_assistant_message") or raw_event.get("last_assistant_message", "")
-    if not isinstance(text, str):
+    if args.event == "stop" and not isinstance(text, str):
         return 0
     identity = owner_identity()
     if identity is None:
@@ -429,9 +511,13 @@ def main() -> int:
     session, alias, role = identity
     mode = declared_role_mode()
     if mode == "assist":
+        if args.event == "pretool" and not pretool_is_mutating(payload):
+            return 0
         # Assist pairs the panes but never makes the working side use its peer.
-        blocked = consult_gate(session, alias, role)
+        blocked = consult_gate(session, alias, role, args.event)
         return block(blocked) if blocked else 0
+    if args.event != "stop":
+        return 0
     # Under any other declared mode there is no orchestrator handing work down, so the
     # delegation lifecycle below does not describe what is happening. Holding a turn
     # open for a tag nobody is waiting on is the friction the mode was introduced to

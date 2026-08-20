@@ -64,17 +64,18 @@ sqlite3 "$DB" "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, sess
 
 printf '{"role":"solo-fallback"}' > "$TMP/cache/s1/3/tproj.cc.json"
 
-write_lock() {  # <task_run_id> <owner_alias>
+write_lock() {  # <task_run_id> <owner_alias> [wait|send|none|legacy]
   python3 -c "
 import hashlib, json, sys
 key = hashlib.md5(sys.argv[1].encode('utf-8')).hexdigest()  # same key intent-guard writes
 run = {} if sys.argv[2] == '-' else {'task_run_id': sys.argv[2]}
+policy = {} if sys.argv[4] == 'legacy' else {'assist_consult_policy': sys.argv[4]}
 state = {'version': 1, 'entries': {key: dict({
     'cwd': sys.argv[1], 'intent': 'x', 'status': 'active',
     'started_at': '2020-01-01T00:00:00Z', 'started_at_epoch': 1,
-    'owner_session': 's1', 'owner_alias': sys.argv[3]}, **run)}}
-json.dump(state, open(sys.argv[4], 'w', encoding='utf-8'))
-" "$TMP/proj" "$1" "$2" "$TMP/ig/state.json"
+    'owner_session': 's1', 'owner_alias': sys.argv[3]}, **run, **policy)}}
+json.dump(state, open(sys.argv[5], 'w', encoding='utf-8'))
+" "$TMP/proj" "$1" "$2" "${3-legacy}" "$TMP/ig/state.json"
 }
 
 add_msg() {  # <kind> <task_run_id> [delivery] [body]
@@ -82,8 +83,20 @@ add_msg() {  # <kind> <task_run_id> [delivery] [body]
                  VALUES ('s1','tproj.cc','tproj.cdx','${4-hello}','outbound','${3-send-keys}','$1','$2',$(date +%s));"
 }
 
+add_reply() {
+  sqlite3 "$DB" "INSERT INTO messages (session, from_alias, to_alias, body, direction, delivery, msg_kind, task_run_id, created_at)
+                 VALUES ('s1','tproj.cdx','tproj.cc','advice','inbound','send-keys','','',$(date +%s));"
+}
+
 run_guard() {
-  printf '{"last_assistant_message":"done"}' | \
+  local event="${GUARD_EVENT-stop}" payload
+  if [[ "$event" == "pretool" ]]; then
+    payload=$(jq -nc --arg tool "${PRETOOL_TOOL-apply_patch}" --arg command "${PRETOOL_COMMAND-}" \
+      '{tool_name:$tool,tool_input:{command:$command}}')
+  else
+    payload='{"last_assistant_message":"done"}'
+  fi
+  printf '%s' "$payload" | \
     env PATH="$TMP/bin:$PATH" \
         FAKE_CACHE="$TMP/cache" \
         FAKE_PROJECT="$TMP/proj" \
@@ -93,7 +106,7 @@ run_guard() {
         INTENT_GUARD_DIR="$TMP/ig" \
         TPROJ_PANE="%8" \
         TMUX_PANE="%8" \
-        "$GUARD" 2>&1
+        "$GUARD" --event "$event" 2>&1
 }
 
 # The hook protocol is the output, not the exit status: block() prints a decision
@@ -114,6 +127,31 @@ expect "a locked task with no consultation is held open" yes
 
 add_msg consult run-B
 expect "one consultation inside the task run releases it" no
+
+# `send` gates the first mutation on the outbound consultation. `wait` additionally
+# requires a real inbound peer message after that consultation.
+sqlite3 "$DB" "DELETE FROM messages;"
+write_lock run-S tproj.cc send
+GUARD_EVENT=pretool expect "send policy blocks the first mutation before consultation" yes
+add_msg consult run-S
+GUARD_EVENT=pretool expect "send policy allows mutation after consultation is sent" no
+
+sqlite3 "$DB" "DELETE FROM messages;"
+write_lock run-W tproj.cc wait
+GUARD_EVENT=pretool expect "wait policy blocks mutation before consultation" yes
+add_msg consult run-W
+GUARD_EVENT=pretool expect "wait policy still blocks while the reply is pending" yes
+expect "wait policy also holds a plan-only Stop while the reply is pending" yes
+add_reply
+GUARD_EVENT=pretool expect "wait policy allows mutation after the peer reply" no
+expect "wait policy allows completion after the peer reply" no
+
+sqlite3 "$DB" "DELETE FROM messages;"
+write_lock run-N tproj.cc none
+GUARD_EVENT=pretool expect "none policy leaves a local mutation alone" no
+write_lock run-R tproj.cc wait
+PRETOOL_TOOL=Bash PRETOOL_COMMAND="git status" GUARD_EVENT=pretool expect "read-only shell work is allowed while advice is pending" no
+FAKE_PEER="" GUARD_EVENT=pretool expect "an unavailable peer never wedges the first mutation" no
 
 # The whole reason the run id had to reach the message row: `created_at` has
 # one-second resolution, so a boundary made of time alone lets a consultation sent

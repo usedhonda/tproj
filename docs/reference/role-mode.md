@@ -204,8 +204,19 @@ reason ever to use the other one: internally the working side is `solo-fallback`
 the duty attached to that role is to finish end to end. Left there, the mode is
 indistinguishable from `solo`.
 
-So the Stop hook holds a turn open until the working side has consulted its peer once
-for the current task. The gate arms only when all four hold:
+Assist consultation has three task-run policies, selected by
+`intent-guard start --assist-consult wait|send|none`:
+
+- `wait` is for plans and high-impact work. Read-only investigation may continue,
+  but the first mutation and Stop both require a consultation followed by a real
+  inbound message from that peer.
+- `send` is for ordinary non-trivial work. The first mutation requires the
+  consultation to have been sent; the reply is not required.
+- `none` is limited to read-only work or an obvious local correction.
+
+The same predicate runs at PreToolUse and Stop, so Stop is a backstop rather than the
+normal time to ask. A legacy active run with no policy keeps the former Stop-only
+rule. The gate arms only when all four hold:
 
 1. the project's declared mode is `assist`
 2. this pane is the working side (`role` is `solo-fallback`)
@@ -242,6 +253,11 @@ pane owner has one active run. Entries that name no owner are legacy and are lef
 alone. Sender and gate both refuse to choose: zero or more than one match yields no
 run, and no run means no gate. The older
 `started_at` field is sticky across starts and cannot serve as a boundary at all.
+
+For `wait`, a reply is a non-empty inbound DB row from the same live peer to the
+working side, with a row id after the task-run consultation. The check uses message
+direction and identities, not body text. A queued consultation does not satisfy the
+reply requirement until it is flushed and a later inbound row arrives.
 
 Anything the gate cannot determine — no lock, no reachable peer, no database, a lock
 predating the run stamp, a lock owned by another pane — leaves the turn alone. A guard
