@@ -15,7 +15,7 @@ starting unless that component is explicitly required by the invoked command.
 - `bin/`: core CLI and tmux lifecycle scripts. `bin/tproj` is the main entrypoint.
 - `bin/lib/`: shell helpers shared by the core scripts.
 - `config/`: public tmux, yazi, and workspace example configuration.
-- `extensions/`: optional messaging, hooks, bootstrap, agent-team, and memory tooling.
+- `extensions/`: optional messaging, hooks, bootstrap, crew, skills, and memory tooling.
 - `apps/tproj/`: macOS SwiftUI GUI, split into `TprojApp` and `TprojLogic` targets.
 - `tests/`: repository-level smoke coverage for the CLI scripts.
 - `docs/`: public project and release documentation.
@@ -96,6 +96,10 @@ The repository's `project-bootstrap` entrypoint is a tracked symlink to the
 canonical implementation in the sibling `general` checkout. Do not materialize
 or retarget that symlink in tproj changes. `install.sh --check` verifies the
 canonical source, tracked symlink, and installed copy remain byte-identical.
+
+Skills both agents share live in `extensions/skills/<name>/SKILL.md`, symlinked into
+`~/.claude/skills/` and `~/.codex/skills/`. Keeping the source here means a shared
+rule is reviewable in a diff rather than living only in an ignored directory.
 
 Durable project rules belong in this file. Do not introduce important shared
 rules only in `CLAUDE.local.md`, `.codex/config.toml`, or agent memory: those
