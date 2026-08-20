@@ -4590,8 +4590,12 @@ struct ContentView: View {
                         weight: .semibold,
                         monospaced: true
                     ))
-                    .foregroundStyle(statusTint)
+                    .foregroundStyle(
+                        side.pacePercent == nil ? GhosttyTheme.current.textSecondary : statusTint
+                    )
                     .frame(width: 40, alignment: .trailing)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                 Spacer(minLength: 2)
                 Text(weeklyPaceResetCountdown(side.resetsAt))
                     .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
