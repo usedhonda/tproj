@@ -1,9 +1,9 @@
 #!/bin/bash
-# reflow-agent-pane - Move Agent Teams panes above Codex
-# Called by tmux after-split-window hook via team-watcher.
+# reflow-crew-pane - Move Crew panes above Codex
+# Called by tmux after-split-window hook via crew-watcher.
 # Serialization is handled by the caller (wait-for -L/U).
 #
-# Usage: reflow-agent-pane <session_name>
+# Usage: reflow-crew-pane <session_name>
 set -eo pipefail
 
 SESSION="${1:-}"
@@ -13,7 +13,7 @@ SESSION="${1:-}"
 CURRENT_WINDOW=$(tmux display-message -t "$SESSION" -p '#{window_name}' 2>/dev/null) || exit 0
 [[ "$CURRENT_WINDOW" != "dev" ]] && exit 0
 
-# Only act when agents are active (team-watcher sets this)
+# Only act when agents are active (crew-watcher sets this)
 AGENTS_ACTIVE=$(tmux show-environment -t "$SESSION" TPROJ_AGENTS_ACTIVE 2>/dev/null | cut -d= -f2) || true
 [[ "$AGENTS_ACTIVE" != "1" ]] && exit 0
 
@@ -62,7 +62,7 @@ fi
 
 [[ -z "$CODEX_PANE" ]] && exit 0
 
-# Get claude pane ID and original width (saved by team-watcher BEFORE any agent splits)
+# Get claude pane ID and original width (saved by crew-watcher BEFORE any agent splits)
 CLAUDE_PANE=""
 
 if [[ "$WORKSPACE_MODE" == "true" && -n "$CODEX_COLUMN" ]]; then
@@ -98,11 +98,11 @@ done < <(tmux list-panes -t "$SESSION:dev" -F '#{pane_id}:#{@role}' 2>/dev/null)
 for pane_id in "${UNTAGGED[@]}"; do
   # 1. Create empty pane above Codex (vertical split in right column only)
   NEW_PANE=$(tmux split-window -v -b -t "$CODEX_PANE" -l 20% -d -P -F '#{pane_id}' 2>/dev/null) || continue
-  # 2. Swap: agent pane moves to correct position, empty shell moves to old position
+  # 2. Swap: crew pane moves to correct position, empty shell moves to old position
   tmux swap-pane -s "$pane_id" -t "$NEW_PANE" 2>/dev/null || { tmux kill-pane -t "$NEW_PANE" 2>/dev/null; continue; }
-  # 3. Kill the empty shell (NEW_PANE) in the old position - NOT the agent pane
+  # 3. Kill the empty shell (NEW_PANE) in the old position - NOT the crew pane
   tmux kill-pane -t "$NEW_PANE" 2>/dev/null || true
-  # 4. Tag the original pane (now in correct position, keeps its pane ID for Agent Teams)
+  # 4. Tag the original pane (now in correct position, keeps its pane ID for Crew)
   if [[ "$WORKSPACE_MODE" == "true" && -n "$CODEX_COLUMN" ]]; then
     tmux set-option -pt "$pane_id" @role "agent-p${CODEX_COLUMN}-pending" 2>/dev/null || true
     tmux set-option -pt "$pane_id" @column "$CODEX_COLUMN" 2>/dev/null || true

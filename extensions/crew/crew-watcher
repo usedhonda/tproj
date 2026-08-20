@@ -1,5 +1,5 @@
 #!/bin/bash
-# team-watcher - Agent Teams hook-based pane management daemon
+# crew-watcher - Crew hook-based pane management daemon
 # Phase 1: Synchronous setup (hook + env var) - completes before Claude Code proceeds
 # Phase 2: Background polling loop (name resolution + cleanup) - forked & disowned
 set -eo pipefail
@@ -26,7 +26,7 @@ fi
 # === Phase 1: Synchronous setup ===
 # These MUST complete before Claude Code spawns agents
 
-# Signal reflow-agent-pane to act on new splits
+# Signal reflow-crew-pane to act on new splits
 tmux set-environment -t "$SESSION" TPROJ_AGENTS_ACTIVE 1
 
 # Save original pane dimensions BEFORE any agent splits happen
@@ -44,16 +44,16 @@ else
   [[ -n "$CLAUDE_W" ]] && tmux set-environment -t "$SESSION" TPROJ_CLAUDE_WIDTH "$CLAUDE_W"
 fi
 
-# Install after-split-window hook: runs reflow-agent-pane on every new split
+# Install after-split-window hook: runs reflow-crew-pane on every new split
 # - run-shell -d 0.3: coalesces burst spawns (multiple panes created rapidly)
 # - wait-for -L/U: tmux-native lock for serialization
 tmux set-hook -t "$SESSION" after-split-window \
-  "run-shell -b -d 0.3 'tmux wait-for -L tproj-reflow; $HOME/bin/reflow-agent-pane \"$SESSION\"; tmux wait-for -U tproj-reflow'"
+  "run-shell -b -d 0.3 'tmux wait-for -L tproj-reflow; $HOME/bin/reflow-crew-pane \"$SESSION\"; tmux wait-for -U tproj-reflow'"
 
 # === Phase 2: Background polling loop ===
 # Fork into background and return control to Claude Code immediately
 # Singleton guard: only one polling daemon per session
-PIDFILE="/tmp/tproj-team-watcher-${SESSION}.pid"
+PIDFILE="/tmp/tproj-crew-watcher-${SESSION}.pid"
 if [[ -f "$PIDFILE" ]]; then
   existing_pid=$(cat "$PIDFILE" 2>/dev/null || true)
   if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
@@ -81,7 +81,7 @@ fi
     fi
 
     if [[ "$WORKSPACE_MODE" == "true" ]]; then
-      # ワークスペースモード: 各列ごとに agent panes を削除（高さ比は保持しない）
+      # ワークスペースモード: 各列ごとに crew panes を削除（高さ比は保持しない）
       for pane_info in $(tmux list-panes -t "$SESSION:dev" \
         -F "#{pane_id}:#{@role}" 2>/dev/null); do
         role="${pane_info#*:}"
@@ -93,7 +93,7 @@ fi
       done
     else
       # 単一プロジェクトモード: 既存のロジック
-      # Capture current codex/yazi heights BEFORE killing agent panes
+      # Capture current codex/yazi heights BEFORE killing crew panes
       local codex_h=0 yazi_h=0
       local pane_info role pane_id
       for pane_info in $(tmux list-panes -t "$SESSION:dev" \
@@ -106,7 +106,7 @@ fi
       done
       local total_ratio=$(( codex_h + yazi_h ))
 
-      # Kill remaining agent panes
+      # Kill remaining crew panes
       local protected="claude codex yazi"
       for pane_info in $(tmux list-panes -t "$SESSION:dev" \
         -F "#{pane_id}:#{@role}" 2>/dev/null); do

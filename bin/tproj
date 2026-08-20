@@ -900,7 +900,7 @@ kill_session() {
 
   while IFS= read -r session; do
     [[ -z "$session" ]] && continue
-    pkill -TERM -f "bin/team-watcher" 2>/dev/null || true
+    pkill -TERM -f "bin/crew-watcher" 2>/dev/null || true
     tmux kill-session -t "$session" 2>/dev/null || true
   done <<< "$sessions"
 
@@ -986,8 +986,8 @@ stop_session() {
       ((waited++)) || true
     done
 
-    # team-watcher デーモンを停止
-    pkill -TERM -f "bin/team-watcher" 2>/dev/null || true
+    # crew-watcher デーモンを停止
+    pkill -TERM -f "bin/crew-watcher" 2>/dev/null || true
 
     # Phase 3: 残存セッションを強制終了
     tmux kill-session -t "$session" 2>/dev/null || true
@@ -2249,7 +2249,7 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
     # split直後のPTYバッファ安定待ち（エスケープシーケンス漏れ防止）
     sleep 0.3
 
-    # 3) ペインに @role タグを設定（Agent Teams 動的ペイン管理用）
+    # 3) ペインに @role タグを設定（Crew 動的ペイン管理用）
     tmux set-option -pt "$session:dev.1" @role "claude"
     tmux set-option -pt "$session:dev.2" @role "codex"
     tmux set-option -pt "$session:dev.3" @role "yazi"

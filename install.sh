@@ -76,7 +76,7 @@ Options:
   --all               Install all extensions including memory
   --check             Report repo bin/ and canonical extension drift (no install)
 
-By default, messaging + persona + model-role-router + agent-teams extensions are installed.
+By default, messaging + persona + model-role-router + crew extensions are installed.
 Memory extension requires --with-memory or --all (runs a launchd daemon).
 
 Examples:
@@ -572,16 +572,16 @@ if ! $CORE_ONLY; then
     fi
   fi
 
-  # --- agent-teams ---
-  if [[ -d "$SCRIPT_DIR/extensions/agent-teams" ]]; then
-    echo "  agent-teams (team-watcher, reflow-agent-pane, agent-monitor)"
+  # --- crew ---
+  if [[ -d "$SCRIPT_DIR/extensions/crew" ]]; then
+    echo "  crew (crew-watcher, reflow-crew-pane, crew-monitor)"
     if ! $DRY_RUN; then
-      for ext_bin in team-watcher reflow-agent-pane agent-monitor; do
-        cp "$SCRIPT_DIR/extensions/agent-teams/$ext_bin" ~/bin/
+      for ext_bin in crew-watcher reflow-crew-pane crew-monitor; do
+        cp "$SCRIPT_DIR/extensions/crew/$ext_bin" ~/bin/
         chmod +x ~/bin/"$ext_bin"
       done
     else
-      echo "    [DRY-RUN] team-watcher, reflow-agent-pane, agent-monitor -> ~/bin/"
+      echo "    [DRY-RUN] crew-watcher, reflow-crew-pane, crew-monitor -> ~/bin/"
     fi
   fi
 
@@ -630,7 +630,7 @@ echo "   ~/bin/            core scripts"
 echo "   ~/.tmux.conf      tmux config (previous backed up)"
 echo "   ~/.config/yazi/   yazi config (previous backed up)"
 if ! $CORE_ONLY; then
-  echo "   ~/bin/            extensions (messaging, persona, model-role-router, agent-teams)"
+  echo "   ~/bin/            extensions (messaging, persona, model-role-router, crew)"
   $WITH_MEMORY && echo "   ~/bin/            memory extension (cc-mem, memory-guard)"
 fi
 echo ""

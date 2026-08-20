@@ -1,9 +1,9 @@
 #!/bin/bash
-# agent-monitor - Agent Teams individual agent status display
-# Usage: agent-monitor <agent-name>
+# crew-monitor - Crew individual agent status display
+# Usage: crew-monitor <agent-name>
 set -eo pipefail
 
-AGENT_NAME="${1:?Usage: agent-monitor <agent-name>}"
+AGENT_NAME="${1:?Usage: crew-monitor <agent-name>}"
 TASK_DIR="$HOME/.claude/tasks"
 
 while true; do

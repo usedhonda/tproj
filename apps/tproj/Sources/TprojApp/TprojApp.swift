@@ -2927,7 +2927,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        // Set @role immediately to prevent reflow-agent-pane hook from misidentifying this pane
+        // Set @role immediately to prevent reflow-crew-pane hook from misidentifying this pane
         _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@role", roleName])
         _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@column", "\(column.column)"])
         _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@project", column.projectPath])
@@ -3056,7 +3056,7 @@ final class AppViewModel: ObservableObject {
         if agentsActive.exitCode == 0 {
             resultTag = "blocked"
             note += " reason=agents_active"
-            statusText = "Reorder disabled while agent panes are active"
+            statusText = "Reorder disabled while crew panes are active"
             await loadLiveColumnsAsync()
             return
         }
@@ -3416,8 +3416,8 @@ final class AppViewModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
         }
 
-        // Kill team-watcher
-        _ = await runCommandAsync("/usr/bin/env", ["pkill", "-TERM", "-f", "bin/team-watcher"])
+        // Kill crew-watcher
+        _ = await runCommandAsync("/usr/bin/env", ["pkill", "-TERM", "-f", "bin/crew-watcher"])
 
         // Phase 3: Force kill remaining sessions
         for session in sessions {
@@ -3485,8 +3485,8 @@ final class AppViewModel: ObservableObject {
         // Collect descendant PIDs before killing (to clean up MCP servers)
         let descendantPids = await collectSessionDescendants(sessions: sessions)
 
-        // Kill team-watcher first
-        _ = await runCommandAsync("/usr/bin/env", ["pkill", "-TERM", "-f", "bin/team-watcher"])
+        // Kill crew-watcher first
+        _ = await runCommandAsync("/usr/bin/env", ["pkill", "-TERM", "-f", "bin/crew-watcher"])
 
         // Kill all tproj sessions
         for session in sessions {

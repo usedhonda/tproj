@@ -26,7 +26,7 @@ tproj               # launch workspace
 - **AI Persona system** — deterministic personality, profession, era, and character type per project
 - **Pane backgrounds** — AI-generated character art (Gemini) for each CC/Cdx pane
 - **Inter-AI messaging** — `tproj-msg` for CC ↔ Cdx ↔ cross-project communication
-- **Agent Teams** — Claude Code Agent Teams pane management with auto-reflow
+- **Crew** — Claude Code Crew pane management with auto-reflow
 - **Remote SSH** — launch the same layout on a remote host
 
 ## Requirements
@@ -72,7 +72,7 @@ cd tproj
 Run `./install.sh -h` for all options.
 
 This installs CLI tools in `~/bin/`, config files (`~/.tmux.conf`, `~/.config/yazi/`),
-and extensions (messaging, persona, agent-teams). The native GUI app is **not** built
+and extensions (messaging, persona, crew). The native GUI app is **not** built
 by `install.sh` — see [GUI App](#gui-app) to build it from source.
 
 ### Homebrew (maintainer distribution)
@@ -187,7 +187,7 @@ one-line notice that the GUI was not found — core functionality is unaffected.
 | **messaging** | Inter-pane AI messaging (`tproj-msg`) + `msg` skill for Claude Code/Codex | yes |
 | **persona** | Deterministic AI persona generation (personality, profession, era) + pane background art | yes |
 | **model-role-router** | Active-model hierarchy metadata and symmetric orchestration handoff | yes |
-| **agent-teams** | Claude Code Agent Teams pane management with auto-reflow | yes |
+| **crew** | Claude Code Crew pane management with auto-reflow | yes |
 | **memory** | Memory monitoring + watchdog daemon (macOS launchd) | opt-in |
 
 ### Persona System
@@ -235,7 +235,7 @@ apps/tproj/                     SwiftUI GUI app
 extensions/                     optional extensions
   messaging/                      tproj-msg + msg skill
   persona/                        project-bootstrap + tproj-pane-bg + voicevox-alert
-  agent-teams/                    team-watcher + reflow-agent-pane
+  crew/                    crew-watcher + reflow-crew-pane
   memory/                         cc-mem + memory-guard daemon
 docs/                           documentation
   release/                        release notes
