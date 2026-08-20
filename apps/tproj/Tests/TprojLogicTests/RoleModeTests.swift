@@ -2,90 +2,90 @@ import XCTest
 @testable import TprojLogic
 
 final class RoleModeTests: XCTestCase {
-    // Absent file (nil data) resolves to auto.
+    // Absent file (nil data) resolves to collab.
     func testParseAbsentIsAuto() {
-        XCTAssertEqual(RoleMode.parse(nil), .auto)
+        XCTAssertEqual(RoleMode.parse(nil), .collab)
     }
 
-    // Corrupt / non-JSON contents resolve to auto.
+    // Corrupt / non-JSON contents resolve to collab.
     func testParseCorruptIsAuto() {
         let data = Data("not json {".utf8)
-        XCTAssertEqual(RoleMode.parse(data), .auto)
+        XCTAssertEqual(RoleMode.parse(data), .collab)
     }
 
-    // An unrecognized mode value resolves to auto (contract calls this out).
+    // An unrecognized mode value resolves to collab (contract calls this out).
     func testParseUnknownModeIsAuto() {
         let data = Data(#"{"mode":"bogus","set_at":1,"set_by":"user","source":"x"}"#.utf8)
-        XCTAssertEqual(RoleMode.parse(data), .auto)
+        XCTAssertEqual(RoleMode.parse(data), .collab)
     }
 
-    // Valid advisor / solo parse to their modes.
+    // Valid assist / solo parse to their modes.
     func testParseValidModes() {
-        let advisor = Data(#"{"mode":"advisor","set_at":1,"set_by":"user","source":"x"}"#.utf8)
-        XCTAssertEqual(RoleMode.parse(advisor), .advisor)
+        let assist = Data(#"{"mode":"assist","set_at":1,"set_by":"user","source":"x"}"#.utf8)
+        XCTAssertEqual(RoleMode.parse(assist), .assist)
         let solo = Data(#"{"mode":"solo","set_at":1,"set_by":"gui","source":"tproj-gui"}"#.utf8)
         XCTAssertEqual(RoleMode.parse(solo), .solo)
     }
 
-    // Cycle order is auto -> advisor -> solo -> auto.
+    // Cycle order is collab -> assist -> solo -> collab.
     func testCycleOrder() {
-        XCTAssertEqual(RoleMode.auto.next, .advisor)
-        XCTAssertEqual(RoleMode.advisor.next, .solo)
-        XCTAssertEqual(RoleMode.solo.next, .auto)
+        XCTAssertEqual(RoleMode.collab.next, .assist)
+        XCTAssertEqual(RoleMode.assist.next, .solo)
+        XCTAssertEqual(RoleMode.solo.next, .collab)
     }
 
-    // auto serializes to nil (declaring auto deletes the file).
+    // collab serializes to nil (declaring collab deletes the file).
     func testAutoHasNoFileContents() {
-        XCTAssertNil(RoleMode.auto.fileContents(setBy: "gui", source: "tproj-gui", setAt: 1))
+        XCTAssertNil(RoleMode.collab.fileContents(setBy: "gui", source: "tproj-gui", setAt: 1))
     }
 
     // A declared mode serializes to the four-key shape; round-trip to verify
     // keys/values rather than asserting on string order.
     func testFileContentsShape() throws {
         let data = try XCTUnwrap(
-            RoleMode.advisor.fileContents(setBy: "gui", source: "tproj-gui", setAt: 1786400000)
+            RoleMode.assist.fileContents(setBy: "gui", source: "tproj-gui", setAt: 1786400000)
         )
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let dict = try XCTUnwrap(object)
         XCTAssertEqual(Set(dict.keys), ["mode", "set_at", "set_by", "source"])
-        XCTAssertEqual(dict["mode"] as? String, "advisor")
+        XCTAssertEqual(dict["mode"] as? String, "assist")
         XCTAssertEqual(dict["set_at"] as? Int, 1786400000)
         XCTAssertEqual(dict["set_by"] as? String, "gui")
         XCTAssertEqual(dict["source"] as? String, "tproj-gui")
         // Serialized form round-trips back through parse.
-        XCTAssertEqual(RoleMode.parse(data), .advisor)
+        XCTAssertEqual(RoleMode.parse(data), .assist)
     }
 
-    // Router --json output parses into mode + lead; failures fall back to auto.
+    // Router --json output parses into mode + lead; failures fall back to collab.
     func testParseStatus() {
-        let ok = Data(#"{"mode":"advisor","lead":"cc","main":"cdx","project":"/x"}"#.utf8)
-        XCTAssertEqual(RoleMode.parseStatus(ok), RoleModeStatus(mode: .advisor, lead: "cc", main: "cdx"))
-        XCTAssertEqual(RoleMode.parseStatus(nil), RoleModeStatus(mode: .auto, lead: ""))
-        XCTAssertEqual(RoleMode.parseStatus(Data("{".utf8)), RoleModeStatus(mode: .auto, lead: ""))
+        let ok = Data(#"{"mode":"assist","lead":"cc","main":"cdx","project":"/x"}"#.utf8)
+        XCTAssertEqual(RoleMode.parseStatus(ok), RoleModeStatus(mode: .assist, lead: "cc", main: "cdx"))
+        XCTAssertEqual(RoleMode.parseStatus(nil), RoleModeStatus(mode: .collab, lead: ""))
+        XCTAssertEqual(RoleMode.parseStatus(Data("{".utf8)), RoleModeStatus(mode: .collab, lead: ""))
         let unknown = Data(#"{"mode":"bogus","lead":"cc"}"#.utf8)
-        XCTAssertEqual(RoleMode.parseStatus(unknown), RoleModeStatus(mode: .auto, lead: "cc"))
+        XCTAssertEqual(RoleMode.parseStatus(unknown), RoleModeStatus(mode: .collab, lead: "cc"))
     }
 
     // The badge names only the mode; button tint identifies conversation main.
     func testBadgeLabelComposition() {
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cc"), "Team")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "cdx"), "Team")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cc"), "Advisor")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .advisor, main: "cdx"), "Advisor")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .collab, main: "cc"), "Collab")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .collab, main: "cdx"), "Collab")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .assist, main: "cc"), "Assist")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .assist, main: "cdx"), "Assist")
         XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cc"), "Solo")
         XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: "cdx"), "Solo")
         XCTAssertEqual(roleModeBadgeLabel(mode: .solo, main: ""), "Solo")
-        XCTAssertEqual(roleModeBadgeLabel(mode: .auto, main: "other"), "Team")
+        XCTAssertEqual(roleModeBadgeLabel(mode: .collab, main: "other"), "Collab")
     }
 
     func testConversationMainIsIndependentAndBuildsCanonicalCommand() {
-        XCTAssertEqual(roleModeConversationMain(mode: .advisor, main: "cc", lead: "cdx"), "cc")
-        XCTAssertEqual(roleModeConversationMain(mode: .advisor, main: "", lead: "cdx"), "cdx")
-        XCTAssertEqual(roleModeConversationMain(mode: .auto, main: "", lead: "cc"), "cc")
-        XCTAssertEqual(roleModeConversationMain(mode: .auto, main: "", lead: ""), "cdx")
+        XCTAssertEqual(roleModeConversationMain(mode: .assist, main: "cc", lead: "cdx"), "cc")
+        XCTAssertEqual(roleModeConversationMain(mode: .assist, main: "", lead: "cdx"), "cdx")
+        XCTAssertEqual(roleModeConversationMain(mode: .collab, main: "", lead: "cc"), "cc")
+        XCTAssertEqual(roleModeConversationMain(mode: .collab, main: "", lead: ""), "cdx")
         XCTAssertEqual(
-            roleModeSetArguments(mode: .advisor, main: "cc", projectPath: "/project"),
-            ["mode", "advisor", "--main", "cc", "--json", "--project", "/project", "--set-by", "gui", "--source", "tproj-gui"]
+            roleModeSetArguments(mode: .assist, main: "cc", projectPath: "/project"),
+            ["mode", "assist", "--main", "cc", "--json", "--project", "/project", "--set-by", "gui", "--source", "tproj-gui"]
         )
     }
 

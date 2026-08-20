@@ -1764,7 +1764,7 @@ final class AppViewModel: ObservableObject {
     @Published var pendingDropColumns: Set<Int> = []
     @Published var pendingSessionAction: SessionAction? = nil
     // Per-project role state (mode + which side leads), keyed by normalized
-    // (tilde-expanded) project path. Absent key == auto with no lead. Derived by
+    // (tilde-expanded) project path. Absent key == collab with no lead. Derived by
     // `model-role-router mode --json`, which owns `<project>/.local/role-mode.json`.
     @Published var roleModeStatuses: [String: RoleModeStatus] = [:]
     @Published var weeklyPaceSnapshots: [String: WeeklyPaceSnapshot] = [:]
@@ -3673,10 +3673,10 @@ final class AppViewModel: ObservableObject {
         "\(NSHomeDirectory())/bin/model-role-router"
     }
 
-    // Current mode for a project; auto when unknown.
+    // Current mode for a project; collab when unknown.
     func roleMode(forProjectPath path: String) -> RoleMode {
-        guard !path.isEmpty else { return .auto }
-        return roleModeStatuses[normalizedProjectKey(path)]?.mode ?? .auto
+        guard !path.isEmpty else { return .collab }
+        return roleModeStatuses[normalizedProjectKey(path)]?.mode ?? .collab
     }
 
     // Which side leads a project ("cc" / "cdx" / "" when unknown).
@@ -3691,7 +3691,7 @@ final class AppViewModel: ObservableObject {
         guard !path.isEmpty else { return "" }
         let status = roleModeStatuses[normalizedProjectKey(path)]
         return roleModeConversationMain(
-            mode: status?.mode ?? .auto,
+            mode: status?.mode ?? .collab,
             main: status?.main ?? "",
             lead: status?.lead ?? ""
         )
@@ -3814,14 +3814,14 @@ final class AppViewModel: ObservableObject {
             for path in paths {
                 let key = normalizedProjectKey(path)
                 group.addTask { [weak self] in
-                    guard let self else { return (key, RoleModeStatus(mode: .auto, lead: "")) }
+                    guard let self else { return (key, RoleModeStatus(mode: .collab, lead: "")) }
                     let result = await self.runCommandAsync(router, ["mode", "--json", "--project", key])
                     let data = result.exitCode == 0 ? Data(result.stdout.utf8) : nil
                     return (key, RoleMode.parseStatus(data))
                 }
             }
             for await (key, status) in group {
-                if status.mode != .auto || !status.lead.isEmpty || !status.main.isEmpty {
+                if status.mode != .collab || !status.lead.isEmpty || !status.main.isEmpty {
                     statuses[key] = status
                 }
             }
@@ -3838,7 +3838,7 @@ final class AppViewModel: ObservableObject {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let key = normalizedProjectKey(trimmed)
-        let previous = roleModeStatuses[key] ?? RoleModeStatus(mode: .auto, lead: "")
+        let previous = roleModeStatuses[key] ?? RoleModeStatus(mode: .collab, lead: "")
         let mainValue = (main == "cc" || main == "cdx") ? main : ""
         roleModeStatuses[key] = RoleModeStatus(mode: mode, lead: previous.lead, main: mainValue)
 
@@ -3852,7 +3852,7 @@ final class AppViewModel: ObservableObject {
             return
         }
         let status = RoleMode.parseStatus(Data(result.stdout.utf8))
-        if status.mode == .auto && status.lead.isEmpty && status.main.isEmpty {
+        if status.mode == .collab && status.lead.isEmpty && status.main.isEmpty {
             roleModeStatuses[key] = nil
         } else {
             roleModeStatuses[key] = status
@@ -5511,7 +5511,7 @@ struct ContentView: View {
     @ViewBuilder
     private func roleModeBadge(projectPath: String, isLocal: Bool) -> some View {
         let canWrite = isLocal && !projectPath.isEmpty
-        let mode = canWrite ? vm.roleMode(forProjectPath: projectPath) : .auto
+        let mode = canWrite ? vm.roleMode(forProjectPath: projectPath) : .collab
         let main = canWrite ? vm.roleModeMain(forProjectPath: projectPath) : ""
 
         if canWrite {
@@ -5544,18 +5544,18 @@ struct ContentView: View {
             .fixedSize()
             .help(roleModeBadgeLabel(mode: mode, main: main))
         } else {
-            pill(roleModeBadgeLabel(mode: .auto, main: ""), tint: roleModeTint(.auto))
+            pill(roleModeBadgeLabel(mode: .collab, main: ""), tint: roleModeTint(.collab))
                 .opacity(0.5)
-                .help("role mode: auto (remote)")
+                .help("role mode: collab (remote)")
         }
     }
 
-    // Accent color for a role mode: green (auto, the healthy everyday state),
-    // cyan (advisor), red (solo). Shared by the badge and the lead-side button.
+    // Accent color for a role mode: green (collab, the healthy everyday state),
+    // cyan (assist), red (solo). Shared by the badge and the lead-side button.
     private func roleModeTint(_ mode: RoleMode) -> Color {
         switch mode {
-        case .auto: return GhosttyTheme.current.accentGreen
-        case .advisor: return GhosttyTheme.current.accentCyan
+        case .collab: return GhosttyTheme.current.accentGreen
+        case .assist: return GhosttyTheme.current.accentCyan
         case .solo: return GhosttyTheme.current.accentRed
         }
     }

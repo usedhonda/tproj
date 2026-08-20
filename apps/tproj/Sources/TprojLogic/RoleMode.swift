@@ -1,45 +1,46 @@
 import Foundation
 
-// Per-project role mode. `auto` is the default and is represented ON DISK by the
-// ABSENCE of `<project>/.local/role-mode.json`; `advisor` and `solo` are written
+// Per-project role mode. `collab` is the default and is represented ON DISK by the
+// ABSENCE of `<project>/.local/role-mode.json`; `assist` and `solo` are written
 // as a small JSON object. Pure parse/serialize/cycle logic lives here so it can
 // be unit-tested without touching the filesystem; the app layer keeps file IO
 // thin. See docs/reference/role-mode.md.
 public enum RoleMode: String, CaseIterable {
-    case auto
-    case advisor
+    case collab
+    case assist
     case solo
 
-    public var displayName: String {
-        self == .auto ? "Team" : rawValue.capitalized
-    }
+    // No special case here any more: the GUI used to show "Team" for the stored
+    // `collab`, which is how the same mode ended up with two names and why an agent
+    // told to change it could not tell what it had changed.
+    public var displayName: String { rawValue.capitalized }
 
-    // Badge click cycle order: auto -> advisor -> solo -> auto.
+    // Badge click cycle order: collab -> assist -> solo -> collab.
     public var next: RoleMode {
         switch self {
-        case .auto: return .advisor
-        case .advisor: return .solo
-        case .solo: return .auto
+        case .collab: return .assist
+        case .assist: return .solo
+        case .solo: return .collab
         }
     }
 
     // Parse the on-disk file contents. Absent (nil data), unreadable/corrupt
-    // JSON, and an unrecognized mode value all resolve to `auto`, matching the
-    // contract's "absent means auto" rule.
+    // JSON, and an unrecognized mode value all resolve to `collab`, matching the
+    // contract's "absent means collab" rule.
     public static func parse(_ data: Data?) -> RoleMode {
-        guard let data else { return .auto }
+        guard let data else { return .collab }
         guard let record = try? JSONDecoder().decode(Record.self, from: data),
               let mode = RoleMode(rawValue: record.mode) else {
-            return .auto
+            return .collab
         }
         return mode
     }
 
     // Serialize a declared mode to the file's JSON shape (mode/set_at/set_by/
-    // source, sorted keys). Returns nil for `auto`, since declaring auto deletes
+    // source, sorted keys). Returns nil for `collab`, since declaring collab deletes
     // the file rather than writing one.
     public func fileContents(setBy: String, source: String, setAt: Int) -> Data? {
-        guard self != .auto else { return nil }
+        guard self != .collab else { return nil }
         let record = Record(mode: rawValue, setAt: setAt, setBy: setBy, source: source)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -61,15 +62,15 @@ public enum RoleMode: String, CaseIterable {
     }
 
     // Parse `model-role-router mode --json` output into mode + lead + main. Any failure
-    // (nil, corrupt, unrecognized mode) resolves to auto with no lead, matching
-    // the "treat unreadable as auto" rule. `lead` is passed through verbatim
+    // (nil, corrupt, unrecognized mode) resolves to collab with no lead, matching
+    // the "treat unreadable as collab" rule. `lead` is passed through verbatim
     // ("cc" / "cdx" / "" when no pane has resolved a role yet).
     public static func parseStatus(_ data: Data?) -> RoleModeStatus {
         guard let data,
               let record = try? JSONDecoder().decode(StatusRecord.self, from: data) else {
-            return RoleModeStatus(mode: .auto, lead: "")
+            return RoleModeStatus(mode: .collab, lead: "")
         }
-        let mode = RoleMode(rawValue: record.mode ?? "") ?? .auto
+        let mode = RoleMode(rawValue: record.mode ?? "") ?? .collab
         let main = ["cc", "cdx"].contains(record.main ?? "") ? record.main ?? "" : ""
         return RoleModeStatus(mode: mode, lead: record.lead ?? "", main: main)
     }
