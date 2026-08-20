@@ -4439,7 +4439,6 @@ struct ContentView: View {
     @AppStorage("weeklyCapacitySectionCollapsed") private var weeklyCapacityCollapsed = false
     @AppStorage("memorySectionCollapsed") private var memoryCollapsed = false
     @AppStorage("ccCdxSectionCollapsed") private var ccCdxCollapsed = true
-    @AppStorage("workspaceYAMLSectionCollapsed") private var workspaceYAMLCollapsed = false
     @AppStorage("workspaceProjectOrder") private var workspaceProjectOrderRaw = WorkspaceProjectOrder.recent.rawValue
     @AppStorage("autoZoomEnabled") private var autoZoomEnabled = false
     @State private var draggingColumnID: Int?
@@ -4737,38 +4736,37 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
-    private var yamlFooter: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            SectionHeader(title: "Workspace YAML", isCollapsed: $workspaceYAMLCollapsed)
-            if !workspaceYAMLCollapsed {
-                Card(compact: true) {
-                    HStack(spacing: 6) {
-                        ActionButton("Open workspace.yaml", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                            vm.openWorkspaceYAML()
-                        }
-                        .fixedSize()
-                        Spacer(minLength: 0)
-                        Menu {
-                            Picker("Order", selection: $workspaceProjectOrderRaw) {
-                                ForEach(WorkspaceProjectOrder.allCases) { order in
-                                    Text(order.title).tag(order.rawValue)
-                                }
-                            }
-                        } label: {
-                            Text("Order: \(workspaceProjectOrder.title)")
-                                .font(GhosttyTheme.current.font(size: 10, weight: .medium))
-                                .foregroundStyle(GhosttyTheme.current.textSecondary)
-                        }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
-                        .help("Sort waiting projects; live panes keep tmux order")
-                    }
+    private var workspaceUtilitiesRow: some View {
+        VStack(spacing: 3) {
+            Divider()
+                .overlay(GhosttyTheme.current.cardBorder.opacity(0.55))
+            HStack(spacing: 6) {
+                ActionButton("YAML", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                    vm.openWorkspaceYAML()
                 }
+                .fixedSize()
+                .help("Open workspace.yaml")
+                Spacer(minLength: 0)
+                Menu {
+                    Picker("Order", selection: $workspaceProjectOrderRaw) {
+                        ForEach(WorkspaceProjectOrder.allCases) { order in
+                            Text(order.title).tag(order.rawValue)
+                        }
+                    }
+                } label: {
+                    Text("Order: \(workspaceProjectOrder.title)")
+                        .font(GhosttyTheme.current.font(size: 10, weight: .medium))
+                        .foregroundStyle(GhosttyTheme.current.textSecondary)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Sort waiting projects; live panes keep tmux order")
             }
-            // Bottom resize grip indicator
-            WindowResizeGrip()
         }
+    }
+
+    private var bottomResizeFooter: some View {
+        WindowResizeGrip()
         .padding(.horizontal, 4)
         .padding(.bottom, 2)
     }
@@ -4788,6 +4786,7 @@ struct ContentView: View {
                             Card(compact: true, chrome: false) {
                                 workspaceControlHeader
                                 workspaceListContent
+                                workspaceUtilitiesRow
                             }
                         }
                         weeklyPaceBalanceSection
@@ -4798,7 +4797,7 @@ struct ContentView: View {
                     .padding(.top, 4)
                 }
                 .frame(maxWidth: .infinity)
-                .safeAreaInset(edge: .bottom, spacing: 0) { yamlFooter }
+                .safeAreaInset(edge: .bottom, spacing: 0) { bottomResizeFooter }
             } else {
                 GeometryReader { geo in
                     let maxH = geo.size.height * (vm.weeklyPaceBalance() == nil ? 0.8 : 0.58)
@@ -4815,6 +4814,7 @@ struct ContentView: View {
                                     ScrollView {
                                         workspaceListContent
                                     }
+                                    workspaceUtilitiesRow
                                 }
                             }
                             .frame(height: min(workspaceHeight, maxH))
@@ -4836,7 +4836,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                     }
                 }
-                .safeAreaInset(edge: .bottom, spacing: 0) { yamlFooter }
+                .safeAreaInset(edge: .bottom, spacing: 0) { bottomResizeFooter }
             }
         }
         .overlay(alignment: .topTrailing) {
