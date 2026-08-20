@@ -2,9 +2,9 @@
 # Declare how the two agents of a PROJECT work together.
 #
 #   tproj-role                  show this project's mode
-#   tproj-role advisor          the side you prompt does the work, the other advises
+#   tproj-role assist          the side you prompt does the work, the other advises
 #   tproj-role solo             the side you prompt works alone
-#   tproj-role auto             back to the default, where model tier decides
+#   tproj-role collab             back to the default, where model tier decides
 #
 # The mode is per project: its state lives at <project>/.local/role-mode.json, so
 # switching one column never touches its neighbours, and every pane of the project
@@ -15,11 +15,11 @@ set -uo pipefail
 
 usage() {
   cat <<'USAGE'
-usage: tproj-role [auto|advisor|solo] [main cc|cdx|derived] [--project DIR | --all] [--json]
+usage: tproj-role [collab|assist|solo] [main cc|cdx|derived] [--project DIR | --all] [--json]
        tproj-role --status-segment
 
-  auto      model tier decides who leads (default)
-  advisor   the side you prompt leads; the other side advises only
+  collab      model tier decides who leads (default)
+  assist   the side you prompt leads; the other side advises only
   solo      the side you prompt leads; the other side stays out
 
   main <side>       hand the conversation main side to cc or cdx (derived clears it)
@@ -28,9 +28,9 @@ usage: tproj-role [auto|advisor|solo] [main cc|cdx|derived] [--project DIR | --a
   --project DIR     act on that project instead of the current one
   --all             apply the declaration to every project in workspace.yaml
   --json            machine readable state
-  --status-segment  short label for the tmux status line, empty under auto
+  --status-segment  short label for the tmux status line, empty under collab
 
-To return a project to auto you can also delete its state file:
+To return a project to collab you can also delete its state file:
   rm <project>/.local/role-mode.json
 USAGE
 }
@@ -46,7 +46,7 @@ if [ -z "$router" ]; then
   case "${1:-}" in
     -h|--help) usage; exit 0 ;;
     --status-segment) exit 0 ;;
-    --json) echo '{"mode": "auto"}'; exit 0 ;;
+    --json) echo '{"mode": "collab"}'; exit 0 ;;
   esac
   echo "tproj-role: model-role-router is not on PATH" >&2
   exit 1
@@ -97,7 +97,7 @@ while [ $# -gt 0 ]; do
       project="${1:-}"
       [ -n "$project" ] || { echo "tproj-role: --project needs a directory" >&2; exit 2; }
       ;;
-    auto|advisor|solo) value="$1" ;;
+    collab|assist|solo) value="$1" ;;
     --main)
       shift
       main_side="${1:-}"
@@ -126,7 +126,7 @@ while [ $# -gt 0 ]; do
 done
 
 if $segment; then
-  # Nothing is shown under auto, so a project that never declares a mode keeps
+  # Nothing is shown under collab, so a project that never declares a mode keeps
   # exactly the status line it had before. tmux runs this format command against the
   # focused pane, so display-message without -t resolving the focused pane is, for
   # once, exactly the right behaviour: the segment describes the project you are
@@ -135,7 +135,7 @@ if $segment; then
   seg_json=$("$router" mode --json ${seg_project:+--project "$seg_project"} 2>/dev/null)
   mode=$(printf '%s' "$seg_json" | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   lead=$(printf '%s' "$seg_json" | sed -n 's/.*"lead"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-  if [ -n "$mode" ] && [ "$mode" != auto ]; then
+  if [ -n "$mode" ] && [ "$mode" != collab ]; then
     # The lead answers "which side is main right now", which is the question the
     # segment exists to answer, so it rides along whenever it is known.
     printf ' role:%s%s' "$mode" "${lead:+·$lead}"

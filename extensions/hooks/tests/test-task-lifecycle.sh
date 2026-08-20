@@ -56,8 +56,8 @@ PINNED_BIN="$(mktemp -d)"
 cat > "$PINNED_BIN/model-role-router" <<'MRR'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_ROLE_MODE_ARGS:-/dev/null}"
-[ "${FAKE_ROLE_MODE:-auto}" = broken ] && exit 1
-printf '{"mode":"%s"}\n' "${FAKE_ROLE_MODE:-auto}"
+[ "${FAKE_ROLE_MODE:-collab}" = broken ] && exit 1
+printf '{"mode":"%s"}\n' "${FAKE_ROLE_MODE:-collab}"
 MRR
 cat > "$PINNED_BIN/tmux" <<'FTMUX'
 #!/usr/bin/env bash
@@ -381,8 +381,8 @@ mkdir -p "$mode_bin"
 cat > "$mode_bin/model-role-router" <<'MRR'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_ROLE_MODE_ARGS:-/dev/null}"
-[ "${FAKE_ROLE_MODE:-auto}" = broken ] && exit 1
-printf '{"mode":"%s"}\n' "${FAKE_ROLE_MODE:-auto}"
+[ "${FAKE_ROLE_MODE:-collab}" = broken ] && exit 1
+printf '{"mode":"%s"}\n' "${FAKE_ROLE_MODE:-collab}"
 MRR
 chmod +x "$mode_bin/model-role-router"
 cat > "$mode_bin/tmux" <<'FTMUX'
@@ -392,13 +392,13 @@ printf '%s\n' "${FAKE_PANE_PROJECT:-}"
 FTMUX
 chmod +x "$mode_bin/tmux"
 
-declared_out="$(PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=advisor invoke_guard 'Finished the work.')"
+declared_out="$(PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=assist invoke_guard 'Finished the work.')"
 check "declared mode suspends lifecycle enforcement" test -z "$declared_out"
 solo_out="$(PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=solo invoke_guard 'Finished the work.')"
 check "solo mode suspends lifecycle enforcement" test -z "$solo_out"
 
-auto_out="$(PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=auto invoke_guard 'Finished the work.')"
-check "auto still enforces the lifecycle" sh -c "grep -q '\[DONE: mode-01\]' <<'EOF'
+auto_out="$(PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=collab invoke_guard 'Finished the work.')"
+check "collab still enforces the lifecycle" sh -c "grep -q '\[DONE: mode-01\]' <<'EOF'
 $auto_out
 EOF"
 
@@ -412,11 +412,11 @@ EOF"
 #     neighbouring column can never silence this one's lifecycle.
 args_log="$TMP/mode-args.log"
 : > "$args_log"
-PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=auto FAKE_ROLE_MODE_ARGS="$args_log" \
+PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=collab FAKE_ROLE_MODE_ARGS="$args_log" \
   FAKE_PANE_PROJECT="/work/projA" TMUX_PANE="%9" invoke_guard 'Finished the work.' >/dev/null
 check "mode query names the pane's own project" sh -c "grep -q -- '--project /work/projA' '$args_log'"
 : > "$args_log"
-PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=auto FAKE_ROLE_MODE_ARGS="$args_log" \
+PATH="$mode_bin:$PATH" FAKE_ROLE_MODE=collab FAKE_ROLE_MODE_ARGS="$args_log" \
   FAKE_PANE_PROJECT="" TMUX_PANE="" invoke_guard 'Finished the work.' >/dev/null
 check "no pane means no project argument" sh -c "grep -q 'mode --json' '$args_log' && ! grep -q -- '--project' '$args_log'"
 

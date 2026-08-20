@@ -1768,7 +1768,7 @@ if reference_path and os.path.isfile(reference_path):
         content.append({
             "type": "input_image",
             "image_url": f"data:image/png;base64,{reference_b64}",
-            "detail": "auto",
+            "detail": "collab",
         })
     except OSError:
         pass  # a missing reference must never block generation
@@ -2234,7 +2234,7 @@ body = {
     "model": "gpt-5.5",
     "input": [{"role": "user", "content": [
         {"type": "input_text", "text": ask},
-        {"type": "input_image", "image_url": f"data:image/png;base64,{encoded}", "detail": "auto"},
+        {"type": "input_image", "image_url": f"data:image/png;base64,{encoded}", "detail": "collab"},
     ]}],
     "instructions": "You return only compact JSON.",
     "stream": True,

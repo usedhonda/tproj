@@ -479,7 +479,7 @@ fi
 # below either delegates instead of asking (--new-task, --role-handoff,
 # --user-authorized) or overrides a delivery policy (--force, --fire,
 # --allow-relay, --allow-fanout). Allowing any of them would let a pane satisfy the
-# advisor consultation gate while handing the work off or shouting past a guard,
+# assist consultation gate while handing the work off or shouting past a guard,
 # which is the opposite of what the mark is supposed to attest.
 if [[ "$MSG_KIND" == "consult" ]]; then
   if [[ "$SEND_MODE" != "true" ]]; then
@@ -3957,7 +3957,7 @@ do_read() {
   exit "$FOUND_REPLY"
 }
 
-advisor_mode_blocks_peer_task() {
+assist_mode_blocks_peer_task() {
   [[ "${NEW_TASK_MODE:-false}" == "true" ]] || return 1
   local peer project router mode_json mode
   case "${MY_ROLE:-}" in
@@ -3978,17 +3978,17 @@ advisor_mode_blocks_peer_task() {
   [[ -x "$router" ]] || return 1
   mode_json="$("$router" mode --json --project "$project" 2>/dev/null || true)"
   mode="$(printf '%s' "$mode_json" | jq -r '.mode // empty' 2>/dev/null || true)"
-  [[ "$mode" == "advisor" ]]
+  [[ "$mode" == "assist" ]]
 }
 
 do_send_tmux() {
-# Advisor mode makes the side directly prompted by the user the working side.
+# Assist mode makes the side directly prompted by the user the working side.
 # The opposite same-column peer remains available for ordinary consultation,
 # but cannot receive a delegated task or role-handoff. Enforce this before
 # liveness checks, task-id creation, database writes, or send-keys so stale
 # role markers cannot silently reverse the user-selected ownership.
-if advisor_mode_blocks_peer_task; then
-  echo "Error: task delegation to '$TARGET' is disabled in Advisor mode (reason: advisor_peer_is_advice_only). Send an ordinary consultation message, prompt that pane directly, or change the mode." >&2
+if assist_mode_blocks_peer_task; then
+  echo "Error: task delegation to '$TARGET' is disabled in Assist mode (reason: assist_peer_is_advice_only). Send an ordinary consultation message, prompt that pane directly, or change the mode." >&2
   exit 1
 fi
 

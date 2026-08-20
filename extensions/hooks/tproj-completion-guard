@@ -218,11 +218,11 @@ def declared_role_mode() -> str:
     # The router owns the mode; ask it rather than reading its file. A second parser
     # of the same state is a second thing to keep in step, and this guard is exactly
     # where a disagreement would show up as a turn that cannot be ended. If the router
-    # is missing or unhappy, treat the project as auto so the guard keeps behaving
+    # is missing or unhappy, treat the project as collab so the guard keeps behaving
     # the way it does today instead of quietly switching itself off.
     command = shutil.which("model-role-router")
     if not command:
-        return "auto"
+        return "collab"
     invocation = [command, "mode", "--json"]
     project = own_project()
     if project:
@@ -232,15 +232,15 @@ def declared_role_mode() -> str:
             invocation, capture_output=True, text=True, timeout=3, check=False
         )
     except (OSError, subprocess.SubprocessError):
-        return "auto"
+        return "collab"
     if result.returncode != 0:
-        return "auto"
+        return "collab"
     try:
         document = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
-        return "auto"
-    mode = str(document.get("mode", "auto")) if isinstance(document, dict) else "auto"
-    return mode or "auto"
+        return "collab"
+    mode = str(document.get("mode", "collab")) if isinstance(document, dict) else "collab"
+    return mode or "collab"
 
 
 ROUTER_MODULE_CACHE: dict = {}
@@ -363,7 +363,7 @@ def consulted_in_run(db, session: str, self_alias: str, peer_alias: str, run: st
 
 
 def consult_gate(session: str, alias: str, role: str) -> str:
-    # Empty string when the turn may end. Advisor mode pairs the panes correctly but
+    # Empty string when the turn may end. Assist mode pairs the panes correctly but
     # gives the working side no reason to ever use its peer, so it works alone and
     # the mode looks identical to solo. This is the one place that makes the
     # consultation real, and every unknown fails open.
@@ -400,7 +400,7 @@ def consult_gate(session: str, alias: str, role: str) -> str:
     if consulted:
         return ""
     return (
-        f"Advisor mode: consult {peer_alias} once before finishing this task. "
+        f"Assist mode: consult {peer_alias} once before finishing this task. "
         f"Send a design question, an approach check, or a review request with "
         f"`tproj-msg --consult {peer_alias} \"...\"`, then finish. "
         "The reply arrives on its own; do not wait for it."
@@ -428,15 +428,15 @@ def main() -> int:
         return 0
     session, alias, role = identity
     mode = declared_role_mode()
-    if mode == "advisor":
-        # Advisor pairs the panes but never makes the working side use its peer.
+    if mode == "assist":
+        # Assist pairs the panes but never makes the working side use its peer.
         blocked = consult_gate(session, alias, role)
         return block(blocked) if blocked else 0
     # Under any other declared mode there is no orchestrator handing work down, so the
     # delegation lifecycle below does not describe what is happening. Holding a turn
     # open for a tag nobody is waiting on is the friction the mode was introduced to
     # remove.
-    if mode != "auto":
+    if mode != "collab":
         return 0
     owner = f"{session}/{alias}"
     self_alias = f"{alias}.{role}"

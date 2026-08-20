@@ -174,10 +174,10 @@ under a real privilege boundary.
 
 ## Fail-closed behavior
 
-- In `advisor` mode, a verified CC/Cdx sender cannot use `--new-task` (including
+- In `assist` mode, a verified CC/Cdx sender cannot use `--new-task` (including
   `--role-handoff`) to delegate implementation to its opposite same-column peer.
   The check reads the authoritative project mode and exits with
-  `advisor_peer_is_advice_only` before task-id creation, persistence, or delivery.
+  `assist_peer_is_advice_only` before task-id creation, persistence, or delivery.
   Ordinary consultation messages and tasks to distinct subagents remain available.
 
 - **An unverified sender refuses ALL sends**, not just `--role-handoff`: no

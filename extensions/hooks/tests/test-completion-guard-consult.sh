@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# test-completion-guard-consult.sh — advisor mode owes the peer one consultation.
+# test-completion-guard-consult.sh — assist mode owes the peer one consultation.
 #
-# Advisor pairs the two panes correctly but gives the working side no reason to ever
+# Assist pairs the two panes correctly but gives the working side no reason to ever
 # use its peer, so it works alone and the mode is indistinguishable from solo. The
 # gate below is what makes the consultation real. Everything it cannot determine
 # must fail open: a guard that holds a turn open on a missing DB, a dead peer, or a
@@ -42,7 +42,7 @@ def pane_peer(identity):
     return {"alias": alias} if alias else {}
 
 if __name__ == "__main__":
-    print(json.dumps({"mode": os.environ.get("FAKE_MODE", "advisor")}))
+    print(json.dumps({"mode": os.environ.get("FAKE_MODE", "assist")}))
 ROUTER
 chmod +x "$TMP/bin/model-role-router"
 
@@ -88,7 +88,7 @@ run_guard() {
         FAKE_CACHE="$TMP/cache" \
         FAKE_PROJECT="$TMP/proj" \
         FAKE_PEER="${FAKE_PEER-tproj.cdx}" \
-        FAKE_MODE="${FAKE_MODE-advisor}" \
+        FAKE_MODE="${FAKE_MODE-assist}" \
         TPROJ_MSG_DB_PATH="$DB" \
         INTENT_GUARD_DIR="$TMP/ig" \
         TPROJ_PANE="%8" \
@@ -136,8 +136,8 @@ expect "an empty-bodied audit row does not count" yes
 # Fail-open paths.
 sqlite3 "$DB" "DELETE FROM messages;"
 FAKE_PEER="" expect "no reachable peer never holds the turn open" no
-FAKE_MODE=auto expect "auto mode does not use this gate" no
-printf '{"role":"advisor"}' > "$TMP/cache/s1/3/tproj.cc.json"
+FAKE_MODE=collab expect "collab mode does not use this gate" no
+printf '{"role":"assist"}' > "$TMP/cache/s1/3/tproj.cc.json"
 expect "the advising side owes nothing" no
 printf '{"role":"solo-fallback"}' > "$TMP/cache/s1/3/tproj.cc.json"
 write_lock run-B other.cc
