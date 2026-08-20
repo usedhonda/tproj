@@ -3828,7 +3828,21 @@ final class AppViewModel: ObservableObject {
         }
         if statuses != roleModeStatuses {
             roleModeStatuses = statuses
+            // The pane backgrounds mark the main side, and nothing else notices when
+            // this file changes: the pane-bg hooks are all tmux geometry events, and a
+            // mode declared from the CLI or by an agent fires none of them. setRoleMode
+            // below already syncs its own writes, so this is what covers everyone
+            // else's -- and because a GUI write updates the dictionary first, the poll
+            // that follows it sees no difference and does not sync twice.
+            await syncPaneBackgrounds()
         }
+    }
+
+    private func syncPaneBackgrounds() async {
+        let arguments = ["sync", "--session", TmuxTargets.session, "--fast"]
+        guard let sync = runtimeLaunchCommand(commandName: "tproj-pane-bg", arguments: arguments)
+            ?? fallbackLaunchCommand(commandName: "tproj-pane-bg", arguments: arguments) else { return }
+        _ = await runCommandAsync(sync.launchPath, sync.arguments)
     }
 
     // Set mode and the user's preferred conversation side through the canonical
@@ -3857,15 +3871,7 @@ final class AppViewModel: ObservableObject {
         } else {
             roleModeStatuses[key] = status
         }
-        if let sync = runtimeLaunchCommand(
-            commandName: "tproj-pane-bg",
-            arguments: ["sync", "--session", TmuxTargets.session, "--fast"]
-        ) ?? fallbackLaunchCommand(
-            commandName: "tproj-pane-bg",
-            arguments: ["sync", "--session", TmuxTargets.session, "--fast"]
-        ) {
-            _ = await runCommandAsync(sync.launchPath, sync.arguments)
-        }
+        await syncPaneBackgrounds()
     }
 
     private func loadLiveColumns() {
