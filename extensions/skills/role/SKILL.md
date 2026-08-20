@@ -1,24 +1,16 @@
 ---
 name: role
 description: |
-  tproj の役割設定スキル。プロジェクトの Mode と Main conversation を変更する時に使う。
+  tproj の役割設定。Mode と Main conversation を変更・確認する時に使う。
+  **Mode(Collab/Assist/Solo) と Main conversation(cc/cdx) は別のレバー。**
+  Main は会話する主の側で、GUI 表示とペイン背景の主従もこれで決まる。
 
-  **Mode と Main は別のレバー。混同してはならない。**
-  - Mode = 二人の働き方（Collab / Assist / Solo）
-  - Main conversation = ユーザーが会話する主の側（cc / cdx）。GUI の表示とペイン背景の主従もこれで決まる
+  発動例: 「主を Cdx に」「主を渡して」「主を戻して」「Collab にして」
+  「Assist にして」「Solo で」「役割を変えて」「役割どうなってる？」/role
 
-  以下のような状況・表現で発動:
-  - 「主を Cdx に」「Cdx を主にして」「主役 Cdx」「Main を cc に」
-  - 「主を渡して」「主を交代して」（= 言われた側から見た反対側へ渡す）
-  - 「主を戻して」「主の指定を消して」
-  - 「Collab にして」「Assist にして」「Solo で」「一人でやって」
-  - 「役割を変えて」「モードを変えて」「役割どうなってる？」
-  - `/role` コマンド
-
-  ※ 「主を渡して」は相対指定。cc ペインで言われたら cdx へ、cdx ペインで言われたら cc へ
-  ※ 何も言われなければ現在のプロジェクトだけ。「全プロジェクト」「全部の列」なら --all
-  ※ Crew（subagent を tmux ペインに並べる運用機能）は Mode ではない。「crew を立てて」は別物
-  ※ auto / advisor は撤去された旧名。使わない。言われたら Collab / Assist と読み替える
+  ※ 「主を渡して」は相対指定（言われた側の反対へ）
+  ※ Crew（subagent のペイン運用）は Mode ではない
+  ※ auto / advisor は撤去された旧名。Collab / Assist と読み替える
 argument-hint: <collab|assist|solo> | main <cc|cdx>
 allowed-tools: [Bash, Read]
 compression-anchors:
