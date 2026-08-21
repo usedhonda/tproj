@@ -263,6 +263,29 @@ Anything the gate cannot determine — no lock, no reachable peer, no database, 
 predating the run stamp, a lock owned by another pane — leaves the turn alone. A guard
 that wedges a session is worse than the problem it solves.
 
+### Mid-task course checks
+
+The first consultation is not a permanent exemption. In every non-solo working mode,
+the PreToolUse guard watches for one narrow sign of blind retry: the same mutating
+action is proposed again without a different mutation in between. It stores only a
+SHA-256 action fingerprint in the active `intent-guard` task run, never command or
+patch text.
+
+- The second unchanged attempt opens a one-shot, trigger-specific course check. The
+  working side must either record one concrete reason to continue with
+  `intent-guard reflect --continue --why "..."`, or consult the live peer again.
+- A third unchanged attempt cannot be acknowledged locally. It requires a new
+  task-run consultation whose monotonic `messages.id` is greater than the checkpoint
+  anchor. Timestamps are not used.
+- A different mutating action resets the streak. Read-only commands do not enter it.
+- `assist` applies this to the working `solo-fallback` side; `collab` applies it only
+  to the `worker`. `solo` never runs the reflection gate.
+
+`intent-guard` remains the only writer of the task-run reflection state and keeps a
+bounded audit of continue/consult outcomes. A reflection or peer consultation can
+help diagnose scope drift, but it never authorizes it: an Intent Drift failure still
+requires user approval before out-of-scope work resumes.
+
 ## Tests
 
 - `general/system/model-role-router/test-model-role-router.sh` — state file defaults

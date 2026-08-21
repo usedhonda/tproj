@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -379,7 +380,7 @@ def active_task_context(session: str, self_alias: str) -> tuple[str, str]:
 
 def consultation_state(
     db: sqlite3.Connection, session: str, self_alias: str, peer_alias: str, run: str
-) -> tuple[bool, bool]:
+) -> tuple[bool, bool, int]:
     # Only a send that was marked as a consultation, and that belongs to THIS task
     # run, counts. Any outbound row would be satisfied by a status report or by the
     # router's own pairing ping, which is not what "you asked someone" means.
@@ -404,9 +405,11 @@ def consultation_state(
             (session, self_alias, *forms, run),
         ).fetchall()
     except sqlite3.Error:
-        return True, True  # cannot tell: never hold a turn open on a broken query
+        return True, True, 0  # cannot tell: never hold a turn open on a broken query
     if not rows:
-        return False, False
+        return False, False, 0
+
+    latest_consult_id = max(int(row[0]) for row in rows)
 
     peer_forms = recipient_forms(self_alias, peer_alias)
     self_forms = recipient_forms(peer_alias, self_alias)
@@ -431,10 +434,117 @@ def consultation_state(
                 (session, *peer_forms, *self_forms, consult_id),
             ).fetchone()
         except sqlite3.Error:
-            return True, True
+            return True, True, latest_consult_id
         if reply is not None:
-            return True, True
-    return True, False
+            return True, True, latest_consult_id
+    return True, False, latest_consult_id
+
+
+def reflection_control(payload: dict[str, Any]) -> bool:
+    module = mutation_guard_module()
+    if module is None:
+        return False
+    try:
+        _tool_name, command = module.parse_command(payload)
+    except Exception:
+        return False
+    if not command:
+        return False
+    return (
+        "tproj-msg" in command and "--consult" in command
+    ) or re.search(r"(?:^|[/\s])intent-guard\s+reflect(?:\s|$)", command) is not None
+
+
+def action_fingerprint(payload: dict[str, Any]) -> str:
+    module = mutation_guard_module()
+    if module is None:
+        return ""
+    try:
+        tool_name, command = module.parse_command(payload)
+        if command:
+            material = f"{tool_name}\0{command}"
+        else:
+            tool_input = payload.get("tool_input")
+            if not isinstance(tool_input, dict):
+                hook_input = payload.get("hook_input")
+                tool_input = hook_input.get("tool_input") if isinstance(hook_input, dict) else {}
+            material = f"{tool_name}\0{json.dumps(tool_input, sort_keys=True, separators=(',', ':'))}"
+    except Exception:
+        return ""
+    return hashlib.sha256(material.encode("utf-8", errors="replace")).hexdigest()
+
+
+def own_runtime_role(session: str, self_alias: str) -> str:
+    module = router_module()
+    if module is None:
+        return ""
+    column = pane_column()
+    if not column:
+        return ""
+    try:
+        own = module.read_json_file(
+            module.state_path({"session": session, "column": column, "alias": self_alias})
+        )
+    except Exception:
+        return ""
+    return str(own.get("role", "")) if isinstance(own, dict) else ""
+
+
+def reflection_gate(
+    db: sqlite3.Connection,
+    session: str,
+    alias: str,
+    role: str,
+    run: str,
+    peer_alias: str,
+    payload: dict[str, Any],
+) -> str:
+    action_hash = action_fingerprint(payload)
+    command = shutil.which("intent-guard")
+    if not action_hash or not command:
+        return ""
+    try:
+        anchor_row = db.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()
+        anchor = int(anchor_row[0]) if anchor_row else 0
+        result = subprocess.run(
+            [command, "reflect-observe", "--action-hash", action_hash, "--anchor", str(anchor)],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+    except (OSError, ValueError, sqlite3.Error, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    state = result.stdout.strip()
+    if state == "reflect":
+        return (
+            "Course check: the same mutating action is being retried without an intervening change. "
+            "What evidence changed, and what will this retry test? If the route is still sound, run "
+            "`intent-guard reflect --continue --why \"<one concrete reason>\"`; if it is unclear, "
+            f"consult {peer_alias} again with `tproj-msg --consult {peer_alias} \"...\"`."
+        )
+    if not state.startswith("consult:"):
+        return ""
+    try:
+        due_anchor = int(state.split(":", 1)[1])
+        _consulted, _replied, latest_consult_id = consultation_state(
+            db, session, f"{alias}.{role}", peer_alias, run
+        )
+    except ValueError:
+        return ""
+    if latest_consult_id > due_anchor:
+        try:
+            subprocess.run(
+                [command, "reflect", "--consulted", "--message-id", str(latest_consult_id)],
+                capture_output=True, text=True, timeout=3, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return ""
+    return (
+        "Course correction required: this is the third unchanged retry of the same mutating action. "
+        f"Consult {peer_alias} again with `tproj-msg --consult {peer_alias} \"<failure evidence and proposed correction>\"` "
+        "before retrying."
+    )
 
 
 def consult_gate(session: str, alias: str, role: str, event: str) -> str:
@@ -471,7 +581,7 @@ def consult_gate(session: str, alias: str, role: str, event: str) -> str:
     if db is None:
         return ""
     try:
-        consulted, replied = consultation_state(db, session, self_alias, peer_alias, run)
+        consulted, replied, _latest_consult_id = consultation_state(db, session, self_alias, peer_alias, run)
     finally:
         db.close()
     if not consulted:
@@ -510,14 +620,44 @@ def main() -> int:
         return 0
     session, alias, role = identity
     mode = declared_role_mode()
-    if mode == "assist":
-        if args.event == "pretool" and not pretool_is_mutating(payload):
+    if args.event == "pretool":
+        if not pretool_is_mutating(payload):
             return 0
-        # Assist pairs the panes but never makes the working side use its peer.
-        blocked = consult_gate(session, alias, role, args.event)
+        if reflection_control(payload):
+            return 0
+        self_alias = f"{alias}.{role}"
+        if mode == "assist":
+            # Assist pairs the panes but never makes the working side use its peer.
+            blocked = consult_gate(session, alias, role, args.event)
+            if blocked:
+                return block(blocked)
+        elif mode != "collab":
+            return 0
+        own_role = own_runtime_role(session, self_alias)
+        if not (
+            (mode == "assist" and own_role == "solo-fallback")
+            or (mode == "collab" and own_role == "worker")
+        ):
+            return 0
+        run, _policy = active_task_context(session, self_alias)
+        if not run:
+            return 0
+        peer_alias = consultable_peer(session, alias, role)
+        if not peer_alias:
+            return 0
+        db = open_db()
+        if db is None:
+            return 0
+        try:
+            blocked = reflection_gate(db, session, alias, role, run, peer_alias, payload)
+        finally:
+            db.close()
         return block(blocked) if blocked else 0
     if args.event != "stop":
         return 0
+    if mode == "assist":
+        blocked = consult_gate(session, alias, role, args.event)
+        return block(blocked) if blocked else 0
     # Under any other declared mode there is no orchestrator handing work down, so the
     # delegation lifecycle below does not describe what is happening. Holding a turn
     # open for a tag nobody is waiting on is the friction the mode was introduced to

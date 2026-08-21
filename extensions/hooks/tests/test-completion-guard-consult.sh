@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# test-completion-guard-consult.sh — assist mode owes the peer one consultation.
+# test-completion-guard-consult.sh — consultation and non-solo course checks.
 #
 # Assist pairs the two panes correctly but gives the working side no reason to ever
 # use its peer, so it works alone and the mode is indistinguishable from solo. The
@@ -59,6 +59,19 @@ esac
 TMUX
 chmod +x "$TMP/bin/tmux"
 
+cat > "$TMP/bin/intent-guard" <<'INTENT'
+#!/usr/bin/env bash
+case "${1-}" in
+  reflect-observe) printf '%s\n' "${FAKE_REFLECTION_STATE-ok}" ;;
+  reflect)
+    printf '%s\n' "$*" >> "${FAKE_REFLECTION_LOG:?}"
+    printf 'Reflection: consult\n'
+    ;;
+  *) exit 1 ;;
+esac
+INTENT
+chmod +x "$TMP/bin/intent-guard"
+
 DB="$TMP/messages.db"
 sqlite3 "$DB" "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT, from_alias TEXT, to_alias TEXT, body TEXT, direction TEXT, delivery TEXT, msg_kind TEXT, task_run_id TEXT, created_at INTEGER);"
 
@@ -104,6 +117,8 @@ run_guard() {
         FAKE_MODE="${FAKE_MODE-assist}" \
         TPROJ_MSG_DB_PATH="$DB" \
         INTENT_GUARD_DIR="$TMP/ig" \
+        FAKE_REFLECTION_STATE="${FAKE_REFLECTION_STATE-ok}" \
+        FAKE_REFLECTION_LOG="$TMP/reflection.log" \
         TPROJ_PANE="%8" \
         TMUX_PANE="%8" \
         "$GUARD" --event "$event" 2>&1
@@ -145,6 +160,34 @@ expect "wait policy also holds a plan-only Stop while the reply is pending" yes
 add_reply
 GUARD_EVENT=pretool expect "wait policy allows mutation after the peer reply" no
 expect "wait policy allows completion after the peer reply" no
+
+# After the initial consultation, the PreToolUse hook adds a one-shot course check
+# only for an unchanged blind retry. The canonical intent-guard owns the streak;
+# this fixture controls its returned state so this test stays focused on hook routing.
+FAKE_REFLECTION_STATE=reflect GUARD_EVENT=pretool expect "a blind retry asks the Assist working side to reflect" yes
+PRETOOL_TOOL=Bash PRETOOL_COMMAND='intent-guard reflect --continue --why changed' \
+  FAKE_REFLECTION_STATE=reflect GUARD_EVENT=pretool expect "the reflection acknowledgement command cannot block itself" no
+
+# A third unchanged retry remains blocked until a consultation newer than the
+# captured DB row id exists. The resolver records that newer message through the
+# canonical writer before allowing the action.
+anchor=$(sqlite3 "$DB" 'SELECT COALESCE(MAX(id),0) FROM messages;')
+FAKE_REFLECTION_STATE="consult:$anchor" GUARD_EVENT=pretool expect "a third blind retry requires a fresh consultation" yes
+add_msg consult run-W
+: > "$TMP/reflection.log"
+FAKE_REFLECTION_STATE="consult:$anchor" GUARD_EVENT=pretool expect "a newer consultation releases the blind retry" no
+grep -q -- "--consulted --message-id" "$TMP/reflection.log" \
+  && pass "the released consultation is durably acknowledged through intent-guard" \
+  || fail "the released consultation is durably acknowledged through intent-guard" "log=$(cat "$TMP/reflection.log" 2>/dev/null)"
+
+# The user contract says every non-solo working mode. Collab workers get the same
+# narrow blind-retry checkpoint without changing the delegated-task lifecycle;
+# Solo remains completely outside it.
+printf '{"role":"worker"}' > "$TMP/cache/s1/3/tproj.cc.json"
+FAKE_MODE=collab FAKE_REFLECTION_STATE=reflect GUARD_EVENT=pretool expect "a Collab worker receives the same course check" yes
+printf '{"role":"solo-fallback"}' > "$TMP/cache/s1/3/tproj.cc.json"
+FAKE_MODE=solo FAKE_REFLECTION_STATE=reflect GUARD_EVENT=pretool expect "Solo mode never runs the reflection gate" no
+FAKE_MODE=assist
 
 sqlite3 "$DB" "DELETE FROM messages;"
 write_lock run-N tproj.cc none
