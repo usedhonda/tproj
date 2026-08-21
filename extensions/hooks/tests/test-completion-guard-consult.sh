@@ -2,11 +2,9 @@
 #
 # test-completion-guard-consult.sh — consultation and non-solo course checks.
 #
-# Assist pairs the two panes correctly but gives the working side no reason to ever
-# use its peer, so it works alone and the mode is indistinguishable from solo. The
-# gate below is what makes the consultation real. Everything it cannot determine
-# must fail open: a guard that holds a turn open on a missing DB, a dead peer, or a
-# pre-migration lock would be worse than the problem it solves.
+# Consultation and course checks remain auditable, but they are advice rather than
+# permission. This regression pins the boundary: no consultation state, pending
+# reply, unacknowledged reply, or reflection state may block mutation or Stop.
 
 set -uo pipefail
 
@@ -188,97 +186,24 @@ printf '{"version":1,"entries":{}}' > "$TMP/ig/state.json"
 expect "a turn with no locked task is never gated" no
 
 write_lock run-B tproj.cc
-expect "a locked task with no consultation is held open" yes
-
-add_msg consult run-B
-expect "one consultation inside the task run releases it" no
-
-# `send` gates the first mutation on the outbound consultation. `wait` additionally
-# requires a real inbound peer message after that consultation.
-sqlite3 "$DB" "DELETE FROM messages;"
-write_lock run-S tproj.cc send
-GUARD_EVENT=pretool expect "send policy blocks the first mutation before consultation" yes
-add_msg consult run-S
-GUARD_EVENT=pretool expect "send policy allows mutation after consultation is sent" no
+expect "Assist Stop never waits for a consultation" no
+GUARD_EVENT=pretool expect "Assist mutation never waits for a consultation" no
 
 sqlite3 "$DB" "DELETE FROM messages;"
 write_lock run-W tproj.cc wait
-GUARD_EVENT=pretool expect "wait policy blocks mutation before consultation" yes
 add_msg consult run-W
-GUARD_EVENT=pretool expect "wait policy still blocks while the reply is pending" yes
-expect "wait policy also holds a plan-only Stop while the reply is pending" yes
+GUARD_EVENT=pretool expect "a pending peer reply does not block mutation" no
+expect "a pending peer reply does not block Stop" no
 add_reply
-reply_id=$(sqlite3 "$DB" 'SELECT MAX(id) FROM messages;')
-GUARD_EVENT=pretool expect "wait policy requires anchored acknowledgement after the peer reply" yes
-set_entry "e['advice']={'message_id':$reply_id,'decision':'adopt','reason':'use the safer boundary'}"
-GUARD_EVENT=pretool expect "wait policy allows mutation after anchored acknowledgement" no
-expect "wait policy allows completion after anchored acknowledgement" no
+GUARD_EVENT=pretool expect "an unacknowledged peer reply does not block mutation" no
+expect "an unacknowledged peer reply does not block Stop" no
 
-# Adaptive policy waits only while delivered peer evidence is unchanged. A changed
-# pane degrades to send, while a later direct reply still requires acknowledgement.
-sqlite3 "$DB" "DELETE FROM messages;"
-write_lock run-A tproj.cc adaptive
-add_msg consult run-A
-GUARD_EVENT=pretool expect "adaptive policy records a peer baseline and waits" yes
-GUARD_EVENT=pretool expect "adaptive policy keeps waiting while peer evidence is unchanged" yes
-printf 'pane-changed\n' > "$TMP/pane-evidence"
-GUARD_EVENT=pretool expect "adaptive policy degrades after peer pane evidence changes" no
-if python3 - "$TMP/ig/state.json" <<'PY'
-import json, sys
-entry = next(iter(json.load(open(sys.argv[1], encoding="utf-8"))["entries"].values()))
-raise SystemExit(0 if (entry.get("consultation") or {}).get("outcome") == "degraded" else 1)
-PY
-then
-  pass "adaptive degradation is recorded by the canonical writer"
-else
-  fail "adaptive degradation is recorded by the canonical writer" "state did not record degraded"
-fi
-GUARD_EVENT=pretool expect "adaptive degradation persists without re-blocking the next mutation" no
-add_reply
-reply_id=$(sqlite3 "$DB" 'SELECT MAX(id) FROM messages;')
-GUARD_EVENT=pretool expect "a late reply after degradation still requires acknowledgement" yes
-set_entry "e['advice']={'message_id':$reply_id,'decision':'partial','reason':'adopt the bounded part'}"
-GUARD_EVENT=pretool expect "adaptive policy resumes after the late reply is acknowledged" no
-
-sqlite3 "$DB" "DELETE FROM messages;"
-write_lock run-Q tproj.cc adaptive
-add_msg consult run-Q
-printf '{"generated_at":%s,"sides":{"cc":{"status":"ok","main_remaining_percent":50},"cdx":{"status":"unavailable","main_remaining_percent":0}}}\n' "$(date +%s)" > "$TMP/weekly.json"
-GUARD_EVENT=pretool expect "adaptive policy pre-degrades when the peer weekly state is freshly unavailable" no
-printf '{"generated_at":%s,"sides":{"cc":{"status":"ok","main_remaining_percent":50},"cdx":{"status":"ok","main_remaining_percent":50}}}\n' "$(date +%s)" > "$TMP/weekly.json"
-
-# Reflection state is owned by intent-guard. Semantic acknowledgement clears the
-# first course check; a repeated machine signature escalates to a newer consult.
-sqlite3 "$DB" "DELETE FROM messages;"
+# Reflection remains an audit signal, never a permission gate.
 write_lock run-F tproj.cc send
-add_msg consult run-F
 set_entry "e['reflection']={'state':'due-reflect','anchor_message_id':0}"
-GUARD_EVENT=pretool expect "a failed verification asks the Assist working side to reflect" yes
-PRETOOL_TOOL=Bash PRETOOL_COMMAND='intent-guard reflect --assessment course-correct --evidence changed --next retry' \
-  GUARD_EVENT=pretool expect "the semantic reflection command cannot block itself" no
-
-# A repeated signature remains blocked until a consultation newer than the anchor.
-anchor=$(sqlite3 "$DB" 'SELECT COALESCE(MAX(id),0) FROM messages;')
-set_entry "e['reflection']={'state':'due-consult','anchor_message_id':$anchor}"
-GUARD_EVENT=pretool expect "a repeated failure signature requires a fresh consultation" yes
-add_msg consult run-F
-: > "$TMP/reflection.log"
-GUARD_EVENT=pretool expect "a newer consultation releases the repeated failure" no
-grep -q -- "--consulted --message-id" "$TMP/reflection.log" \
-  && pass "the released consultation is durably acknowledged through intent-guard" \
-  || fail "the released consultation is durably acknowledged through intent-guard" "log=$(cat "$TMP/reflection.log" 2>/dev/null)"
-
-# Collab workers get the same course check without changing delegated-task
-# lifecycle; Solo remains completely outside it.
-printf '{"role":"worker"}' > "$TMP/cache/s1/3/tproj.cc.json"
-sqlite3 "$DB" "DELETE FROM messages;"
-write_lock run-C tproj.cc send
-add_msg consult run-C
-set_entry "e['reflection']={'state':'due-reflect','anchor_message_id':0}"
-FAKE_MODE=collab GUARD_EVENT=pretool expect "a Collab worker receives the same course check" yes
-printf '{"role":"solo-fallback"}' > "$TMP/cache/s1/3/tproj.cc.json"
-FAKE_MODE=solo GUARD_EVENT=pretool expect "Solo mode never runs the reflection gate" no
-FAKE_MODE=assist
+GUARD_EVENT=pretool expect "a due reflection does not block mutation" no
+set_entry "e['reflection']={'state':'due-consult','anchor_message_id':0}"
+GUARD_EVENT=pretool expect "a repeated failure signal does not block mutation" no
 
 # PostToolUse never blocks. With a proven non-zero exit it records a machine
 # command signature; missing exits and simple predicates fail open.
@@ -306,62 +231,8 @@ write_lock run-R tproj.cc wait
 PRETOOL_TOOL=Bash PRETOOL_COMMAND="git status" GUARD_EVENT=pretool expect "read-only shell work is allowed while advice is pending" no
 FAKE_PEER="" GUARD_EVENT=pretool expect "an unavailable peer never wedges the first mutation" no
 
-# The whole reason the run id had to reach the message row: `created_at` has
-# one-second resolution, so a boundary made of time alone lets a consultation sent
-# for the previous task satisfy the next one when the two share a second.
-sqlite3 "$DB" "DELETE FROM messages;"
-add_msg consult run-A
-expect "a consultation belonging to another task run does not count" yes
-
-# Ordinary traffic and the router's own pairing ping must not pass as consultation.
-sqlite3 "$DB" "DELETE FROM messages;"
-write_lock run-B tproj.cc send
-add_msg "" run-B
-expect "an unmarked message does not count as consultation" yes
-sqlite3 "$DB" "DELETE FROM messages;"
-add_msg consult run-B rejected
-expect "a rejected consultation does not count" yes
-sqlite3 "$DB" "DELETE FROM messages;"
-add_msg consult run-B send-keys ""
-expect "an empty-bodied audit row does not count" yes
-
-# Fail-open paths.
-sqlite3 "$DB" "DELETE FROM messages;"
-FAKE_PEER="" expect "no reachable peer never holds the turn open" no
-FAKE_MODE=collab expect "collab mode does not use this gate" no
-printf '{"role":"assist"}' > "$TMP/cache/s1/3/tproj.cc.json"
-expect "the advising side owes nothing" no
-printf '{"role":"solo-fallback"}' > "$TMP/cache/s1/3/tproj.cc.json"
-write_lock run-B other.cc
-expect "a lock owned by another pane is not this pane's task" no
-write_lock - tproj.cc
-expect "a lock predating the run stamp is not gated" no
-
-# intent-guard start supersedes an owner's other active runs, so two of them means
-# the invariant is broken and there is no "current" run to gate against. Picking one
-# would let whichever entry enumerated first decide, and the older run's
-# consultation would release a task the pane never consulted for.
-python3 -c "
-import hashlib, json, sys
-entries = {}
-for cwd, run in ((sys.argv[1] + '/old', 'run-A'), (sys.argv[1], 'run-B')):
-    entries[hashlib.md5(cwd.encode('utf-8')).hexdigest()] = {
-        'cwd': cwd, 'intent': 'x', 'status': 'active', 'task_run_id': run,
-        'owner_session': 's1', 'owner_alias': 'tproj.cc'}
-json.dump({'version': 1, 'entries': entries}, open(sys.argv[2], 'w', encoding='utf-8'))
-" "$TMP/proj" "$TMP/ig/state.json"
-# Asserted with an empty message table on purpose: first-wins would pick run-A,
-# find no consultation for it, and block. Only refusing to choose leaves the turn
-# alone. (The harm Cdx reported -- run-A's old consultation releasing run-B -- shows
-# up as "not blocked" under both behaviours, so it cannot tell them apart here; the
-# supersede test in test-intent-guard.sh is what covers that direction.)
-sqlite3 "$DB" "DELETE FROM messages;"
-expect "two active runs for one owner leave the turn alone" no
-
-# The CLI contract behind the mark. `--consult` attests that this pane ASKED its
-# peer; every flag below either hands the work off instead of asking or overrides a
-# delivery policy, so allowing the combination would let a pane clear the gate
-# without ever consulting anyone.
+# `--consult` remains a distinct audit kind and stays incompatible with control or
+# delivery-bypass flags even though consultation is no longer an execution gate.
 MSG="$SCRIPT_DIR/../../messaging/tproj-msg"
 reject() {  # <name> <flag...>
   local name="$1"; shift

@@ -13,7 +13,6 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +21,6 @@ LIFECYCLE_RE = re.compile(
     r"\[(ACK-PROGRESS|ACK|DONE|BLOCK|BLOCKED):\s*([A-Za-z0-9._-]+)\]"
 )
 REPORT_RE = re.compile(r"\[COMPLETION-REPORT:\s*([A-Za-z0-9._-]+)\]")
-SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-WEEKLY_PACE_MAX_AGE_SEC = 900
 
 
 def block(reason: str) -> int:
@@ -350,69 +347,6 @@ def consultable_peer(session: str, alias: str, role: str) -> str:
     return str(consultable_peer_info(session, alias, role).get("alias", ""))
 
 
-def peer_evidence_hash(peer: dict[str, Any]) -> str:
-    """Hash live pane evidence without persisting pane text."""
-    pane = str(peer.get("pane_id") or "")
-    if not pane:
-        return ""
-    try:
-        values = []
-        for fmt in ("#{pane_current_command}", "#{@prompt_state}", "#{@prompt_state_ts}"):
-            result = subprocess.run(
-                ["tmux", "display-message", "-t", pane, "-p", fmt],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                check=False,
-            )
-            if result.returncode != 0:
-                return ""
-            values.append(result.stdout.strip())
-        capture = subprocess.run(
-            ["tmux", "capture-pane", "-p", "-t", pane, "-S", "-12"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    if capture.returncode != 0:
-        return ""
-    material = "\0".join([pane, *values, capture.stdout])
-    return hashlib.sha256(material.encode("utf-8", errors="replace")).hexdigest()
-
-
-def weekly_peer_unavailable(peer_alias: str) -> str:
-    """Return a state reason only for fresh, authoritative unavailability."""
-    role = peer_alias.rsplit(".", 1)[-1]
-    if role not in {"cc", "cdx"}:
-        return ""
-    path = Path(
-        os.environ.get(
-            "TPROJ_USAGE_STATE_PATH",
-            str(Path.home() / ".local/state/tproj/weekly-pace.json"),
-        )
-    )
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-        generated = int(document.get("generated_at", 0) or 0)
-        side = (document.get("sides") or {}).get(role) or {}
-        now = int(os.environ.get("TPROJ_USAGE_NOW", "") or time.time())
-        status = str(side.get("status") or "")
-        remaining = int(side.get("main_remaining_percent", -1))
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return ""
-    age = now - generated
-    if age < -300 or age > WEEKLY_PACE_MAX_AGE_SEC:
-        return ""
-    if status in {"hold", "unavailable"}:
-        return f"weekly-{status}"
-    if remaining == 0:
-        return "weekly-empty"
-    return ""
-
-
 def intent_guard_command(*args: str) -> bool:
     command = shutil.which("intent-guard")
     if not command:
@@ -424,21 +358,6 @@ def intent_guard_command(*args: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
-
-
-def record_consult_outcome(message_id: int, outcome: str, reason: str, evidence_hash: str = "") -> None:
-    args = [
-        "consult-observe",
-        "--message-id",
-        str(message_id),
-        "--outcome",
-        outcome,
-        "--reason",
-        reason[:120],
-    ]
-    if evidence_hash:
-        args.extend(["--evidence-hash", evidence_hash])
-    intent_guard_command(*args)
 
 
 def active_task_context(session: str, self_alias: str) -> tuple[str, str, dict[str, Any]]:
@@ -475,135 +394,6 @@ def active_task_context(session: str, self_alias: str) -> tuple[str, str, dict[s
     run, policy, entry = runs[0]
     valid_policy = policy if policy in {"adaptive", "wait", "send", "none", "legacy"} else "legacy"
     return run, valid_policy, entry
-
-
-def consultation_state(
-    db: sqlite3.Connection, session: str, self_alias: str, peer_alias: str, run: str
-) -> dict[str, Any]:
-    # Only a send that was marked as a consultation, and that belongs to THIS task
-    # run, counts. Any outbound row would be satisfied by a status report or by the
-    # router's own pairing ping, which is not what "you asked someone" means.
-    # Caller-audit rows carry an empty body and are excluded. Rejected/error/queued
-    # attempts remain visible so adaptive policy can degrade instead of wedging.
-    forms = recipient_forms(self_alias, peer_alias)
-    placeholders = ",".join("?" for _ in forms)
-    try:
-        rows = db.execute(
-            f"""
-            SELECT id, COALESCE(delivery, ''), COALESCE(delivered_at, created_at, 0)
-              FROM messages
-             WHERE session = ?
-               AND from_alias = ?
-               AND to_alias IN ({placeholders})
-               AND direction = 'outbound'
-               AND msg_kind = 'consult'
-               AND task_run_id = ?
-               AND TRIM(COALESCE(body, '')) != ''
-             ORDER BY id
-            """,
-            (session, self_alias, *forms, run),
-        ).fetchall()
-    except sqlite3.Error:
-        return {"unknown": True}
-    if not rows:
-        return {"consulted": False, "replied": False, "consult_id": 0, "reply_id": 0}
-
-    consult_id, delivery, delivered_at = rows[-1]
-    consult_id = int(consult_id)
-    delivery = str(delivery)
-    delivered_at = int(delivered_at or 0)
-
-    peer_forms = recipient_forms(self_alias, peer_alias)
-    self_forms = recipient_forms(peer_alias, self_alias)
-    peer_placeholders = ",".join("?" for _ in peer_forms)
-    self_placeholders = ",".join("?" for _ in self_forms)
-    if delivery in {"send-keys", "flushed"}:
-        try:
-            reply = db.execute(
-                f"""
-                SELECT id FROM messages
-                 WHERE session = ?
-                   AND from_alias IN ({peer_placeholders})
-                   AND to_alias IN ({self_placeholders})
-                   AND direction = 'inbound'
-                   AND id > ?
-                   AND TRIM(COALESCE(body, '')) != ''
-                   AND COALESCE(delivery, '') NOT IN ('rejected', 'error')
-                 ORDER BY id LIMIT 1
-                """,
-                (session, *peer_forms, *self_forms, consult_id),
-            ).fetchone()
-        except sqlite3.Error:
-            return {"unknown": True}
-        if reply is not None:
-            return {
-                "consulted": True,
-                "replied": True,
-                "consult_id": consult_id,
-                "reply_id": int(reply[0]),
-                "delivery": delivery,
-                "delivered_at": delivered_at,
-            }
-    return {
-        "consulted": True,
-        "replied": False,
-        "consult_id": consult_id,
-        "reply_id": 0,
-        "delivery": delivery,
-        "delivered_at": delivered_at,
-    }
-
-
-def reflection_control(payload: dict[str, Any]) -> bool:
-    module = mutation_guard_module()
-    if module is None:
-        return False
-    try:
-        _tool_name, command = module.parse_command(payload)
-    except Exception:
-        return False
-    if not command:
-        return False
-    return (
-        "tproj-msg" in command and "--consult" in command
-    ) or re.search(r"(?:^|[/\s])intent-guard\s+(?:reflect|advice)(?:\s|$)", command) is not None
-
-
-def advice_ack_id(entry: dict[str, Any]) -> int:
-    try:
-        return int((entry.get("advice") or {}).get("message_id", 0) or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def adaptive_wait_reason(
-    peer: dict[str, Any], evidence: dict[str, Any], entry: dict[str, Any]
-) -> tuple[str, str]:
-    """Return (wait|degrade, reason) from delivery, quota, and pane evidence."""
-    delivery = str(evidence.get("delivery") or "")
-    consult_id = int(evidence.get("consult_id", 0) or 0)
-    if delivery not in {"send-keys", "flushed"}:
-        return "degrade", f"delivery-{delivery or 'unknown'}"
-    unavailable = weekly_peer_unavailable(str(peer.get("alias") or ""))
-    if unavailable:
-        return "degrade", unavailable
-    current_hash = peer_evidence_hash(peer)
-    if not current_hash:
-        return "degrade", "pane-evidence-unavailable"
-    observed = entry.get("consultation") or {}
-    try:
-        observed_id = int(observed.get("message_id", 0) or 0)
-    except (TypeError, ValueError):
-        observed_id = 0
-    if observed_id == consult_id and str(observed.get("outcome") or "") == "degraded":
-        return "degrade", str(observed.get("reason") or "previously-degraded")
-    previous_hash = str(observed.get("evidence_hash") or "") if observed_id == consult_id else ""
-    if not previous_hash:
-        record_consult_outcome(consult_id, "waiting", "pane-unchanged", current_hash)
-        return "wait", "pane-baseline-recorded"
-    if not SHA256_RE.fullmatch(previous_hash) or previous_hash != current_hash:
-        return "degrade", "pane-state-changed"
-    return "wait", "pane-unchanged"
 
 
 def action_fingerprint(payload: dict[str, Any]) -> str:
@@ -714,132 +504,6 @@ def own_runtime_role(session: str, self_alias: str) -> str:
     return str(own.get("role", "")) if isinstance(own, dict) else ""
 
 
-def reflection_gate(
-    db: sqlite3.Connection,
-    session: str,
-    alias: str,
-    role: str,
-    run: str,
-    peer_alias: str,
-    entry: dict[str, Any],
-) -> str:
-    reflection = entry.get("reflection") or {}
-    state = str(reflection.get("state") or "clear")
-    if state == "due-reflect":
-        return (
-            "Course check: the last verification failed. Read its actual evidence before changing more. "
-            "Record `intent-guard reflect --assessment expected-progress|course-correct|stuck "
-            "--evidence \"<what changed>\" --next \"<one discriminating action>\"`. "
-            f"Choosing stuck requires a fresh consultation with {peer_alias}."
-        )
-    if state != "due-consult":
-        return ""
-    try:
-        due_anchor = int(reflection.get("anchor_message_id", 0) or 0)
-    except (TypeError, ValueError):
-        return ""
-    evidence = consultation_state(db, session, f"{alias}.{role}", peer_alias, run)
-    latest_consult_id = int(evidence.get("consult_id", 0) or 0)
-    if (
-        latest_consult_id > due_anchor
-        and str(evidence.get("delivery") or "") not in {"rejected", "error", ""}
-    ):
-        intent_guard_command("reflect", "--consulted", "--message-id", str(latest_consult_id))
-        return ""
-    return (
-        "Course correction required: reflection marked this route stuck, or the same machine failure "
-        "signature returned without new evidence. Self-classification cannot clear it. "
-        f"Consult {peer_alias} again with `tproj-msg --consult {peer_alias} \"<failure evidence and proposed correction>\"` "
-        "before retrying."
-    )
-
-
-def consult_gate(session: str, alias: str, role: str, mode: str, event: str) -> str:
-    # Empty string when the turn may end. Assist mode pairs the panes correctly but
-    # gives the working side no reason to ever use its peer, so it works alone and
-    # the mode looks identical to solo. This is the one place that makes the
-    # consultation real, and every unknown fails open.
-    self_alias = f"{alias}.{role}"
-    module = router_module()
-    if module is None:
-        return ""
-    # state_path scopes by column, so an empty one silently reads nothing and the
-    # gate would quietly never arm. Ask tmux for this pane's column.
-    column = pane_column()
-    if not column:
-        return ""
-    try:
-        own = module.read_json_file(
-            module.state_path({"session": session, "column": column, "alias": self_alias})
-        )
-    except Exception:
-        own = {}
-    own_role = str(own.get("role") or "") if isinstance(own, dict) else ""
-    is_working = (mode == "assist" and own_role == "solo-fallback") or (
-        mode == "collab" and own_role == "worker"
-    )
-    if not is_working:
-        return ""
-    # A Collab worker's ACK-only turn must not be held open before it begins work;
-    # PreToolUse is the authoritative early boundary for that mode.
-    if mode == "collab" and event == "stop":
-        return ""
-    run, policy, entry = active_task_context(session, self_alias)
-    if not run:
-        return ""
-    if policy == "none" or (event == "pretool" and policy == "legacy"):
-        return ""
-    peer = consultable_peer_info(session, alias, role)
-    peer_alias = str(peer.get("alias") or "")
-    if not peer_alias:
-        return ""
-    db = open_db()
-    if db is None:
-        return ""
-    try:
-        evidence = consultation_state(db, session, self_alias, peer_alias, run)
-    finally:
-        db.close()
-    if evidence.get("unknown"):
-        return ""
-    if not evidence.get("consulted"):
-        timing = "before the first mutation" if event == "pretool" else "before finishing this task"
-        return (
-            f"{mode.title()} mode: consult {peer_alias} {timing}. Send a design question or approach check with "
-            f"`tproj-msg --consult {peer_alias} \"...\"`."
-        )
-    reply_id = int(evidence.get("reply_id", 0) or 0)
-    consult_id = int(evidence.get("consult_id", 0) or 0)
-    if reply_id:
-        record_consult_outcome(consult_id, "replied", "direct-reply")
-        if advice_ack_id(entry) != reply_id:
-            return (
-                f"Advice pending from {peer_alias}: acknowledge direct reply #{reply_id} before the next "
-                "significant mutation or completion with `intent-guard advice --message-id "
-                f"{reply_id} --decision adopt|partial|reject --why \"<one concrete reason>\"`."
-            )
-        return ""
-    if policy == "send" and str(evidence.get("delivery") or "") in {"", "rejected", "error"}:
-        return (
-            f"{mode.title()} mode: the consultation to {peer_alias} was not delivered. "
-            f"Send one successful `tproj-msg --consult {peer_alias} \"...\"` before continuing."
-        )
-    if policy not in {"wait", "adaptive"}:
-        return ""
-    if policy == "adaptive":
-        outcome, reason = adaptive_wait_reason(peer, evidence, entry)
-        if outcome == "degrade":
-            record_consult_outcome(consult_id, "degraded", reason)
-            return ""
-    else:
-        reason = "strict-wait"
-    return (
-        f"{mode.title()} mode: {peer_alias} accepted the consultation and its pane evidence is unchanged "
-        f"({reason}). Continue read-only investigation until a reply or pane-state change; a later reply "
-        "still requires an anchored advice acknowledgement."
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--platform", choices=("claude", "codex"), default="claude")
@@ -867,42 +531,15 @@ def main() -> int:
             observe_posttool_failure(payload, session, alias, role, mode)
         return 0
     if args.event == "pretool":
-        if not pretool_is_mutating(payload):
-            return 0
-        if reflection_control(payload):
-            return 0
-        self_alias = f"{alias}.{role}"
-        if mode in {"assist", "collab"}:
-            blocked = consult_gate(session, alias, role, mode, args.event)
-            if blocked:
-                return block(blocked)
-        else:
-            return 0
-        own_role = own_runtime_role(session, self_alias)
-        if not (
-            (mode == "assist" and own_role == "solo-fallback")
-            or (mode == "collab" and own_role == "worker")
-        ):
-            return 0
-        run, _policy, entry = active_task_context(session, self_alias)
-        if not run:
-            return 0
-        peer_alias = consultable_peer(session, alias, role)
-        if not peer_alias:
-            return 0
-        db = open_db()
-        if db is None:
-            return 0
-        try:
-            blocked = reflection_gate(db, session, alias, role, run, peer_alias, entry)
-        finally:
-            db.close()
-        return block(blocked) if blocked else 0
+        # Consultation and reflection are advisory. They never authorize work, so
+        # they must not become a permission gate for mutation, commit, or Stop.
+        # Safety, role, freeze/cancel, and destructive-operation checks remain in
+        # tproj-mutation-guard.
+        return 0
     if args.event != "stop":
         return 0
     if mode == "assist":
-        blocked = consult_gate(session, alias, role, mode, args.event)
-        return block(blocked) if blocked else 0
+        return 0
     # Under any other declared mode there is no orchestrator handing work down, so the
     # delegation lifecycle below does not describe what is happening. Holding a turn
     # open for a tag nobody is waiting on is the friction the mode was introduced to

@@ -72,20 +72,27 @@ def ensure_entry(hooks: dict[str, Any], event: str, matcher: str, command: str) 
     entries.append(item)
 
 
+def remove_entry(hooks: dict[str, Any], event: str, command: str) -> None:
+    entries = hooks.get(event)
+    if not isinstance(entries, list):
+        return
+    hooks[event] = [entry for entry in entries if command_of(entry) != command]
+
+
 def merge(document: dict[str, Any], platform: str) -> dict[str, Any]:
     hooks = document.setdefault("hooks", {})
     if platform == "claude":
         home = "$HOME/bin"
+        remove_entry(hooks, "PreToolUse", f"{home}/tproj-completion-guard --event pretool")
         ensure_entry(hooks, "PreToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|apply_patch|functions.apply_patch", f"{home}/tproj-mutation-guard")
-        ensure_entry(hooks, "PreToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|apply_patch|functions.apply_patch", f"{home}/tproj-completion-guard --event pretool")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec|functions.exec_command", f"{home}/tproj-inbox-record")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec|functions.exec_command", f"{home}/tproj-completion-guard --event posttool")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check")
         ensure_entry(hooks, "Stop", "", f"{home}/tproj-completion-guard")
     else:
         home = str(Path("~/bin").expanduser())
+        remove_entry(hooks, "PreToolUse", f"{home}/tproj-completion-guard --platform codex --event pretool")
         ensure_entry(hooks, "PreToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|apply_patch|functions.apply_patch", f"{home}/tproj-mutation-guard --platform codex")
-        ensure_entry(hooks, "PreToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|apply_patch|functions.apply_patch", f"{home}/tproj-completion-guard --platform codex --event pretool")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec|functions.exec_command", f"{home}/tproj-inbox-record")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec|functions.exec_command", f"{home}/tproj-completion-guard --platform codex --event posttool")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check --platform codex")

@@ -242,8 +242,8 @@ test -z '$notice_twice'"
 claude_hooks="$TMP/claude-hooks.json"
 codex_hooks="$TMP/codex-hooks.json"
 codex_config="$TMP/codex-config.toml"
-printf '{"hooks":{}}\n' > "$claude_hooks"
-printf '{"hooks":{}}\n' > "$codex_hooks"
+printf '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"$HOME/bin/tproj-completion-guard --event pretool"}]}]}}\n' > "$claude_hooks"
+printf '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"%s/bin/tproj-completion-guard --platform codex --event pretool"}]}]}}\n' "$HOME" > "$codex_hooks"
 install_rc=0
 "$REPO/extensions/hooks/install-tproj-hooks" --claude-settings "$claude_hooks" --codex-hooks "$codex_hooks" \
   --codex-config "$codex_config" --skip-codex-trust \
@@ -288,6 +288,10 @@ EOF2
 grep -q tproj-mutation-guard <<'EOF3'
 $codex_commands
 EOF3
+! grep -q 'completion-guard.*event pretool' <<'EOF4'
+$claude_commands
+$codex_commands
+EOF4
 grep -q 'trusted_hash = \"sha256:abcdef\"' '$codex_config'"
 
 # 11. Codex nested functions.exec response metadata records a task.
