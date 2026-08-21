@@ -39,7 +39,7 @@ def state_path(identity):
 
 def pane_peer(identity):
     alias = os.environ.get("FAKE_PEER", "")
-    return {"alias": alias} if alias else {}
+    return {"alias": alias, "pane_id": "%9"} if alias else {}
 
 if __name__ == "__main__":
     print(json.dumps({"mode": os.environ.get("FAKE_MODE", "assist")}))
@@ -49,11 +49,15 @@ chmod +x "$TMP/bin/model-role-router"
 cat > "$TMP/bin/tmux" <<'TMUX'
 #!/usr/bin/env bash
 case "$*" in
+  capture-pane*) cat "$FAKE_PANE_EVIDENCE" ;;
   *"#{@project}"*) echo "$FAKE_PROJECT" ;;
   *"#{@column}"*) echo 3 ;;
   *"#S"*|*"#{session_name}"*) echo s1 ;;
   *"#{@alias}"*) echo tproj ;;
   *"#{@role}"*) echo claude-p3 ;;
+  *"#{pane_current_command}"*) echo 2.1.227 ;;
+  *"#{@prompt_state}"*) echo idle ;;
+  *"#{@prompt_state_ts}"*) echo 1 ;;
   *) echo "" ;;
 esac
 TMUX
@@ -62,7 +66,33 @@ chmod +x "$TMP/bin/tmux"
 cat > "$TMP/bin/intent-guard" <<'INTENT'
 #!/usr/bin/env bash
 case "${1-}" in
-  reflect-observe) printf '%s\n' "${FAKE_REFLECTION_STATE-ok}" ;;
+  reflect-observe)
+    printf '%s\n' "$*" >> "${FAKE_REFLECTION_LOG:?}"
+    printf '%s\n' "${FAKE_REFLECTION_STATE-ok}"
+    ;;
+  consult-observe)
+    printf '%s\n' "$*" >> "${FAKE_REFLECTION_LOG:?}"
+    shift
+    message_id=0; outcome=""; reason=""; evidence=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --message-id) message_id="$2"; shift 2 ;;
+        --outcome) outcome="$2"; shift 2 ;;
+        --reason) reason="$2"; shift 2 ;;
+        --evidence-hash) evidence="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    python3 - "$FAKE_STATE_FILE" "$message_id" "$outcome" "$reason" "$evidence" <<'PY'
+import json, sys
+path, mid, outcome, reason, evidence = sys.argv[1:]
+state = json.load(open(path, encoding="utf-8"))
+entry = next(v for v in state["entries"].values() if v.get("status") == "active")
+entry["consultation"] = {"message_id": int(mid), "outcome": outcome, "reason": reason,
+                         "evidence_hash": evidence}
+json.dump(state, open(path, "w", encoding="utf-8"))
+PY
+    ;;
   reflect)
     printf '%s\n' "$*" >> "${FAKE_REFLECTION_LOG:?}"
     printf 'Reflection: consult\n'
@@ -73,7 +103,9 @@ INTENT
 chmod +x "$TMP/bin/intent-guard"
 
 DB="$TMP/messages.db"
-sqlite3 "$DB" "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT, from_alias TEXT, to_alias TEXT, body TEXT, direction TEXT, delivery TEXT, msg_kind TEXT, task_run_id TEXT, created_at INTEGER);"
+sqlite3 "$DB" "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT, from_alias TEXT, to_alias TEXT, body TEXT, direction TEXT, delivery TEXT, msg_kind TEXT, task_run_id TEXT, created_at INTEGER, delivered_at INTEGER);"
+printf 'pane-start\n' > "$TMP/pane-evidence"
+printf '{"generated_at":%s,"sides":{"cc":{"status":"ok","main_remaining_percent":50},"cdx":{"status":"ok","main_remaining_percent":50}}}\n' "$(date +%s)" > "$TMP/weekly.json"
 
 printf '{"role":"solo-fallback"}' > "$TMP/cache/s1/3/tproj.cc.json"
 
@@ -92,8 +124,8 @@ json.dump(state, open(sys.argv[5], 'w', encoding='utf-8'))
 }
 
 add_msg() {  # <kind> <task_run_id> [delivery] [body]
-  sqlite3 "$DB" "INSERT INTO messages (session, from_alias, to_alias, body, direction, delivery, msg_kind, task_run_id, created_at)
-                 VALUES ('s1','tproj.cc','tproj.cdx','${4-hello}','outbound','${3-send-keys}','$1','$2',$(date +%s));"
+  sqlite3 "$DB" "INSERT INTO messages (session, from_alias, to_alias, body, direction, delivery, msg_kind, task_run_id, created_at, delivered_at)
+                 VALUES ('s1','tproj.cc','tproj.cdx','${4-hello}','outbound','${3-send-keys}','$1','$2',$(date +%s),$(date +%s));"
 }
 
 add_reply() {
@@ -101,11 +133,26 @@ add_reply() {
                  VALUES ('s1','tproj.cdx','tproj.cc','advice','inbound','send-keys','','',$(date +%s));"
 }
 
+set_entry() { # <python body mutating entry>
+  python3 -c "import json; p='$TMP/ig/state.json'; s=json.load(open(p)); e=next(iter(s['entries'].values())); $1; json.dump(s,open(p,'w'))"
+}
+
 run_guard() {
   local event="${GUARD_EVENT-stop}" payload
   if [[ "$event" == "pretool" ]]; then
     payload=$(jq -nc --arg tool "${PRETOOL_TOOL-apply_patch}" --arg command "${PRETOOL_COMMAND-}" \
       '{tool_name:$tool,tool_input:{command:$command}}')
+  elif [[ "$event" == "posttool" ]]; then
+    if [[ -n "${POSTTOOL_EXIT_CODE+x}" ]]; then
+      payload=$(jq -nc --arg tool "${POSTTOOL_TOOL-functions.exec_command}" \
+        --arg command "${POSTTOOL_COMMAND-bash tests/example.sh}" \
+        --argjson exit_code "$POSTTOOL_EXIT_CODE" \
+        '{tool_name:$tool,tool_input:{command:$command},tool_response:{exit_code:$exit_code}}')
+    else
+      payload=$(jq -nc --arg tool "${POSTTOOL_TOOL-functions.exec_command}" \
+        --arg command "${POSTTOOL_COMMAND-bash tests/example.sh}" \
+        '{tool_name:$tool,tool_input:{command:$command},tool_response:{}}')
+    fi
   else
     payload='{"last_assistant_message":"done"}'
   fi
@@ -119,6 +166,9 @@ run_guard() {
         INTENT_GUARD_DIR="$TMP/ig" \
         FAKE_REFLECTION_STATE="${FAKE_REFLECTION_STATE-ok}" \
         FAKE_REFLECTION_LOG="$TMP/reflection.log" \
+        FAKE_PANE_EVIDENCE="$TMP/pane-evidence" \
+        FAKE_STATE_FILE="$TMP/ig/state.json" \
+        TPROJ_USAGE_STATE_PATH="$TMP/weekly.json" \
         TPROJ_PANE="%8" \
         TMUX_PANE="%8" \
         "$GUARD" --event "$event" 2>&1
@@ -158,36 +208,96 @@ add_msg consult run-W
 GUARD_EVENT=pretool expect "wait policy still blocks while the reply is pending" yes
 expect "wait policy also holds a plan-only Stop while the reply is pending" yes
 add_reply
-GUARD_EVENT=pretool expect "wait policy allows mutation after the peer reply" no
-expect "wait policy allows completion after the peer reply" no
+reply_id=$(sqlite3 "$DB" 'SELECT MAX(id) FROM messages;')
+GUARD_EVENT=pretool expect "wait policy requires anchored acknowledgement after the peer reply" yes
+set_entry "e['advice']={'message_id':$reply_id,'decision':'adopt','reason':'use the safer boundary'}"
+GUARD_EVENT=pretool expect "wait policy allows mutation after anchored acknowledgement" no
+expect "wait policy allows completion after anchored acknowledgement" no
 
-# After the initial consultation, the PreToolUse hook adds a one-shot course check
-# only for an unchanged blind retry. The canonical intent-guard owns the streak;
-# this fixture controls its returned state so this test stays focused on hook routing.
-FAKE_REFLECTION_STATE=reflect GUARD_EVENT=pretool expect "a blind retry asks the Assist working side to reflect" yes
-PRETOOL_TOOL=Bash PRETOOL_COMMAND='intent-guard reflect --continue --why changed' \
-  FAKE_REFLECTION_STATE=reflect GUARD_EVENT=pretool expect "the reflection acknowledgement command cannot block itself" no
+# Adaptive policy waits only while delivered peer evidence is unchanged. A changed
+# pane degrades to send, while a later direct reply still requires acknowledgement.
+sqlite3 "$DB" "DELETE FROM messages;"
+write_lock run-A tproj.cc adaptive
+add_msg consult run-A
+GUARD_EVENT=pretool expect "adaptive policy records a peer baseline and waits" yes
+GUARD_EVENT=pretool expect "adaptive policy keeps waiting while peer evidence is unchanged" yes
+printf 'pane-changed\n' > "$TMP/pane-evidence"
+GUARD_EVENT=pretool expect "adaptive policy degrades after peer pane evidence changes" no
+if python3 - "$TMP/ig/state.json" <<'PY'
+import json, sys
+entry = next(iter(json.load(open(sys.argv[1], encoding="utf-8"))["entries"].values()))
+raise SystemExit(0 if (entry.get("consultation") or {}).get("outcome") == "degraded" else 1)
+PY
+then
+  pass "adaptive degradation is recorded by the canonical writer"
+else
+  fail "adaptive degradation is recorded by the canonical writer" "state did not record degraded"
+fi
+GUARD_EVENT=pretool expect "adaptive degradation persists without re-blocking the next mutation" no
+add_reply
+reply_id=$(sqlite3 "$DB" 'SELECT MAX(id) FROM messages;')
+GUARD_EVENT=pretool expect "a late reply after degradation still requires acknowledgement" yes
+set_entry "e['advice']={'message_id':$reply_id,'decision':'partial','reason':'adopt the bounded part'}"
+GUARD_EVENT=pretool expect "adaptive policy resumes after the late reply is acknowledged" no
 
-# A third unchanged retry remains blocked until a consultation newer than the
-# captured DB row id exists. The resolver records that newer message through the
-# canonical writer before allowing the action.
+sqlite3 "$DB" "DELETE FROM messages;"
+write_lock run-Q tproj.cc adaptive
+add_msg consult run-Q
+printf '{"generated_at":%s,"sides":{"cc":{"status":"ok","main_remaining_percent":50},"cdx":{"status":"unavailable","main_remaining_percent":0}}}\n' "$(date +%s)" > "$TMP/weekly.json"
+GUARD_EVENT=pretool expect "adaptive policy pre-degrades when the peer weekly state is freshly unavailable" no
+printf '{"generated_at":%s,"sides":{"cc":{"status":"ok","main_remaining_percent":50},"cdx":{"status":"ok","main_remaining_percent":50}}}\n' "$(date +%s)" > "$TMP/weekly.json"
+
+# Reflection state is owned by intent-guard. Semantic acknowledgement clears the
+# first course check; a repeated machine signature escalates to a newer consult.
+sqlite3 "$DB" "DELETE FROM messages;"
+write_lock run-F tproj.cc send
+add_msg consult run-F
+set_entry "e['reflection']={'state':'due-reflect','anchor_message_id':0}"
+GUARD_EVENT=pretool expect "a failed verification asks the Assist working side to reflect" yes
+PRETOOL_TOOL=Bash PRETOOL_COMMAND='intent-guard reflect --assessment course-correct --evidence changed --next retry' \
+  GUARD_EVENT=pretool expect "the semantic reflection command cannot block itself" no
+
+# A repeated signature remains blocked until a consultation newer than the anchor.
 anchor=$(sqlite3 "$DB" 'SELECT COALESCE(MAX(id),0) FROM messages;')
-FAKE_REFLECTION_STATE="consult:$anchor" GUARD_EVENT=pretool expect "a third blind retry requires a fresh consultation" yes
-add_msg consult run-W
+set_entry "e['reflection']={'state':'due-consult','anchor_message_id':$anchor}"
+GUARD_EVENT=pretool expect "a repeated failure signature requires a fresh consultation" yes
+add_msg consult run-F
 : > "$TMP/reflection.log"
-FAKE_REFLECTION_STATE="consult:$anchor" GUARD_EVENT=pretool expect "a newer consultation releases the blind retry" no
+GUARD_EVENT=pretool expect "a newer consultation releases the repeated failure" no
 grep -q -- "--consulted --message-id" "$TMP/reflection.log" \
   && pass "the released consultation is durably acknowledged through intent-guard" \
   || fail "the released consultation is durably acknowledged through intent-guard" "log=$(cat "$TMP/reflection.log" 2>/dev/null)"
 
-# The user contract says every non-solo working mode. Collab workers get the same
-# narrow blind-retry checkpoint without changing the delegated-task lifecycle;
-# Solo remains completely outside it.
+# Collab workers get the same course check without changing delegated-task
+# lifecycle; Solo remains completely outside it.
 printf '{"role":"worker"}' > "$TMP/cache/s1/3/tproj.cc.json"
-FAKE_MODE=collab FAKE_REFLECTION_STATE=reflect GUARD_EVENT=pretool expect "a Collab worker receives the same course check" yes
+sqlite3 "$DB" "DELETE FROM messages;"
+write_lock run-C tproj.cc send
+add_msg consult run-C
+set_entry "e['reflection']={'state':'due-reflect','anchor_message_id':0}"
+FAKE_MODE=collab GUARD_EVENT=pretool expect "a Collab worker receives the same course check" yes
 printf '{"role":"solo-fallback"}' > "$TMP/cache/s1/3/tproj.cc.json"
-FAKE_MODE=solo FAKE_REFLECTION_STATE=reflect GUARD_EVENT=pretool expect "Solo mode never runs the reflection gate" no
+FAKE_MODE=solo GUARD_EVENT=pretool expect "Solo mode never runs the reflection gate" no
 FAKE_MODE=assist
+
+# PostToolUse never blocks. With a proven non-zero exit it records a machine
+# command signature; missing exits and simple predicates fail open.
+sqlite3 "$DB" "DELETE FROM messages;"
+write_lock run-P tproj.cc send
+add_msg consult run-P
+: > "$TMP/reflection.log"
+POSTTOOL_EXIT_CODE=1 GUARD_EVENT=posttool run_guard >/dev/null
+grep -q -- "reflect-observe --failure-signature" "$TMP/reflection.log" \
+  && pass "an explicit shell failure records a machine signature" \
+  || fail "an explicit shell failure records a machine signature" "log=$(cat "$TMP/reflection.log" 2>/dev/null)"
+before=$(wc -l < "$TMP/reflection.log" | tr -d ' ')
+POSTTOOL_COMMAND='rg missing file' POSTTOOL_EXIT_CODE=1 GUARD_EVENT=posttool run_guard >/dev/null
+unset POSTTOOL_EXIT_CODE
+GUARD_EVENT=posttool run_guard >/dev/null
+after=$(wc -l < "$TMP/reflection.log" | tr -d ' ')
+[[ "$before" == "$after" ]] \
+  && pass "predicate failures and unproven exits do not create reflection episodes" \
+  || fail "predicate failures and unproven exits do not create reflection episodes" "before=$before after=$after"
 
 sqlite3 "$DB" "DELETE FROM messages;"
 write_lock run-N tproj.cc none
@@ -205,6 +315,7 @@ expect "a consultation belonging to another task run does not count" yes
 
 # Ordinary traffic and the router's own pairing ping must not pass as consultation.
 sqlite3 "$DB" "DELETE FROM messages;"
+write_lock run-B tproj.cc send
 add_msg "" run-B
 expect "an unmarked message does not count as consultation" yes
 sqlite3 "$DB" "DELETE FROM messages;"

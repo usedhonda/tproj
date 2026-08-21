@@ -12,7 +12,7 @@ fi
 
 payload="$(cat)"
 tool_name="$(printf '%s' "$payload" | jq -r '(.tool_name // .hook_input.tool_name // "")' 2>/dev/null || printf '')"
-[[ "$tool_name" == "Bash" || "$tool_name" == "functions.exec" ]] || exit 0
+[[ "$tool_name" == "Bash" || "$tool_name" == "functions.exec" || "$tool_name" == "functions.exec_command" ]] || exit 0
 
 command_text="$(printf '%s' "$payload" | jq -r '(.tool_input.command // .tool_input.cmd // .tool_input.source // .command // "") | tostring | .[0:8192]' 2>/dev/null || printf '')"
 [[ "$command_text" == *tproj-msg* && "$command_text" == *--new-task* ]] || exit 0

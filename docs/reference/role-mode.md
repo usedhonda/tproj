@@ -204,9 +204,13 @@ reason ever to use the other one: internally the working side is `solo-fallback`
 the duty attached to that role is to finish end to end. Left there, the mode is
 indistinguishable from `solo`.
 
-Assist consultation has three task-run policies, selected by
-`intent-guard start --assist-consult wait|send|none`:
+Assist consultation has four task-run policies, selected by
+`intent-guard start --assist-consult adaptive|wait|send|none`:
 
+- `adaptive` is the default for non-trivial work. A delivered consultation waits
+  only while the peer's hashed pane evidence remains unchanged. Queued, rejected,
+  errored, offline, unknown, quota-empty, or changed-pane evidence degrades to
+  `send` without blocking the task. Raw pane text is never stored.
 - `wait` is for plans and high-impact work. Read-only investigation may continue,
   but the first mutation and Stop both require a consultation followed by a real
   inbound message from that peer.
@@ -254,10 +258,18 @@ alone. Sender and gate both refuse to choose: zero or more than one match yields
 run, and no run means no gate. The older
 `started_at` field is sticky across starts and cannot serve as a boundary at all.
 
-For `wait`, a reply is a non-empty inbound DB row from the same live peer to the
+For `wait` and `adaptive`, a reply is a non-empty inbound DB row from the same live peer to the
 working side, with a row id after the task-run consultation. The check uses message
 direction and identities, not body text. A queued consultation does not satisfy the
 reply requirement until it is flushed and a later inbound row arrives.
+
+A reply is not the end of the contract. The working side records exactly one
+decision for the direct reply with `intent-guard advice --message-id <id>
+--decision adopt|partial|reject --why "<one concrete reason>"`. A reply cannot be
+acknowledged before its monotonic message id exists. Once a reply exists, the next
+significant mutation and Stop require that acknowledgement. A delayed reply after
+adaptive degradation creates the same obligation, so early degradation changes
+"wait now" into "address it later" rather than discarding the advice.
 
 Anything the gate cannot determine — no lock, no reachable peer, no database, a lock
 predating the run stamp, a lock owned by another pane — leaves the turn alone. A guard
@@ -265,21 +277,26 @@ that wedges a session is worse than the problem it solves.
 
 ### Mid-task course checks
 
-The first consultation is not a permanent exemption. In every non-solo working mode,
-the PreToolUse guard watches for one narrow sign of blind retry: the same mutating
-action is proposed again without a different mutation in between. It stores only a
-SHA-256 action fingerprint in the active `intent-guard` task run, never command or
-patch text.
+The first consultation is not a permanent exemption. After a shell tool reports an
+explicit non-zero exit, the model must read that result and record a semantic course
+check with `intent-guard reflect --assessment expected-progress|course-correct|stuck
+--evidence "<what changed>" --next "<one discriminating action>"` before another
+mutation. Payloads without a proven exit field fail open; simple predicate commands
+such as `grep`, `rg`, `cmp`, `diff`, and `test` do not become failures merely because
+their predicate is false.
 
-- The second unchanged attempt opens a one-shot, trigger-specific course check. The
-  working side must either record one concrete reason to continue with
-  `intent-guard reflect --continue --why "..."`, or consult the live peer again.
-- A third unchanged attempt cannot be acknowledged locally. It requires a new
-  task-run consultation whose monotonic `messages.id` is greater than the checkpoint
-  anchor. Timestamps are not used.
-- A different mutating action resets the streak. Read-only commands do not enter it.
+- `expected-progress` and `course-correct` may clear a reflection only with concrete
+  one-line evidence and a next discriminating action.
+- `stuck` escalates to a fresh consultation. The same machine-computed command
+  signature failing again also requires consultation, regardless of self-classification.
+- The consultation must have a monotonic `messages.id` newer than the failure anchor.
+  Timestamps and raw failure output are not persisted.
 - `assist` applies this to the working `solo-fallback` side; `collab` applies it only
-  to the `worker`. `solo` never runs the reflection gate.
+  to the worker, without changing ACK/DONE/BLOCK lifecycle state. `solo` never runs it.
+
+Safety containment stops the unsafe action, not the whole goal: when a safe
+alternative remains, the working side consults and continues. Consultation never
+authorizes Intent Drift; changed scope still requires the user's approval.
 
 `intent-guard` remains the only writer of the task-run reflection state and keeps a
 bounded audit of continue/consult outcomes. A reflection or peer consultation can
