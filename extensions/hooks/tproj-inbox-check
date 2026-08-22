@@ -318,6 +318,35 @@ if [[ "$CACHE_PRESENT" -eq 1 && ${#_cache_entries[@]} -gt 0 ]] && tt_cache_valid
     read_output="$("$MSG_CLI" --read "$target" 40 2>&1 >/dev/null || true)"
     while IFS= read -r task_id; do
       [[ -n "$task_id" ]] || continue
+      # Advance the ledger from the durable inbound row, not only from what
+      # --read happens to capture. The capture is the last 40 lines of the
+      # WORKER's pane; a worker that sent its DONE with tproj-msg shows at most
+      # a "Sent to" echo there, which has scrolled away by the time this runs.
+      # Meanwhile the sender's tproj-msg mirrored that DONE as an inbound row
+      # for us, carrying the exact id and body hash apply_reply demands. A
+      # formal-id ACK and DONE that genuinely reached this pane once left the
+      # task at `pending` for a whole day, so verify refused it and the only
+      # way out was a cancel (artist-runtime, 2026-08-16). Recipient identity is
+      # required (fail-closed), and every call is idempotent.
+      if [[ -n "$OWNER_ROLE" ]] \
+         && declare -F tt_cache_apply_reply >/dev/null 2>&1 \
+         && declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_quote >/dev/null 2>&1; then
+        _sess_q="$(tt_db_quote "${OWNER%%/*}")"
+        _self_alias="${OWNER##*/}.${OWNER_ROLE}"
+        _self_q="$(tt_db_quote "$_self_alias")"
+        _from_q="$(tt_db_quote "$target")"
+        _task_q="$(tt_db_quote "$task_id")"
+        _ev_rows="$(tt_db_exec_safe "SELECT id || char(9) || COALESCE(body_hash,'') || char(9) || REPLACE(REPLACE(COALESCE(body,''), char(10), ' '), char(9), ' ') FROM messages WHERE session='${_sess_q}' AND to_alias='${_self_q}' AND from_alias='${_from_q}' AND task_id='${_task_q}' AND direction='inbound' AND COALESCE(delivery,'') NOT IN ('rejected','error') ORDER BY id ASC;" 2>/dev/null || true)"
+        while IFS=$'\t' read -r _ev_id _ev_hash _ev_body; do
+          [[ -n "$_ev_id" ]] || continue
+          # `|| true`: under set -euo pipefail a no-match grep would abort the
+          # whole hook here, which is how the notified_at update below went
+          # silent the first time this block was written.
+          _ev_tag="$(printf '%s' "$_ev_body" | grep -oE "\[(ACK-PROGRESS|ACK|DONE|BLOCKED|BLOCK): ${task_id}\]" | head -n 1 | sed -E 's/^\[([A-Z-]+):.*/\1/' || true)"
+          [[ -n "$_ev_tag" ]] || continue
+          tt_cache_apply_reply "$OWNER" "$target" "$task_id" "$_ev_tag" "$_ev_id" "$_ev_hash" "$_self_alias" >/dev/null 2>&1 || true
+        done <<< "$_ev_rows"
+      fi
       if printf '%s\n' "$read_output" | grep -q "TASK_REPLIED=${task_id}"; then
         if tt_cache_mark_notice "$OWNER" "$target" "$task_id" reply_arrived >/dev/null 2>&1; then
           emit_notice "[inbox-notice] reply arrived from ${target} task=${task_id} - review with tproj-msg --read ${target} 40"

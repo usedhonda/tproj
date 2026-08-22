@@ -384,6 +384,34 @@ else
   echo "  SKIP: sqlite3 not available"
 fi
 
+# Case N1 (artist-runtime 2026-08-16): a formal-id ACK and DONE that reached
+# this pane as inbound rows must advance the ledger even when --read captures
+# no marker (the worker's own pane shows only a "Sent to" echo, long scrolled).
+# Before this, the task sat at `pending`, verify refused it, and the only way
+# out was a cancel.
+echo "Case N1: ledger advances from durable inbound ACK/DONE rows"
+if command -v sqlite3 >/dev/null 2>&1; then
+  setup_tmp_with_db
+  export TT_OWNER_ROLE=cc
+  ( source "$TMP/tproj-msg-db.sh"; tt_db_init ) >/dev/null 2>&1 || true
+  sqlite3 "$TPROJ_MSG_DB_PATH" \
+    "INSERT INTO messages (id, session, from_alias, to_alias, body, body_hash, task_id, direction, delivery, created_at) VALUES (300,'testsess','$TARGET_NAME','testcol.cc','[ACK: ledger-x] on it','hash-ack-300','ledger-x','inbound','send-keys',strftime('%s','now'));
+     INSERT INTO messages (id, session, from_alias, to_alias, body, body_hash, task_id, direction, delivery, created_at) VALUES (301,'testsess','$TARGET_NAME','testcol.cc','[DONE: ledger-x] finished','hash-done-301','ledger-x','inbound','send-keys',strftime('%s','now'));" >/dev/null 2>&1 || true
+  make_mock_msg "pane dummy" ""   # --read sees nothing: the marker has scrolled away
+  seed_cache "ledger-x" 1800 "$OWNER_SELF" "$TARGET_NAME"
+  TPROJ_HOOK_ENABLED=1 "$TMP/tproj-inbox-check" >/dev/null 2>&1 || true
+  ledger_state="$(source "$TMP/tproj-task-cache.sh"; tt_cache_get_task "$OWNER_SELF" "$TARGET_NAME" ledger-x 2>/dev/null | jq -r '.state // ""' 2>/dev/null || true)"
+  if [[ "$ledger_state" == "done" || "$ledger_state" == "received" ]]; then
+    PASS=$((PASS + 1)); echo "  PASS: inbound DONE row advanced the ledger (state=$ledger_state)"
+  else
+    FAIL=$((FAIL + 1)); echo "  FAIL: ledger still [$ledger_state] after inbound ACK+DONE rows"
+  fi
+  teardown_db
+  teardown_tmp
+else
+  echo "  SKIP: sqlite3 not available"
+fi
+
 # Case N2 (R4-2): when our role cannot be resolved, the recipient predicate is
 # unknown, so the notified update is skipped entirely (fail-closed). It must NOT
 # fall back to session+sender+task_id and flag another recipient's row.
