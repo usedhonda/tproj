@@ -74,5 +74,14 @@ out=$(layers --project "$TMP/bare")
   && pass "a project with no override file still inherits the baseline" \
   || fail "a project with no override file still inherits the baseline" "$out"
 
+# The OpenAI image-detail parameter is the string "auto". A whole-word vocabulary
+# rename (auto -> collab) once rewrote it, the API rejected the probe, and the
+# face-centred crop silently fell open -- every new pane came out too far away.
+if [[ "$(grep -c '"detail": "auto"' "$BG")" -ge 2 ]] && ! grep -q '"detail": "collab"' "$BG"; then
+  pass "the OpenAI image-detail literal survived the vocabulary rename"
+else
+  fail "the OpenAI image-detail literal survived the vocabulary rename" "$(grep -n '"detail":' "$BG" | tr '\n' '|')"
+fi
+
 printf -- '----\nPASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

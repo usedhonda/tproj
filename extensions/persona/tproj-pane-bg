@@ -1768,7 +1768,7 @@ if reference_path and os.path.isfile(reference_path):
         content.append({
             "type": "input_image",
             "image_url": f"data:image/png;base64,{reference_b64}",
-            "detail": "collab",
+            "detail": "auto",  # OpenAI image-detail level, not a role mode
         })
     except OSError:
         pass  # a missing reference must never block generation
@@ -2234,7 +2234,7 @@ body = {
     "model": "gpt-5.5",
     "input": [{"role": "user", "content": [
         {"type": "input_text", "text": ask},
-        {"type": "input_image", "image_url": f"data:image/png;base64,{encoded}", "detail": "collab"},
+        {"type": "input_image", "image_url": f"data:image/png;base64,{encoded}", "detail": "auto"},
     ]}],
     "instructions": "You return only compact JSON.",
     "stream": True,
@@ -2336,6 +2336,11 @@ write_face_centered_image() {
   center="$(gpt_face_box_norm "$decoded_path" 2>/dev/null || true)"
   if [[ -z "$center" ]]; then
     set_face_center_crop_json false "face_box_unavailable"
+    # Loud on purpose. This crop is the safety net that keeps gpt-image-2's
+    # wide framing from reaching the pane; when it fails the picture is still
+    # written, only too far away, and the sidecar record alone was not enough
+    # for anyone to notice until the user did.
+    warn "face-centred crop skipped: face box unavailable (the pane image will be written uncropped)"
     return 1
   fi
 
