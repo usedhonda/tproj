@@ -188,6 +188,11 @@ under a real privilege boundary.
   - the in-tmux **pane-derived** path when the selected pane's `pane_pid` (its
     shell) is not a genuine ancestor of the sending process — a spoofed
     `TMUX_PANE` pointing at another pane is refused (`pane_ancestry_mismatch`);
+  - a `--session` naming a session that is not live is rejected with exit 1 and an
+    explicit `is not a live tmux session` error on stderr. It used to exit 3 with
+    nothing printed: under `set -e` the failing `resolve_target` substitution
+    aborted the script before its error block, so the sender believed it had
+    delivered and the DONE never reached its orchestrator.
   - the **CWD auto-detect** fallback (`--session` without `--as`), which uses the
     `workspace.yaml`/CWD alias and the nearest agent-ancestor role as *selection
     inputs only*, then binds identity through the **same alias.role registry

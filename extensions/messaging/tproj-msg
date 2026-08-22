@@ -4639,8 +4639,20 @@ if is_gate_target "$TARGET"; then
 fi
 
 # === Resolve target (required for send and read modes) ===
-TARGET_PANE=$(resolve_target "$TARGET")
+# `|| true` is load-bearing. Under `set -e`, an assignment whose command
+# substitution fails aborts the script with the substitution's status before
+# the error block below ever runs. A send to a session that was not live exited
+# 3 with nothing on stderr: the sender believed it had delivered, and a DONE
+# never reached its orchestrator for a whole day (artist-runtime, 2026-08-22).
+TARGET_PANE=$(resolve_target "$TARGET") || true
 if [[ -z "$TARGET_PANE" ]]; then
+  # resolve_target ran in a subshell, so its reason is gone; re-check the one
+  # cause that deserves a specific message.
+  if ! tmux has-session -t "=$SESSION" 2>/dev/null; then
+    echo "Error: session '$SESSION' is not a live tmux session (target '$TARGET' not delivered)" >&2
+    echo "Hint: the live session name is what 'tmux display-message -p #S' prints inside a pane." >&2
+    exit 1
+  fi
   echo "Error: target '$TARGET' not found" >&2
   echo "" >&2
   echo "Available targets:" >&2

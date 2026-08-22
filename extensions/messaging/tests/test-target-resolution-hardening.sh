@@ -172,6 +172,15 @@ if [[ "$b_status_rc" -ne 0 && "$b_send_rc" -ne 0 ]] && no_sendkeys && ! grep -q 
 else
   fail "B_exact_missing_session_rejects_prefix_session status_rc=$b_status_rc send_rc=$b_send_rc log=$(tr '\n' '|' < "$FAKE_DIR/tmux.log")"
 fi
+# A rejection nobody can see is not a rejection. Under set -e the failing
+# resolve_target substitution used to abort the script before the error block,
+# so the send exited 3 with an empty stderr and the sender believed it had
+# delivered. The message must name the session as the cause.
+if [[ "$b_send" == *"not a live tmux session"* && "$b_send" == *missing-session* ]]; then
+  pass 'B_missing_session_rejection_is_explained'
+else
+  fail "B_missing_session_rejection_is_explained output=[$(printf '%s' "$b_send" | tr '\n' '|' | cut -c1-160)]"
+fi
 
 # C: non-shell process without fresh prompt or WS evidence is offline.
 reset_runtime
