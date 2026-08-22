@@ -166,6 +166,8 @@ Rationale: adds are rare (one per delegation) and pass through a single hook. St
 - `tproj-msg --role-handoff --new-task` uses the same cache record and lifecycle.
 - `tproj-msg --new-task --user-authorized ...` records only structural metadata / hashes; no delegated body or prompt text is persisted in task storage.
 - `tproj-msg --read` still returns capture output and exits 0 when any ACK/ACK-PROGRESS/DONE/BLOCK marker is detected. Its lifecycle side effect is state advancement, never close.
+- Pane capture is not the only evidence path. On every prompt, `tproj-inbox-check` also reads the durable inbound rows for each open task (session + recipient=self + sender=target + task_id, rejected/error excluded) and applies any `[ACK:]` / `[ACK-PROGRESS:]` / `[DONE:]` / `[BLOCK:]` marker found in their bodies through `tt_cache_apply_reply` with that row's id and body hash. A worker that sent its DONE with `tproj-msg` leaves only a "Sent to" echo in its own pane, which the 40-line capture misses once it scrolls; the mirrored inbound row does not scroll. Recipient identity is required (fail-closed), and the application is idempotent.
+- `[Task: <id>] ` is prepended for every `--new-task` send, pane-derived included. It was once an `--as`-only behaviour, which left a pane-derived delegation's receiver with no id to answer with.
 
 Consumers that depend on `--read` exit code being 0 unconditionally must be audited; none are known inside the tproj workspace at Lane D implementation time (regression floor).
 

@@ -258,6 +258,20 @@ r=$(run_intmux %1 ""); [[ "$r" == "VERIFY" ]] \
 r=$(run_intmux %2 ""); [[ "$r" == "VERIFY" ]] \
   && ok cvh08_intmux_cdx_pane_verifies || no cvh08_intmux_cdx_pane_verifies "got [$r]"
 
+# 8b. a pane-derived --new-task carries its [Task: id] in the DELIVERED body.
+#     The body is the only channel a send-keys receiver has, and the lifecycle
+#     contract requires the receiver to answer with that exact id. The tag used
+#     to be prepended only for --as sends, so a pane-derived delegation reached
+#     its receiver with no id and came back as [ACK: <alias>-unknown].
+rm -f "$FAKE_DIR/sendkeys.log"
+nt_out=$(TMUX=1 TMUX_PANE="%1" "$REAL_TPROJ_MSG" --new-task tproj.cdx "cvh newtask body $$-$RANDOM" 2>&1)
+nt_id=$(printf '%s\n' "$nt_out" | sed -n 's/.*TASK_ID=\([^ ]*\).*/\1/p' | head -n 1)
+if [[ -n "$nt_id" ]] && grep -q "\[Task: $nt_id\]" "$FAKE_DIR/sendkeys.log" 2>/dev/null; then
+  ok cvh08b_pane_derived_new_task_body_carries_task_id
+else
+  no cvh08b_pane_derived_new_task_body_carries_task_id "id=[$nt_id] sendkeys=[$(tr '\n' '|' < "$FAKE_DIR/sendkeys.log" 2>/dev/null | cut -c1-160)]"
+fi
+
 # 9. spoofed TMUX_PANE (pane_pid is NOT an ancestor) -> REJECT
 #    pane_ancestry_mismatch before any send-keys.
 r=$(run_intmux %1 999999); [[ "$r" == "REJECT pane_ancestry_mismatch" ]] \

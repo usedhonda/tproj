@@ -4130,12 +4130,18 @@ Orchestrator: ${ROLE_HANDOFF_ORCHESTRATOR}${_delegated_auth_lines}
     audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 1 "" "$_rh_payload_sha" "$HEADER" "$TASK_ID"
   fi
   if [[ "$ROLE_HANDOFF_MODE" != "true" ]]; then
+    # The tag goes into the body for EVERY new task, not only --as sends. The
+    # body is the only channel a send-keys receiver has, and the lifecycle
+    # contract (tproj-task-cache.contract.md, "prepends [Task: <id>]") requires
+    # the receiver to answer with that exact id. A pane-derived send used to omit
+    # it, so the receiver replied [ACK: <alias>-unknown] and the ledger never
+    # matched (artist-runtime, 2026-08-22).
+    MESSAGE="[Task: ${TASK_ID}] ${MESSAGE}"
     if [[ -n "${EXPLICIT_AS:-}" ]]; then
-      MESSAGE="[Task: ${TASK_ID}] ${MESSAGE}"
       audit_log_caller_decision "$TARGET" "$AS_CLAIMED_IDENTITY" 1 "" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
     else
       # Non-explicit-as verified new-task (pane-derived / cwd): exactly one accept
-      # audit too. No [Task:] prepend -- that is an --as-only convention.
+      # audit too.
       audit_log_caller_decision "$TARGET" "${AS_CLAIMED_IDENTITY:-${MY_ALIAS:+${MY_ALIAS}.}${MY_ROLE}}" 1 "" "$(sha256_hash "$MESSAGE")" "$HEADER" ""
     fi
   fi
