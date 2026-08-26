@@ -304,11 +304,11 @@ private struct PaneBackgroundUnderlayView: View {
         // for sub panes is just a quieter way of doing what the old black overlay did.
         min(0.55, 0.1375 / visibleUnderlayShare)
     }
-    // A small, deliberate dim on sub panes. Raising main alone did not put it far
-    // enough forward, so a little is taken back from sub -- a fraction of the 0.32
-    // black that used to crush the portrait, applied over the wash rather than
-    // instead of it.
-    private let conversationSubDim: Double = 0.12
+    // A deliberate dim on sub panes. Raising main alone did not put it far enough
+    // forward, and the violet wash difference alone did not read as main-vs-sub, so
+    // brightness carries the distinction: still well under the 0.32 black that used
+    // to crush the portrait, and applied over the wash rather than instead of it.
+    private let conversationSubDim: Double = 0.20
     private var conversationMainOpacity: Double {
         // Main is raised ABOVE that baseline rather than sub being pushed below it.
         // Every earlier attempt separated the two by taking something away from sub,
