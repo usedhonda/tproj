@@ -16,19 +16,46 @@ from typing import Any
 
 READONLY_GIT_SUBCOMMANDS = {"status", "diff", "show", "log", "rev-parse", "ls-files"}
 READONLY_HASH_COMMANDS = {"shasum", "sha1sum", "sha256sum", "md5", "md5sum", "cksum"}
+# Reading a file is how a frozen receiver collects the evidence the contract asks it
+# for. Without these the whitelist could compare hashes but not open a log, so the
+# "read-only incident" allowance promised by the contract was not actually usable.
+# None of these can write without a redirection, and redirections are already
+# refused by AMBIGUOUS_SHELL_RE before this set is consulted.
+READONLY_FILE_COMMANDS = {
+    "cat", "head", "tail", "wc", "ls", "file", "basename", "dirname",
+    "realpath", "readlink", "pwd", "echo", "printf", "date", "du", "df",
+    "uname", "whoami", "env", "which", "type", "column", "cut", "sort",
+    "uniq", "tr", "grep", "egrep", "fgrep", "rg", "jq", "diff", "comm",
+}
 MUTATING_TOOL_NAMES = {
     "Edit",
     "Write",
     "MultiEdit",
+    "NotebookEdit",
     "apply_patch",
     "functions.apply_patch",
 }
+# Tools that cannot themselves mutate anything. Skill belongs here: loading a skill
+# only puts instructions in front of the model, and every action it then asks for
+# comes back through this same guard. Blocking it bought no safety and cost the
+# receiver its only documented route to the messaging skill, so a frozen pane could
+# not carry out the BLOCK report the contract requires of it.
 READONLY_TOOL_NAMES = {
     "Read",
     "LS",
     "Glob",
     "Search",
     "Grep",
+    "Skill",
+    "SlashCommand",
+    "TodoWrite",
+    "TaskCreate",
+    "TaskUpdate",
+    "TaskList",
+    "NotebookRead",
+    "BashOutput",
+    "WebFetch",
+    "WebSearch",
 }
 AMBIGUOUS_SHELL_RE = re.compile(r"[|&;><`$()]|\\n")
 FIND_DANGEROUS_ACTIONS = {
@@ -183,10 +210,22 @@ def open_db() -> sqlite3.Connection | None:
 
 
 def active_tombstone(db: sqlite3.Connection, session: str, alias: str, role: str) -> tuple[str, str, str, str] | None:
+    """The tombstone this pane is still held by, or None once it has moved on.
+
+    A tombstone is durable forever so the task can never reopen. The pane-wide
+    quarantine is not the same thing and must not inherit that lifetime: read the
+    row alone and the newest cancel or freeze ever addressed to this pane keeps
+    enforcing itself against unrelated work for the rest of the machine's life,
+    which is how a freeze meant to park one task ended up making a pane read-only
+    indefinitely. A newer non-tombstoned task for the same pane is the owner
+    reassigning it, and the quarantine ends there; the frozen task itself stays
+    frozen in the cache and in the marker suppression regardless.
+    """
     self_alias = f"{alias}.{role}"
     row = db.execute(
         """
-        SELECT task_id, owner_alias, state, COALESCE(tombstone_reason_hash, '')
+        SELECT task_id, owner_alias, state, COALESCE(tombstone_reason_hash, ''),
+               COALESCE(frozen_at, cancelled_at, sent_at)
           FROM tasks
          WHERE owner_session=?
            AND target=?
@@ -196,7 +235,25 @@ def active_tombstone(db: sqlite3.Connection, session: str, alias: str, role: str
         """,
         (session, self_alias),
     ).fetchone()
-    return tuple(str(value) for value in row) if row else None
+    if row is None:
+        return None
+    task_id, owner_alias, state, reason_hash, tombstoned_at = row
+    newer = db.execute(
+        """
+        SELECT 1
+          FROM tasks
+         WHERE owner_session=?
+           AND target=?
+           AND task_id != ?
+           AND state NOT IN ('cancelled','frozen')
+           AND sent_at > ?
+         LIMIT 1
+        """,
+        (session, self_alias, task_id, tombstoned_at),
+    ).fetchone()
+    if newer is not None:
+        return None
+    return str(task_id), str(owner_alias), str(state), str(reason_hash)
 
 
 def extract_payload_value(payload: dict[str, Any], *path: str) -> str:
@@ -332,7 +389,44 @@ def is_readonly_shell(command: str) -> bool:
         return True
     if cmd in READONLY_HASH_COMMANDS:
         return True
+    if cmd in READONLY_FILE_COMMANDS:
+        return True
+    if cmd == "sed":
+        # -n prints only what the script selects; -i rewrites the file in place.
+        return "-n" in argv[1:] and not any(
+            token == "-i" or token.startswith("-i") or token.startswith("--in-place")
+            for token in argv[1:]
+        )
+    if cmd == "sqlite3":
+        return "-readonly" in argv[1:]
     return False
+
+
+def is_owner_report_send(command: str) -> bool:
+    """Allow a frozen receiver to report to its owner, but not to delegate onward.
+
+    The contract requires a blocked receiver to send `[BLOCK: <id>]` to the exact
+    task owner, and treats an unreported freeze as an incident. The guard used to
+    refuse every `tproj-msg` invocation, so the one obligation the receiver still
+    had was the one action it could not take -- and the freeze sealed off the route
+    to its own release as well. Delegation stays refused: a frozen pane that can
+    open a new task could hand the frozen work to somebody else and call the
+    quarantine satisfied. Lifecycle markers naming a tombstoned id are still
+    suppressed downstream by tproj-msg, so this reopens reporting, not the task.
+    """
+    if not command.strip() or AMBIGUOUS_SHELL_RE.search(command):
+        return False
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    if Path(argv[0]).name != "tproj-msg":
+        return False
+    return not any(
+        token in {"--new-task", "--role-handoff"} for token in argv[1:]
+    )
 
 
 def is_exact_user_unfreeze(command: str) -> bool:
@@ -386,22 +480,33 @@ def main() -> int:
     if tombstone is None:
         return 0
     task_id, owner_alias, state, reason_hash = tombstone
+    # Every refusal names the way out. The receiver that hit this guard had to
+    # infer both its obligation and its release from a sentence that mentioned
+    # neither, and reported the freeze as unescapable because nothing told it
+    # otherwise.
+    escape = (
+        f"; report to {owner_alias} with tproj-msg, and after explicit user "
+        f"confirmation release with: ~/bin/tproj-task unfreeze {task_id} "
+        f"{alias}.{role} <confirmation-hash>"
+        if state == "frozen"
+        else f"; report to {owner_alias} with tproj-msg"
+    )
     tool_name, command = parse_command(payload)
     if tool_name in READONLY_TOOL_NAMES:
         return 0
     if tool_name in MUTATING_TOOL_NAMES:
-        return block(f"Delegated task {task_id} from {owner_alias} is {state} (reason_hash={reason_hash}); edits are blocked")
+        return block(f"Delegated task {task_id} from {owner_alias} is {state} (reason_hash={reason_hash}); edits are blocked{escape}")
     if command:
         if state == "frozen" and is_exact_user_unfreeze(command):
             return 0
-        if is_readonly_shell(command):
+        if is_readonly_shell(command) or is_owner_report_send(command):
             return 0
         return block(
-            f"Delegated task {task_id} from {owner_alias} is {state} (reason_hash={reason_hash}); only read-only incident shell commands are allowed"
+            f"Delegated task {task_id} from {owner_alias} is {state} (reason_hash={reason_hash}); only read-only incident shell commands and tproj-msg reports are allowed{escape}"
         )
     if tool_name:
         return block(
-            f"Delegated task {task_id} from {owner_alias} is {state} (reason_hash={reason_hash}); mutating tool '{tool_name}' is blocked"
+            f"Delegated task {task_id} from {owner_alias} is {state} (reason_hash={reason_hash}); mutating tool '{tool_name}' is blocked{escape}"
         )
     return 0
 
