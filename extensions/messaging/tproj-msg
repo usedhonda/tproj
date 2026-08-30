@@ -2544,6 +2544,40 @@ SELECTION_SCREEN_DETECTED="false"
 SELECTION_SCREEN_SOURCE="none"
 SELECTION_SCREEN_REASON="uninitialized"
 
+# Drop the composer and the status furniture under it before the selection scan.
+# The input line carries arbitrary user text, so scanning it for approval words
+# made any parked draft opening with 承認 / yes / continue read as a permission
+# dialog. That misclassification is expensive rather than merely cosmetic:
+# selection_screen is the one state --force deliberately refuses to bypass, so a
+# draft the user simply had not pressed enter on parked every queued message for
+# that pane indefinitely (observed 2026-08-28 on airtip.cc, where selector=1 was
+# the input line itself reading "❯ 承認、Stage 1からすすめて"). A real dialog owns
+# the input area instead of holding a live draft, so it never reaches this trim,
+# and nothing below the composer is ever a selectable option.
+SELECTION_OPTION_SHAPE_RE='^[[:space:]]*([0-9]+[.)]|[>›❯▶▷▸▹●○◉◯◆◇*+-])[[:space:]]*[^[:space:]]'
+
+strip_live_input_line() {
+  local cleaned="$1"
+  local prompt_line="" below=""
+
+  prompt_line=$(printf '%s\n' "$cleaned" | grep -n -E '^[[:space:]]*[›❯]' | tail -1 | cut -d: -f1 || true)
+  if [[ -z "$prompt_line" ]] || (( prompt_line <= 1 )); then
+    printf '%s\n' "$cleaned"
+    return 0
+  fi
+  # A selected dialog option has the remaining options under it; a composer has
+  # only the divider and the status bar. If anything option-shaped sits below,
+  # this is a dialog and the line stays in the scan. Even when the selected
+  # option happens to be the last one, the unselected options above it still
+  # carry their own markers, so detection does not rest on this line alone.
+  below=$(printf '%s\n' "$cleaned" | tail -n "+$((prompt_line + 1))" | grep -c -E "$SELECTION_OPTION_SHAPE_RE" || true)
+  if [[ -n "$below" ]] && (( below > 0 )); then
+    printf '%s\n' "$cleaned"
+    return 0
+  fi
+  printf '%s\n' "$cleaned" | sed -n "1,$((prompt_line - 1))p"
+}
+
 detect_selection_screen_capture() {
   local pane="$1"
   local captured cleaned bottom selector_hits context_hits
@@ -2552,6 +2586,7 @@ detect_selection_screen_capture() {
   [[ -z "$captured" ]] && return 1
 
   cleaned=$(printf '%s\n' "$captured" | strip_ansi)
+  cleaned=$(strip_live_input_line "$cleaned")
   bottom=$(printf '%s\n' "$cleaned" | tail -30 | tr '[:upper:]' '[:lower:]')
 
   selector_hits=$(printf '%s\n' "$bottom" | grep -Eic '^[[:space:]]*([>›❯▶▷▸▹●○◉◯◆◇*+-]|[0-9]+[.)])[[:space:]]*(allow|deny|yes|no|approve|reject|continue|cancel|run|always allow|continue anyway|許可|拒否|承認|続行|キャンセル)' || true)

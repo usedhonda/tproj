@@ -17,6 +17,14 @@
 # not-yet-connected send path are asserted via the --status verdict (side-effect
 # free) rather than real send-keys, so the harness stays hermetic.
 #
+# Scan boundary (SC1-SC3): the selection scan reads the transcript, never the
+# composer. The input line holds arbitrary user text, so scanning it let a
+# parked draft opening with an approval word ("承認...", "yes...") masquerade as
+# a dialog and hold the pane in blocked_selection, which --force refuses to
+# bypass. The composer is recognised as the last prompt-marker line with nothing
+# option-shaped beneath it; a selected dialog option always has either sibling
+# options below or marker-carrying options above, so a real menu still blocks.
+#
 # Usage: bash extensions/messaging/tests/test-sendability-gate.sh [path-to-tproj-msg]
 #   Defaults to the repo copy next to this tests/ dir.
 
@@ -1082,6 +1090,44 @@ else
 fi
 
 unset TPROJ_MSG_QUEUE_DIR
+
+# =============================================================================
+# Composer text is not a dialog option. The selection scan used to read the
+# input line, so a parked draft opening with an approval word held the pane in
+# blocked_selection -- the one state --force will not bypass -- and queued
+# messages never left. Detection of a genuine dialog must survive the trim.
+# =============================================================================
+
+# refute_detail <name> <target> <substring-that-must-be-absent>
+refute_detail() {
+  local name="$1" target="$2" unwanted="$3" out
+  out=$(run_status "$target")
+  if grep -q "$unwanted" <<<"$out"; then
+    printf 'FAIL  %s\n      unwanted substring present: %s\n      got: %s\n' "$name" "$unwanted" "$(printf '%s' "$out" | tr '\n' '|')"
+    FAIL=$((FAIL+1))
+  else
+    printf 'PASS  %s\n' "$name"; PASS=$((PASS+1))
+  fi
+}
+
+# SC1. Composer holding an approval-word draft is not a selection screen.
+reset_fixtures
+set_ws "$CC_TTY" "waiting_input" "unknown"
+set_capture "%1" $'earlier assistant output\n\xe2\x9d\xaf \xe6\x89\xbf\xe8\xaa\x8d\xe3\x80\x81Stage 1 please proceed\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n  [model] | main\n  Context: 40% left'
+refute_detail "SC1_composer_draft_not_selection" "tproj.cc" "blocked_selection"
+
+# SC2. A dialog with options under the selected one still blocks.
+reset_fixtures
+set_ws "$CC_TTY" "waiting_input" "unknown"
+set_capture "%1" $'Do you want to proceed?\n\xe2\x9d\xaf 1. Yes\n  2. No'
+assert_detail "SC2_dialog_options_below_still_blocked" "tproj.cc" "blocked_selection"
+
+# SC3. A dialog whose selected option is last still blocks: the unselected
+# options above carry their own markers, so the trim cannot hide the menu.
+reset_fixtures
+set_ws "$CC_TTY" "waiting_input" "unknown"
+set_capture "%1" $'Do you want to proceed?\n  1. Yes\n\xe2\x9d\xaf 2. No'
+assert_detail "SC3_dialog_selected_last_still_blocked" "tproj.cc" "blocked_selection"
 
 # =============================================================================
 echo "----"
