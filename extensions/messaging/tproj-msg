@@ -3152,7 +3152,12 @@ flush_all_queues() {
     fi
     local idle_status
     idle_status=$(get_idle_status "$pane")
-    if [[ "$idle_status" == "idle" ]]; then
+    # `suggestion` is a dim ghost completion, not user input: the send path and
+    # --status both call it sendable. Requiring a bare `idle` here made flush the
+    # one place that disagreed, so a pane sitting on a ghost line collected a
+    # queue that no flush would ever drain (observed 2026-08-28: airtip.cc held
+    # four messages while reporting sendable_suggestion).
+    if [[ "$idle_status" == "idle" || "$idle_status" == "suggestion" ]]; then
       local count
       count=$(queue_count "$target_name")
       echo "Flushing $count message(s) to $target_name..." >&2

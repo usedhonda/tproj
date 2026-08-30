@@ -1129,6 +1129,28 @@ set_ws "$CC_TTY" "waiting_input" "unknown"
 set_capture "%1" $'Do you want to proceed?\n  1. Yes\n\xe2\x9d\xaf 2. No'
 assert_detail "SC3_dialog_selected_last_still_blocked" "tproj.cc" "blocked_selection"
 
+# SC4. --flush must drain a pane the send path calls sendable. `suggestion` is a
+# dim ghost completion, not user input, so requiring a bare `idle` here left the
+# queue parked forever on a pane that --status reported as sendable.
+export TPROJ_MSG_QUEUE_DIR="$WORK/queue"
+mkdir -p "$TPROJ_MSG_QUEUE_DIR"
+reset_fixtures
+rm -f "$TPROJ_MSG_QUEUE_DIR"/*.queue
+printf '%s\t%s\t%s\n' "$(date +%s)" "" "queued flush test SC4" > "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue"
+set_ws "$CC_TTY" "waiting_input" "unknown"
+set_signal "%1" "suggestion"
+set_capture "%1" $'earlier output\n\xe2\x9d\xaf \x1b[2mghost completion text\x1b[0m'
+"$TPROJ_MSG" --session tproj-workspace --as tproj.cc --flush >/dev/null 2>&1
+sug_sent=0; [[ -f "$FAKE_DIR/sendkeys.log" ]] && sug_sent=1
+sug_gone=1; [[ -f "$TPROJ_MSG_QUEUE_DIR/tproj.cc.queue" ]] && sug_gone=0
+unset TPROJ_MSG_QUEUE_DIR
+if [[ "$sug_sent" -eq 1 && "$sug_gone" -eq 1 ]]; then
+  printf 'PASS  SC4_flush_drains_suggestion\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  SC4_flush_drains_suggestion (want sent=1 gone=1, got sent=%s gone=%s)\n' "$sug_sent" "$sug_gone"
+  FAIL=$((FAIL+1))
+fi
+
 # =============================================================================
 echo "----"
 printf 'PASS=%d FAIL=%d PENDING=%d\n' "$PASS" "$FAIL" "$PENDING"
