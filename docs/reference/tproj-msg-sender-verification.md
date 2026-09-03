@@ -172,6 +172,47 @@ not be exercised in the local single-user test sandbox (would require a
 second UID); the code path exists (`svc_uid` vs `id -u`) but is untested
 under a real privilege boundary.
 
+### 3. Bridge reply — configured id + service-owner ancestry
+
+Implemented by `verify_bridge_reply_caller_identity()` / `bridge_id_for_reply_as()`
+in `tproj-msg` (#12).
+
+A remote bridge (a Tailscale box running Codex, configured as
+`gui.bridges.<id>` and addressed as `gate:<id>`) answers by POSTing to the same
+ClawGate `/v1/tproj-msg-deliver` endpoint Chi uses, with `senderAs` set to the
+bridge's `reply_as` (default `<id>.cdx`). ClawGate then execs
+`tproj-msg --as <reply_as> ...` locally.
+
+That claim is dotted, so without this class it would be routed to class 1 and
+refused: the box has no model-role-router registry entry and no local pid that
+could be an ancestor. This class is checked **before** the dotted/bare split.
+
+Evidence standard, held to the same bar as class 2:
+
+- **The trust anchor is class 2's anchor, unchanged**: the locally running
+  ClawGate process (`gui.bridge.trusted_caller_executable`, default the
+  empirically confirmed `ClawGate.app` path) must be in this process's own
+  ancestry with the same UID and a readable start time
+  (`verify_service_owner_binding()`, shared with class 2).
+- **The only new element is the accepted identity set**: instead of the single
+  hardcoded string `"OpenClaw Agent - Reply"`, a claimed `<alias>.<role>` is
+  accepted iff it equals the `reply_as` of exactly one configured
+  `gui.bridges.<id>` (`bridge_id_for_reply_as()`); an unconfigured id is
+  `unknown_bridge_id`, default-deny.
+- **The box is never the anchor.** Its network reachability, its Tailscale IP,
+  and its own assertions are not evidence; what is verified is that the
+  delivery came through the trusted local receiver, and that the identity it
+  relays is one the operator configured. Anything a remote box could forge is
+  therefore bounded to identities already written into `workspace.yaml`.
+- Recorded `auth_path`: `bridge-sender-verified` / `bridge-sender-rejected`;
+  `anchor_pid` is the ClawGate service pid, as for class 2.
+
+Rejected alternatives: a synthetic registry entry for `<id>.cdx` (the registry
+is the role-resolution source of truth and must not carry non-agent entries),
+and a tproj-owned receiver daemon (a second listening surface with its own
+verification to keep aligned; the existing receiver already accepts Tailscale
+CGNAT sources and needs no change).
+
 ## Fail-closed behavior
 
 - In `assist` mode, a verified CC/Cdx sender cannot use `--new-task` (including
@@ -228,7 +269,8 @@ the CWD fallback — accept and reject alike). Attribution fields:
   signal.
 - `auth_path` names which path decided, one of: `explicit-as-verified`,
   `explicit-as-rejected`, `bare-role-service`, `bare-role-rejected`,
-  `pane-derived`, `pane-derived-rejected`, `cwd-ancestry`, `cwd-ancestry-rejected`.
+  `pane-derived`, `pane-derived-rejected`, `cwd-ancestry`, `cwd-ancestry-rejected`,
+  `bridge-sender-verified`, `bridge-sender-rejected`.
 
 `body` and `body_hash` are always empty strings for these rows — the only
 content reference kept is `payload_sha256`. Document titles, message

@@ -844,6 +844,85 @@ verify_as_caller_identity() {
   return 0
 }
 
+# Bridge config helpers live here, ahead of the --as verifier that runs at
+# top level long before the ClawGate section below is parsed.
+WORKSPACE_CONFIG="$HOME/.config/tproj/workspace.yaml"
+
+# === Bridge targets: gate:<id> -> gui.bridges.<id> (#12) ===
+# A bridge is a remote HTTP inbox (a Tailscale box running Codex) that shares
+# the gate: prefix with ClawGate but is its own family: it speaks /v1/inbox and
+# /v1/health, carries the sender inside the JSON payload instead of a
+# [tproj-msg:...] text header, and replies through ClawGate's
+# /v1/tproj-msg-deliver as [from:<id>.cdx]. Ids live in gui.bridges so two
+# boxes cannot be confused; the singleton gui.bridge (Chi) is untouched.
+BRIDGE_RESERVED_IDS=" direct line tmux session default "
+BRIDGE_IDS_LOADED=""
+BRIDGE_IDS=""
+
+# Ids from gui.bridges, one per line, memoised. Listing only: validation is
+# bridge_config_check, which runs once in the main shell -- an exit inside this
+# function is swallowed by the command substitutions that call it, and the
+# send would carry on to ClawGate as if nothing were wrong.
+bridge_ids() {
+  if [[ -z "$BRIDGE_IDS_LOADED" ]]; then
+    BRIDGE_IDS_LOADED=1
+    if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
+      BRIDGE_IDS=$(yq -r '.gui.bridges // {} | keys | .[]' "$WORKSPACE_CONFIG" 2>/dev/null || true)
+    fi
+  fi
+  printf '%s\n' "$BRIDGE_IDS"
+}
+
+# A reserved ClawGate adapter name used as a bridge id would make gate:<id>
+# ambiguous, so the whole command is refused up front rather than resolving one
+# way on send and the other on --status. Called once from the main shell.
+bridge_config_check() {
+  local id
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    if [[ "$BRIDGE_RESERVED_IDS" == *" ${id} "* ]]; then
+      echo "Error: gui.bridges id '${id}' collides with a reserved gate adapter name (direct|line|tmux|session|default)" >&2
+      return 1
+    fi
+    if ! [[ "$id" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+      echo "Error: gui.bridges id '${id}' is not a plain identifier" >&2
+      return 1
+    fi
+  done < <(bridge_ids)
+  return 0
+}
+
+is_bridge_id() {
+  local id="$1" known
+  [[ -n "$id" ]] || return 1
+  while IFS= read -r known; do
+    [[ "$known" == "$id" ]] && return 0
+  done < <(bridge_ids)
+  return 1
+}
+
+is_bridge_target() {
+  [[ "$1" == gate:* ]] && is_bridge_id "${1#gate:}"
+}
+
+bridge_url() {
+  local url=""
+  if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
+    url=$(yq -r ".gui.bridges.\"$1\".url // \"\"" "$WORKSPACE_CONFIG" 2>/dev/null || true)
+  fi
+  printf '%s' "${url%/}"
+}
+
+# The identity the box's reply arrives under. Defaults to <id>.cdx so the
+# reply reads as a Codex peer, and is what the reply verifier checks against.
+bridge_reply_as() {
+  local v=""
+  if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
+    v=$(yq -r ".gui.bridges.\"$1\".reply_as // \"\"" "$WORKSPACE_CONFIG" 2>/dev/null || true)
+  fi
+  printf '%s' "${v:-$1.cdx}"
+}
+
 # --- Bare-role service-bound verifier (distinct from the alias.role class
 # above -- bare roles like "gate" have no model-role-router registry entry
 # to bind against, since the caller is not a claude/codex agent process).
@@ -907,6 +986,52 @@ verify_bare_role_caller_identity() {
       ;;
   esac
 
+  verify_service_owner_binding
+}
+
+# Bridge reply (verifier class 3, #12). A remote box answers through ClawGate's
+# /v1/tproj-msg-deliver, which execs `tproj-msg --as <reply_as>` locally. The
+# claimed <reply_as> is dotted, so it would otherwise fall into the registry
+# class and fail: a box has no registry entry and no local pid to bind. The
+# trust anchor here is exactly the bare-role one -- the local ClawGate process
+# in this caller's ancestry, same UID -- and the only new element is that the
+# accepted identity is a configured `gui.bridges.<id>.reply_as` instead of one
+# hardcoded string. The box itself is never the anchor: it is remote, and its
+# word is what is being checked.
+# Usage: verify_bridge_reply_caller_identity <id>
+verify_bridge_reply_caller_identity() {
+  local bridge_id="$1"
+  CALLER_VERIFY_REASON=""
+  VERIFIED_CALLER_PID=0
+  VERIFIED_CALLER_PPID=0
+  VERIFIED_CALLER_EXECUTABLE=""
+  VERIFIED_CALLER_UID=0
+  VERIFIED_PROCESS_START=0
+  VERIFIED_ANCHOR_PID=0
+  if ! is_bridge_id "$bridge_id"; then
+    CALLER_VERIFY_REASON="unknown_bridge_id"
+    return 1
+  fi
+  verify_service_owner_binding
+}
+
+# Which configured bridge replies as <alias.role>, or nothing.
+bridge_id_for_reply_as() {
+  local claimed="$1" id
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    if [[ "$(bridge_reply_as "$id")" == "$claimed" ]]; then
+      printf '%s\n' "$id"
+      return 0
+    fi
+  done < <(bridge_ids)
+  return 1
+}
+
+# Bind this caller to the trusted service-owner process (ClawGate) in its own
+# ancestry: configured executable path, same UID, readable start time. Shared
+# by the bare-role and bridge-reply verifiers; sets VERIFIED_* on success.
+verify_service_owner_binding() {
   local expected_exec="$BARE_ROLE_SERVICE_EXPECTED_EXEC_DEFAULT" ws_cfg="$HOME/.config/tproj/workspace.yaml"
   if command -v yq >/dev/null 2>&1 && [[ -f "$ws_cfg" ]]; then
     local cfg_exec
@@ -1209,7 +1334,19 @@ if [[ -n "$EXPLICIT_SESSION" ]]; then
       MY_ROLE_RAW="$EXPLICIT_AS"
       MY_ROLE=$(role_to_short "$MY_ROLE_RAW")
     fi
-    if [[ -n "$MY_ALIAS" ]]; then
+    BRIDGE_REPLY_ID=""
+    if [[ -n "$MY_ALIAS" ]] && BRIDGE_REPLY_ID=$(bridge_id_for_reply_as "${MY_ALIAS}.${MY_ROLE:-$MY_ROLE_RAW}"); then
+      # A configured bridge's reply identity. Checked before the registry
+      # class, which would otherwise claim every dotted alias and refuse it.
+      AS_CLAIMED_IDENTITY="${MY_ALIAS}.${MY_ROLE:-$MY_ROLE_RAW}"
+      if verify_bridge_reply_caller_identity "$BRIDGE_REPLY_ID"; then
+        AS_CALLER_VERIFIED=true
+        AUTH_PATH="bridge-sender-verified"
+      else
+        AUTH_PATH="bridge-sender-rejected"
+      fi
+      ANCHOR_PID="${VERIFIED_ANCHOR_PID:-0}"
+    elif [[ -n "$MY_ALIAS" ]]; then
       AS_CLAIMED_IDENTITY="${MY_ALIAS}.${MY_ROLE:-$MY_ROLE_RAW}"
       if verify_as_caller_identity "$AS_CLAIMED_IDENTITY" "$EXPLICIT_SESSION"; then
         AS_CALLER_VERIFIED=true
@@ -3185,7 +3322,8 @@ flush_all_queues() {
 }
 
 # === ClawGate bridge support ===
-WORKSPACE_CONFIG="$HOME/.config/tproj/workspace.yaml"
+# WORKSPACE_CONFIG is defined earlier, beside the bridge helpers that the
+# --as verifier needs before this section is reached.
 
 # Read bridge config from workspace.yaml (mikefarah/yq v4+)
 gate_bridge_url() {
@@ -3213,81 +3351,6 @@ gate_reply_callback_url() {
     [[ "$url" == "null" ]] && url=""
   fi
   echo "$url"
-}
-
-# === Bridge targets: gate:<id> -> gui.bridges.<id> (#12) ===
-# A bridge is a remote HTTP inbox (a Tailscale box running Codex) that shares
-# the gate: prefix with ClawGate but is its own family: it speaks /v1/inbox and
-# /v1/health, carries the sender inside the JSON payload instead of a
-# [tproj-msg:...] text header, and replies through ClawGate's
-# /v1/tproj-msg-deliver as [from:<id>.cdx]. Ids live in gui.bridges so two
-# boxes cannot be confused; the singleton gui.bridge (Chi) is untouched.
-BRIDGE_RESERVED_IDS=" direct line tmux session default "
-BRIDGE_IDS_LOADED=""
-BRIDGE_IDS=""
-
-# Ids from gui.bridges, one per line, memoised. Listing only: validation is
-# bridge_config_check, which runs once in the main shell -- an exit inside this
-# function is swallowed by the command substitutions that call it, and the
-# send would carry on to ClawGate as if nothing were wrong.
-bridge_ids() {
-  if [[ -z "$BRIDGE_IDS_LOADED" ]]; then
-    BRIDGE_IDS_LOADED=1
-    if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
-      BRIDGE_IDS=$(yq -r '.gui.bridges // {} | keys | .[]' "$WORKSPACE_CONFIG" 2>/dev/null || true)
-    fi
-  fi
-  printf '%s\n' "$BRIDGE_IDS"
-}
-
-# A reserved ClawGate adapter name used as a bridge id would make gate:<id>
-# ambiguous, so the whole command is refused up front rather than resolving one
-# way on send and the other on --status. Called once from the main shell.
-bridge_config_check() {
-  local id
-  while IFS= read -r id; do
-    [[ -n "$id" ]] || continue
-    if [[ "$BRIDGE_RESERVED_IDS" == *" ${id} "* ]]; then
-      echo "Error: gui.bridges id '${id}' collides with a reserved gate adapter name (direct|line|tmux|session|default)" >&2
-      return 1
-    fi
-    if ! [[ "$id" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
-      echo "Error: gui.bridges id '${id}' is not a plain identifier" >&2
-      return 1
-    fi
-  done < <(bridge_ids)
-  return 0
-}
-
-is_bridge_id() {
-  local id="$1" known
-  [[ -n "$id" ]] || return 1
-  while IFS= read -r known; do
-    [[ "$known" == "$id" ]] && return 0
-  done < <(bridge_ids)
-  return 1
-}
-
-is_bridge_target() {
-  [[ "$1" == gate:* ]] && is_bridge_id "${1#gate:}"
-}
-
-bridge_url() {
-  local url=""
-  if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
-    url=$(yq -r ".gui.bridges.\"$1\".url // \"\"" "$WORKSPACE_CONFIG" 2>/dev/null || true)
-  fi
-  printf '%s' "${url%/}"
-}
-
-# The identity the box's reply arrives under. Defaults to <id>.cdx so the
-# reply reads as a Codex peer, and is what the reply verifier checks against.
-bridge_reply_as() {
-  local v=""
-  if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
-    v=$(yq -r ".gui.bridges.\"$1\".reply_as // \"\"" "$WORKSPACE_CONFIG" 2>/dev/null || true)
-  fi
-  printf '%s' "${v:-$1.cdx}"
 }
 
 # Check if target is a gate target (gate or gate:adapter). A configured bridge
