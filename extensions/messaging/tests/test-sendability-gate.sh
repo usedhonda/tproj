@@ -215,7 +215,8 @@ for arg in "$@"; do
 done
 printf '%s' "$body" > "$FAKE_DIR_ENV/curl_body.json"
 printf '%s\n' "$*" > "$FAKE_DIR_ENV/curl_argv.txt"
-printf '{"ok":true}\n200\n'
+printf '%s\n' "$*" >> "$FAKE_DIR_ENV/curl_argv_all.txt"
+printf '%s\n%s\n' "${FAKE_CURL_BODY:-{"ok":true\}}" "${FAKE_CURL_CODE:-200}"
 CURL
 chmod +x "$BIN_DIR/curl"
 
@@ -1149,6 +1150,122 @@ if [[ "$sug_sent" -eq 1 && "$sug_gone" -eq 1 ]]; then
 else
   printf 'FAIL  SC4_flush_drains_suggestion (want sent=1 gone=1, got sent=%s gone=%s)\n' "$sug_sent" "$sug_gone"
   FAIL=$((FAIL+1))
+fi
+
+# =============================================================================
+# Bridge targets (#12): gate:<id> resolved from gui.bridges. The family shares
+# the gate: prefix with ClawGate but must not inherit its policies, its
+# endpoints, or its dedup namespace, and two configured boxes must never be
+# confused (acceptance #4).
+# =============================================================================
+
+write_bridges_yaml() { # writes a workspace.yaml with two bridges
+  mkdir -p "$WORK/home/.config/tproj"
+  cat > "$WORK/home/.config/tproj/workspace.yaml" <<'YAML'
+gui:
+  bridge:
+    url: http://bridge.test:8765
+    default_adapter: direct
+    reply_callback_url: http://reply.test:8765
+  bridges:
+    bot01:
+      url: http://bot01.test:8765
+    bot02:
+      url: http://bot02.test:9000
+      reply_as: two.cdx
+YAML
+}
+run_bridge() { # <target> <message>
+  HOME="$WORK/home" "$TPROJ_MSG" --session tproj-workspace --as tproj.cc "$1" "$2" 2>&1
+}
+run_bridge_status() { # <target>
+  HOME="$WORK/home" "$TPROJ_MSG" --session tproj-workspace --as tproj.cc --status "$1" 2>&1
+}
+
+# BR1. A bridge send POSTs a jq-built envelope to <url>/v1/inbox, not to the
+# ClawGate debug/inject lane, and carries sender, session, reply identity.
+reset_fixtures
+write_bridges_yaml
+rm -f "$FAKE_DIR/curl_body.json" "$FAKE_DIR/curl_argv.txt"
+br_out=$(run_bridge gate:bot01 "line one
+line two"); br_rc=$?
+br_argv=$(cat "$FAKE_DIR/curl_argv.txt" 2>/dev/null || true)
+br_body=$(cat "$FAKE_DIR/curl_body.json" 2>/dev/null || true)
+br_from=$(printf '%s' "$br_body" | jq -r '.from' 2>/dev/null)
+br_to=$(printf '%s' "$br_body" | jq -r '.to' 2>/dev/null)
+br_text=$(printf '%s' "$br_body" | jq -r '.text' 2>/dev/null)
+br_reply=$(printf '%s' "$br_body" | jq -r '.reply_as' 2>/dev/null)
+br_ret=$(printf '%s' "$br_body" | jq -r '.return_url' 2>/dev/null)
+br_sess=$(printf '%s' "$br_body" | jq -r '.session' 2>/dev/null)
+if [[ "$br_rc" -eq 0 && "$br_argv" == *"http://bot01.test:8765/v1/inbox"* && "$br_argv" != *"debug/inject"* \
+      && "$br_from" == "tproj.cc" && "$br_to" == "gate:bot01" && "$br_text" == $'line one\nline two' \
+      && "$br_reply" == "bot01.cdx" && "$br_ret" == "http://reply.test:8765" && "$br_sess" == "tproj-workspace" ]]; then
+  printf 'PASS  BR1_bridge_send_envelope\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  BR1_bridge_send_envelope\n      rc=%s argv=%s\n      body=%s\n      out=%s\n' "$br_rc" "$br_argv" "$br_body" "$(printf '%s' "$br_out" | tr '\n' '|')"
+  FAIL=$((FAIL+1))
+fi
+
+# BR2. Two configured bridges go to two hosts; reply_as honours the override.
+reset_fixtures
+write_bridges_yaml
+rm -f "$FAKE_DIR/curl_argv_all.txt"
+run_bridge gate:bot01 "route check A $$" >/dev/null 2>&1
+argv1=$(cat "$FAKE_DIR/curl_argv.txt" 2>/dev/null || true)
+run_bridge gate:bot02 "route check B $$" >/dev/null 2>&1
+argv2=$(cat "$FAKE_DIR/curl_argv.txt" 2>/dev/null || true)
+reply2=$(jq -r '.reply_as' "$FAKE_DIR/curl_body.json" 2>/dev/null)
+if [[ "$argv1" == *"bot01.test:8765/v1/inbox"* && "$argv2" == *"bot02.test:9000/v1/inbox"* && "$argv1" != *"bot02"* && "$reply2" == "two.cdx" ]]; then
+  printf 'PASS  BR2_two_bridges_two_hosts\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  BR2_two_bridges_two_hosts\n      argv1=%s\n      argv2=%s reply2=%s\n' "$argv1" "$argv2" "$reply2"; FAIL=$((FAIL+1))
+fi
+
+# BR3. A bridge id that collides with a reserved ClawGate adapter is refused at
+# load time, so gate:direct can never mean two different things.
+reset_fixtures
+mkdir -p "$WORK/home/.config/tproj"
+cat > "$WORK/home/.config/tproj/workspace.yaml" <<'YAML'
+gui:
+  bridges:
+    direct:
+      url: http://evil.test:1
+YAML
+rm -f "$FAKE_DIR/curl_argv.txt"
+br3_out=$(run_bridge gate:direct "must not send $$"); br3_rc=$?
+if [[ "$br3_rc" -ne 0 && "$br3_out" == *"collides with a reserved gate adapter name"* && ! -f "$FAKE_DIR/curl_argv.txt" ]]; then
+  printf 'PASS  BR3_reserved_id_refused\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  BR3_reserved_id_refused (rc=%s out=%s)\n' "$br3_rc" "$(printf '%s' "$br3_out" | tr '\n' '|')"; FAIL=$((FAIL+1))
+fi
+
+# BR4. The gate dedup store is namespaced by family: the same body to a ClawGate
+# lane and then to a bridge within the TTL is not a cross-adapter duplicate.
+reset_fixtures
+write_bridges_yaml
+export TPROJ_MSG_GATE_DEDUP_DIR="$WORK/gate-dedup"
+rm -rf "$TPROJ_MSG_GATE_DEDUP_DIR"
+same_body="same words to two families $$"
+HOME="$WORK/home" "$TPROJ_MSG" --session tproj-workspace --as tproj.cc gate:direct "$same_body" >/dev/null 2>&1
+br4_out=$(run_bridge gate:bot01 "$same_body"); br4_rc=$?
+unset TPROJ_MSG_GATE_DEDUP_DIR
+if [[ "$br4_rc" -eq 0 && "$br4_out" != *"Duplicate blocked"* ]]; then
+  printf 'PASS  BR4_dedup_namespaced_by_family\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  BR4_dedup_namespaced_by_family (rc=%s out=%s)\n' "$br4_rc" "$(printf '%s' "$br4_out" | tr '\n' '|')"; FAIL=$((FAIL+1))
+fi
+
+# BR5. --status maps the bridge health body: busy -> online/busy, idle ->
+# online/idle, non-2xx -> offline. The HTTP code is inspected, unlike gate_health.
+reset_fixtures
+write_bridges_yaml
+st_idle=$(FAKE_CURL_BODY='{"ok":true,"busy":false}' run_bridge_status gate:bot01)
+st_busy=$(FAKE_CURL_BODY='{"ok":true,"busy":true}' run_bridge_status gate:bot01)
+st_down=$(FAKE_CURL_BODY='{"ok":false}' FAKE_CURL_CODE=503 run_bridge_status gate:bot01)
+if [[ "$st_idle" == *"gate:bot01"*"online/idle"* && "$st_busy" == *"online/busy"* && "$st_down" == *"offline"* ]]; then
+  printf 'PASS  BR5_status_maps_health\n'; PASS=$((PASS+1))
+else
+  printf 'FAIL  BR5_status_maps_health\n      idle=%s\n      busy=%s\n      down=%s\n' "$st_idle" "$st_busy" "$st_down"; FAIL=$((FAIL+1))
 fi
 
 # =============================================================================
