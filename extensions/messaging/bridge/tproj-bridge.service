@@ -1,0 +1,24 @@
+# systemd unit for tproj-bridge on the box. Install as a user unit:
+#   mkdir -p ~/.config/systemd/user
+#   cp tproj-bridge.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now tproj-bridge
+#   loginctl enable-linger "$USER"     # keep user units running without a login session
+# Adjust the three Environment= lines for this box.
+[Unit]
+Description=tproj-bridge (box Codex as tproj-msg gate:<id> peer)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=TPROJ_BRIDGE_ID=bot01
+Environment=TPROJ_BRIDGE_REPO=%h/workspace/repos/management-brain
+Environment=TPROJ_BRIDGE_CODEX=%h/.local/bin/codex
+Environment=TPROJ_BRIDGE_PORT=8765
+ExecStart=%h/.local/bin/tproj-bridge
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
