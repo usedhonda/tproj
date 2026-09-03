@@ -13,6 +13,7 @@ Inter-pane AI messaging for tproj workspaces.
 - Message queueing with automatic flush when target becomes idle
 - Relay and fan-out safety guards
 - Gate target support for external bridge connections
+- `gate:<id>` bridge targets for a box-hosted Codex (`bridge/tproj-bridge.py`, replies as `[from:<id>.cdx]`)
 - Symmetric active-model role handoff with Task ID tracking
 - Durable task cancel/freeze tombstones and stale-epoch handoff rejection
 - Symmetric Claude/Codex mutation guard when a delegated task is cancelled/frozen

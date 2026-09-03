@@ -39,3 +39,5 @@ jobs:
         run: bash extensions/hooks/tests/test-inbox-check.sh
       - name: Mutation guard
         run: bash extensions/hooks/tests/test-mutation-guard.sh
+      - name: Bridge server
+        run: bash extensions/messaging/tests/test-bridge-server.sh

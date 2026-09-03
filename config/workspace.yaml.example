@@ -128,10 +128,25 @@ projects:
 #       required: false
 #       hint: brew install yq
 #
-#   # External bridge for inter-pane messaging (optional, used by tproj-msg)
+#   # External bridge for inter-pane messaging (optional, used by tproj-msg).
+#   # This is the ClawGate / Chi singleton.
 #   bridge:
 #     url: http://localhost:8765    # Bridge server URL
-#     default_adapter: direct       # Default adapter
+#     default_adapter: direct       # Default adapter (direct | tmux | line)
+#     reply_callback_url: http://<this-mac>.<tailnet>.ts.net:8765
+#                                   # Where the bridge posts replies back
+#                                   # (/v1/tproj-msg-deliver). Also used by bridges below.
+#     session_target: clawgate      # tmux session lane target (gate:tmux)
+#     trusted_caller_executable: /path/to/ClawGate.app/Contents/MacOS/ClawGate
+#                                   # Process allowed to inject replies via --as
+#
+#   # Remote bridges: a box-hosted Codex addressed as gate:<id>, replying as
+#   # [from:<id>.cdx]. One entry per box; ids must not be a reserved adapter
+#   # name (direct, line, tmux, session, default). See docs/reference/bridge-targets.md
+#   bridges:
+#     bot01:
+#       url: http://100.64.0.10:8765  # tproj-bridge on the box (Tailscale)
+#       # reply_as: bot01.cdx         # default <id>.cdx
 
 # ===== Recommended limits =====
 #
