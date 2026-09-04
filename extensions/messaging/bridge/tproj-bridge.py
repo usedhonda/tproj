@@ -82,7 +82,7 @@ def run_codex(prompt: str) -> tuple[bool, str]:
     with tempfile.NamedTemporaryFile("r", suffix=".txt", delete=False) as out:
         out_path = out.name
     cmd = [CODEX, "exec", "-C", REPO, "--skip-git-repo-check",
-           "-a", "never", "-s", "workspace-write", "-o", out_path, "-"]
+           "-s", "workspace-write", "-o", out_path, "-"]
     try:
         proc = subprocess.run(cmd, input=prompt, text=True, capture_output=True,
                               timeout=TIMEOUT_SEC, check=False)
