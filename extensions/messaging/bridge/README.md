@@ -50,7 +50,7 @@ TPROJ_BRIDGE_ID=bot01 TPROJ_BRIDGE_REPO=/workspace/repos/management-brain \
 # -> tproj-bridge id=bot01 listening on 0.0.0.0:8765 ...
 
 # 4. From the Mac
-curl -s http://100.79.49.70:8765/v1/health
+curl -s http://100.64.0.10:8765/v1/health
 ```
 
 Then install `tproj-bridge.service` (see that file) so it survives reboots.
@@ -77,7 +77,7 @@ gui:
     reply_callback_url: http://<mac-tailscale-name>:8765   # already set for Chi
   bridges:
     bot01:
-      url: http://100.79.49.70:8765
+      url: http://100.64.0.10:8765
       # reply_as: bot01.cdx   # default
 ```
 

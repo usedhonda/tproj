@@ -19,7 +19,7 @@ gui:
     reply_callback_url: http://<mac>.<tailnet>.ts.net:8765
   bridges:                     # one entry per remote box
     bot01:
-      url: http://100.79.49.70:8765
+      url: http://100.64.0.10:8765
       # reply_as: bot01.cdx    # default <id>.cdx
 ```
 
