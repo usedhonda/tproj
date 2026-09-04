@@ -992,6 +992,20 @@ else
   fail bridge_reply_wrong_executable_rejected "rc=$rc out=$out"
 fi
 
+# A reply whose text begins with a dash must still be delivered. ClawGate passes
+# the text as a positional after the target; it used to be rejected as an
+# unknown option and the reply was lost.
+reset_case
+set_state %2 idle
+out="$(run_as_bare_role_caller "$FAKE_SERVICE_BIN" \
+  "$TPROJ_MSG" --allow-relay gate-reverse-channel --force --session tproj-workspace --as bot01.cdx tproj.cdx '-a never is the flag I used')"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[from:bot01.cdx] -a never is the flag I used'* ]]; then
+  pass reply_text_leading_dash_delivered
+else
+  fail reply_text_leading_dash_delivered "rc=$rc out=$out log=$log"
+fi
+
 printf '%s\n' '----'
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

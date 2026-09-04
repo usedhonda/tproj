@@ -24,7 +24,8 @@ description: |
   - 依頼されたタスクが完了した（報告）
   - 自力では解決できない問題に遭遇した
   - Chi（ちー姉様）への技術相談・報告が必要
-  ※ tproj-msg を Bash で直接実行してはならない。必ず Skill ツールで発動すること。
+  ※ CC: tproj-msg を素の Bash で叩かず、必ずこの Skill ツールで発動する。
+  ※ Cdx: Skill ツールが無いので、この SKILL.md を読んだうえで shell から tproj-msg を実行する（それがこの skill に従うということ）。
 argument-hint: <target> <message>
 allowed-tools: [Bash, Read]
 compression-anchors:
