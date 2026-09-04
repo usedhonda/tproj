@@ -409,8 +409,18 @@ while [[ $# -gt 0 ]]; do
       done
       ;;
     -*)
-      echo "Error: unknown option '$1'" >&2
-      exit 1
+      # Once the target has been named, a dash-leading word is message text,
+      # not an option. ClawGate execs `tproj-msg ... <target> <text>` for every
+      # reply, so a reply that happened to begin with "-a" or "--help" used to
+      # die here as an unknown option and never reach the pane. Known options
+      # are matched above and still work in any position.
+      if [[ ${#POSITIONAL_ARGS[@]} -ge 1 ]]; then
+        POSITIONAL_ARGS+=("$1")
+        shift
+      else
+        echo "Error: unknown option '$1'" >&2
+        exit 1
+      fi
       ;;
     *)
       POSITIONAL_ARGS+=("$1")
@@ -3721,7 +3731,7 @@ send_via_bridge() {
   http_code=$(echo "$result" | tail -1)
   body=$(echo "$result" | sed '$d')
   if [[ "$http_code" =~ ^2 ]]; then
-    echo "Sent via gate:${id} -> ${url}/v1/inbox" >&2
+    echo "Accepted by gate:${id} (queued on the box; the reply arrives as [from:$(bridge_reply_as "$id")])" >&2
     if declare -F tt_db_log_message >/dev/null 2>&1; then
       _outid=$(tt_db_log_message "$SESSION" "$_from" "gate:${id}" "$msg" "$_hash" "" "" "outbound" "gate" "${MY_ROLE:-cc}" "bridge" "$trace_id" 2>/dev/null)
       [[ -n "$_outid" ]] && tt_db_set_delivered "$_outid" 2>/dev/null
