@@ -67,7 +67,8 @@ export PATH="$WORK/bin:$PATH"
 export FAKE_CODEX_PROMPT_FILE="$WORK/prompt.txt"
 TPROJ_BRIDGE_ID=bot01 TPROJ_BRIDGE_PORT="$BPORT" TPROJ_BRIDGE_BIND=127.0.0.1 \
   TPROJ_BRIDGE_REPO="$WORK" TPROJ_BRIDGE_CODEX="$WORK/bin/codex" \
-  TPROJ_BRIDGE_NETWORK=1 TPROJ_BRIDGE_ADD_DIRS="$WORK/extra" \
+  TPROJ_BRIDGE_ADD_DIRS="$WORK/extra,$WORK/extra2" \
+  TPROJ_BRIDGE_CODEX_CONFIG="sandbox_workspace_write.network_access=true, model=\"o3\"" \
   python3 "$BRIDGE" 2>"$WORK/bridge.log" &
 BRIDGE_PID=$!
 for _ in $(seq 1 50); do
@@ -134,8 +135,13 @@ code=$(inbox '{not json')
 # 7. the effective sandbox policy is visible on /v1/health and applied to codex
 h=$(health)
 argv=$(cat "$WORK/prompt.txt.argv" 2>/dev/null || true)
-if [[ "$h" == *'"sandbox": "workspace-write"'* && "$h" == *'"network": true'* && "$h" == *"$WORK/extra"* \
-      && "$argv" == *"-s workspace-write"* && "$argv" == *"sandbox_workspace_write.network_access=true"* && "$argv" == *"--add-dir $WORK/extra"* ]]; then
+# The box variant spelled these as comma-separated add-dirs and a -c passthrough;
+# both must land in codex's argv, and network must resolve to true from the
+# passthrough alone (no TPROJ_BRIDGE_NETWORK set here), exactly once.
+net_count=$(printf '%s' "$argv" | grep -o 'sandbox_workspace_write.network_access=true' | wc -l | tr -d ' ')
+if [[ "$h" == *'"sandbox": "workspace-write"'* && "$h" == *'"network": true'* && "$h" == *"$WORK/extra2"* \
+      && "$argv" == *"-s workspace-write"* && "$net_count" == "1" && "$argv" == *'-c model="o3"'* \
+      && "$argv" == *"--add-dir $WORK/extra "* && "$argv" == *"--add-dir $WORK/extra2"* ]]; then
   pass health_exposes_policy_and_codex_gets_it
 else
   fail health_exposes_policy_and_codex_gets_it "health=$h argv=$argv"

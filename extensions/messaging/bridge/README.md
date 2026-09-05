@@ -68,13 +68,24 @@ Then install `tproj-bridge.service` (see that file) so it survives reboots.
 | `TPROJ_BRIDGE_MAX_REPLY_CHARS` | `6000` | Reply truncation |
 | `TPROJ_BRIDGE_SANDBOX` | `workspace-write` | Codex sandbox: `read-only` / `workspace-write` / `danger-full-access` |
 | `TPROJ_BRIDGE_NETWORK` | `0` | `1` adds `-c sandbox_workspace_write.network_access=true` (loopback APIs, `git push`, package fetches) |
-| `TPROJ_BRIDGE_ADD_DIRS` | (empty) | Colon-separated extra writable roots (`--add-dir`), for work outside `TPROJ_BRIDGE_REPO` |
+| `TPROJ_BRIDGE_ADD_DIRS` | (empty) | Extra writable roots (`--add-dir` each); `,` or `:` separated |
+| `TPROJ_BRIDGE_CODEX_CONFIG` | (empty) | Comma-separated `key=value` passed as `codex -c`; `sandbox_workspace_write.network_access=true` here also turns `network` on |
+
+**Replacing a box-local variant**: earlier box copies used comma-separated
+`TPROJ_BRIDGE_ADD_DIRS` and `TPROJ_BRIDGE_CODEX_CONFIG=sandbox_workspace_write.network_access=true`.
+Both spellings are accepted unchanged, so no environment migration is needed on
+replacement; confirm with `/v1/health` (`add_dirs` lists every path,
+`network` is `true`) before trusting the new process.
 
 **What the defaults refuse, by Codex design**: writes outside `TPROJ_BRIDGE_REPO`;
 any network (including `127.0.0.1`); and writes to `.git` / `.agents` / `.codex`
 under the repo — so `git commit` / `git push` fail in `workspace-write` even with
-`TPROJ_BRIDGE_NETWORK=1`. Widening is an explicit operator choice per box; the
-live policy is shown on `/v1/health` (`repo`, `sandbox`, `network`, `add_dirs`).
+`TPROJ_BRIDGE_NETWORK=1`. File writes passing does not prove git works; treat git
+as unverified until a job has actually committed. Codex carves `.git` out only
+"if no explicit rule" exists, so an explicit `--add-dir <repo>/.git` may be
+enough (untested here); `TPROJ_BRIDGE_SANDBOX=danger-full-access` is the blunt
+alternative and removes the sandbox entirely. Either widening is an explicit
+operator choice per box; the live policy is shown on `/v1/health`.
 
 **Empty replies**: a run that exits 0 with no last message delivers nothing (a
 返信不要 / FYI is normal). Only a failed run is delivered, prefixed
