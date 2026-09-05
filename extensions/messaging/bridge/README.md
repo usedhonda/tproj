@@ -66,6 +66,19 @@ Then install `tproj-bridge.service` (see that file) so it survives reboots.
 | `TPROJ_BRIDGE_CODEX` | `codex` | Codex binary (e.g. `~/.local/bin/codex`) |
 | `TPROJ_BRIDGE_TIMEOUT_SEC` | `1800` | Per-job Codex timeout |
 | `TPROJ_BRIDGE_MAX_REPLY_CHARS` | `6000` | Reply truncation |
+| `TPROJ_BRIDGE_SANDBOX` | `workspace-write` | Codex sandbox: `read-only` / `workspace-write` / `danger-full-access` |
+| `TPROJ_BRIDGE_NETWORK` | `0` | `1` adds `-c sandbox_workspace_write.network_access=true` (loopback APIs, `git push`, package fetches) |
+| `TPROJ_BRIDGE_ADD_DIRS` | (empty) | Colon-separated extra writable roots (`--add-dir`), for work outside `TPROJ_BRIDGE_REPO` |
+
+**What the defaults refuse, by Codex design**: writes outside `TPROJ_BRIDGE_REPO`;
+any network (including `127.0.0.1`); and writes to `.git` / `.agents` / `.codex`
+under the repo — so `git commit` / `git push` fail in `workspace-write` even with
+`TPROJ_BRIDGE_NETWORK=1`. Widening is an explicit operator choice per box; the
+live policy is shown on `/v1/health` (`repo`, `sandbox`, `network`, `add_dirs`).
+
+**Empty replies**: a run that exits 0 with no last message delivers nothing (a
+返信不要 / FYI is normal). Only a failed run is delivered, prefixed
+`[bridge:<id>] Codex could not complete this request: ...`.
 
 ## Mac side
 

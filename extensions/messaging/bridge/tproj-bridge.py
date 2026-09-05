@@ -37,6 +37,16 @@ BIND = os.environ.get("TPROJ_BRIDGE_BIND", "0.0.0.0")
 REPO = os.environ.get("TPROJ_BRIDGE_REPO", os.getcwd())
 CODEX = os.environ.get("TPROJ_BRIDGE_CODEX", "codex")
 TIMEOUT_SEC = int(os.environ.get("TPROJ_BRIDGE_TIMEOUT_SEC", "1800"))
+# Sandbox policy for the Codex run. The defaults are Codex's own conservative
+# ones: writes only inside REPO (its .git/.agents/.codex stay read-only), no
+# network. Anything wider is an explicit operator choice on the box, and the
+# effective policy is reported on /v1/health so the Mac side can see what a
+# live bridge actually runs with rather than guess from a service file.
+SANDBOX = os.environ.get("TPROJ_BRIDGE_SANDBOX", "workspace-write")
+NETWORK = os.environ.get("TPROJ_BRIDGE_NETWORK", "0") in ("1", "true", "yes")
+ADD_DIRS = [d for d in os.environ.get("TPROJ_BRIDGE_ADD_DIRS", "").split(":") if d]
+if SANDBOX not in ("read-only", "workspace-write", "danger-full-access"):
+    raise SystemExit(f"TPROJ_BRIDGE_SANDBOX must be read-only|workspace-write|danger-full-access, got {SANDBOX!r}")
 MAX_REPLY_CHARS = int(os.environ.get("TPROJ_BRIDGE_MAX_REPLY_CHARS", "6000"))
 MAX_BODY_BYTES = int(os.environ.get("TPROJ_BRIDGE_MAX_BODY_BYTES", str(256 * 1024)))
 # Only loopback and the Tailscale CGNAT range may talk to this inbox. That is
@@ -81,8 +91,12 @@ def run_codex(prompt: str) -> tuple[bool, str]:
     """Run one headless Codex turn on the box repo; return (ok, last_message)."""
     with tempfile.NamedTemporaryFile("r", suffix=".txt", delete=False) as out:
         out_path = out.name
-    cmd = [CODEX, "exec", "-C", REPO, "--skip-git-repo-check",
-           "-s", "workspace-write", "-o", out_path, "-"]
+    cmd = [CODEX, "exec", "-C", REPO, "--skip-git-repo-check", "-s", SANDBOX]
+    if NETWORK and SANDBOX == "workspace-write":
+        cmd += ["-c", "sandbox_workspace_write.network_access=true"]
+    for d in ADD_DIRS:
+        cmd += ["--add-dir", d]
+    cmd += ["-o", out_path, "-"]
     try:
         proc = subprocess.run(cmd, input=prompt, text=True, capture_output=True,
                               timeout=TIMEOUT_SEC, check=False)
@@ -146,10 +160,14 @@ def worker() -> None:
             log(f"job start trace={job['trace_id']} from={job['from']}")
             ok, text = run_codex(prompt)
             if not ok:
-                text = f"[bridge:{BRIDGE_ID}] Codex could not complete this request: {text}"
-            if not text.strip():
-                text = f"[bridge:{BRIDGE_ID}] Codex returned no message."
-            deliver_reply(job, text)
+                deliver_reply(job, f"[bridge:{BRIDGE_ID}] Codex could not complete this request: {text}")
+            elif not text.strip():
+                # A clean run with nothing to say (an FYI, a 返信不要) is a normal
+                # outcome, not a fault. Delivering a stub for it made every quiet
+                # completion look like a failure in the asking pane.
+                log(f"job done with no reply trace={job['trace_id']} (exit 0, empty last message; nothing delivered)")
+            else:
+                deliver_reply(job, text)
         except Exception as exc:  # never let one job kill the worker
             log(f"job crashed trace={job.get('trace_id')}: {exc!r}")
         finally:
@@ -181,7 +199,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._client_ok():
             return
         if self.path == "/v1/health":
-            self._send(200, {"ok": True, "id": BRIDGE_ID, "busy": _busy.is_set(), "queued": _jobs.qsize()})
+            self._send(200, {"ok": True, "id": BRIDGE_ID, "busy": _busy.is_set(), "queued": _jobs.qsize(),
+                             "repo": REPO, "sandbox": SANDBOX, "network": NETWORK, "add_dirs": ADD_DIRS})
             return
         self._send(404, {"ok": False, "error": "not found"})
 
@@ -220,7 +239,8 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     threading.Thread(target=worker, name="codex-worker", daemon=True).start()
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
-    log(f"tproj-bridge id={BRIDGE_ID} listening on {BIND}:{PORT} repo={REPO} codex={CODEX}")
+    log(f"tproj-bridge id={BRIDGE_ID} listening on {BIND}:{PORT} repo={REPO} codex={CODEX} "
+        f"sandbox={SANDBOX} network={NETWORK} add_dirs={ADD_DIRS}")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

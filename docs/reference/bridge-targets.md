@@ -68,6 +68,10 @@ split on its last colon because the label itself contains one.
   from `GET <url>/v1/health` -> `{"ok":true,"busy":<bool>}`. Unlike
   `gate_health`, the HTTP status is inspected: a non-2xx is `offline`.
 - Bare `--status` and `--list` append one row per configured bridge.
+- `/v1/health` also reports the box's effective Codex policy (`repo`, `sandbox`,
+  `network`, `add_dirs`), set on the box via `TPROJ_BRIDGE_SANDBOX` /
+  `TPROJ_BRIDGE_NETWORK` / `TPROJ_BRIDGE_ADD_DIRS`. Defaults are Codex's own:
+  writes only under the repo (`.git` read-only), no network. See the bridge README.
 
 ## Reply
 
@@ -79,6 +83,10 @@ CGNAT sources and execs `tproj-msg --as <reply_as> --session <session>
 be the `reply_as` of exactly one configured bridge **and** the caller's
 ancestry must contain the trusted ClawGate executable. Audit rows carry
 `auth_path = bridge-sender-verified | bridge-sender-rejected`.
+
+A run that exits 0 with no last message delivers nothing (a 返信不要 / FYI is a
+normal outcome); a failed run is delivered with its exit code and stderr tail
+so the asking pane is never left waiting.
 
 ## Acceptance (issue #12)
 
