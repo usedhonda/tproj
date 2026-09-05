@@ -38,14 +38,14 @@ Mac pane ◀──[from:bot01.cdx]── ClawGate ◀── POST {return_url}/v1
 ```bash
 # 1. Codex logged in, repo cloned
 codex login            # ChatGPT login
-ls /workspace/repos/management-brain
+ls /workspace/repos/<project>
 
 # 2. Copy the bridge (scp from the Mac checkout, or curl the raw file)
 mkdir -p ~/.local/bin
 cp tproj-bridge.py ~/.local/bin/tproj-bridge && chmod +x ~/.local/bin/tproj-bridge
 
 # 3. Run once by hand to see it come up
-TPROJ_BRIDGE_ID=bot01 TPROJ_BRIDGE_REPO=/workspace/repos/management-brain \
+TPROJ_BRIDGE_ID=bot01 TPROJ_BRIDGE_REPO=/workspace/repos/<project> \
   ~/.local/bin/tproj-bridge
 # -> tproj-bridge id=bot01 listening on 0.0.0.0:8765 ...
 
