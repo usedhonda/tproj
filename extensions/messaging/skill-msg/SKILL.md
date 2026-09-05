@@ -10,7 +10,7 @@ description: |
   - 「XXに報告して」「XXに知らせて」「XXに共有して」
   - 「XXに相談して」「XXに相談」「XXに確認して」「XXに確認とって」
   - 「Codexに投げて」「Cdxに任せて」「Cdxに相談」「CCに聞いて」「CCに相談」
-  - 「slに聞いて」「ちー姉様に送って」「gateに送って」
+  - 「slに聞いて」「ちー姉様に送って」「gateに送って」「bot01 に送って」
   - `/msg` コマンド
 
   ※ 「Cdxに」「CCに」（列指定なし）→ 同列の cdx / cc に送信（tproj-msg のデフォルト）
@@ -24,7 +24,8 @@ description: |
   - 依頼されたタスクが完了した（報告）
   - 自力では解決できない問題に遭遇した
   - Chi（ちー姉様）への技術相談・報告が必要
-  ※ tproj-msg を Bash で直接実行してはならない。必ず Skill ツールで発動すること。
+  ※ CC: tproj-msg を素の Bash で叩かず、必ずこの Skill ツールで発動する。
+  ※ Cdx: Skill ツールが無いので、この SKILL.md を読んだうえで shell から tproj-msg を実行する（それがこの skill に従うということ）。
 argument-hint: <target> <message>
 allowed-tools: [Bash, Read]
 compression-anchors:
@@ -225,6 +226,7 @@ tproj-msg --flush                   # キュー内メッセージを idle ター
 | `agent-<name>` | Agent ペイン | `tproj-msg agent-reviewer "check"` |
 | `gate` | Chi（デフォルトアダプター） | `tproj-msg gate "相談"` |
 | `gate:<adapter>` | Chi（アダプター指定） | `tproj-msg gate:line "報告"` |
+| `gate:<id>` | 箱の Codex（`gui.bridges.<id>` に設定した remote bridge） | `tproj-msg gate:bot01 "サーバー側の実装をお願い"` |
 
 ## 受信メッセージの処理
 
@@ -236,6 +238,7 @@ tproj-msg --flush                   # キュー内メッセージを idle ター
 | `[from:sl.cdx]` | sl列の Codex |
 | `[from:cc]` | 同列の Claude Code（単一モード） |
 | `[from:agent-<name>]` | Agent ペイン |
+| `[from:<id>.cdx]` | 箱の Codex（`gate:<id>` bridge からの返信。AI 同僚として扱う） |
 
 **処理フロー**: 送信元を特定 → 本文を処理 → `tproj-msg <sender> "返信"` で返信
 
@@ -284,6 +287,23 @@ tproj-msg --status gate             # bridge 生死確認
 **フォールバック無効**: `gate:tmux` 失敗時は自動フォールバックしない（即エラー終了）。`gate:direct` を使いたい場合は `tproj-msg gate:direct "msg"` と明示的に指定すること。
 
 **Gate 横断 dedup**: 同一メッセージを60秒以内に異なる gate アダプターで送信するとブロックされる。パニックリトライによる多重送信を防止する仕組み。
+
+## Bridge ターゲット（gate:<id> -> 箱の Codex）
+
+tmux ペインを持たない箱（Tailscale 上の Codex）へは `gate:<id>` で送る。id は
+`~/.config/tproj/workspace.yaml` の `gui.bridges.<id>` に設定したもの（例 `bot01`）。
+返信は ClawGate 経由で `[from:<id>.cdx]` として同じペインに戻る。
+
+```bash
+tproj-msg --status gate:bot01       # online/idle | online/busy | offline
+tproj-msg gate:bot01 "message"      # 箱の inbox へ。Codex が実行し、結果が返信で戻る
+tproj-msg --list                    # 設定済み bridge が gate:<id> 行として並ぶ
+```
+
+- `online/busy` は箱が別ジョブ実行中。送信自体は受け付けられ順番待ちになる
+- `offline` は bridge 未起動か到達不能。送らず報告する（Target not found と同じ扱い）
+- 「bot01 に送って」「箱の Codex に頼んで」はこのターゲット
+- Chi の `gate` と id が衝突しないよう、`direct` / `line` / `tmux` / `session` / `default` は id にできない
 
 ## `--list` 出力例
 

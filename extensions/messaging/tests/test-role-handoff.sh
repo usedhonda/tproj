@@ -930,6 +930,82 @@ else
   fail bare_role_unknown_default_deny "rc=$rc out=$out"
 fi
 
+# --- Verifier class 3: bridge reply (#12) -----------------------------------
+# A box replies through ClawGate as its configured reply_as. Same anchor as the
+# bare-role class (the fake ClawGate executable in our ancestry); the accepted
+# identity comes from gui.bridges instead of a hardcoded string.
+cat > "$TEST_HOME/.config/tproj/workspace.yaml" <<YAML
+gui:
+  bridge:
+    trusted_caller_executable: "$FAKE_SERVICE_BIN"
+  bridges:
+    bot01:
+      url: http://bot01.test:8765
+    bot02:
+      url: http://bot02.test:9000
+      reply_as: two.cdx
+YAML
+
+reset_case
+set_state %2 idle
+out="$(run_as_bare_role_caller "$FAKE_SERVICE_BIN" \
+  "$TPROJ_MSG" --allow-relay gate-reverse-channel --force --session tproj-workspace --as bot01.cdx tproj.cdx 'reply-from-box')"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[from:bot01.cdx]'* ]]; then
+  pass bridge_reply_default_identity_allow
+else
+  fail bridge_reply_default_identity_allow "rc=$rc out=$out log=$log"
+fi
+
+reset_case
+set_state %2 idle
+out="$(run_as_bare_role_caller "$FAKE_SERVICE_BIN" \
+  "$TPROJ_MSG" --allow-relay gate-reverse-channel --force --session tproj-workspace --as two.cdx tproj.cdx 'reply-from-box-two')"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[from:two.cdx]'* ]]; then
+  pass bridge_reply_configured_reply_as_allow
+else
+  fail bridge_reply_configured_reply_as_allow "rc=$rc out=$out log=$log"
+fi
+
+# An id nobody configured is not a bridge; it falls to the registry class and,
+# having no entry and no local pid, is refused.
+reset_case
+set_state %2 idle
+out="$(run_as_bare_role_caller "$FAKE_SERVICE_BIN" \
+  "$TPROJ_MSG" --allow-relay gate-reverse-channel --force --session tproj-workspace --as bot09.cdx tproj.cdx 'reply-from-nowhere')"; rc=$?
+if [[ $rc -ne 0 && ! -f "$FIXTURES/sendkeys.log" ]]; then
+  pass bridge_reply_unconfigured_id_rejected
+else
+  fail bridge_reply_unconfigured_id_rejected "rc=$rc out=$out"
+fi
+
+# The configured identity alone is not enough: the delivery must still come
+# through the trusted local receiver.
+reset_case
+set_state %2 idle
+out="$(run_as_bare_role_caller "/bin/some-unrelated-binary" \
+  "$TPROJ_MSG" --allow-relay gate-reverse-channel --force --session tproj-workspace --as bot01.cdx tproj.cdx 'reply-from-imposter-box')"; rc=$?
+if [[ $rc -ne 0 && ! -f "$FIXTURES/sendkeys.log" && "$out" == *'could not be verified'* ]]; then
+  pass bridge_reply_wrong_executable_rejected
+else
+  fail bridge_reply_wrong_executable_rejected "rc=$rc out=$out"
+fi
+
+# A reply whose text begins with a dash must still be delivered. ClawGate passes
+# the text as a positional after the target; it used to be rejected as an
+# unknown option and the reply was lost.
+reset_case
+set_state %2 idle
+out="$(run_as_bare_role_caller "$FAKE_SERVICE_BIN" \
+  "$TPROJ_MSG" --allow-relay gate-reverse-channel --force --session tproj-workspace --as bot01.cdx tproj.cdx '-a never is the flag I used')"; rc=$?
+log="$(cat "$FIXTURES/sendkeys.log" 2>/dev/null || true)"
+if [[ $rc -eq 0 && "$log" == *'[from:bot01.cdx] -a never is the flag I used'* ]]; then
+  pass reply_text_leading_dash_delivered
+else
+  fail reply_text_leading_dash_delivered "rc=$rc out=$out log=$log"
+fi
+
 printf '%s\n' '----'
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

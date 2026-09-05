@@ -37,6 +37,7 @@ set -euo pipefail
 #   gate:direct     ClawGate bridge (legacy direct EventBus lane)
 #   gate:default    ClawGate bridge (workspace default adapter)
 #   gate:<adapter>  ClawGate bridge with specific adapter (e.g. gate:tmux)
+#   gate:<id>       Remote bridge (a box Codex) configured under gui.bridges.<id>; replies as [from:<id>.cdx]
 #
 # Modes (after fix):
 #   --fire    No idle check. Auto-flush queue (max 3), then send. Immediate return.
@@ -96,6 +97,7 @@ Usage:
   Note: broadcast-like targets are forbidden (all, *, broadcast, everyone)
   Note: gate uses session-first tmux lane by default; prefix message with [line-private] for LINE-only lane
   Note: repeated Chi recovery/proxy dispatch to gate is blocked for 24h unless --allow-chi-retry <reason> is explicit
+  Note: gate:<id> where <id> is a key of gui.bridges sends to that remote bridge inbox (see docs/reference/bridge-targets.md)
 
 Target formats:
   cc, cdx           Same column / single mode
@@ -120,6 +122,8 @@ Examples:
   tproj-msg gate:line "Send via LINE adapter"
   tproj-msg gate:direct "Send via direct EventBus lane (legacy)"
   tproj-msg gate "[line-private] this is private to LINE only"
+  tproj-msg gate:bot01 "Please implement this on the box"
+  tproj-msg --status gate:bot01
   tproj-msg --status cdx
   tproj-msg --flush
   tproj-msg --list
@@ -405,8 +409,18 @@ while [[ $# -gt 0 ]]; do
       done
       ;;
     -*)
-      echo "Error: unknown option '$1'" >&2
-      exit 1
+      # Once the target has been named, a dash-leading word is message text,
+      # not an option. ClawGate execs `tproj-msg ... <target> <text>` for every
+      # reply, so a reply that happened to begin with "-a" or "--help" used to
+      # die here as an unknown option and never reach the pane. Known options
+      # are matched above and still work in any position.
+      if [[ ${#POSITIONAL_ARGS[@]} -ge 1 ]]; then
+        POSITIONAL_ARGS+=("$1")
+        shift
+      else
+        echo "Error: unknown option '$1'" >&2
+        exit 1
+      fi
       ;;
     *)
       POSITIONAL_ARGS+=("$1")
@@ -840,6 +854,85 @@ verify_as_caller_identity() {
   return 0
 }
 
+# Bridge config helpers live here, ahead of the --as verifier that runs at
+# top level long before the ClawGate section below is parsed.
+WORKSPACE_CONFIG="$HOME/.config/tproj/workspace.yaml"
+
+# === Bridge targets: gate:<id> -> gui.bridges.<id> (#12) ===
+# A bridge is a remote HTTP inbox (a Tailscale box running Codex) that shares
+# the gate: prefix with ClawGate but is its own family: it speaks /v1/inbox and
+# /v1/health, carries the sender inside the JSON payload instead of a
+# [tproj-msg:...] text header, and replies through ClawGate's
+# /v1/tproj-msg-deliver as [from:<id>.cdx]. Ids live in gui.bridges so two
+# boxes cannot be confused; the singleton gui.bridge (Chi) is untouched.
+BRIDGE_RESERVED_IDS=" direct line tmux session default "
+BRIDGE_IDS_LOADED=""
+BRIDGE_IDS=""
+
+# Ids from gui.bridges, one per line, memoised. Listing only: validation is
+# bridge_config_check, which runs once in the main shell -- an exit inside this
+# function is swallowed by the command substitutions that call it, and the
+# send would carry on to ClawGate as if nothing were wrong.
+bridge_ids() {
+  if [[ -z "$BRIDGE_IDS_LOADED" ]]; then
+    BRIDGE_IDS_LOADED=1
+    if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
+      BRIDGE_IDS=$(yq -r '.gui.bridges // {} | keys | .[]' "$WORKSPACE_CONFIG" 2>/dev/null || true)
+    fi
+  fi
+  printf '%s\n' "$BRIDGE_IDS"
+}
+
+# A reserved ClawGate adapter name used as a bridge id would make gate:<id>
+# ambiguous, so the whole command is refused up front rather than resolving one
+# way on send and the other on --status. Called once from the main shell.
+bridge_config_check() {
+  local id
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    if [[ "$BRIDGE_RESERVED_IDS" == *" ${id} "* ]]; then
+      echo "Error: gui.bridges id '${id}' collides with a reserved gate adapter name (direct|line|tmux|session|default)" >&2
+      return 1
+    fi
+    if ! [[ "$id" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+      echo "Error: gui.bridges id '${id}' is not a plain identifier" >&2
+      return 1
+    fi
+  done < <(bridge_ids)
+  return 0
+}
+
+is_bridge_id() {
+  local id="$1" known
+  [[ -n "$id" ]] || return 1
+  while IFS= read -r known; do
+    [[ "$known" == "$id" ]] && return 0
+  done < <(bridge_ids)
+  return 1
+}
+
+is_bridge_target() {
+  [[ "$1" == gate:* ]] && is_bridge_id "${1#gate:}"
+}
+
+bridge_url() {
+  local url=""
+  if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
+    url=$(yq -r ".gui.bridges.\"$1\".url // \"\"" "$WORKSPACE_CONFIG" 2>/dev/null || true)
+  fi
+  printf '%s' "${url%/}"
+}
+
+# The identity the box's reply arrives under. Defaults to <id>.cdx so the
+# reply reads as a Codex peer, and is what the reply verifier checks against.
+bridge_reply_as() {
+  local v=""
+  if command -v yq >/dev/null 2>&1 && [[ -f "$WORKSPACE_CONFIG" ]]; then
+    v=$(yq -r ".gui.bridges.\"$1\".reply_as // \"\"" "$WORKSPACE_CONFIG" 2>/dev/null || true)
+  fi
+  printf '%s' "${v:-$1.cdx}"
+}
+
 # --- Bare-role service-bound verifier (distinct from the alias.role class
 # above -- bare roles like "gate" have no model-role-router registry entry
 # to bind against, since the caller is not a claude/codex agent process).
@@ -903,6 +996,52 @@ verify_bare_role_caller_identity() {
       ;;
   esac
 
+  verify_service_owner_binding
+}
+
+# Bridge reply (verifier class 3, #12). A remote box answers through ClawGate's
+# /v1/tproj-msg-deliver, which execs `tproj-msg --as <reply_as>` locally. The
+# claimed <reply_as> is dotted, so it would otherwise fall into the registry
+# class and fail: a box has no registry entry and no local pid to bind. The
+# trust anchor here is exactly the bare-role one -- the local ClawGate process
+# in this caller's ancestry, same UID -- and the only new element is that the
+# accepted identity is a configured `gui.bridges.<id>.reply_as` instead of one
+# hardcoded string. The box itself is never the anchor: it is remote, and its
+# word is what is being checked.
+# Usage: verify_bridge_reply_caller_identity <id>
+verify_bridge_reply_caller_identity() {
+  local bridge_id="$1"
+  CALLER_VERIFY_REASON=""
+  VERIFIED_CALLER_PID=0
+  VERIFIED_CALLER_PPID=0
+  VERIFIED_CALLER_EXECUTABLE=""
+  VERIFIED_CALLER_UID=0
+  VERIFIED_PROCESS_START=0
+  VERIFIED_ANCHOR_PID=0
+  if ! is_bridge_id "$bridge_id"; then
+    CALLER_VERIFY_REASON="unknown_bridge_id"
+    return 1
+  fi
+  verify_service_owner_binding
+}
+
+# Which configured bridge replies as <alias.role>, or nothing.
+bridge_id_for_reply_as() {
+  local claimed="$1" id
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    if [[ "$(bridge_reply_as "$id")" == "$claimed" ]]; then
+      printf '%s\n' "$id"
+      return 0
+    fi
+  done < <(bridge_ids)
+  return 1
+}
+
+# Bind this caller to the trusted service-owner process (ClawGate) in its own
+# ancestry: configured executable path, same UID, readable start time. Shared
+# by the bare-role and bridge-reply verifiers; sets VERIFIED_* on success.
+verify_service_owner_binding() {
   local expected_exec="$BARE_ROLE_SERVICE_EXPECTED_EXEC_DEFAULT" ws_cfg="$HOME/.config/tproj/workspace.yaml"
   if command -v yq >/dev/null 2>&1 && [[ -f "$ws_cfg" ]]; then
     local cfg_exec
@@ -1205,7 +1344,19 @@ if [[ -n "$EXPLICIT_SESSION" ]]; then
       MY_ROLE_RAW="$EXPLICIT_AS"
       MY_ROLE=$(role_to_short "$MY_ROLE_RAW")
     fi
-    if [[ -n "$MY_ALIAS" ]]; then
+    BRIDGE_REPLY_ID=""
+    if [[ -n "$MY_ALIAS" ]] && BRIDGE_REPLY_ID=$(bridge_id_for_reply_as "${MY_ALIAS}.${MY_ROLE:-$MY_ROLE_RAW}"); then
+      # A configured bridge's reply identity. Checked before the registry
+      # class, which would otherwise claim every dotted alias and refuse it.
+      AS_CLAIMED_IDENTITY="${MY_ALIAS}.${MY_ROLE:-$MY_ROLE_RAW}"
+      if verify_bridge_reply_caller_identity "$BRIDGE_REPLY_ID"; then
+        AS_CALLER_VERIFIED=true
+        AUTH_PATH="bridge-sender-verified"
+      else
+        AUTH_PATH="bridge-sender-rejected"
+      fi
+      ANCHOR_PID="${VERIFIED_ANCHOR_PID:-0}"
+    elif [[ -n "$MY_ALIAS" ]]; then
       AS_CLAIMED_IDENTITY="${MY_ALIAS}.${MY_ROLE:-$MY_ROLE_RAW}"
       if verify_as_caller_identity "$AS_CLAIMED_IDENTITY" "$EXPLICIT_SESSION"; then
         AS_CALLER_VERIFIED=true
@@ -1680,6 +1831,11 @@ cleanup_fanout_dedup_store() {
 target_family_from_target() {
   local target="$1"
   local target_role
+
+  if is_bridge_target "$target"; then
+    echo "bridge"
+    return 0
+  fi
 
   if is_gate_target "$target"; then
     echo "gate"
@@ -3176,7 +3332,8 @@ flush_all_queues() {
 }
 
 # === ClawGate bridge support ===
-WORKSPACE_CONFIG="$HOME/.config/tproj/workspace.yaml"
+# WORKSPACE_CONFIG is defined earlier, beside the bridge helpers that the
+# --as verifier needs before this section is reached.
 
 # Read bridge config from workspace.yaml (mikefarah/yq v4+)
 gate_bridge_url() {
@@ -3206,9 +3363,13 @@ gate_reply_callback_url() {
   echo "$url"
 }
 
-# Check if target is a gate target (gate or gate:adapter)
+# Check if target is a gate target (gate or gate:adapter). A configured bridge
+# id is its own family, so every gate-only policy (Chi recovery block, LINE
+# private lane, ClawGate dedup exemption) stays off it.
 is_gate_target() {
-  [[ "$1" == "gate" || "$1" == gate:* ]]
+  [[ "$1" == "gate" || "$1" == gate:* ]] || return 1
+  is_bridge_target "$1" && return 1
+  return 0
 }
 
 # Normalize adapter aliases:
@@ -3451,12 +3612,20 @@ gate_dedup_check() {
   msg_hash=$(printf '%s' "$msg_body" | shasum -a 1 | cut -d' ' -f1)
   local dedup_file="${GATE_DEDUP_DIR}/${msg_hash}"
   if [[ -f "$dedup_file" ]]; then
-    local prev_adapter prev_ts now_ts age
-    IFS=: read -r prev_adapter prev_ts < "$dedup_file"
+    local prev_line prev_adapter prev_ts now_ts age
+    # The label is family:adapter and itself contains a colon, so split on the
+    # last one: everything before it is the label, after it the timestamp.
+    IFS= read -r prev_line < "$dedup_file"
+    prev_ts="${prev_line##*:}"
+    prev_adapter="${prev_line%:*}"
+    [[ "$prev_ts" =~ ^[0-9]+$ ]] || prev_ts=0
     now_ts=$(date +%s)
     age=$((now_ts - prev_ts))
-    if [[ $age -lt $GATE_DEDUP_TTL && "$prev_adapter" != "$adapter" ]]; then
-      echo "Error: same message already sent via gate:${prev_adapter} ${age}s ago. Duplicate blocked." >&2
+    # A duplicate is the same body to another lane of the SAME family within
+    # the TTL (one Chi message pushed through two ClawGate lanes). Another
+    # family is another recipient, so it is never a duplicate of this one.
+    if [[ $age -lt $GATE_DEDUP_TTL && "$prev_adapter" != "$adapter" && "${prev_adapter%%:*}" == "${adapter%%:*}" ]]; then
+      echo "Error: same message already sent via ${prev_adapter} ${age}s ago. Duplicate blocked." >&2
       return 1
     fi
   fi
@@ -3518,6 +3687,79 @@ gate_health() {
     return
   }
   echo "online"
+}
+
+# Send to a bridge inbox. The payload carries everything the box needs to
+# answer: who asked, which tmux session and pane to deliver to, where the reply
+# callback lives, and the identity to reply as. JSON is built with jq -- the
+# hand-rolled escaping in send_via_gate collapses newlines and misses control
+# characters, and a Codex prompt needs its line breaks.
+# Usage: send_via_bridge <id> <message>
+send_via_bridge() {
+  local id="$1" msg="$2" url trace_id payload result http_code body _from _hash _outid
+  url=$(bridge_url "$id")
+  if [[ -z "$url" ]]; then
+    echo "Error: bridge '${id}' has no url under gui.bridges in ${WORKSPACE_CONFIG}" >&2
+    return 1
+  fi
+  _from="${MY_ALIAS:-unknown}.${MY_ROLE:-unknown}"
+  trace_id="tproj-msg-${id}-$(date +%s)-$$"
+  payload=$(jq -cn \
+    --arg from "$_from" \
+    --arg to "gate:${id}" \
+    --arg session "$SESSION" \
+    --arg text "$msg" \
+    --arg trace_id "$trace_id" \
+    --arg return_url "$(gate_reply_callback_url)" \
+    --arg reply_as "$(bridge_reply_as "$id")" \
+    '{from:$from,to:$to,session:$session,text:$text,trace_id:$trace_id,return_url:$return_url,reply_as:$reply_as}')
+  _hash=$(sha1_hash "$msg" 2>/dev/null)
+
+  result=$(curl -s -w "\n%{http_code}" -X POST "${url}/v1/inbox" \
+    -H "Content-Type: application/json" \
+    -H "X-Trace-ID: $trace_id" \
+    --connect-timeout 3 \
+    --max-time 10 \
+    -d "$payload" 2>&1) || {
+    echo "Error: bridge '${id}' unreachable at ${url}" >&2
+    if declare -F tt_db_log_message >/dev/null 2>&1; then
+      _outid=$(tt_db_log_message "$SESSION" "$_from" "gate:${id}" "$msg" "$_hash" "" "" "outbound" "error" "${MY_ROLE:-cc}" "bridge" "$trace_id" 2>/dev/null)
+      [[ -n "$_outid" ]] && tt_db_set_delivery_error "$_outid" "curl failed: bridge unreachable at ${url}" 2>/dev/null
+    fi
+    return 1
+  }
+  http_code=$(echo "$result" | tail -1)
+  body=$(echo "$result" | sed '$d')
+  if [[ "$http_code" =~ ^2 ]]; then
+    echo "Accepted by gate:${id} (queued on the box; the reply arrives as [from:$(bridge_reply_as "$id")])" >&2
+    if declare -F tt_db_log_message >/dev/null 2>&1; then
+      _outid=$(tt_db_log_message "$SESSION" "$_from" "gate:${id}" "$msg" "$_hash" "" "" "outbound" "gate" "${MY_ROLE:-cc}" "bridge" "$trace_id" 2>/dev/null)
+      [[ -n "$_outid" ]] && tt_db_set_delivered "$_outid" 2>/dev/null
+    fi
+    return 0
+  fi
+  echo "Error: gate:${id} returned HTTP ${http_code}" >&2
+  [[ -n "$body" ]] && echo "  $body" >&2
+  if declare -F tt_db_log_message >/dev/null 2>&1; then
+    _outid=$(tt_db_log_message "$SESSION" "$_from" "gate:${id}" "$msg" "$_hash" "" "" "outbound" "error" "${MY_ROLE:-cc}" "bridge" "$trace_id" 2>/dev/null)
+    [[ -n "$_outid" ]] && tt_db_set_delivery_error "$_outid" "HTTP ${http_code}: ${body:0:200}" 2>/dev/null
+  fi
+  return 1
+}
+
+# Bridge health: GET /v1/health -> {ok, busy}. Unlike gate_health the HTTP
+# status is inspected, and busy is surfaced, because a box mid-job is the
+# common state and the caller decides whether to queue behind it.
+bridge_health() {
+  local id="$1" url result http_code body busy
+  url=$(bridge_url "$id")
+  [[ -n "$url" ]] || { echo "offline"; return; }
+  result=$(curl -s -w "\n%{http_code}" --connect-timeout 2 --max-time 3 "${url}/v1/health" 2>/dev/null) || { echo "offline"; return; }
+  http_code=$(echo "$result" | tail -1)
+  body=$(echo "$result" | sed '$d')
+  [[ "$http_code" =~ ^2 ]] || { echo "offline"; return; }
+  busy=$(printf '%s' "$body" | jq -r '.busy // false' 2>/dev/null || echo false)
+  if [[ "$busy" == "true" ]]; then echo "online/busy"; else echo "online/idle"; fi
 }
 
 # === Target resolution ===
@@ -4326,6 +4568,31 @@ fi
 exit 0
 }
 
+do_send_bridge() {
+  local bridge_id="${TARGET#gate:}"
+  if [[ "$READ_MODE" == "true" ]]; then
+    echo "Error: --read is not supported for bridge targets" >&2
+    exit 1
+  fi
+  if control_dedup_check "$TARGET" "$MESSAGE"; then
+    :
+  else
+    rc=$?
+    [[ $rc -eq 12 ]] && exit 12
+    echo "Error: control dedup check failed (rc=$rc)" >&2
+    exit "$rc"
+  fi
+  if ! gate_dedup_check "bridge:${bridge_id}" "$MESSAGE"; then
+    exit 1
+  fi
+  if send_via_bridge "$bridge_id" "$MESSAGE"; then
+    gate_dedup_mark "bridge:${bridge_id}" "$MESSAGE"
+    control_dedup_mark "$TARGET" "$MESSAGE" || true
+    exit 0
+  fi
+  exit 1
+}
+
 do_send_gate() {
   if [[ "$READ_MODE" == "true" ]]; then
     echo "Error: --read is not supported for gate targets" >&2
@@ -4382,8 +4649,10 @@ do_send_gate() {
     gate_msg=$(format_line_private_notice "$sender_label" "$private_body")
   fi
 
-  # Gate cross-adapter dedup check
-  if ! gate_dedup_check "$gate_adpt" "$MESSAGE"; then
+  # Gate cross-adapter dedup check. The store holds family:adapter so a
+  # bridge send of the same body is neither mistaken for a retry of this
+  # lane nor blocked as its duplicate.
+  if ! gate_dedup_check "gate:${gate_adpt}" "$MESSAGE"; then
     exit 1
   fi
 
@@ -4393,7 +4662,7 @@ do_send_gate() {
       if echo "$tmux_err" | grep -q "session_busy"; then
         echo "Info: gate:tmux session_busy -> auto-fallback to gate:direct" >&2
         if send_via_gate "direct" "$gate_msg" "$gate_hint"; then
-          gate_dedup_mark "direct" "$MESSAGE"
+          gate_dedup_mark "gate:direct" "$MESSAGE"
           control_dedup_mark "$TARGET" "$MESSAGE" || true
           exit 0
         fi
@@ -4405,17 +4674,21 @@ do_send_gate() {
       exit 1
     }
     echo "$tmux_err" >&2
-    gate_dedup_mark "$gate_adpt" "$MESSAGE"
+    gate_dedup_mark "gate:${gate_adpt}" "$MESSAGE"
     control_dedup_mark "$TARGET" "$MESSAGE" || true
     exit 0
   fi
   if send_via_gate "$gate_adpt" "$gate_msg" "$gate_hint"; then
-    gate_dedup_mark "$gate_adpt" "$MESSAGE"
+    gate_dedup_mark "gate:${gate_adpt}" "$MESSAGE"
     control_dedup_mark "$TARGET" "$MESSAGE" || true
     exit 0
   fi
   exit $?
 }
+
+# Bridge ids are validated once here, in the main shell, after every helper is
+# defined and before any mode that could resolve a gate:<id> target.
+bridge_config_check || exit 1
 
 # === --list mode ===
 if [[ "$LIST_MODE" == "true" ]]; then
@@ -4454,6 +4727,10 @@ if [[ "$LIST_MODE" == "true" ]]; then
   printf "  %-20s  bridge default adapter: %s\n" "gate:default" "$default_adapter"
   printf "  %-20s  bridge session target: %s\n" "gate:session" "$(gate_session_target)"
   printf "  %-20s  %s\n" "" "$gurl"
+  while IFS= read -r bid; do
+    [[ -n "$bid" ]] || continue
+    printf "  %-20s  bridge %s (%s)\n" "gate:${bid}" "$(bridge_url "$bid")" "$(bridge_health "$bid")"
+  done < <(bridge_ids)
 
   exit 0
 fi
@@ -4495,6 +4772,11 @@ print_monitor_diagnostic() {
 if [[ "$STATUS_MODE" == "true" ]]; then
   dlog "status: target=${TARGET:-<none>} session=${SESSION:-?}"
   if [[ -n "$TARGET" ]]; then
+    if is_bridge_target "$TARGET"; then
+      printf "%-20s  %s\n" "$TARGET" "$(bridge_health "${TARGET#gate:}")"
+      print_monitor_diagnostic
+      exit 0
+    fi
     # Gate target: show bridge health instead of pane status
     if is_gate_target "$TARGET"; then
       gstatus=$(gate_health)
@@ -4545,6 +4827,10 @@ if [[ "$STATUS_MODE" == "true" ]]; then
     # Append gate status
     gstatus=$(gate_health)
     printf "%-20s  %s\n" "gate" "$gstatus"
+    while IFS= read -r bid; do
+      [[ -n "$bid" ]] || continue
+      printf "%-20s  %s\n" "gate:${bid}" "$(bridge_health "$bid")"
+    done < <(bridge_ids)
     print_monitor_diagnostic
   fi
   exit 0
@@ -4667,7 +4953,7 @@ if [[ "$READ_MODE" != "true" ]]; then
   # when --as/--role-handoff later prepend a [Task:]/[Role-Handoff:] header.
   # --force bypasses the check; gate targets use their own gate_dedup.
   DEDUP_BODY="$MESSAGE"
-  if [[ "$FORCE_MODE" != "true" ]] && ! is_gate_target "$TARGET"; then
+  if [[ "$FORCE_MODE" != "true" ]] && ! is_gate_target "$TARGET" && ! is_bridge_target "$TARGET"; then
     if ! send_dedup_check "$TARGET" "$DEDUP_BODY"; then
       exit "$DUP_SEND_EXIT"
     fi
@@ -4679,7 +4965,10 @@ if [[ "$POLICY_DRY_RUN" == "1" || "$POLICY_DRY_RUN" == "true" ]]; then
   exit 0
 fi
 
-# === Gate target early-exit (bypasses tmux pane resolution) ===
+# === Bridge / gate target early-exit (bypasses tmux pane resolution) ===
+if is_bridge_target "$TARGET"; then
+  do_send_bridge
+fi
 if is_gate_target "$TARGET"; then
   do_send_gate
 fi

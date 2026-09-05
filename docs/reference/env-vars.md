@@ -17,7 +17,7 @@ tunables).
 | `TPROJ_MSG_QUEUE_DIR` | `tproj-msg:511` | `/tmp/tproj-msg-queue` | Per-target send queue directory. |
 | `TPROJ_MSG_CONTROL_DEDUP_DIR` | `tproj-msg:515` | `/tmp/tproj-msg-control-dedup` | Control-message dedup store (B-D M-D4 fallback). |
 | `TPROJ_MSG_FANOUT_DEDUP_DIR` | `tproj-msg:518` | `/tmp/tproj-msg-fanout-dedup` | Fan-out dedup store (M-D4 fallback). |
-| `TPROJ_MSG_GATE_DEDUP_DIR` | `tproj-msg:2240` | `/tmp/tproj-msg-gate-dedup` | Gate cross-adapter dedup store (M-D4 fallback). |
+| `TPROJ_MSG_GATE_DEDUP_DIR` | `tproj-msg:2240` | `/tmp/tproj-msg-gate-dedup` | Gate cross-adapter dedup store (M-D4 fallback). Records are `family:adapter:epoch` (`gate:direct`, `bridge:bot01`); only same-family adapters dedup against each other. |
 | `TPROJ_MSG_CHI_DISPATCH_LEDGER` | `tproj-msg:521` | `$HOME/.cache/tproj-msg/chi-dispatch.tsv` | Ledger of Chi/gate dispatches for rate control. |
 | `TPROJ_MSG_CHI_DISPATCH_TTL_SEC` | `tproj-msg:522` | `86400` | TTL (seconds) for the Chi dispatch ledger entries. |
 | `TPROJ_MSG_POLICY_DRY_RUN` | `tproj-msg:523` | `false` | When `true`, evaluate send policy without sending. |
@@ -51,6 +51,22 @@ tunables).
 | `TPROJ_AUTOZOOM_W_MAX` (alias `_W_MIN`) | `tproj-pane-autozoom:33` | `120` | Upper bound (cols) on active pane width. |
 | `TPROJ_AUTOZOOM_H_MIN` (alias `_H_MAX`) | `tproj-pane-autozoom:34` | `40` | Minimum active pane height (rows). |
 | `TPROJ_AUTOZOOM_DEBUG` | `tproj-pane-autozoom:38,43` | `0` | When `1`, write `/tmp/tproj-pane-autozoom.log`. |
+
+## Bridge (box-side `extensions/messaging/bridge/tproj-bridge.py`)
+
+These are read by the bridge process on the remote box, not by tproj on the Mac.
+See `docs/reference/bridge-targets.md`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TPROJ_BRIDGE_ID` | `bot01` | Id matching `gui.bridges.<id>`; replies default to `<id>.cdx`. |
+| `TPROJ_BRIDGE_PORT` | `8765` | Listen port. |
+| `TPROJ_BRIDGE_BIND` | `0.0.0.0` | Bind address; source IPs are filtered to loopback + Tailscale CGNAT. |
+| `TPROJ_BRIDGE_REPO` | cwd | Directory passed to `codex exec -C`. |
+| `TPROJ_BRIDGE_CODEX` | `codex` | Codex binary path. |
+| `TPROJ_BRIDGE_TIMEOUT_SEC` | `1800` | Per-job Codex timeout. |
+| `TPROJ_BRIDGE_MAX_REPLY_CHARS` | `6000` | Reply truncation before delivery. |
+| `TPROJ_BRIDGE_MAX_BODY_BYTES` | `262144` | Max accepted `/v1/inbox` body. |
 
 ## tmux inter-process vars (set-environment; not user tunables)
 
