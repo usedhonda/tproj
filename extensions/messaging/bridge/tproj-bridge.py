@@ -22,6 +22,7 @@ import ipaddress
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import tempfile
@@ -43,8 +44,17 @@ TIMEOUT_SEC = int(os.environ.get("TPROJ_BRIDGE_TIMEOUT_SEC", "1800"))
 # effective policy is reported on /v1/health so the Mac side can see what a
 # live bridge actually runs with rather than guess from a service file.
 SANDBOX = os.environ.get("TPROJ_BRIDGE_SANDBOX", "workspace-write")
-NETWORK = os.environ.get("TPROJ_BRIDGE_NETWORK", "0") in ("1", "true", "yes")
-ADD_DIRS = [d for d in os.environ.get("TPROJ_BRIDGE_ADD_DIRS", "").split(":") if d]
+# Extra writable roots. Both "," and ":" separate entries: a box-local variant of
+# this bridge already used commas, and a drop-in replacement that read only
+# colons would have turned its two repos into one wrong path without a word.
+ADD_DIRS = [d for d in re.split(r"[,:]", os.environ.get("TPROJ_BRIDGE_ADD_DIRS", "")) if d]
+# Generic `codex -c key=value` passthrough (comma-separated), honoured for the
+# same reason: the box variant set network access through it. Network access is
+# true if either the simple switch or a passthrough entry says so, and health
+# reports the resolved value, not the spelling.
+CODEX_CONFIG = [c for c in os.environ.get("TPROJ_BRIDGE_CODEX_CONFIG", "").split(",") if c.strip()]
+NETWORK = os.environ.get("TPROJ_BRIDGE_NETWORK", "0") in ("1", "true", "yes") or any(
+    c.replace(" ", "") == "sandbox_workspace_write.network_access=true" for c in CODEX_CONFIG)
 if SANDBOX not in ("read-only", "workspace-write", "danger-full-access"):
     raise SystemExit(f"TPROJ_BRIDGE_SANDBOX must be read-only|workspace-write|danger-full-access, got {SANDBOX!r}")
 MAX_REPLY_CHARS = int(os.environ.get("TPROJ_BRIDGE_MAX_REPLY_CHARS", "6000"))
@@ -92,7 +102,10 @@ def run_codex(prompt: str) -> tuple[bool, str]:
     with tempfile.NamedTemporaryFile("r", suffix=".txt", delete=False) as out:
         out_path = out.name
     cmd = [CODEX, "exec", "-C", REPO, "--skip-git-repo-check", "-s", SANDBOX]
-    if NETWORK and SANDBOX == "workspace-write":
+    for c in CODEX_CONFIG:
+        cmd += ["-c", c.strip()]
+    if NETWORK and SANDBOX == "workspace-write" and not any(
+            c.replace(" ", "") == "sandbox_workspace_write.network_access=true" for c in CODEX_CONFIG):
         cmd += ["-c", "sandbox_workspace_write.network_access=true"]
     for d in ADD_DIRS:
         cmd += ["--add-dir", d]
@@ -200,7 +213,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/health":
             self._send(200, {"ok": True, "id": BRIDGE_ID, "busy": _busy.is_set(), "queued": _jobs.qsize(),
-                             "repo": REPO, "sandbox": SANDBOX, "network": NETWORK, "add_dirs": ADD_DIRS})
+                             "repo": REPO, "sandbox": SANDBOX, "network": NETWORK, "add_dirs": ADD_DIRS,
+                             "codex_config": CODEX_CONFIG})
             return
         self._send(404, {"ok": False, "error": "not found"})
 
@@ -240,7 +254,7 @@ def main() -> int:
     threading.Thread(target=worker, name="codex-worker", daemon=True).start()
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
     log(f"tproj-bridge id={BRIDGE_ID} listening on {BIND}:{PORT} repo={REPO} codex={CODEX} "
-        f"sandbox={SANDBOX} network={NETWORK} add_dirs={ADD_DIRS}")
+        f"sandbox={SANDBOX} network={NETWORK} add_dirs={ADD_DIRS} codex_config={CODEX_CONFIG}")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
