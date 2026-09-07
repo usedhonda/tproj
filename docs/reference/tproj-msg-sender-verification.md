@@ -33,6 +33,22 @@ file:line trace: `oc-general` project journal, task
 
 ## Target resolution and liveness boundary
 
+### Native subagents are not pane peers
+
+Host-internal parent/root IDs are not tmux aliases. Subagents report progress
+and completion through their host collaboration channel, not `tproj-msg`.
+An explicit inter-pane send delegated to a subagent must name its exact
+session and recipient separately. Listing live panes proves availability,
+not task ownership; a missing parent must never be replaced by an unrelated
+listed pane or an alias copied from a skill example.
+
+Process-ancestry sender verification does not establish the identity of a
+subagent's parent thread or its intended recipient. It must not be described
+as such a guarantee. A sender rejection must not be worked around by dropping
+`--as` and retrying under inherited pane identity. The messaging skill defines
+this channel-selection boundary; no new runtime thread-authentication claim
+is introduced here.
+
 Target identity is independently fail-closed from sender identity. For an
 explicit `<alias>.<role>` target, `tproj-msg` requires exactly one live pane in
 the exact `=<session>:dev` window whose alias and normalized role occur on that
