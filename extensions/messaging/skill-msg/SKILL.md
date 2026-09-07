@@ -3,6 +3,7 @@ name: msg
 description: |
   tproj-msg によるAI間通信スキル。
   他の AI ペイン（CC, Cdx, Agent, Chi）にメッセージを送る時に使う。
+  host 内部の subagent -> parent/root の報告には使わない。native collaboration と final response を使う。
 
   以下のような状況・表現で発動:
   - 「XXに送って」「XXに伝えて」「XXに届けて」「XXに連絡して」
@@ -21,7 +22,7 @@ description: |
 
   自律トリガー（ユーザー指示なしで自分から発動）:
   - 他列・他プロジェクトに影響する問題を発見した
-  - 依頼されたタスクが完了した（報告）
+  - ペイン間で依頼されたタスクが完了した（実際の依頼元ペインへの報告のみ）
   - 自力では解決できない問題に遭遇した
   - Chi（ちー姉様）への技術相談・報告が必要
   ※ CC: tproj-msg を素の Bash で叩かず、必ずこの Skill ツールで発動する。
@@ -38,9 +39,18 @@ compression-anchors:
 
 tmux ワークスペース内の他 AI ペイン（CC, Cdx, Agent）と通信するための内部ツール。
 
+## 通信チャネルの境界（宛先選定より先に確認）
+
+- host の spawn_agent 等で起動された内部 subagent は、親への ACK・進捗・DONE を host の native collaboration API または final response で返す。親への報告のためにこの skill を起動しない。
+- `/root`、`root`、parent、agent ID は host 内部の識別子であり、tmux alias ではない。`tproj.cdx` 等の実在ペインへ推測で置き換えない。CLI の実行名や skill の例示に出るプロジェクトは依頼元の証拠にならない。
+- `--list` / `--status` は存在・状態の確認だけであり、依頼元や報告先を決める証拠ではない。依頼元が見つからなくても、一覧の別 alias へ報告先を代替しない。
+- 内部 subagent にペイン間送信そのものが明示委任された場合だけ、Task Packet に指定された exact session/target と正当な sender を使う。親への報告とは別操作として扱う。
+- 認証拒否を受けたら `--as` を削除・別名へ変更して再送しない。誤った sender と target を確認し、native parent へ事実を返す。`--force` / `--allow-relay` は宛先や依頼元の証明にならない。
+- 無関係な ACK・進捗・完了報告を受けた側は、その Task Intent の依頼元と確認できない限り返信せず、ユーザーへ誤着信として報告する。送信元 pane への返信は内部 subagent でなく親へ届くため、二次的な誤配信を起こしうる。質問・相談・依頼への通常の返信義務とは区別する。
+
 ## 使用手順
 
-1. ターゲットを選定（ユーザー指定があればそれを、なければ文脈から最適な相手を選ぶ）
+1. 上記チャネル境界を確認し、ユーザー指定または実際のペイン間依頼元を根拠にターゲットを選定する（内部 parent を推測で alias に変換しない）
 2. **送信前ヘルスチェック（必須）**を実施
 3. 直近の作業コンテキストから**自分の言葉で**メッセージを構築
 4. **Control Safety（必須）**を確認（下記）
@@ -319,7 +329,7 @@ Available targets (tproj-workspace):
 
 | エラー | 原因 | 対処 |
 |-------|------|------|
-| `Target not found: <name>` | ペインが存在しない or タグ未設定 | `tproj-msg --list` で利用可能なターゲットを確認 |
+| `Target not found: <name>` | ペインが存在しない or タグ未設定 | `--list` は候補確認のみ。別 alias へ代替せず native parent またはユーザーへ報告 |
 | `Gate connection failed` | ClawGate bridge が未起動 | `tproj-msg --status gate` で状態確認 |
 | メッセージが届かない（queue 積み） | 相手が busy | `--fire` フラグで強制送信、または `--flush` で queue 配信 |
 | `Session not found` | tmux セッション外で実行 | tproj セッション内から実行すること |
