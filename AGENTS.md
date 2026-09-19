@@ -60,9 +60,9 @@ binary): other launch paths run stale variants and invalidate verification.
 
 ## Protected Contracts
 
-- `AGENTS.md`, `CLAUDE.md`, `.gitignore`: tracked contract files. Runtime
-  startup must never create or modify them (enforced by
-  `extensions/persona/test-project-bootstrap-contract.sh`).
+- `AGENTS.md`, `.gitignore`: tracked contract files. Runtime startup must
+  never create or modify them, and must never create a `CLAUDE.md` (enforced
+  by `extensions/persona/test-project-bootstrap-contract.sh`).
 - `project-bootstrap`, `model-role-router`: tracked symlinks into the sibling
   `general` checkout. Do not materialize or retarget them
   (`install.sh --check` verifies canonical/symlink/installed copies match).
@@ -76,12 +76,14 @@ binary): other launch paths run stale variants and invalidate verification.
 
 ## Runtime Instruction Contract
 
-`AGENTS.md`, `CLAUDE.md`, and `.gitignore` are public, tracked repository files.
-Runtime startup must not create or modify them.
+`AGENTS.md` and `.gitignore` are public, tracked repository files. Claude Code
+and Codex both read `AGENTS.md` directly, so there is no tracked `CLAUDE.md`.
+Runtime startup must not create or modify them, and must not create a
+`CLAUDE.md`.
 
 The ignored local layer is limited to machine- or session-specific artifacts:
 
-- `CLAUDE.local.md`
+- `CLAUDE.local.md` (Claude-only private instructions)
 - `.codex/config.toml`
 - `.local/`
 - `.cc-status-bar.voice.json`
@@ -90,7 +92,7 @@ SessionStart and `project-bootstrap --prime` may update only the local layer.
 Shared instruction initialization or migration requires an explicit
 `project-bootstrap --init-shared` or `project-bootstrap --migrate-shared`
 command. Any bootstrap change must preserve the focused contract test's
-before/after hash guarantee for the three tracked files.
+before/after hash guarantee for the tracked files.
 
 The repository's `project-bootstrap` entrypoint is a tracked symlink to the
 canonical implementation in the sibling `general` checkout. Do not materialize

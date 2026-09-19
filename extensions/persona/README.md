@@ -18,8 +18,8 @@ Each project gets a deterministic persona derived from an MD5 hash of its path. 
 - `.codex/config.toml` managed bootstrap contract (for Codex)
 - `.cc-status-bar.voice.json` (for VOICEVOX TTS, optional)
 
-Runtime bootstrap never creates or modifies tracked `AGENTS.md`, `CLAUDE.md`,
-or `.gitignore`. Shared repository instructions use explicit maintenance modes:
+Runtime bootstrap never creates or modifies tracked `AGENTS.md` or
+`.gitignore`, and never creates a `CLAUDE.md`. Shared repository instructions use explicit maintenance modes:
 
 ```bash
 project-bootstrap --init-shared <project_path>
@@ -27,8 +27,9 @@ project-bootstrap --migrate-shared <project_path>          # dry-run
 project-bootstrap --migrate-shared <project_path> --apply  # apply migration
 ```
 
-`--init-shared` creates a public-safe tracked `AGENTS.md` / `CLAUDE.md` pair
-when missing and records local artifact ignores. `--migrate-shared` removes
+`--init-shared` creates a public-safe tracked `AGENTS.md` when missing (Claude
+Code and Codex both read it directly, so no `CLAUDE.md` is created) and records
+local artifact ignores. `--migrate-shared` removes
 legacy generated blocks or instruction symlinks while preserving user-owned
 content; it is dry-run unless `--apply` is supplied.
 

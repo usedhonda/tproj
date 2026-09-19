@@ -115,4 +115,10 @@ assert_shared_unchanged "$ensure_repo" "$ensure_before"
 [[ -f "$ensure_repo/.codex/config.toml" ]] || fail "voice --ensure did not request local persona config"
 [[ -f "$ensure_repo/.cc-status-bar.voice.json" ]] || fail "voice --ensure did not request local voice artifact"
 
+agents_only_repo="$TMP_ROOT/agents-only-repo"
+mkdir -p "$agents_only_repo"
+printf '# Shared Agent Rule\n' > "$agents_only_repo/AGENTS.md"
+HOME="$TEST_HOME" "$BOOTSTRAP_LINK" --prime "$agents_only_repo" --alias agents-only-fixture >/dev/null
+[[ ! -e "$agents_only_repo/CLAUDE.md" ]] || fail "--prime created a CLAUDE.md in an AGENTS.md-only repo"
+
 echo "PASS: project-bootstrap two-layer and three-tier contract"

@@ -38,14 +38,14 @@ FLASH model へ一度だけ fallback し、FLASH も unavailable なら
 `project-bootstrap` は shared instruction と local runtime artifact を別の
 操作として扱う。
 
-- shared 層: tracked `AGENTS.md` / `CLAUDE.md`。作成は
+- shared 層: tracked `AGENTS.md`（Claude Code も Codex も直接読むので `CLAUDE.md` は作らない）。作成は
   `project-bootstrap --init-shared <repo>`、legacy block や instruction
   symlink の移行は `--migrate-shared <repo>`（dry-run）と `--apply` でのみ行う。
 - local 層: `MEMORY.md` persona block、`.codex/config.toml` persona block、
   `.cc-status-bar.voice.json`。SessionStart、`tproj` startup の `--prime`、
   `voice-identity-sync --ensure` が扱うのはこの層だけ。
-- runtime 経路は tracked `AGENTS.md` / `CLAUDE.md` / `.gitignore` を作成・
-  変更しない。shared 層の初期化や移行を startup の副作用にしない。
+- runtime 経路は tracked `AGENTS.md` / `.gitignore` を作成・変更せず、
+  `CLAUDE.md` も作らない。shared 層の初期化や移行を startup の副作用にしない。
 
 実装の版は general の canonical 実体 ->
 `extensions/persona/project-bootstrap` の tracked symlink ->
