@@ -299,9 +299,16 @@ struct TerminalDockView: View {
             }
             .font(.system(size: 11, weight: .medium))
             .padding(.horizontal, 8)
-            .frame(height: 36)
+            .frame(height: 36, alignment: .bottom)
             .background(GhosttyTheme.current.backgroundLighter.opacity(GhosttyTheme.current.appBackgroundOpacity))
             TerminalHostView(controller: controller, path: path)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(GhosttyTheme.current.cardBorder, lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
         }
         .background(GhosttyTheme.current.background.opacity(GhosttyTheme.current.appBackgroundOpacity))
     }
