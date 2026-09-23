@@ -1766,7 +1766,17 @@ final class AppViewModel: ObservableObject {
     @Published var liveColumns: [LiveColumn] = []
     @Published var selectedAlias: String = ""
     @Published var statusText: String = "Ready"
-    @Published var isBusy: Bool = false
+    @Published var isBusy: Bool = false {
+        didSet {
+            if isBusy && !oldValue { busySince = Date() }
+            if !isBusy, oldValue, let since = busySince {
+                let held = Date().timeIntervalSince(since)
+                if held > 1 { NSLog("[tproj busy] controls disabled for %.1fs", held) }
+                busySince = nil
+            }
+        }
+    }
+    private var busySince: Date?
     @Published var isMIDILearning: Bool = false
     @Published var memoryStatus: MonitorStatus?
     @Published var memoryErrorText: String?

@@ -116,7 +116,20 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
 
     func toggle(projectPath: String, title: String, in mainWindow: NSWindow?) {
         guard FileManager.default.fileExists(atPath: projectPath) else { return }
-        if tabPaths.contains(projectPath) { closeTab(path: projectPath); return }
+        if tabPaths.contains(projectPath) {
+            // A hidden dock keeps its tabs alive; Term brings the tab back instead of
+            // closing it (closing is End). Only a tab already on screen is closed.
+            if visibleProjectPath == projectPath { closeTab(path: projectPath); return }
+            if visibleProjectPath == nil {
+                window = mainWindow ?? NSApp.windows.first(where: { $0.title == "tproj" })
+                sidebarWidth = window?.frame.width ?? sidebarWidth
+                originalOrigin = window?.frame.origin
+                resizeWindow(expanded: true)
+            }
+            visibleProjectPath = projectPath
+            window?.makeKeyAndOrderFront(nil)
+            return
+        }
         guard !closingPaths.contains(projectPath) else { return }
         guard let session = sessions[projectPath] ?? createSession(path: projectPath) else { return }
         sessions[projectPath] = session
