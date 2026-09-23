@@ -1714,6 +1714,16 @@ gpt_image_available() {
     "$GPT_IMAGE_AUTH_FILE" >/dev/null 2>&1
 }
 
+# TPROJ_PANE_BG_REFERENCE_IMAGE applies to every pane. The _FEMALE variant applies only
+# to female personas, so a face reference picked for women never bends a male pane.
+reference_image_for_persona() {
+  if [[ -n "${TPROJ_PANE_BG_REFERENCE_IMAGE:-}" ]]; then
+    printf '%s' "$TPROJ_PANE_BG_REFERENCE_IMAGE"
+  elif [[ "${PERSONA_GENDER_RAW:-}" == "女" ]]; then
+    printf '%s' "${TPROJ_PANE_BG_REFERENCE_IMAGE_FEMALE:-}"
+  fi
+}
+
 request_gpt_image() {
   local prompt="$1"
   local negative_prompt="$2"
@@ -1721,7 +1731,7 @@ request_gpt_image() {
   local error_file="${4:-${response_file}.error.json}"
   python3 - "$prompt" "$negative_prompt" "$response_file" "$error_file" \
     "$GPT_IMAGE_AUTH_FILE" "$GPT_IMAGE_MODEL_NAME" "$REQUEST_TIMEOUT_SECONDS" \
-    "${TPROJ_PANE_BG_REFERENCE_IMAGE:-}" "$GPT_IMAGE_SIZE" <<'PY'
+    "$(reference_image_for_persona)" "$GPT_IMAGE_SIZE" <<'PY'
 import base64
 import json
 import os
@@ -3039,6 +3049,12 @@ generate_background() {
   persona_line="$(apply_era_override "$persona_line" "$era_override")"
   persona_line="$(apply_age_override "$persona_line" "$age_override")"
   set_persona_from_line "$persona_line" "$role"
+  # A house style that draws grown-up allure must never be applied to a teenager, so
+  # TPROJ_PANE_BG_ADULT_ONLY=1 draws a 10代 persona as 20代 unless --age says otherwise.
+  if [[ -z "$age_override" && "${TPROJ_PANE_BG_ADULT_ONLY:-0}" == "1" && "$PERSONA_AGE_RAW" == "10代" ]]; then
+    persona_line="$(apply_age_override "$persona_line" "20代")"
+    set_persona_from_line "$persona_line" "$role"
+  fi
   gender_desc="$(translate_gender "$PERSONA_GENDER_RAW")"
   age_desc="$(translate_age "$PERSONA_AGE_RAW")"
 
