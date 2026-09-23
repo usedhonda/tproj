@@ -9,6 +9,41 @@ private final class TrackedTerminalView: LocalProcessTerminalView {
     var onCommandState: ((Bool, pid_t) -> Void)?
     private var markerBuffer = Data()
 
+    private func handleClipboardShortcut(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else { return false }
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "c":
+            if selectionActive { copy(self) }
+        case "v":
+            paste(self)
+        case "a":
+            selectAll(self)
+        default:
+            return false
+        }
+        return true
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard window?.firstResponder === self else { return super.performKeyEquivalent(with: event) }
+        return handleClipboardShortcut(event) || super.performKeyEquivalent(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        window?.makeFirstResponder(self)
+        let menu = NSMenu()
+        for (title, action) in [
+            ("Copy", #selector(copy(_:))),
+            ("Paste", #selector(paste(_:))),
+            ("Select All", #selector(selectAll(_:)))
+        ] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        return menu
+    }
+
     override func dataReceived(slice: ArraySlice<UInt8>) {
         super.dataReceived(slice: slice)
         markerBuffer.append(contentsOf: slice)
