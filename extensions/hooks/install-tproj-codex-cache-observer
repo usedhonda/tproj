@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Install only the Tproj Codex cache observer hook."""
+from __future__ import annotations
+import argparse, hashlib, json, os, select, shutil, subprocess, tempfile, time, tomllib
+from pathlib import Path
+from typing import Any
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""): digest.update(chunk)
+    return digest.hexdigest()
+
+def load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try: value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc: raise RuntimeError(f"unable to read JSON: {path}: {exc}") from exc
+    except json.JSONDecodeError as exc: raise RuntimeError(f"invalid JSON: {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"JSON root must be an object: {path}")
+    return value
+
+def command_of(entry: Any) -> str:
+    if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list): return ""
+    hooks = entry["hooks"]
+    return str(hooks[0].get("command", "")) if hooks and isinstance(hooks[0], dict) else ""
+
+def observer_commands(home: Path) -> tuple[str, str]:
+    observer = str(home / "bin" / "tproj-codex-cache-observer")
+    return observer + " prompt", observer + " stop"
+
+def merge_observer(document: dict[str, Any], home: Path) -> dict[str, Any]:
+    hooks = document.setdefault("hooks", {})
+    if not isinstance(hooks, dict): raise RuntimeError("Codex hooks document has a non-object hooks field")
+    for event, command in zip(("UserPromptSubmit", "Stop"), observer_commands(home)):
+        entries = hooks.setdefault(event, [])
+        if not isinstance(entries, list): raise RuntimeError(f"Codex hooks event is not an array: {event}")
+        if not any(command_of(entry) == command and entry.get("matcher", "") == "" for entry in entries if isinstance(entry, dict)):
+            entries.append({"hooks": [{"type": "command", "command": command}]})
+    return document
+
+def write_json(path: Path, document: dict[str, Any], dry_run: bool) -> None:
+    rendered = json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+    current = path.read_text(encoding="utf-8") if path.exists() else ""
+    if rendered == current: return
+    if dry_run: print(f"WOULD WRITE {path}"); return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists(): shutil.copy2(path, path.with_name(f"{path.name}.bak.tproj-codex-observer-{int(time.time())}"))
+    with tempfile.NamedTemporaryFile(dir=str(path.parent), prefix=f".{path.name}.", mode="w", encoding="utf-8", delete=False) as handle:
+        handle.write(rendered); temporary = Path(handle.name)
+    os.replace(temporary, path)
+
+def read_response(process: subprocess.Popen[str], request_id: int) -> dict[str, Any]:
+    deadline = time.monotonic() + 8.0
+    assert process.stdout is not None
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([process.stdout], [], [], max(0.0, deadline - time.monotonic()))
+        if not ready: break
+        line = process.stdout.readline()
+        if not line: break
+        try: value = json.loads(line)
+        except json.JSONDecodeError: continue
+        if value.get("id") == request_id:
+            if "error" in value: raise RuntimeError(f"Codex hooks/list failed: {value['error']}")
+            return value
+    raise RuntimeError("Codex app-server hooks/list timed out")
+
+def live_hooks(cwd: Path) -> dict[str, Any]:
+    try:
+        process = subprocess.Popen(["codex", "app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    except OSError as exc: raise RuntimeError(f"unable to start Codex app-server: {exc}") from exc
+    try:
+        assert process.stdin is not None
+        process.stdin.write(json.dumps({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "tproj-codex-observer-installer", "version": "1"}}}) + "\n"); process.stdin.flush(); read_response(process, 1)
+        process.stdin.write(json.dumps({"method": "initialized"}) + "\n")
+        process.stdin.write(json.dumps({"id": 2, "method": "hooks/list", "params": {"cwds": [str(cwd)]}}) + "\n"); process.stdin.flush()
+        return read_response(process, 2)
+    finally:
+        process.terminate()
+        try: process.wait(timeout=2)
+        except subprocess.TimeoutExpired: process.kill()
+
+def observer_metadata(response: dict[str, Any], hooks_path: Path, home: Path) -> list[dict[str, str]]:
+    result = response.get("result", response)
+    if not isinstance(result, dict) or not isinstance(result.get("data"), list): raise RuntimeError("Codex hooks/list returned no hook data")
+    wanted, found, found_commands = set(observer_commands(home)), [], set()
+    for group in result["data"]:
+        if not isinstance(group, dict): continue
+        for hook in group.get("hooks", []):
+            if not isinstance(hook, dict) or str(hook.get("command", "")) not in wanted: continue
+            if Path(str(hook.get("sourcePath", ""))).expanduser() != hooks_path: continue
+            key, current_hash = str(hook.get("key", "")), str(hook.get("currentHash", ""))
+            if not key or not current_hash.startswith("sha256:"): raise RuntimeError("Codex hooks/list returned observer metadata without an exact hash")
+            found.append({"key": key, "trusted_hash": current_hash})
+            found_commands.add(str(hook["command"]))
+    if len({item["key"] for item in found}) != 2 or found_commands != wanted:
+        raise RuntimeError("Codex hooks/list did not return exactly both observer hooks")
+    return found
+
+def update_trust(path: Path, metadata: list[dict[str, str]]) -> None:
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
+    lines = original.splitlines()
+    for item in metadata:
+        header, trusted = f'[hooks.state.{json.dumps(item["key"])}]', f'trusted_hash = {json.dumps(item["trusted_hash"])}'
+        try: start = lines.index(header)
+        except ValueError:
+            if lines and lines[-1]: lines.append("")
+            lines.extend([header, trusted]); continue
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+        slot = next((i for i in range(start + 1, end) if lines[i].startswith("trusted_hash =")), None)
+        if slot is None: lines.insert(start + 1, trusted)
+        else: lines[slot] = trusted
+    rendered = "\n".join(lines) + "\n"
+    if rendered == original: return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists(): shutil.copy2(path, path.with_name(f"{path.name}.bak.tproj-codex-observer-{int(time.time())}"))
+    with tempfile.NamedTemporaryFile(dir=str(path.parent), prefix=f".{path.name}.", mode="w", encoding="utf-8", delete=False) as handle:
+        handle.write(rendered); temporary = Path(handle.name)
+    os.replace(temporary, path)
+
+def install_file(source: Path, target: Path, dry_run: bool) -> None:
+    if not source.is_file(): raise RuntimeError(f"observer source is missing: {source}")
+    if target.is_file() and sha256(source) == sha256(target) and os.access(target, os.X_OK): return
+    if dry_run: print(f"WOULD INSTALL {source} -> {target}"); return
+    target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(source, target); target.chmod(0o755)
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", default=str(Path(__file__).with_name("tproj-codex-cache-observer")))
+    parser.add_argument("--installed", default="~/bin/tproj-codex-cache-observer")
+    parser.add_argument("--codex-hooks", default="~/.codex/hooks.json")
+    parser.add_argument("--codex-config", default="~/.codex/config.toml")
+    parser.add_argument("--trust-response"); parser.add_argument("--dry-run", action="store_true"); parser.add_argument("--check", action="store_true")
+    args = parser.parse_args(); home = Path.home(); source, installed = Path(args.source).expanduser(), Path(args.installed).expanduser(); hooks_path, config_path = Path(args.codex_hooks).expanduser(), Path(args.codex_config).expanduser()
+    response = load_json(Path(args.trust_response).expanduser()) if args.trust_response else None
+    if config_path.exists():
+        try: tomllib.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+            raise RuntimeError(f"invalid Codex config: {config_path}: {exc}") from exc
+    if args.check:
+        if not installed.is_file() or sha256(source) != sha256(installed): raise RuntimeError("installed Codex observer is missing or differs from source")
+        document, commands = load_json(hooks_path), {command_of(entry) for entries in load_json(hooks_path).get("hooks", {}).values() if isinstance(entries, list) for entry in entries}
+        if not set(observer_commands(home)) <= commands: raise RuntimeError("Codex hooks.json is missing an observer command")
+        metadata = observer_metadata(response or live_hooks(Path.cwd()), hooks_path, home); config = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+        for item in metadata:
+            if f'[hooks.state.{json.dumps(item["key"])}]' not in config or f'trusted_hash = {json.dumps(item["trusted_hash"])}' not in config: raise RuntimeError(f"observer trust is stale or missing: {item['key']}")
+        print("OK: Codex cache observer is installed, registered, and trusted"); return 0
+    if not args.dry_run and response is None: live_hooks(Path.cwd())
+    original = hooks_path.read_bytes() if hooks_path.exists() else None
+    install_file(source, installed, args.dry_run); write_json(hooks_path, merge_observer(load_json(hooks_path), home), args.dry_run)
+    if args.dry_run: return 0
+    try: update_trust(config_path, observer_metadata(response or live_hooks(Path.cwd()), hooks_path, home))
+    except Exception:
+        if original is None: hooks_path.unlink(missing_ok=True)
+        else: hooks_path.write_bytes(original)
+        raise
+    print("Installed and trusted only the Tproj Codex cache observer"); return 0
+
+if __name__ == "__main__":
+    try: raise SystemExit(main())
+    except RuntimeError as exc: print(f"error: {exc}", file=__import__("sys").stderr); raise SystemExit(1)

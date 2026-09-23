@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Install only the Tproj Claude cache observer hooks."""
+from __future__ import annotations
+import argparse, hashlib, json, os, shutil, shlex, tempfile, time
+from pathlib import Path
+from typing import Any
+
+FILES = ("tproj-cc-cache-observer", "tproj-cc-poke", "tproj-cc-statusline-tap")
+
+def digest(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""): h.update(chunk)
+    return h.hexdigest()
+
+def load(path: Path) -> dict[str, Any]:
+    if not path.exists(): return {}
+    try: value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc: raise RuntimeError(f"unable to read JSON: {path}: {exc}") from exc
+    except json.JSONDecodeError as exc: raise RuntimeError(f"invalid JSON: {path}: {exc}") from exc
+    if not isinstance(value, dict): raise RuntimeError(f"JSON root is not an object: {path}")
+    return value
+
+def command_of(entry: Any) -> str:
+    return str(entry.get("hooks", [{}])[0].get("command", "")) if isinstance(entry, dict) and isinstance(entry.get("hooks"), list) and entry["hooks"] and isinstance(entry["hooks"][0], dict) else ""
+
+def add(hooks: dict[str, Any], event: str, matcher: str, command: str) -> None:
+    entries = hooks.setdefault(event, [])
+    if not isinstance(entries, list): raise RuntimeError(f"Claude hooks event is not an array: {event}")
+    if any(command_of(e) == command and e.get("matcher", "") == matcher for e in entries if isinstance(e, dict)): return
+    item = {"hooks": [{"type": "command", "command": command}]}
+    if matcher: item["matcher"] = matcher
+    entries.append(item)
+
+def save(path: Path, value: dict[str, Any], dry: bool) -> None:
+    rendered = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    if path.exists() and path.read_text(encoding="utf-8") == rendered: return
+    if dry: print(f"WOULD WRITE {path}"); return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists(): shutil.copy2(path, path.with_name(f"{path.name}.bak.tproj-claude-observer-{int(time.time())}"))
+    with tempfile.NamedTemporaryFile(dir=str(path.parent), mode="w", encoding="utf-8", delete=False) as f:
+        f.write(rendered); temporary = Path(f.name)
+    os.replace(temporary, path)
+
+def install_file(source: Path, target: Path, dry: bool) -> None:
+    if not source.is_file(): raise RuntimeError(f"source is missing: {source}")
+    if target.is_file() and digest(source) == digest(target) and os.access(target, os.X_OK): return
+    if dry: print(f"WOULD INSTALL {source} -> {target}"); return
+    target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(source, target); target.chmod(0o755)
+
+def wrapped(command: str) -> str:
+    prefix = "$HOME/bin/tproj-cc-statusline-tap -- /bin/sh -c "
+    if command.startswith(prefix): return command
+    return prefix + shlex.quote(command)
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--claude-settings", default="~/.claude/settings.json"); p.add_argument("--source-dir", default=str(Path(__file__).parent)); p.add_argument("--bin-dir", default="~/bin")
+    p.add_argument("--wrap-statusline", action="store_true"); p.add_argument("--dry-run", action="store_true"); p.add_argument("--check", action="store_true")
+    a = p.parse_args(); settings, source_dir, bin_dir = Path(a.claude_settings).expanduser(), Path(a.source_dir).expanduser(), Path(a.bin_dir).expanduser(); home = Path.home()
+    if a.check:
+        for name in FILES:
+            target = bin_dir / name
+            if not target.is_file() or digest(source_dir / name) != digest(target): raise RuntimeError(f"installed hook differs: {name}")
+        document = load(settings); hooks = document.get("hooks", {})
+        wanted = {f"$HOME/bin/tproj-cc-cache-observer prompt", f"$HOME/bin/tproj-cc-cache-observer notification", f"$HOME/bin/tproj-cc-cache-observer stop"}
+        commands = {command_of(e) for entries in hooks.values() if isinstance(entries, list) for e in entries if isinstance(e, dict)} if isinstance(hooks, dict) else set()
+        if not wanted <= commands: raise RuntimeError("Claude settings is missing an observer hook")
+        if a.wrap_statusline:
+            status = document.get("statusLine")
+            if not isinstance(status, dict) or not str(status.get("command", "")).startswith("$HOME/bin/tproj-cc-statusline-tap -- /bin/sh -c "):
+                raise RuntimeError("Claude statusLine does not use the cache observer tap")
+        print("OK: Claude cache observer hooks are installed"); return 0
+    document = load(settings); hooks = document.setdefault("hooks", {})
+    if not isinstance(hooks, dict): raise RuntimeError("Claude settings hooks field is not an object")
+    if a.wrap_statusline:
+        status = document.get("statusLine")
+        if not isinstance(status, dict) or not isinstance(status.get("command"), str) or not status["command"]:
+            raise RuntimeError("--wrap-statusline requires an existing statusLine.command")
+    for name in FILES: install_file(source_dir / name, bin_dir / name, a.dry_run)
+    add(hooks, "UserPromptSubmit", "", "$HOME/bin/tproj-cc-cache-observer prompt")
+    add(hooks, "Notification", "idle_prompt", "$HOME/bin/tproj-cc-cache-observer notification")
+    add(hooks, "Stop", "", "$HOME/bin/tproj-cc-cache-observer stop")
+    if a.wrap_statusline:
+        status["command"] = wrapped(status["command"])
+    save(settings, document, a.dry_run)
+    return 0
+
+if __name__ == "__main__":
+    try: raise SystemExit(main())
+    except RuntimeError as exc: print(f"error: {exc}", file=__import__("sys").stderr); raise SystemExit(1)
