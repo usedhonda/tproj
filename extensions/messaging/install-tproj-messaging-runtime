@@ -29,6 +29,7 @@ RUNTIME_FILES = (
     ("extensions/hooks/tproj-completion-guard", "tproj-completion-guard"),
     ("extensions/hooks/tproj-mutation-guard", "tproj-mutation-guard"),
     ("extensions/hooks/tproj-cc-cache-observer", "tproj-cc-cache-observer"),
+    ("extensions/hooks/tproj-cc-statusline-tap", "tproj-cc-statusline-tap"),
 )
 SKILL_SOURCE = Path("extensions/messaging/skill-msg/SKILL.md")
 
@@ -47,6 +48,7 @@ def hook_command_strings(home: Path) -> tuple[set[str], set[str]]:
         "$HOME/bin/tproj-inbox-record",
         "$HOME/bin/tproj-inbox-check",
         "$HOME/bin/tproj-completion-guard",
+        "$HOME/bin/tproj-cc-cache-observer prompt",
     }
     codex = {
         f"{home / 'bin' / 'tproj-mutation-guard'} --platform codex",

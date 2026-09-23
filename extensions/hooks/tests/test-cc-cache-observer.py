@@ -10,9 +10,34 @@ import unittest
 
 
 OBSERVER = Path(__file__).resolve().parents[1] / "tproj-cc-cache-observer"
+TAP = Path(__file__).resolve().parents[1] / "tproj-cc-statusline-tap"
 
 
 class CCCacheObserverTest(unittest.TestCase):
+    def test_statusline_tap_preserves_renderer_output_and_observes_copy(self):
+        with tempfile.TemporaryDirectory() as base:
+            root = Path(base)
+            home_bin = root / "bin"
+            home_bin.mkdir()
+            (home_bin / "tproj-cc-cache-observer").symlink_to(OBSERVER)
+            fake_tmux = home_bin / "tmux"
+            fake_tmux.write_text("#!/bin/sh\nprintf '%s\\n' '%2|/dev/ttys999|0|111|claude-p1|demo|test-session'\n")
+            fake_tmux.chmod(0o700)
+            renderer = home_bin / "renderer"
+            renderer.write_text("#!/bin/sh\ncat\n")
+            renderer.chmod(0o700)
+            payload = json.dumps({"session_id": "tap-session", "prompt_cache": {
+                "warm": True, "expires_at": 2_000_000_001}})
+            env = {**os.environ, "HOME": str(root), "PATH": f"{home_bin}:{os.environ['PATH']}",
+                   "TMUX_PANE": "%2", "TPROJ_CC_CACHE_DIR": str(root / "state")}
+            result = subprocess.run(["python3", str(TAP), "--", str(renderer)],
+                                    input=payload, text=True, capture_output=True, env=env)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, payload)
+            state_files = list((root / "state").glob("*.json"))
+            self.assertEqual(len(state_files), 1)
+            self.assertEqual(json.loads(state_files[0].read_text())["cache_expires_at"], 2_000_000_001)
+
     def test_statusline_prompt_and_keepalive_are_scoped_and_private(self):
         with tempfile.TemporaryDirectory() as base:
             root = Path(base)

@@ -17,6 +17,10 @@ failure must not block a Claude turn.
 Before this state can authorize any Poke, the caller must independently recheck
 the live session/pane binding, freshness, idle state, and empty composer at
 send time. Cache observation alone is never proof that sending is safe.
-Status-line and prompt hook wiring and the GUI consumer are separate
-integration steps; until both are installed and validated, existing
+`tproj-cc-statusline-tap -- <renderer> [args...]` forwards the exact status-line
+input and renderer output while observing a copy. The hook installer registers
+the `prompt` event on Claude only. The machine's `statusLine.command` must
+explicitly wrap its existing renderer with this tap; the installer does not
+replace it silently. The GUI consumer is a separate integration step; until
+that is installed and validated, existing
 CCStatusBar-backed keep-warm remains unchanged.

@@ -54,7 +54,7 @@ def sha256(path: Path) -> str:
 
 
 def verify_installed_hooks(canonical: Path, installed: Path) -> None:
-    for name in ("tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard", "tproj-mutation-guard"):
+    for name in ("tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard", "tproj-mutation-guard", "tproj-cc-cache-observer"):
         source = canonical / name
         deployed = installed / name
         if not source.is_file() or not deployed.is_file() or sha256(source) != sha256(deployed):
@@ -88,6 +88,7 @@ def merge(document: dict[str, Any], platform: str) -> dict[str, Any]:
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec|functions.exec_command", f"{home}/tproj-inbox-record")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec|functions.exec_command", f"{home}/tproj-completion-guard --event posttool")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check")
+        ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-cc-cache-observer prompt")
         ensure_entry(hooks, "Stop", "", f"{home}/tproj-completion-guard")
     else:
         home = str(Path("~/bin").expanduser())
