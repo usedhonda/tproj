@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
+from datetime import datetime
 
 
 MAX_INPUT_BYTES = 1_048_576
@@ -103,6 +104,45 @@ def cache_sample(payload):
     return sample or None
 
 
+def transcript_token_sample(payload):
+    """Read only the numeric latest sample from this hook's exact session file."""
+    raw_path = payload.get("transcript_path")
+    session_id = payload.get("session_id")
+    if not isinstance(raw_path, str) or not isinstance(session_id, str):
+        return None
+    try:
+        path = Path(raw_path).resolve(strict=True)
+        sessions = (Path.home() / ".codex/sessions").resolve(strict=True)
+        if not path.is_relative_to(sessions) or path.suffix != ".jsonl" or not path.is_file():
+            return None
+        with path.open("rb") as stream:
+            first = json.loads(stream.readline(65_537))
+            if first.get("type") != "session_meta" or first.get("payload", {}).get("id") != session_id:
+                return None
+            size = stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, size - 65_536))
+            tail = stream.read(65_536)
+        for raw in reversed(tail.splitlines()):
+            try:
+                row = json.loads(raw)
+                if row.get("type") != "event_msg" or row.get("payload", {}).get("type") != "token_count":
+                    continue
+                usage = row["payload"]["info"]["last_token_usage"]
+                input_tokens = usage["input_tokens"]
+                cached_tokens = usage["cached_input_tokens"]
+                timestamp = row["timestamp"]
+                datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                if (type(input_tokens) is int and type(cached_tokens) is int
+                        and 0 <= cached_tokens <= input_tokens):
+                    return {"at": timestamp, "input_tokens": input_tokens,
+                            "cached_input_tokens": cached_tokens}
+            except (KeyError, TypeError, ValueError, AttributeError):
+                continue
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
 def record(event, payload, identity):
     session_id = payload.get("session_id")
     if not isinstance(session_id, str) or not 0 < len(session_id) <= 128:
@@ -130,6 +170,7 @@ def record(event, payload, identity):
         sample = cache_sample(payload)
         state["cache_sample"] = sample
         state["sample_available"] = sample is not None
+        state["last_token_sample"] = transcript_token_sample(payload)
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root,
                                          prefix=".codex-cache-", delete=False) as tmp:
             os.chmod(tmp.name, 0o600)
