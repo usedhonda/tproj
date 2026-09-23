@@ -4969,6 +4969,9 @@ struct ContentView: View {
                 inactiveProjectRow(project)
             }
         }
+        // Overlay scrollbars occupy the trailing edge when this list scrolls.
+        // Keep the row's Drop button outside that hit-test strip.
+        .padding(.trailing, 14)
     }
 
     @ViewBuilder
