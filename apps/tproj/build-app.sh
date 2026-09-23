@@ -12,7 +12,7 @@ APP_DIR="$DIST_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RES_DIR="$CONTENTS_DIR/Resources"
-BIN_SRC="$ROOT_DIR/.build/apple/Products/Release/tproj"
+BIN_SRC=""
 BIN_DST="$MACOS_DIR/$APP_NAME"
 ICON_SRC="$ROOT_DIR/Resources/AppIcon.icns"
 RUNTIME_SEED_NAME="tproj-runtime-seed.tar.gz"
@@ -21,6 +21,7 @@ mkdir -p "$DIST_DIR"
 
 pushd "$ROOT_DIR" >/dev/null
 swift build -c release --arch arm64 --arch x86_64
+BIN_SRC="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/tproj"
 popd >/dev/null
 
 rm -rf "$APP_DIR"

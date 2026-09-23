@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_BUNDLE="$SCRIPT_DIR/dist/tproj.app"
-DEBUG_BIN="$SCRIPT_DIR/.build/arm64-apple-macosx/debug/tproj"
+DEBUG_BIN=""
 MODE="debug"
 TPROJ_GUI_PIDFILE="${TMPDIR:-/tmp}/tproj-gui.pid"
 TPROJ_GUI_LOG="${TMPDIR:-/tmp}/tproj-gui.log"
@@ -17,6 +17,7 @@ if [[ "$MODE" == "debug" ]]; then
   echo "==> Build app (debug)"
   pushd "$SCRIPT_DIR" >/dev/null
   swift build
+  DEBUG_BIN="$(swift build --show-bin-path)/tproj"
   popd >/dev/null
 else
   echo "==> Build app (release)"
