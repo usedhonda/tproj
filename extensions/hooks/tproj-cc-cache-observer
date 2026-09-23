@@ -91,9 +91,13 @@ def record(event, payload, identity):
             state["recache_tokens_if_cold"] = tokens if type(tokens) is int and tokens >= 0 else None
         elif event == "prompt":
             prompt = payload.get("prompt")
-            if not isinstance(prompt, str) or not prompt.strip() or prompt.lstrip().startswith(KEEP_ALIVE_MARKER):
+            if not isinstance(prompt, str) or not prompt.strip():
                 return
-            state["last_user_prompt_at"] = int(time.time())
+            state["turn_state"] = "running"
+            if not prompt.lstrip().startswith(KEEP_ALIVE_MARKER):
+                state["last_user_prompt_at"] = int(time.time())
+        elif event == "stop":
+            state["turn_state"] = "idle"
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root,
                                          prefix=".cc-cache-", delete=False) as tmp:
             os.chmod(tmp.name, 0o600)
@@ -108,7 +112,7 @@ def record(event, payload, identity):
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ("statusline", "prompt"):
+    if len(sys.argv) != 2 or sys.argv[1] not in ("statusline", "prompt", "stop"):
         return 0
     identity = pane_identity()
     if identity is None:

@@ -74,6 +74,7 @@ class CCCacheObserverTest(unittest.TestCase):
             self.assertEqual(state["cache_expires_at"], 2_000_000_000)
             self.assertEqual(state["last_user_prompt_at"] > 0, True)
             self.assertEqual(state["pane_id"], "%2")
+            self.assertEqual(state["turn_state"], "running")
             self.assertEqual(state["owner_session"], "test-session")
             self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
             self.assertEqual(state_dir.stat().st_mode & 0o777, 0o700)
@@ -83,12 +84,20 @@ class CCCacheObserverTest(unittest.TestCase):
             previous_prompt_at = state["last_user_prompt_at"]
             observe("prompt", {"session_id": "test-session-id", "prompt": "[keep-alive] ok"})
             self.assertEqual(json.loads(files[0].read_text())["last_user_prompt_at"], previous_prompt_at)
+            observe("stop", {"session_id": "test-session-id"})
+            self.assertEqual(json.loads(files[0].read_text())["turn_state"], "idle")
             observe("statusline", {"session_id": "test-session-id", "prompt_cache": {"warm": False}})
             self.assertIsNone(json.loads(files[0].read_text())["cache_expires_at"])
 
+            observe("statusline", {"session_id": "new-session", "prompt_cache": {"warm": True,
+                    "expires_at": 2_000_000_002}})
+            newer = [file for file in state_dir.glob("*.json") if file != files[0]]
+            self.assertEqual(len(newer), 1)
+            self.assertNotIn("turn_state", json.loads(newer[0].read_text()))
+
             observe("prompt", {"session_id": "another-session", "prompt": "ignored"},
                     {**env, "TMUX_PANE": ""})
-            self.assertEqual(len(list(state_dir.glob("*.json"))), 1)
+            self.assertEqual(len(list(state_dir.glob("*.json"))), 2)
 
 
 if __name__ == "__main__":

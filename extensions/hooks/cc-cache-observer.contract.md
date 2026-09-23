@@ -1,8 +1,8 @@
 # Claude cache observation for Tproj
 
 `tproj-cc-cache-observer` is a fail-open, Tproj-owned recorder for Claude Code's
-`statusLine` input and `UserPromptSubmit` hook input. It does not call CCStatusBar.
-Invoke it as `statusline` with the status-line JSON or `prompt` with the hook
+`statusLine` input and `UserPromptSubmit`/`Stop` hook input. It does not call
+CCStatusBar. Invoke it as `statusline`, `prompt`, or `stop` with the respective
 JSON on stdin. This recorder is an observation primitive, not a Poke sender.
 
 It accepts only a non-dead tagged tmux Claude pane resolved with explicit
@@ -11,7 +11,9 @@ It accepts only a non-dead tagged tmux Claude pane resolved with explicit
 The file contains the session and pane binding, cache expiry, recache-token
 estimate, and latest real user prompt time. Prompt text, transcript paths,
 and raw status-line payloads are never persisted. A `[keep-alive]` prompt
-does not extend the user window. Missing identity, malformed input, or I/O
+does not extend the user window, but does mark the turn running. `Stop` marks
+the exact session idle. A new session does not inherit an old idle state.
+Missing identity, malformed input, or I/O
 failure must not block a Claude turn.
 
 Before this state can authorize any Poke, the caller must independently recheck
