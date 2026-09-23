@@ -1137,6 +1137,7 @@ struct WorkspaceProject: Identifiable {
     var host: String
     var alias: String
     var enabled: Bool
+    var keepWarmHours: Int = 0
     var lastActiveAt: Int = 0
     var sourceOrder: Int = 0
 
@@ -1768,6 +1769,13 @@ final class AppViewModel: ObservableObject {
     // `model-role-router mode --json`, which owns `<project>/.local/role-mode.json`.
     @Published var roleModeStatuses: [String: RoleModeStatus] = [:]
     @Published var weeklyPaceSnapshots: [String: WeeklyPaceSnapshot] = [:]
+    @Published var keepWarmSessionsByColumn: [Int: KeepWarmSession] = [:]
+    @Published var keepWarmOutcomesByColumn: [Int: KeepWarmPokeOutcome] = [:]
+
+    struct KeepWarmPokeOutcome {
+        let at: Date
+        let result: String
+    }
 
     enum SessionAction {
         case stop
@@ -1787,6 +1795,8 @@ final class AppViewModel: ObservableObject {
     private var memoryPollTask: Task<Void, Never>?
     private var roleModePollTask: Task<Void, Never>?
     private var weeklyPacePollTask: Task<Void, Never>?
+    private var keepWarmPollTask: Task<Void, Never>?
+    private var keepWarmAttemptedExpiryByTTY: [String: Date] = [:]
     private var workspaceWatcher: WorkspaceYamlWatcher?
 
     private enum FableCacheKey {
@@ -2186,6 +2196,7 @@ final class AppViewModel: ObservableObject {
         memoryPollTask?.cancel()
         roleModePollTask?.cancel()
         weeklyPacePollTask?.cancel()
+        keepWarmPollTask?.cancel()
         workspaceWatcher?.cancel()
         midiActivator?.stop()
         startupRetryTask?.cancel()
@@ -2197,6 +2208,7 @@ final class AppViewModel: ObservableObject {
 
         loadWorkspaceProjects()
         await loadLiveColumnsAsync()
+        startKeepWarmPolling()
         normalizeSelection()
         await loadRoleModes()
         await refreshWeeklyPaceSnapshots()
@@ -2255,6 +2267,18 @@ final class AppViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 300_000_000_000)
                 if Task.isCancelled { return }
                 await self?.refreshWeeklyPaceSnapshots()
+            }
+        }
+    }
+
+    private func startKeepWarmPolling() {
+        guard keepWarmPollTask == nil else { return }
+        keepWarmPollTask = Task { [weak self] in
+            await self?.refreshKeepWarm()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                if Task.isCancelled { return }
+                await self?.refreshKeepWarm()
             }
         }
     }
@@ -3612,7 +3636,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let query = ".projects[]? | [(.path // \"\"),(.type // \"local\"),(.host // \"\"),(.alias // \"\"),((.enabled // true)|tostring),((.lastActiveAt // 0)|tostring)] | @tsv"
+        let query = ".projects[]? | [(.path // \"\"),(.type // \"local\"),(.host // \"\"),(.alias // \"\"),((.enabled // true)|tostring),((.lastActiveAt // 0)|tostring),((.keep_warm_hours // 0)|tostring)] | @tsv"
         let result = runCommand("/usr/bin/env", ["yq", "-r", query, url.path])
 
         guard result.exitCode == 0 else {
@@ -3638,6 +3662,8 @@ final class AppViewModel: ObservableObject {
             let enabledRaw = parts[4].lowercased()
             let enabled = enabledRaw == "true"
             let lastActiveAt = parts.count > 5 ? (Int(parts[5]) ?? 0) : 0
+            let parsedHours = parts.count > 6 ? (Int(parts[6]) ?? 0) : 0
+            let keepWarmHours = [1, 3, 6, 12].contains(parsedHours) ? parsedHours : 0
 
             parsed.append(
                 WorkspaceProject(
@@ -3646,6 +3672,7 @@ final class AppViewModel: ObservableObject {
                     host: parts[2],
                     alias: parts[3],
                     enabled: enabled,
+                    keepWarmHours: keepWarmHours,
                     lastActiveAt: lastActiveAt,
                     sourceOrder: sourceOrder
                 )
@@ -3657,6 +3684,141 @@ final class AppViewModel: ObservableObject {
                 return lhs.lastActiveAt > rhs.lastActiveAt
             }
             return lhs.effectiveAlias.localizedCaseInsensitiveCompare(rhs.effectiveAlias) == .orderedAscending
+        }
+    }
+
+    func keepWarmHours(forProjectPath path: String) -> Int {
+        workspaceProjects.first { normalizedProjectKey($0.path) == normalizedProjectKey(path) }?.keepWarmHours ?? 0
+    }
+
+    func setKeepWarmHours(_ hours: Int, forProjectPath path: String) async {
+        guard [0, 1, 3, 6, 12].contains(hours), !path.isEmpty else { return }
+        let key = normalizedProjectKey(path)
+        guard let index = workspaceProjects.firstIndex(where: { normalizedProjectKey($0.path) == key && $0.type != "remote" }) else { return }
+        let previous = workspaceProjects
+        workspaceProjects[index].keepWarmHours = hours
+        if let error = persistWorkspaceProjects(workspaceProjects, createIfMissing: false) {
+            workspaceProjects = previous
+            statusText = error
+            return
+        }
+        loadWorkspaceProjects()
+        for column in liveColumns where normalizedProjectKey(column.projectPath) == key {
+            keepWarmOutcomesByColumn[column.column] = nil
+        }
+        await refreshKeepWarm()
+    }
+
+    private struct KeepWarmCacheResponse: Decodable {
+        let sessions: [KeepWarmSession]
+    }
+
+    private struct KeepWarmPokeResponse: Decodable {
+        let result: String
+        let reason: String?
+    }
+
+    private func keepWarmAPIBaseURL() -> URL? {
+        let path = "\(NSHomeDirectory())/Library/Application Support/CCStatusBar/keepwarm.json"
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let state = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let port = state["api_port"] as? Int,
+              (1...65535).contains(port) else { return nil }
+        return URL(string: "http://127.0.0.1:\(port)")
+    }
+
+    private func refreshKeepWarm() async {
+        guard let baseURL = keepWarmAPIBaseURL() else {
+            keepWarmSessionsByColumn = [:]
+            return
+        }
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/cache"))
+        request.timeoutInterval = 3
+        let response: KeepWarmCacheResponse
+        do {
+            let (data, urlResponse) = try await URLSession.shared.data(for: request)
+            guard (urlResponse as? HTTPURLResponse)?.statusCode == 200 else {
+                keepWarmSessionsByColumn = [:]
+                NSLog("[tproj keep-warm] cache endpoint returned non-200")
+                return
+            }
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .secondsSince1970
+            response = try decoder.decode(KeepWarmCacheResponse.self, from: data)
+        } catch {
+            keepWarmSessionsByColumn = [:]
+            NSLog("[tproj keep-warm] cache fetch failed: \(error.localizedDescription)")
+            return
+        }
+
+        // Bind each API tty to exactly one live local Claude pane. Neither an
+        // ambiguous tty nor a stale/dead pane is allowed to choose a column.
+        let paneResult = await runCommandAsync("/usr/bin/env", [
+            "tmux", "list-panes", "-t", "=\(TmuxTargets.devWindow)",
+            "-F", "#{pane_id}|#{pane_tty}|#{@role}|#{pane_dead}"
+        ])
+        guard paneResult.exitCode == 0 else {
+            keepWarmSessionsByColumn = [:]
+            NSLog("[tproj keep-warm] tmux pane lookup failed")
+            return
+        }
+        var columnsByTTY: [String: Set<Int>] = [:]
+        for line in paneResult.stdout.split(separator: "\n") {
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 4, parts[2].hasPrefix("claude-p"), parts[3] == "0", !parts[1].isEmpty else { continue }
+            for column in liveColumns where column.hostLabel == "local" && column.claudePaneIDs.contains(parts[0]) {
+                columnsByTTY[parts[1], default: []].insert(column.column)
+            }
+        }
+        let sessionsByTTY = Dictionary(grouping: response.sessions.compactMap { session -> (String, KeepWarmSession)? in
+            guard let tty = session.tty, !tty.isEmpty else { return nil }
+            return (tty, session)
+        }, by: { $0.0 })
+        var mapped: [Int: KeepWarmSession] = [:]
+        for (tty, columns) in columnsByTTY where columns.count == 1 {
+            guard let matches = sessionsByTTY[tty], matches.count == 1,
+                  let column = columns.first else { continue }
+            mapped[column] = matches[0].1
+        }
+        if mapped.isEmpty, !response.sessions.isEmpty {
+            NSLog("[tproj keep-warm] no unique live Claude tty matches")
+        }
+        keepWarmSessionsByColumn = mapped
+
+        for column in liveColumns where column.hostLabel == "local" {
+            guard let session = mapped[column.column], let tty = session.tty,
+                  let expiry = session.cacheExpiresAt else { continue }
+            let hours = keepWarmHours(forProjectPath: column.projectPath)
+            guard KeepWarmDecision.shouldPoke(session: session, now: Date(), hours: hours),
+                  keepWarmAttemptedExpiryByTTY[tty] != expiry else { continue }
+            await sendKeepWarmPoke(tty: tty, expiry: expiry, column: column.column, baseURL: baseURL)
+        }
+    }
+
+    private func sendKeepWarmPoke(tty: String, expiry: Date, column: Int, baseURL: URL) async {
+        // Reserve this expiry before awaiting HTTP so a concurrent menu refresh
+        // cannot issue the same poke twice. Transport errors release it for retry.
+        keepWarmAttemptedExpiryByTTY[tty] = expiry
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/poke"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 3
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["tty": tty])
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let response = try JSONDecoder().decode(KeepWarmPokeResponse.self, from: data)
+            if response.result == "sent" || response.result == "skipped" {
+                let detail = response.result == "sent" ? "sent" : "skipped: \(response.reason ?? "unknown")"
+                keepWarmOutcomesByColumn[column] = KeepWarmPokeOutcome(at: Date(), result: detail)
+            } else {
+                keepWarmAttemptedExpiryByTTY[tty] = nil
+                keepWarmOutcomesByColumn[column] = KeepWarmPokeOutcome(at: Date(), result: "error")
+                NSLog("[tproj keep-warm] unexpected poke response")
+            }
+        } catch {
+            keepWarmAttemptedExpiryByTTY[tty] = nil
+            keepWarmOutcomesByColumn[column] = KeepWarmPokeOutcome(at: Date(), result: "error")
+            NSLog("[tproj keep-warm] poke request failed")
         }
     }
 
@@ -4218,6 +4380,9 @@ final class AppViewModel: ObservableObject {
             // enabled: only write when false (true is default)
             if !project.enabled {
                 lines.append("    enabled: false")
+            }
+            if [1, 3, 6, 12].contains(project.keepWarmHours) {
+                lines.append("    keep_warm_hours: \(project.keepWarmHours)")
             }
             if project.lastActiveAt > 0 {
                 lines.append("    lastActiveAt: \(project.lastActiveAt)")
@@ -5035,6 +5200,7 @@ struct ContentView: View {
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
                     .lineLimit(1)
                 roleModeBadge(projectPath: column.projectPath, isLocal: column.hostLabel == "local")
+                cachePill(column)
                 Spacer()
             }
 
@@ -5583,6 +5749,66 @@ struct ContentView: View {
                 .opacity(0.5)
                 .help("role mode: collab (remote)")
         }
+    }
+
+    @ViewBuilder
+    private func cachePill(_ column: LiveColumn) -> some View {
+        if column.hostLabel == "local", !column.claudePaneIDs.isEmpty {
+            let hours = vm.keepWarmHours(forProjectPath: column.projectPath)
+            let session = vm.keepWarmSessionsByColumn[column.column]
+            let outcome = vm.keepWarmOutcomesByColumn[column.column]
+            let remaining = session?.cacheExpiresAt?.timeIntervalSinceNow
+            let unavailable = hours > 0 && (session?.lastUserPromptAt == nil || remaining == nil)
+            let windowOver = hours > 0 && session?.lastUserPromptAt.map {
+                Date().timeIntervalSince($0) >= Double(hours * 3600)
+            } == true
+            let issue = outcome.map { $0.result != "sent" } ?? false
+            let cacheText: String = {
+                if unavailable { return "--" }
+                if windowOver { return "done" }
+                guard let remaining else { return "--" }
+                if remaining <= 0 { return "cold" }
+                return "\(Int(ceil(remaining / 60)))m"
+            }()
+            let label = hours == 0 ? "◌ \(cacheText)" : "♨ \(hours)h · \(cacheText)\(issue ? " !" : "")"
+            let tint: Color = {
+                if hours == 0 || windowOver || unavailable { return GhosttyTheme.current.textTertiary }
+                if issue || (remaining ?? .infinity) < 600 { return GhosttyTheme.current.accentYellow }
+                return GhosttyTheme.current.accentGreen
+            }()
+
+            Menu {
+                Section("Keep warm") {
+                    ForEach([0, 1, 3, 6, 12], id: \.self) { choice in
+                        Button {
+                            Task { await vm.setKeepWarmHours(choice, forProjectPath: column.projectPath) }
+                        } label: {
+                            Label(choice == 0 ? "Off" : "\(choice)h", systemImage: choice == hours ? "checkmark" : "circle")
+                        }
+                    }
+                }
+                Button("Recache if cold: ~440k tok") {}.disabled(true)
+            } label: {
+                pill(label, tint: tint).lineLimit(1)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(keepWarmTooltip(session: session, hours: hours, outcome: outcome))
+        }
+    }
+
+    private func keepWarmTooltip(session: KeepWarmSession?, hours: Int, outcome: AppViewModel.KeepWarmPokeOutcome?) -> String {
+        func time(_ date: Date?) -> String {
+            guard let date else { return "--" }
+            return DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
+        }
+        let until = hours > 0 ? session?.lastUserPromptAt?.addingTimeInterval(Double(hours * 3600)) : nil
+        return [
+            "Cache expires: \(time(session?.cacheExpiresAt))",
+            "Last user prompt: \(time(session?.lastUserPromptAt))",
+            "Last poke: \(time(outcome?.at)) \(outcome?.result ?? "--")",
+            "Keep warm until: \(time(until))"
+        ].joined(separator: "\n")
     }
 
     // Accent color for a role mode: green (collab, the healthy everyday state),
