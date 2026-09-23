@@ -42,6 +42,7 @@ public enum KeepWarmDecision {
         let idle = now.timeIntervalSince(lastPrompt)
         return remaining > 0 && remaining <= 90 && idle >= 0 && idle < Double(hours * 3600)
     }
+
 }
 
 public struct ClaudeCacheObservation: Decodable, Sendable {
@@ -85,5 +86,57 @@ public struct ClaudeCacheObservation: Decodable, Sendable {
         KeepWarmSession(tty: tty, cacheExpiresAt: cacheExpiresAt,
                         lastUserPromptAt: lastUserPromptAt, pokeable: false,
                         recacheTokensIfCold: recacheTokensIfCold)
+    }
+}
+
+public struct CodexTokenSample: Decodable, Sendable, Equatable {
+    public let at: String?
+    public let inputTokens: Int
+    public let cachedInputTokens: Int
+
+    enum CodingKeys: String, CodingKey {
+        case at
+        case inputTokens = "input_tokens"
+        case cachedInputTokens = "cached_input_tokens"
+    }
+
+    public init(at: String?, inputTokens: Int, cachedInputTokens: Int) {
+        self.at = at
+        self.inputTokens = inputTokens
+        self.cachedInputTokens = cachedInputTokens
+    }
+}
+
+/// Read-only diagnostic state written by the local Codex cache observer.
+/// It is not an expiry signal, human-turn signal, or Poke authorization.
+public struct CodexCacheObservation: Decodable, Sendable {
+    public let version: Int
+    public let paneID: String
+    public let panePID: Int
+    public let role: String
+    public let observedAt: Date
+    public let lastTokenSample: CodexTokenSample?
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case paneID = "pane_id"
+        case panePID = "pane_pid"
+        case role
+        case observedAt = "observed_at"
+        case lastTokenSample = "last_token_sample"
+    }
+
+    public static func decode(_ data: Data) throws -> Self {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        return try decoder.decode(Self.self, from: data)
+    }
+
+    public func matches(paneID: String, panePID: Int, role: String, now: Date) -> Bool {
+        version == 1 && !self.paneID.isEmpty && self.paneID == paneID &&
+        self.panePID == panePID && self.role == role && role.hasPrefix("codex-p") &&
+        observedAt <= now && now.timeIntervalSince(observedAt) <= 300 &&
+        (lastTokenSample.map { $0.inputTokens >= 0 && $0.cachedInputTokens >= 0 &&
+            $0.cachedInputTokens <= $0.inputTokens } ?? true)
     }
 }

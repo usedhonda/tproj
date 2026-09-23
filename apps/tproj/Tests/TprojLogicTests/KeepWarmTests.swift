@@ -57,4 +57,21 @@ final class KeepWarmTests: XCTestCase {
             XCTAssertTrue(KeepWarmDecision.shouldPoke(session: session(idle: Double(hours * 3600 - 1)), now: now, hours: hours))
         }
     }
+
+    func testCodexObservationBindsExactLivePaneAndExposesDiagnosticSampleOnly() throws {
+        let data = Data("""
+        {"version":1,"pane_id":"%21","pane_pid":321,"role":"codex-p2",
+        "observed_at":1800000000,"last_token_sample":{"at":"2026-09-24T02:00:00Z",
+        "input_tokens":12000,"cached_input_tokens":9000}}
+        """.utf8)
+        let observation = try CodexCacheObservation.decode(data)
+        let now = Date(timeIntervalSince1970: 1_800_000_001)
+
+        XCTAssertTrue(observation.matches(paneID: "%21", panePID: 321, role: "codex-p2", now: now))
+        XCTAssertFalse(observation.matches(paneID: "%22", panePID: 321, role: "codex-p2", now: now))
+        XCTAssertFalse(observation.matches(paneID: "%21", panePID: 322, role: "codex-p2", now: now))
+        XCTAssertFalse(observation.matches(paneID: "%21", panePID: 321, role: "codex-p3", now: now))
+        XCTAssertEqual(observation.lastTokenSample?.inputTokens, 12_000)
+        XCTAssertEqual(observation.lastTokenSample?.cachedInputTokens, 9_000)
+    }
 }

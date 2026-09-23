@@ -1781,6 +1781,8 @@ final class AppViewModel: ObservableObject {
     @Published var ccSessionSnapshot: WeeklyPaceSnapshot?
     @Published var keepWarmSessionsByColumn: [Int: KeepWarmSession] = [:]
     @Published var keepWarmOutcomesByColumn: [Int: KeepWarmPokeOutcome] = [:]
+    @Published var claudeCacheObservationsByColumn: [Int: ClaudeCacheObservation] = [:]
+    @Published var codexCacheObservationsByColumn: [Int: CodexCacheObservation] = [:]
 
     struct KeepWarmPokeOutcome {
         let at: Date
@@ -3815,6 +3817,8 @@ final class AppViewModel: ObservableObject {
         ])
         guard paneResult.exitCode == 0 else {
             keepWarmSessionsByColumn = [:]
+            claudeCacheObservationsByColumn = [:]
+            codexCacheObservationsByColumn = [:]
             return
         }
         let directory = URL(fileURLWithPath: NSHomeDirectory())
@@ -3828,6 +3832,7 @@ final class AppViewModel: ObservableObject {
         }
         let now = Date()
         var candidates: [Int: [KeepWarmSession]] = [:]
+        var claudeObservationCandidates: [Int: [ClaudeCacheObservation]] = [:]
         for line in paneResult.stdout.split(separator: "\n") {
             let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
             guard parts.count == 7, parts[2] == "0", let pid = Int(parts[3]),
@@ -3842,9 +3847,43 @@ final class AppViewModel: ObservableObject {
             }
             guard matches.count == 1 else { continue }
             candidates[column.column, default: []].append(matches[0].displaySession)
+            claudeObservationCandidates[column.column, default: []].append(matches[0])
         }
         keepWarmSessionsByColumn = candidates.compactMapValues { sessions in
             sessions.count == 1 ? sessions[0] : nil
+        }
+        claudeCacheObservationsByColumn = claudeObservationCandidates.compactMapValues { observations in
+            observations.count == 1 ? observations[0] : nil
+        }
+
+        let codexDirectory = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".local/state/tproj/codex-cache", isDirectory: true)
+        let codexFiles = (try? FileManager.default.contentsOfDirectory(
+            at: codexDirectory, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles])) ?? []
+        let codexObservations = codexFiles.filter { $0.pathExtension == "json" }.compactMap {
+            file -> CodexCacheObservation? in
+            guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+                  let data = try? Data(contentsOf: file) else { return nil }
+            return try? CodexCacheObservation.decode(data)
+        }
+        var codexMapped: [Int: [CodexCacheObservation]] = [:]
+        for line in paneResult.stdout.split(separator: "\n") {
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 7, parts[2] == "0", let pid = Int(parts[3]),
+                  parts[4].hasPrefix("codex-p"), parts[6] == TmuxTargets.session else { continue }
+            let columns = liveColumns.filter {
+                $0.hostLabel == "local" && $0.codexPaneIDs.contains(parts[0])
+            }
+            guard columns.count == 1, let column = columns.first else { continue }
+            let matches = codexObservations.filter {
+                $0.matches(paneID: parts[0], panePID: pid, role: parts[4], now: now)
+            }
+            guard matches.count == 1 else { continue }
+            codexMapped[column.column, default: []].append(matches[0])
+        }
+        codexCacheObservationsByColumn = codexMapped.compactMapValues { observations in
+            observations.count == 1 ? observations[0] : nil
         }
     }
 
@@ -3873,6 +3912,21 @@ final class AppViewModel: ObservableObject {
             keepWarmOutcomesByColumn[column] = KeepWarmPokeOutcome(at: Date(), result: "error")
             NSLog("[tproj keep-warm] poke request failed")
         }
+    }
+
+    func pokeLocalKeepWarm(column: LiveColumn) async {
+        guard column.hostLabel == "local",
+              let observation = claudeCacheObservationsByColumn[column.column],
+              let launch = runtimeLaunchCommand(commandName: "tproj-cc-poke",
+                                                arguments: [observation.sessionID, "--pane", observation.paneID])
+                  ?? fallbackLaunchCommand(commandName: "tproj-cc-poke",
+                                           arguments: [observation.sessionID, "--pane", observation.paneID]) else {
+            keepWarmOutcomesByColumn[column.column] = KeepWarmPokeOutcome(at: Date(), result: "unavailable")
+            return
+        }
+        let result = await runCommandAsync(launch.launchPath, launch.arguments)
+        keepWarmOutcomesByColumn[column.column] = KeepWarmPokeOutcome(
+            at: Date(), result: result.exitCode == 0 ? "sent" : "refused")
     }
 
     // MARK: - Role mode (per-project .local/role-mode.json)
@@ -5308,6 +5362,7 @@ struct ContentView: View {
             // Keep-warm status and three controls share one line; details remain in the menu tooltip.
             HStack(spacing: 2) {
                 cacheStatusRow(column)
+                codexCacheStatusRow(column)
                 Spacer(minLength: 0)
                 ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
@@ -5887,6 +5942,12 @@ struct ContentView: View {
                         }
                     }
                 }
+                if column.hostLabel == "local", vm.claudeCacheObservationsByColumn[column.column] != nil {
+                    Button("Poke now (local)") {
+                        Task { await vm.pokeLocalKeepWarm(column: column) }
+                    }
+                    .help("Runs the fail-closed local sender for this exact observed session and pane.")
+                }
                 Button("Recache if cold: ~440k tok") {}.disabled(true)
             } label: {
                 Text(label)
@@ -5897,6 +5958,40 @@ struct ContentView: View {
             }
             .menuStyle(.borderlessButton)
             .help(keepWarmTooltip(session: session, hours: hours, outcome: outcome))
+        }
+    }
+
+    @ViewBuilder
+    private func codexCacheStatusRow(_ column: LiveColumn) -> some View {
+        if column.hostLabel == "local", !column.codexPaneIDs.isEmpty {
+            let observation = vm.codexCacheObservationsByColumn[column.column]
+            let sample = observation?.lastTokenSample
+            let shortLabel = if let sample, sample.inputTokens > 0 {
+                "Cdx \(Int((Double(sample.cachedInputTokens) / Double(sample.inputTokens) * 100).rounded()))% hit"
+            } else {
+                "Cdx · --"
+            }
+            let diagnostic = if let sample {
+                "latest token sample: input \(sample.inputTokens), cached \(sample.cachedInputTokens)"
+            } else {
+                "latest token sample: unavailable"
+            }
+            Menu {
+                Text(diagnostic)
+                    .font(GhosttyTheme.current.font(size: 11, weight: .regular, monospaced: true))
+                Button("Poke") {}
+                    .disabled(true)
+                Text("Poke disabled: safety is not verified; no pane input is sent.")
+                    .font(GhosttyTheme.current.font(size: 10, weight: .regular))
+            } label: {
+                Text(shortLabel)
+                    .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
+                    .foregroundStyle(GhosttyTheme.current.textTertiary)
+                    .lineLimit(1)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Diagnostic only: \(diagnostic). Not a cache expiry or human-turn signal.")
         }
     }
 
