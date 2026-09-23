@@ -5213,15 +5213,27 @@ struct ContentView: View {
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
                 pill(liveHostLabel(column), tint: column.hostLabel == "local" ? GhosttyTheme.current.accentGreen : GhosttyTheme.current.accentYellow)
                 Text(columnPrimaryName(column))
-                    .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
+                    .font(GhosttyTheme.current.font(size: 13, weight: .semibold))
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
                     .lineLimit(1)
                     .help(columnAgentNamesText(column) ?? columnPrimaryName(column))
                 roleModeBadge(projectPath: column.projectPath, isLocal: column.hostLabel == "local")
-                Spacer()
+                Spacer(minLength: 0)
+                Button {
+                    Task { await vm.removeColumn(column) }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(GhosttyTheme.current.accentRed.opacity(0.8))
+                        .frame(width: 20, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(vm.isBusy || vm.isDropPending(column.column))
+                .help("Drop column #\(column.column)")
             }
 
-            // Cache status and controls share one line; details remain in the menu tooltip.
+            // Keep-warm status and three controls share one line; details remain in the menu tooltip.
             HStack(spacing: 2) {
                 cacheStatusRow(column)
                 Spacer(minLength: 0)
@@ -5241,10 +5253,6 @@ struct ContentView: View {
                     }
                 }
                 .frame(width: 40)
-                ActionButton("Drop", tone: .danger, isEnabled: !vm.isBusy && !vm.isDropPending(column.column), dense: true) {
-                    Task { await vm.removeColumn(column) }
-                }
-                .frame(width: 36)
             }
         }
         .padding(.vertical, 2)
@@ -5810,7 +5818,7 @@ struct ContentView: View {
                 Button("Recache if cold: ~440k tok") {}.disabled(true)
             } label: {
                 Text(label)
-                    .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
+                    .font(GhosttyTheme.current.font(size: 12, weight: .medium, monospaced: true))
                     .foregroundStyle(tint)
                     .lineLimit(1)
                     .truncationMode(.tail)
