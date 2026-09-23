@@ -54,7 +54,7 @@ def sha256(path: Path) -> str:
 
 
 def verify_installed_hooks(canonical: Path, installed: Path) -> None:
-    for name in ("tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard", "tproj-mutation-guard", "tproj-cc-cache-observer"):
+    for name in ("tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard", "tproj-mutation-guard", "tproj-cc-cache-observer", "tproj-codex-cache-observer"):
         source = canonical / name
         deployed = installed / name
         if not source.is_file() or not deployed.is_file() or sha256(source) != sha256(deployed):
@@ -99,7 +99,9 @@ def merge(document: dict[str, Any], platform: str) -> dict[str, Any]:
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec|functions.exec_command", f"{home}/tproj-inbox-record")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec|functions.exec_command", f"{home}/tproj-completion-guard --platform codex --event posttool")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check --platform codex")
+        ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-codex-cache-observer prompt")
         ensure_entry(hooks, "Stop", "", f"{home}/tproj-completion-guard --platform codex")
+        ensure_entry(hooks, "Stop", "", f"{home}/tproj-codex-cache-observer stop")
     return document
 
 
@@ -152,11 +154,13 @@ def hook_metadata(response: dict[str, Any], source: Path) -> list[dict[str, str]
     result = response.get("result", response)
     found: list[dict[str, str]] = []
     required = {"tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard", "tproj-mutation-guard"}
+    optional = {"tproj-codex-cache-observer"}
+    accepted = required | optional
     seen: set[str] = set()
     for group in result.get("data", []):
         for hook in group.get("hooks", []):
             command = str(hook.get("command") or "")
-            matched = next((name for name in required if name in command), None)
+            matched = next((name for name in accepted if name in command), None)
             if matched is None:
                 continue
             if Path(str(hook.get("sourcePath", ""))).expanduser() != source:
