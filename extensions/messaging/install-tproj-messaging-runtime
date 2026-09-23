@@ -29,6 +29,7 @@ RUNTIME_FILES = (
     ("extensions/hooks/tproj-completion-guard", "tproj-completion-guard"),
     ("extensions/hooks/tproj-mutation-guard", "tproj-mutation-guard"),
     ("extensions/hooks/tproj-cc-cache-observer", "tproj-cc-cache-observer"),
+    ("extensions/hooks/tproj-cc-poke", "tproj-cc-poke"),
     ("extensions/hooks/tproj-codex-cache-observer", "tproj-codex-cache-observer"),
     ("extensions/hooks/tproj-cc-statusline-tap", "tproj-cc-statusline-tap"),
 )

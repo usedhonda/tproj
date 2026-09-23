@@ -29,6 +29,7 @@ runtime_targets=(
   tproj-completion-guard
   tproj-mutation-guard
   tproj-codex-cache-observer
+  tproj-cc-poke
 )
 
 make_trust_response() {

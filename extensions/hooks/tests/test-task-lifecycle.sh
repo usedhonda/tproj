@@ -263,6 +263,7 @@ cp "$REPO/extensions/hooks/tproj-inbox-check" "$TMP/installed-hooks/"
 cp "$REPO/extensions/hooks/tproj-completion-guard" "$TMP/installed-hooks/"
 cp "$REPO/extensions/hooks/tproj-mutation-guard" "$TMP/installed-hooks/"
 cp "$REPO/extensions/hooks/tproj-cc-cache-observer" "$TMP/installed-hooks/"
+cp "$REPO/extensions/hooks/tproj-cc-poke" "$TMP/installed-hooks/"
 "$REPO/extensions/hooks/install-tproj-hooks" --claude-settings "$claude_hooks" --codex-hooks "$codex_hooks" \
   --codex-config "$codex_config" --trust-response "$TMP/hooks-list.json" \
   --canonical-hooks-dir "$REPO/extensions/hooks" --installed-hooks-dir "$TMP/installed-hooks" \

@@ -54,7 +54,7 @@ def sha256(path: Path) -> str:
 
 
 def verify_installed_hooks(canonical: Path, installed: Path) -> None:
-    for name in ("tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard", "tproj-mutation-guard", "tproj-cc-cache-observer", "tproj-codex-cache-observer"):
+    for name in ("tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard", "tproj-mutation-guard", "tproj-cc-cache-observer", "tproj-cc-poke", "tproj-codex-cache-observer"):
         source = canonical / name
         deployed = installed / name
         if not source.is_file() or not deployed.is_file() or sha256(source) != sha256(deployed):
