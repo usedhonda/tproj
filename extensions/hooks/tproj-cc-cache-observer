@@ -97,7 +97,9 @@ def record(event, payload, identity):
             if not prompt.lstrip().startswith(KEEP_ALIVE_MARKER):
                 state["last_user_prompt_at"] = int(time.time())
         elif event == "stop":
-            state["turn_state"] = "idle"
+            # Another Stop hook may block completion and resume this turn.
+            # This event is evidence of Stop invocation, not live idle.
+            state["turn_state"] = "stop_seen"
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root,
                                          prefix=".cc-cache-", delete=False) as tmp:
             os.chmod(tmp.name, 0o600)

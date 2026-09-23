@@ -85,7 +85,7 @@ class CCCacheObserverTest(unittest.TestCase):
             observe("prompt", {"session_id": "test-session-id", "prompt": "[keep-alive] ok"})
             self.assertEqual(json.loads(files[0].read_text())["last_user_prompt_at"], previous_prompt_at)
             observe("stop", {"session_id": "test-session-id"})
-            self.assertEqual(json.loads(files[0].read_text())["turn_state"], "idle")
+            self.assertEqual(json.loads(files[0].read_text())["turn_state"], "stop_seen")
             observe("statusline", {"session_id": "test-session-id", "prompt_cache": {"warm": False}})
             self.assertIsNone(json.loads(files[0].read_text())["cache_expires_at"])
 

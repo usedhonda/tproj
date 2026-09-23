@@ -11,14 +11,16 @@ It accepts only a non-dead tagged tmux Claude pane resolved with explicit
 The file contains the session and pane binding, cache expiry, recache-token
 estimate, and latest real user prompt time. Prompt text, transcript paths,
 and raw status-line payloads are never persisted. A `[keep-alive]` prompt
-does not extend the user window, but does mark the turn running. `Stop` marks
-the exact session idle. A new session does not inherit an old idle state.
+does not extend the user window, but does mark the turn running. `Stop` records
+`stop_seen`, not `idle`: another Stop hook can block and resume the turn after
+this observer ran. A new session does not inherit an old turn state.
 Missing identity, malformed input, or I/O
 failure must not block a Claude turn.
 
-Before this state can authorize any Poke, the caller must independently recheck
-the live session/pane binding, freshness, idle state, and empty composer at
-send time. Cache observation alone is never proof that sending is safe.
+This state never authorizes a Poke. A sender would need independent positive
+proof, after all Stop blockers, that the exact session/pane is currently idle,
+plus a fresh empty-composer check. That proof source does not yet exist in
+Tproj; neither `stop_seen` nor an empty prompt glyph suffices.
 `tproj-cc-statusline-tap -- <renderer> [args...]` forwards the exact status-line
 input and renderer output while observing a copy. The hook installer registers
 the `prompt` event on Claude only. The machine's `statusLine.command` must
