@@ -31,6 +31,7 @@ class CCPokeTest(unittest.TestCase):
         self.bin.mkdir()
         self.state = root / "state"
         self.state.mkdir()
+        self.locks = root / "shared-locks"
         self.log = root / "tmux.log"
         tmux = self.bin / "tmux"
         tmux.write_text(
@@ -61,6 +62,7 @@ class CCPokeTest(unittest.TestCase):
             "last_user_prompt_at": now - 70,
         }
         state.update(changes)
+        self.expiry = state["cache_expires_at"]
         path = self.state / (hashlib.sha256(b"session-1").hexdigest() + ".json")
         path.write_text(json.dumps(state))
 
@@ -68,6 +70,7 @@ class CCPokeTest(unittest.TestCase):
         stderr = io.StringIO()
         with mock.patch.dict(os.environ, self.env), mock.patch.object(sys, "argv", [str(SENDER), "session-1"]), \
              mock.patch.object(sender, "agent_binding", return_value={"agent_pid": 222, "agent_pid_start": 1234567890}), \
+             mock.patch.object(sender, "lock_dir", return_value=self.locks), \
              contextlib.redirect_stderr(stderr):
             code = sender.main()
         return code, stderr.getvalue()
@@ -79,7 +82,17 @@ class CCPokeTest(unittest.TestCase):
         self.assertEqual(first[0], 0, first[1])
         self.assertNotEqual(second[0], 0)
         self.assertIn("already claimed", second[1])
+        self.assertTrue((self.locks / f"session-1-{self.expiry}").is_file())
         self.assertEqual(self.log.read_text().count("send-keys"), 2)
+
+    def test_existing_ccstatusbar_claim_prevents_duplicate_send(self):
+        self.write_state()
+        self.locks.mkdir()
+        (self.locks / f"session-1-{self.expiry}").touch()
+        result = self.run_sender()
+        self.assertNotEqual(result[0], 0)
+        self.assertIn("already claimed", result[1])
+        self.assertFalse(self.log.exists())
 
     def test_stop_or_question_or_stale_prompt_refuses_without_send(self):
         for changes in ({"turn_state": "stop_seen"}, {"last_user_prompt_at": int(time.time()) - 901}):

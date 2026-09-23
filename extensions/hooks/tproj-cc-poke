@@ -161,8 +161,14 @@ def state_ready(state: dict[str, object], session_id: str, identity: dict[str, o
 
 
 def acquire_lock(root: Path, session_id: str, expiry: int) -> Path | None:
-    key = hashlib.sha256(f"{session_id}:{expiry}".encode()).hexdigest()
-    path = root / f"{key}.poke.lock"
+    # CCStatusBar uses this same atomic name. Independent UIs must not inject
+    # two keep-alive turns into one Claude session at the same cache expiry.
+    if root.is_symlink():
+        raise OSError("dedup directory is a symlink")
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if root.is_symlink() or not root.is_dir():
+        raise OSError("dedup directory unavailable")
+    path = root / f"{session_id}-{expiry}"
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="ascii") as handle:
@@ -185,12 +191,16 @@ def send(pane: str) -> bool:
         return False
 
 
+def lock_dir() -> Path:
+    return Path.home() / ".claude/.cache-poke"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("session_id")
     parser.add_argument("--pane", default=os.environ.get("TMUX_PANE", ""))
     args = parser.parse_args()
-    if not args.session_id or len(args.session_id) > 128:
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,128}", args.session_id):
         return fail("invalid session id")
     root = Path(os.environ.get("TPROJ_CC_CACHE_DIR", Path.home() / ".local/state/tproj/cc-cache"))
     first = read_state(root, args.session_id)
@@ -213,7 +223,7 @@ def main() -> int:
     expiry = integer(state.get("cache_expires_at"))
     assert expiry is not None
     try:
-        lock = acquire_lock(root, args.session_id, expiry)
+        lock = acquire_lock(lock_dir(), args.session_id, expiry)
     except OSError:
         return fail("dedup lock unavailable")
     if lock is None:

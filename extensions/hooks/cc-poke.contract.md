@@ -22,11 +22,13 @@ permission, question, or running-turn evidence. The second identity/state/
 capture check includes a fresh agent binding; any change refuses the send. The only
 literal body is `[keep-alive]`, sent with tmux literal text followed by Enter.
 
-Deduplication uses an atomic mode-0600 `O_CREAT|O_EXCL` lock keyed by
-`session_id` and cache expiry. An existing lock refuses the send. The sender
-never removes a lock (including after a failed attempt), so it cannot delete
-another process's lock; the cache expiry bounds the resulting fail-closed
-dedup window.
+Deduplication uses CCStatusBar's existing `~/.claude/.cache-poke/` claim name,
+`<session_id>-<integer cache expiry>`, with atomic mode-0600 `O_CREAT|O_EXCL`.
+The session ID is restricted to safe filename characters. An existing claim
+from either application refuses the send. The sender never removes a lock
+(including after a failed attempt), so it cannot delete another process's
+claim; the cache expiry bounds the resulting fail-closed dedup window. This
+shared claim is a safety protocol, not a runtime dependency on CCSB.
 
 The runtime installer copies the executable artifact but does not add a hook,
 enable a setting, or perform a live send. This contract intentionally does not
