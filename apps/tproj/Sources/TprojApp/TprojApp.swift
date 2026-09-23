@@ -4725,7 +4725,7 @@ struct ContentView: View {
             Text("CC")
                 .font(GhosttyTheme.current.font(size: 12, weight: .bold))
                 .foregroundStyle(RoleVisualPalette.conversationMainCC)
-            capacityRow(vm.ccSessionSnapshot, label: "5h Session", tint: RoleVisualPalette.conversationMainCC, showPace: true)
+            capacityRow(vm.ccSessionSnapshot, label: "5h Session", tint: RoleVisualPalette.conversationMainCC, showPace: true, preciseReset: true)
             capacityRow(vm.weeklyPaceSnapshots["claude"], label: "Weekly", tint: RoleVisualPalette.conversationMainCC, showPace: true)
             capacityRow(vm.weeklyPaceSnapshots["fable"], label: "Fable", tint: RoleVisualPalette.conversationMainCC, showPace: true)
             Divider().overlay(GhosttyTheme.current.textTertiary.opacity(0.25))
@@ -4753,7 +4753,8 @@ struct ContentView: View {
         _ snapshot: WeeklyPaceSnapshot?,
         label: String,
         tint: Color,
-        showPace: Bool
+        showPace: Bool,
+        preciseReset: Bool = false
     ) -> some View {
         let current = snapshot.flatMap { $0.resetsAt > Date() ? $0 : nil }
         let remaining = current.map { max(0, min(100, Int((100 - $0.usedPercent).rounded()))) }
@@ -4780,8 +4781,15 @@ struct ContentView: View {
                         .foregroundStyle(pacePercent == nil ? GhosttyTheme.current.textSecondary : statusTint)
                 }
                 Spacer(minLength: 2)
-                Text(current.map { "Reset \(weeklyPaceResetCountdown($0.resetsAt))" } ?? "Awaiting snapshot")
-                    .foregroundStyle(GhosttyTheme.current.textSecondary)
+                if preciseReset {
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(current.map { "Reset \(weeklyPaceResetCountdown($0.resetsAt, now: context.date, precise: true))" } ?? "Awaiting snapshot")
+                            .foregroundStyle(GhosttyTheme.current.textSecondary)
+                    }
+                } else {
+                    Text(current.map { "Reset \(weeklyPaceResetCountdown($0.resetsAt))" } ?? "Awaiting snapshot")
+                        .foregroundStyle(GhosttyTheme.current.textSecondary)
+                }
             }
             .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
             if showPace {
@@ -4846,11 +4854,18 @@ struct ContentView: View {
         return margin >= 0 ? "+\(margin)pt" : "\(margin)pt"
     }
 
-    private func weeklyPaceResetCountdown(_ date: Date) -> String {
-        let seconds = max(0, Int(date.timeIntervalSinceNow))
+    private func weeklyPaceResetCountdown(_ date: Date, now: Date = Date(), precise: Bool = false) -> String {
+        let seconds = max(0, Int(date.timeIntervalSince(now)))
         let days = seconds / 86_400
         let hours = (seconds % 86_400) / 3_600
         if days > 0 { return "\(days)d\(hours)h" }
+        if precise {
+            let remainingMinutes = Int(ceil(date.timeIntervalSince(now) / 60))
+            let boundedMinutes = max(0, remainingMinutes)
+            let remainingHours = boundedMinutes / 60
+            let minutes = boundedMinutes % 60
+            return remainingHours > 0 ? "\(remainingHours)h\(minutes)m" : "\(minutes)m"
+        }
         return "\(max(1, hours))h"
     }
 
