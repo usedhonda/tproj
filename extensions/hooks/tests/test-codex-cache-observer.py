@@ -23,7 +23,7 @@ class CodexCacheObserverTest(unittest.TestCase):
                 **os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
                 "TMUX_PANE": "%2", "TPROJ_CODEX_CACHE_DIR": str(root / "state"),
                 "TPROJ_CODEX_OBSERVER_PID": "900",
-                "TPROJ_CODEX_OBSERVER_PROCESS_CHAIN": "900 901 hook-shell;901 902 codex --stdio;902 700 zsh",
+                "TPROJ_CODEX_OBSERVER_PROCESS_CHAIN": "900 901 hook-shell;901 902 /usr/bin/codex;902 700 /bin/zsh",
             }
             payload = {"hook_event_name": "UserPromptSubmit", "session_id": "codex-session",
                        "prompt": "do not persist", "transcript_path": "/private/transcript",
@@ -51,7 +51,7 @@ class CodexCacheObserverTest(unittest.TestCase):
             tmux.chmod(0o700)
             env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "TMUX_PANE": "%2",
                    "TPROJ_CODEX_CACHE_DIR": str(root / "state"), "TPROJ_CODEX_OBSERVER_PID": "900",
-                   "TPROJ_CODEX_OBSERVER_PROCESS_CHAIN": "900 901 hook-shell;901 902 codex --stdio;902 700 zsh"}
+                   "TPROJ_CODEX_OBSERVER_PROCESS_CHAIN": "900 901 hook-shell;901 902 /usr/bin/codex;902 700 /bin/zsh"}
             subprocess.run(["python3", str(OBSERVER), "stop"], input=json.dumps({
                 "hook_event_name": "Stop", "session_id": "codex-session", "remote": True}),
                 text=True, env=env, check=True)

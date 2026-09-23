@@ -13,8 +13,9 @@ identifier are never persisted.
 
 It requires positive evidence that `TMUX_PANE` is a live `codex-pN` pane and
 that the observer's process ancestry reaches that pane's process while
-containing a Codex process. Missing, ambiguous, dead, or remote identity fails
-closed and writes nothing. A cache sample is reported as unavailable when the
+containing a process whose basename is exactly `codex`; process arguments are
+never read. Missing, ambiguous, dead, or remote identity fails closed and
+writes nothing. A cache sample is reported as unavailable when the
 payload has no allow-listed `prompt_cache` fields; absence is not evidence that
 Codex lacks caching.
 

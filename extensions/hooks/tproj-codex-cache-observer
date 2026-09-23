@@ -7,7 +7,6 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 import time
@@ -28,7 +27,7 @@ def _process_rows():
         return rows
     try:
         result = subprocess.run(
-            ["ps", "-axo", "pid=,ppid=,command="],
+            ["ps", "-axo", "pid=,ppid=,comm="],
             capture_output=True, text=True, timeout=2, check=True,
         )
     except (OSError, subprocess.SubprocessError):
@@ -68,8 +67,7 @@ def pane_identity():
     while current not in seen and current in by_pid:
         seen.add(current)
         parent, command = by_pid[current]
-        if (re.search(r"(?:^|[\s/])codex(?:[\s]|$)", command, re.IGNORECASE)
-                and not re.search(r"(?:^|[\s/])(ssh|mosh)(?:[\s]|$)", command, re.IGNORECASE)):
+        if Path(command).name == "codex":
             has_codex = True
         if current == pane_pid:
             break
