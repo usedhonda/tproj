@@ -9,6 +9,10 @@ let package = Package(
     products: [
         .executable(name: "tproj", targets: ["TprojApp"])
     ],
+    dependencies: [
+        // v1.5 uses forkpty and has no optional Metal toolchain requirement.
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.5.1")
+    ],
     targets: [
         .target(
             name: "TprojLogic",
@@ -16,7 +20,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "TprojApp",
-            dependencies: ["TprojLogic"],
+            dependencies: ["TprojLogic", .product(name: "SwiftTerm", package: "SwiftTerm")],
             path: "Sources/TprojApp"
         ),
         .testTarget(

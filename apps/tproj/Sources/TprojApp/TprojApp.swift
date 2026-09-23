@@ -1769,6 +1769,7 @@ final class AppViewModel: ObservableObject {
     // `model-role-router mode --json`, which owns `<project>/.local/role-mode.json`.
     @Published var roleModeStatuses: [String: RoleModeStatus] = [:]
     @Published var weeklyPaceSnapshots: [String: WeeklyPaceSnapshot] = [:]
+    @Published var ccSessionSnapshot: WeeklyPaceSnapshot?
     @Published var keepWarmSessionsByColumn: [Int: KeepWarmSession] = [:]
     @Published var keepWarmOutcomesByColumn: [Int: KeepWarmPokeOutcome] = [:]
 
@@ -3895,18 +3896,23 @@ final class AppViewModel: ObservableObject {
 
     private func refreshWeeklyPaceSnapshots() async {
         let historyRoot = "\(NSHomeDirectory())/Library/Application Support/com.steipete.codexbar/history"
-        var snapshots = await Task.detached(priority: .utility) {
+        let history = await Task.detached(priority: .utility) {
             var result: [String: WeeklyPaceSnapshot] = [:]
+            var session: WeeklyPaceSnapshot?
             for provider in ["codex", "claude"] {
                 let url = URL(fileURLWithPath: "\(historyRoot)/\(provider).json")
-                guard let data = try? Data(contentsOf: url),
-                      let snapshot = CodexBarPace.latestWeeklySnapshot(from: data, provider: provider) else {
-                    continue
+                guard let data = try? Data(contentsOf: url) else { continue }
+                if let snapshot = CodexBarPace.latestWeeklySnapshot(from: data, provider: provider) {
+                    result[provider] = snapshot
                 }
-                result[provider] = snapshot
+                if provider == "claude" {
+                    session = CodexBarPace.latestSessionSnapshot(from: data, provider: "claude")
+                }
             }
-            return result
+            return (result, session)
         }.value
+        var snapshots = history.0
+        if ccSessionSnapshot != history.1 { ccSessionSnapshot = history.1 }
         if let fable = weeklyPaceSnapshots["fable"], fable.resetsAt > Date() {
             snapshots["fable"] = fable
         }
@@ -4596,6 +4602,7 @@ struct ContentView: View {
     @StateObject private var windowLevelController = WindowLevelController()
     @StateObject private var collapseController = WindowCollapseController()
     @StateObject private var underlayController = PaneBackgroundUnderlayController()
+    @StateObject private var terminalDock = TerminalDockController()
     @AppStorage("workspaceSectionHeight") private var workspaceHeight: Double = 480
     @AppStorage("monitorSectionHeight") private var monitorHeight: Double = -1
     @AppStorage("windowWidth") private var persistedWidth: Double = 242
@@ -4641,7 +4648,21 @@ struct ContentView: View {
                 }
             )
         } else {
-            normalContentView
+            HStack(spacing: 0) {
+                normalContentView
+                    .frame(width: terminalDock.visibleProjectPath == nil ? nil : terminalDock.sidebarWidth)
+                    .padding(.top, terminalDock.visibleProjectPath == nil ? 0 : 40)
+                if let path = terminalDock.visibleProjectPath {
+                    TerminalDockView(controller: terminalDock, path: path)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .background {
+                if terminalDock.visibleProjectPath != nil {
+                    GhosttyTheme.current.background.opacity(GhosttyTheme.current.appBackgroundOpacity)
+                }
+            }
+            .ignoresSafeArea(.container, edges: terminalDock.visibleProjectPath == nil ? [] : .top)
         }
     }
 
@@ -4691,86 +4712,74 @@ struct ContentView: View {
 
     @ViewBuilder
     private var weeklyPaceBalanceCard: some View {
-        if let balance = vm.weeklyPaceBalance() {
-            VStack(alignment: .leading, spacing: 6) {
-                weeklyPaceColumnHeader
-                weeklyPaceBalanceRow(balance.cdx, label: "Cdx", tint: RoleVisualPalette.conversationMainCdx)
-                Text("CC")
-                    .font(GhosttyTheme.current.font(size: 9, weight: .bold))
-                    .foregroundStyle(RoleVisualPalette.conversationMainCC)
-                weeklyPaceBalanceRow(balance.cc, label: "Weekly", tint: RoleVisualPalette.conversationMainCC)
-                if let fable = balance.fable {
-                    weeklyPaceBalanceRow(fable, label: "Fable", tint: RoleVisualPalette.conversationMainCC)
-                }
-                weeklyPaceAxisLegend
-            }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 6)
+        VStack(alignment: .leading, spacing: 7) {
+            Text("CC")
+                .font(GhosttyTheme.current.font(size: 12, weight: .bold))
+                .foregroundStyle(RoleVisualPalette.conversationMainCC)
+            capacityRow(vm.ccSessionSnapshot, label: "5h Session", tint: RoleVisualPalette.conversationMainCC, showPace: true)
+            capacityRow(vm.weeklyPaceSnapshots["claude"], label: "Weekly", tint: RoleVisualPalette.conversationMainCC, showPace: true)
+            capacityRow(vm.weeklyPaceSnapshots["fable"], label: "Fable", tint: RoleVisualPalette.conversationMainCC, showPace: true)
+            Divider().overlay(GhosttyTheme.current.textTertiary.opacity(0.25))
+            Text("Cdx")
+                .font(GhosttyTheme.current.font(size: 12, weight: .bold))
+                .foregroundStyle(RoleVisualPalette.conversationMainCdx)
+            capacityRow(vm.weeklyPaceSnapshots["codex"], label: "Weekly", tint: RoleVisualPalette.conversationMainCdx, showPace: true)
+            weeklyPaceAxisLegend
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
     }
 
     @ViewBuilder
     private var weeklyPaceBalanceSection: some View {
-        if vm.weeklyPaceBalance() != nil {
-            SectionHeader(title: "Weekly Capacity", isCollapsed: $weeklyCapacityCollapsed)
-            if !weeklyCapacityCollapsed {
-                Card(compact: true, chrome: false) {
-                    weeklyPaceBalanceCard
-                }
+        SectionHeader(title: "Capacity", isCollapsed: $weeklyCapacityCollapsed)
+        if !weeklyCapacityCollapsed {
+            Card(compact: true, chrome: false) {
+                weeklyPaceBalanceCard
             }
         }
     }
 
-    private var weeklyPaceColumnHeader: some View {
-        HStack(spacing: 5) {
-            Color.clear.frame(width: 46, height: 1)
-            Text("Left").frame(width: 30, alignment: .trailing)
-            Text("Margin").frame(width: 40, alignment: .trailing)
-            Spacer(minLength: 2)
-            Text("Reset").frame(width: 42, alignment: .trailing)
-        }
-        .font(GhosttyTheme.current.font(size: 8, weight: .medium))
-        .foregroundStyle(GhosttyTheme.current.textTertiary)
-    }
-
-    private func weeklyPaceBalanceRow(
-        _ side: WeeklyPaceBalanceSide,
+    private func capacityRow(
+        _ snapshot: WeeklyPaceSnapshot?,
         label: String,
-        tint: Color
+        tint: Color,
+        showPace: Bool
     ) -> some View {
-        let statusTint = weeklyPaceStatusTint(side.pacePercent)
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 5) {
+        let current = snapshot.flatMap { $0.resetsAt > Date() ? $0 : nil }
+        let remaining = current.map { max(0, min(100, Int((100 - $0.usedPercent).rounded()))) }
+        let projected = current.flatMap { item in
+            showPace && item.usedPercent >= 10 ? item.projectedUsedPercentAtReset : nil
+        }
+        let pacePercent = projected.map { max(0, min(999, Int($0.rounded()))) }
+        let statusTint = weeklyPaceStatusTint(pacePercent)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(label)
-                    .font(GhosttyTheme.current.font(size: 10, weight: .bold))
+                    .font(GhosttyTheme.current.font(size: 11, weight: .semibold))
                     .foregroundStyle(tint)
-                    .frame(width: 46, alignment: .leading)
-                Text("\(side.remainingPercent)%")
-                    .font(GhosttyTheme.current.font(size: 10, weight: .semibold, monospaced: true))
+                Spacer(minLength: 4)
+                Text(remaining.map { "\($0)% left" } ?? "No data")
+                    .font(GhosttyTheme.current.font(size: 14, weight: .bold, monospaced: true))
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
-                    .frame(width: 30, alignment: .trailing)
-                Text(weeklyPaceMargin(side.pacePercent))
-                    .font(GhosttyTheme.current.font(
-                        size: side.pacePercent == nil ? 8 : 10,
-                        weight: .semibold,
-                        monospaced: true
-                    ))
-                    .foregroundStyle(
-                        side.pacePercent == nil ? GhosttyTheme.current.textSecondary : statusTint
-                    )
-                    .frame(width: 40, alignment: .trailing)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
-                Spacer(minLength: 2)
-                Text(weeklyPaceResetCountdown(side.resetsAt))
-                    .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
-                    .foregroundStyle(GhosttyTheme.current.textSecondary)
-                    .frame(width: 42, alignment: .trailing)
             }
-            GeometryReader { geo in
+            HStack(spacing: 4) {
+                if showPace {
+                    Text(weeklyPaceMargin(pacePercent))
+                        .foregroundStyle(pacePercent == nil ? GhosttyTheme.current.textSecondary : statusTint)
+                }
+                Spacer(minLength: 2)
+                Text(current.map { "Reset \(weeklyPaceResetCountdown($0.resetsAt))" } ?? "Awaiting snapshot")
+                    .foregroundStyle(GhosttyTheme.current.textSecondary)
+            }
+            .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
+            if showPace {
+                GeometryReader { geo in
                 let width = max(geo.size.width, 1)
                 let targetX = width / 2
-                let actualX = side.pacePercent.map { pacePercent in
+                let actualX = pacePercent.map { pacePercent in
                     let boundedMargin = min(max(100 - pacePercent, -50), 50)
                     return width * CGFloat(boundedMargin + 50) / 100
                 }
@@ -4795,8 +4804,9 @@ struct ContentView: View {
                             .offset(x: actualX - 3)
                     }
                 }
+                }
+                .frame(height: 6)
             }
-            .frame(height: 6)
         }
     }
 
@@ -4811,7 +4821,7 @@ struct ContentView: View {
             Text("Spare")
                 .foregroundStyle(GhosttyTheme.current.accentGreen)
         }
-        .font(GhosttyTheme.current.font(size: 8, weight: .medium))
+        .font(GhosttyTheme.current.font(size: 10, weight: .medium))
     }
 
     private func weeklyPaceStatusTint(_ pacePercent: Int?) -> Color {
@@ -4822,7 +4832,7 @@ struct ContentView: View {
     }
 
     private func weeklyPaceMargin(_ pacePercent: Int?) -> String {
-        guard let pacePercent else { return "Sampling" }
+        guard let pacePercent else { return "Pace pending" }
         let margin = 100 - pacePercent
         return margin >= 0 ? "+\(margin)pt" : "\(margin)pt"
     }
@@ -5053,6 +5063,13 @@ struct ContentView: View {
         .onChange(of: isDragActive) { dragging in
             setDragLock(dragging)
         }
+        .onChange(of: terminalDock.visibleProjectPath) { path in
+            ghosttyTracker.suspendDriftDetection = path != nil
+            if path == nil { ghosttyTracker.updateSnapOffset() }
+        }
+        .onChange(of: collapseController.isCollapsed) { collapsed in
+            if collapsed { terminalDock.hide() }
+        }
         .onChange(of: ghosttyTracker.isDragSuspended) { suspended in
             if !suspended {
                 setDragLock(false)
@@ -5120,7 +5137,7 @@ struct ContentView: View {
     }
 
     private func persistWindowSize(_ window: NSWindow) {
-        persistedWidth = Double(window.frame.width)
+        persistedWidth = Double(window.frame.width - (terminalDock.visibleProjectPath == nil ? 0 : 620))
         persistedHeight = Double(window.frame.height)
     }
 
@@ -5199,42 +5216,35 @@ struct ContentView: View {
                     .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
                     .lineLimit(1)
+                    .help(columnAgentNamesText(column) ?? columnPrimaryName(column))
                 roleModeBadge(projectPath: column.projectPath, isLocal: column.hostLabel == "local")
-                cachePill(column)
                 Spacer()
             }
 
-            if let agents = columnAgentNamesText(column) {
-                Text(agents)
-                    .font(GhosttyTheme.current.font(size: 9, weight: .medium))
-                    .foregroundStyle(GhosttyTheme.current.textTertiary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-
-            // Buttons row
-            HStack(spacing: 1) {
-                Spacer()
+            // Cache status and controls share one line; details remain in the menu tooltip.
+            HStack(spacing: 2) {
+                cacheStatusRow(column)
+                Spacer(minLength: 0)
                 ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
                 }
-                .frame(width: 38)
+                .frame(width: 36)
                 ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cc" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "claude", for: column) }
                 }
-                .frame(width: 38)
-                ActionButton("Yazi", tone: column.yaziPaneID == nil ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
-                    Task { await vm.toggleYazi(for: column) }
+                .frame(width: 30)
+                ActionButton("Term", tone: column.hostLabel == "local" && terminalDock.visibleProjectPath == column.projectPath ? .primary : (column.terminalPaneID == nil ? .neutral : .primary), isEnabled: !vm.isBusy, dense: true) {
+                    if column.hostLabel == "local" {
+                        terminalDock.toggle(projectPath: column.projectPath, title: columnPrimaryName(column), in: (NSApp.delegate as? AppDelegate)?.mainWindow)
+                    } else {
+                        Task { await vm.toggleTerminal(for: column) }
+                    }
                 }
-                .frame(width: 38)
-                ActionButton("Term", tone: column.terminalPaneID == nil ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true) {
-                    Task { await vm.toggleTerminal(for: column) }
-                }
-                .frame(width: 38)
+                .frame(width: 40)
                 ActionButton("Drop", tone: .danger, isEnabled: !vm.isBusy && !vm.isDropPending(column.column), dense: true) {
                     Task { await vm.removeColumn(column) }
                 }
-                .frame(width: 38)
+                .frame(width: 36)
             }
         }
         .padding(.vertical, 2)
@@ -5368,28 +5378,33 @@ struct ContentView: View {
                     Text("Free \(sys.freeMB)M")
                         .font(GhosttyTheme.current.font(size: 11, weight: .semibold, monospaced: true))
                         .foregroundStyle(memorySeverityColor(freeMB: sys.freeMB))
-                    Text("Used \(sys.usedMB)M / \(sys.totalMB)M \(memoryBreakdownText(status.categories))")
-                        .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                    Text("Used \(sys.usedMB)M / \(sys.totalMB)M")
+                        .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
                         .foregroundStyle(GhosttyTheme.current.textSecondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer(minLength: 0)
                     if let updated = vm.memoryLastUpdatedAt {
                         Text(updatedTimeText(updated))
-                            .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                            .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
                             .foregroundStyle(GhosttyTheme.current.textTertiary)
                     }
                 }
+
+                Text(memoryBreakdownText(status.categories))
+                    .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
+                    .foregroundStyle(GhosttyTheme.current.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 usageBar(usedMB: sys.usedMB, totalMB: sys.totalMB, color: memorySeverityColor(freeMB: sys.freeMB))
                 ecosystemBar(status.categories)
 
                 HStack(spacing: 4) {
                     Text("Guard")
-                        .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                        .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
                         .foregroundStyle(GhosttyTheme.current.textSecondary)
                     Text(status.guardState)
-                        .font(GhosttyTheme.current.font(size: 10, weight: .semibold, monospaced: true))
+                        .font(GhosttyTheme.current.font(size: 11, weight: .semibold, monospaced: true))
                         .foregroundStyle(guardColor(status.guardState))
                     Spacer(minLength: 0)
                 }
@@ -5452,7 +5467,7 @@ struct ContentView: View {
                     .foregroundStyle(GhosttyTheme.current.textSecondary)
             } else {
                 Text("Legend: C=Claude/CC, M=MCP, X=Codex, O=Other")
-                    .font(GhosttyTheme.current.font(size: 9, weight: .medium, monospaced: true))
+                    .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
                     .foregroundStyle(GhosttyTheme.current.textTertiary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -5467,7 +5482,7 @@ struct ContentView: View {
                 .font(GhosttyTheme.current.font(size: 11, weight: .bold))
                 .foregroundStyle(GhosttyTheme.current.textPrimary)
             Text("(\(summary))")
-                .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
                 .foregroundStyle(GhosttyTheme.current.textTertiary)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -5482,16 +5497,16 @@ struct ContentView: View {
             ForEach(panes) { pane in
                 HStack(spacing: 4) {
                     Text(pane.column.map { "#\($0)" } ?? "--")
-                        .font(GhosttyTheme.current.font(size: 10, weight: .heavy, monospaced: true))
+                        .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
                         .foregroundStyle(GhosttyTheme.current.textSecondary)
                     Text(pane.project.isEmpty ? pane.window : pane.project)
-                        .font(GhosttyTheme.current.font(size: 10, weight: .semibold))
+                        .font(GhosttyTheme.current.font(size: 11, weight: .semibold))
                         .foregroundStyle(GhosttyTheme.current.textSecondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer(minLength: 0)
                     Text(paneMetricText(pane))
-                        .font(GhosttyTheme.current.font(size: 10, weight: .semibold, monospaced: true))
+                        .font(GhosttyTheme.current.font(size: 11, weight: .semibold, monospaced: true))
                         .foregroundStyle(GhosttyTheme.current.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -5752,7 +5767,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func cachePill(_ column: LiveColumn) -> some View {
+    private func cacheStatusRow(_ column: LiveColumn) -> some View {
         if column.hostLabel == "local", !column.claudePaneIDs.isEmpty {
             let hours = vm.keepWarmHours(forProjectPath: column.projectPath)
             let session = vm.keepWarmSessionsByColumn[column.column]
@@ -5770,7 +5785,12 @@ struct ContentView: View {
                 if remaining <= 0 { return "cold" }
                 return "\(Int(ceil(remaining / 60)))m"
             }()
-            let label = hours == 0 ? "◌ \(cacheText)" : "♨ \(hours)h · \(cacheText)\(issue ? " !" : "")"
+            let label: String = {
+                if hours == 0 { return "\(cacheText) · Off" }
+                if unavailable { return "Awaiting · \(hours)h" }
+                if windowOver { return "Done · \(hours)h" }
+                return "\(cacheText) · \(hours)h\(issue ? " !" : "")"
+            }()
             let tint: Color = {
                 if hours == 0 || windowOver || unavailable { return GhosttyTheme.current.textTertiary }
                 if issue || (remaining ?? .infinity) < 600 { return GhosttyTheme.current.accentYellow }
@@ -5789,10 +5809,13 @@ struct ContentView: View {
                 }
                 Button("Recache if cold: ~440k tok") {}.disabled(true)
             } label: {
-                pill(label, tint: tint).lineLimit(1)
+                Text(label)
+                    .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .menuStyle(.borderlessButton)
-            .fixedSize()
             .help(keepWarmTooltip(session: session, hours: hours, outcome: outcome))
         }
     }
@@ -6092,7 +6115,7 @@ struct TprojApp: App {
     var body: some Scene {
         Window("tproj", id: "main") {
             ContentView()
-                .frame(minWidth: 14, maxWidth: 550, minHeight: 520, idealHeight: 980, maxHeight: 2200)
+                .frame(minWidth: 14, maxWidth: 1400, minHeight: 520, idealHeight: 980, maxHeight: 2200)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 242, height: 585)
