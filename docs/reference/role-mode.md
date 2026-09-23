@@ -133,25 +133,31 @@ derived lead. `--main derived` clears the preference.
   is the sole always-visible main indicator and is tinted with the mode colour.
   The GUI reads and writes only through
   `model-role-router mode`.
-- In every mode, the GUI reads CodexBar's selected-account weekly history snapshots
-  from Application Support every five minutes. It also reads the exact
+- In every mode, the GUI reads CodexBar's selected-account history snapshots
+  from Application Support every five minutes: CC's `session` window must be
+  300 minutes, and CC/Cdx weekly windows retain the existing weekly validation.
+  It also reads the exact
   `claude-weekly-scoped-fable` window from CodexBar's local structured CLI output
   when available; it never reads provider credentials or stores the CLI's identity
   fields. The last valid aggregate Fable snapshot is cached in app preferences until
   its reset, so a relaunch or a transient missing/malformed CLI response does not
   remove the row. No account identifier or raw CLI object is cached.
-  For each displayed window, it derives the
-  window start from that provider's own next reset minus seven days, calculates the
-  average burn since that start, and projects usage at that provider's next reset.
+  For each weekly window, it derives the window start from that provider's own
+  next reset minus seven days, calculates the average burn since that start,
+  and projects usage at that provider's next reset. The CC 5-hour session
+  displays only current percentage left and time until reset; it has no
+  projection, pace marker, or weekly notice role.
   User-facing GUI and conversation notices follow CodexBar's remaining-capacity
   vocabulary: current weekly percentage remaining, time until reset, and projected
   percentage remaining at reset. The projected-used percentage remains internal to
   alert evaluation and is not shown as an unexplained standalone number.
-  This account-global comparison appears once in a collapsible `Weekly Capacity`
+  This account-global display appears once in a collapsible `Capacity`
   section directly below `Current Workspace`, not in every project's role-mode
-  menu. Cdx has one row; CC has a base `Weekly` row and an optional `Fable` row.
+  menu. CC has `5h`, `Weekly`, and optional `Fable` rows; Cdx has a `Weekly` row.
   Headroom compares Cdx with CC Weekly because Fable is a model-scoped constraint.
-  Each row gets one thin centered pace bar: the fixed middle line is the
+  Missing session, weekly, or Fable data affects only its own row; the other
+  rows remain visible with independent unavailable placeholders. Each weekly
+  row gets one thin centered pace bar: the fixed middle line is the
   burn rate that would use exactly 100% at that provider's own reset, while the
   coloured marker shows the current linear burn rate. The shared English axis is
   `Over / Target / Spare`; fixed-width `Left`, signed `Margin`, and compact `Reset`

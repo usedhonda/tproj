@@ -176,4 +176,32 @@ final class RoleModeTests: XCTestCase {
         XCTAssertEqual(balance.fable?.remainingPercent, 60)
         XCTAssertEqual(balance.recommendedMain, "cc")
     }
+
+    func testSessionSnapshotUsesSelectedAccountAndLatestValidEntry() throws {
+        let data = Data("""
+        {"preferredAccountKey":"selected","accounts":{
+          "other":[{"name":"session","windowMinutes":300,"entries":[
+            {"capturedAt":"2026-08-14T00:00:00Z","resetsAt":"2026-08-14T05:00:00Z","usedPercent":99}
+          ]}],
+          "selected":[{"name":"session","windowMinutes":300,"entries":[
+            {"capturedAt":"2026-08-14T00:00:00Z","resetsAt":"2026-08-14T05:00:00Z","usedPercent":25},
+            {"capturedAt":"2026-08-14T01:00:00Z","resetsAt":"2026-08-14T05:00:00Z","usedPercent":101}
+          ]}]
+        }}
+        """.utf8)
+        let snapshot = try XCTUnwrap(CodexBarPace.latestSessionSnapshot(from: data, provider: "claude"))
+        XCTAssertEqual(snapshot.provider, "claude")
+        XCTAssertEqual(snapshot.usedPercent, 25)
+        XCTAssertEqual(snapshot.windowMinutes, 300)
+        XCTAssertEqual(snapshot.capturedAt, ISO8601DateFormatter().date(from: "2026-08-14T00:00:00Z"))
+        XCTAssertEqual(snapshot.resetsAt, ISO8601DateFormatter().date(from: "2026-08-14T05:00:00Z"))
+        XCTAssertNil(CodexBarPace.latestSessionSnapshot(from: Data("{}".utf8), provider: "claude"))
+        XCTAssertNil(CodexBarPace.latestSessionSnapshot(from: Data("""
+        {"preferredAccountKey":"selected","accounts":{"selected":[
+          {"name":"session","windowMinutes":300,"entries":[
+            {"capturedAt":"2026-08-14T05:00:00Z","resetsAt":"2026-08-14T05:00:00Z","usedPercent":20}
+          ]}
+        ]}}
+        """.utf8), provider: "claude"))
+    }
 }

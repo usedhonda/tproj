@@ -240,13 +240,29 @@ public enum CodexBarPace {
     }
 
     public static func latestWeeklySnapshot(from data: Data, provider: String) -> WeeklyPaceSnapshot? {
+        latestHistorySnapshot(from: data, provider: provider) {
+            $0.windowMinutes == 10_080 || $0.name == "weekly"
+        }
+    }
+
+    public static func latestSessionSnapshot(from data: Data, provider: String) -> WeeklyPaceSnapshot? {
+        latestHistorySnapshot(from: data, provider: provider) {
+            $0.name == "session" && $0.windowMinutes == 300
+        }
+    }
+
+    private static func latestHistorySnapshot(
+        from data: Data,
+        provider: String,
+        matching matches: (Window) -> Bool
+    ) -> WeeklyPaceSnapshot? {
         guard let history = try? JSONDecoder().decode(History.self, from: data),
               let key = history.preferredAccountKey,
               let windows = history.accounts[key],
-              let weekly = windows.first(where: { $0.windowMinutes == 10_080 || $0.name == "weekly" }) else {
+              let window = windows.first(where: matches) else {
             return nil
         }
-        for entry in weekly.entries.reversed() {
+        for entry in window.entries.reversed() {
             guard let capturedAtValue = entry.capturedAt,
                   let resetsAtValue = entry.resetsAt,
                   let usedPercent = entry.usedPercent,
@@ -261,7 +277,7 @@ public enum CodexBarPace {
                 capturedAt: capturedAt,
                 resetsAt: resetsAt,
                 usedPercent: usedPercent,
-                windowMinutes: weekly.windowMinutes
+                windowMinutes: window.windowMinutes
             )
         }
         return nil
