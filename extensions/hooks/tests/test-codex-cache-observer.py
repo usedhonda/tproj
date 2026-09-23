@@ -11,7 +11,7 @@ OBSERVER = Path(__file__).resolve().parents[1] / "tproj-codex-cache-observer"
 
 
 class CodexCacheObserverTest(unittest.TestCase):
-    def test_records_only_bound_codex_sample_and_redacts_payload(self):
+    def test_records_bound_codex_event_without_inventing_cache_sample(self):
         with tempfile.TemporaryDirectory() as base:
             root = Path(base)
             bin_dir = root / "bin"
@@ -26,17 +26,15 @@ class CodexCacheObserverTest(unittest.TestCase):
                 "TPROJ_CODEX_OBSERVER_PROCESS_CHAIN": "900 901 hook-shell;901 902 /usr/bin/codex;902 700 /bin/zsh",
             }
             payload = {"hook_event_name": "UserPromptSubmit", "session_id": "codex-session",
-                       "prompt": "do not persist", "transcript_path": "/private/transcript",
-                       "prompt_cache": {"warm": True, "expires_at": 2_000_000_001,
-                                        "read_tokens": 42}}
+                       "prompt": "do not persist", "transcript_path": "/private/transcript"}
             result = subprocess.run(["python3", str(OBSERVER), "prompt"], input=json.dumps(payload),
                                     text=True, capture_output=True, env=env)
             self.assertEqual(result.returncode, 0)
             files = list((root / "state").glob("*.json"))
             self.assertEqual(len(files), 1)
             state = json.loads(files[0].read_text())
-            self.assertTrue(state["sample_available"])
-            self.assertEqual(state["cache_sample"]["read_tokens"], 42)
+            self.assertFalse(state["sample_available"])
+            self.assertIsNone(state["cache_sample"])
             self.assertNotIn("session_id", state)
             self.assertNotIn("do not persist", files[0].read_text())
             self.assertNotIn("transcript", files[0].read_text())

@@ -19,5 +19,11 @@ writes nothing. A cache sample is reported as unavailable when the
 payload has no allow-listed `prompt_cache` fields; absence is not evidence that
 Codex lacks caching.
 
+No observed Codex hook payload has proven those `prompt_cache` fields are
+supplied, so the current expected result is `sample_available=false`. The
+hook's `session_id` has not been proven equal to the rollout JSONL filename's
+`session_meta.payload.id`; a JSONL token sample must not be joined by a
+guessed session or cwd.
+
 This state is diagnostic only. It does not prove that a Poke would help and is
 not an authorization or readiness signal for any sender.
