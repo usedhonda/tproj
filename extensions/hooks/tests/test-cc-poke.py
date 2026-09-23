@@ -54,6 +54,7 @@ class CCPokeTest(unittest.TestCase):
     def write_state(self, **changes):
         now = int(time.time())
         state = {
+            "version": 1,
             "session_id": "session-1", "pane_id": "%2", "tty": "/dev/ttys999",
             "pane_pid": 111, "role": "claude-p1", "alias": "demo",
             "owner_session": "test-session", "turn_state": "idle_notified",
@@ -105,6 +106,21 @@ class CCPokeTest(unittest.TestCase):
         self.write_state()
         result = self.run_sender()
         self.assertNotEqual(result[0], 0)
+        self.assertFalse(self.log.exists())
+
+    def test_draft_and_unknown_cache_version_refuse_without_send(self):
+        self.write_state()
+        fake = self.bin / "tmux"
+        fake.write_text(fake.read_text().replace("old output\\n❯", "old output\\n❯ draft"))
+        result = self.run_sender()
+        self.assertNotEqual(result[0], 0)
+        self.assertFalse(self.log.exists())
+
+        fake.write_text(fake.read_text().replace("❯ draft", "❯"))
+        self.write_state(version=2)
+        result = self.run_sender()
+        self.assertNotEqual(result[0], 0)
+        self.assertIn("unknown cache version", result[1])
         self.assertFalse(self.log.exists())
 
     def test_old_agent_binding_cannot_send_to_new_or_missing_agent(self):

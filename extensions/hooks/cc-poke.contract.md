@@ -10,9 +10,9 @@ non-symlink cache directory and all of these hold: session id, pane id, tty,
 pane PID, role, alias, and owner tmux session match a fresh live tagged Claude
 pane; one live `claude` process remains below the pane and its PID plus start
 epoch match the observer's recorded binding; the prompt cache expiry is in the
-future; a bounded recent non-`[keep-alive]`
-user prompt exists; and a fresh `Notification:idle_prompt` follows that prompt.
-`Stop` and an empty prompt glyph alone are never sufficient.
+future; a bounded recent real non-`[keep-alive]` user prompt exists; and a
+fresh `Notification:idle_prompt` follows that prompt. `Stop` and an empty
+prompt glyph alone are never sufficient.
 The observer resets prior turn evidence when the agent binding changes, even
 when a resumed session keeps the same tmux pane and Claude session ID.
 
