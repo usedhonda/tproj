@@ -80,7 +80,9 @@ def record(event, payload, identity):
             previous = {}
         if not isinstance(previous, dict):
             previous = {}
-        if previous.get("session_id") != session_id or previous.get("pane_id") != identity["pane_id"]:
+        if (previous.get("session_id") != session_id or
+                previous.get("pane_id") != identity["pane_id"] or
+                previous.get("pane_pid") != identity["pane_pid"]):
             previous = {}
         state = {**previous, **identity, "version": 1, "session_id": session_id,
                  "observed_at": int(time.time())}
@@ -94,12 +96,18 @@ def record(event, payload, identity):
             if not isinstance(prompt, str) or not prompt.strip():
                 return
             state["turn_state"] = "running"
+            state.pop("idle_prompt_at", None)
             if not prompt.lstrip().startswith(KEEP_ALIVE_MARKER):
                 state["last_user_prompt_at"] = int(time.time())
         elif event == "stop":
             # Another Stop hook may block completion and resume this turn.
             # This event is evidence of Stop invocation, not live idle.
             state["turn_state"] = "stop_seen"
+        elif event == "notification":
+            if payload.get("notification_type") != "idle_prompt":
+                return
+            state["turn_state"] = "idle_notified"
+            state["idle_prompt_at"] = int(time.time())
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root,
                                          prefix=".cc-cache-", delete=False) as tmp:
             os.chmod(tmp.name, 0o600)
@@ -114,7 +122,7 @@ def record(event, payload, identity):
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ("statusline", "prompt", "stop"):
+    if len(sys.argv) != 2 or sys.argv[1] not in ("statusline", "prompt", "stop", "notification"):
         return 0
     identity = pane_identity()
     if identity is None:

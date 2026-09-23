@@ -89,6 +89,7 @@ def merge(document: dict[str, Any], platform: str) -> dict[str, Any]:
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec|functions.exec_command", f"{home}/tproj-completion-guard --event posttool")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-cc-cache-observer prompt")
+        ensure_entry(hooks, "Notification", "idle_prompt", f"{home}/tproj-cc-cache-observer notification")
         ensure_entry(hooks, "Stop", "", f"{home}/tproj-completion-guard")
         ensure_entry(hooks, "Stop", "", f"{home}/tproj-cc-cache-observer stop")
     else:

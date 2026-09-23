@@ -49,6 +49,7 @@ def hook_command_strings(home: Path) -> tuple[set[str], set[str]]:
         "$HOME/bin/tproj-inbox-check",
         "$HOME/bin/tproj-completion-guard",
         "$HOME/bin/tproj-cc-cache-observer prompt",
+        "$HOME/bin/tproj-cc-cache-observer notification",
         "$HOME/bin/tproj-cc-cache-observer stop",
     }
     codex = {
