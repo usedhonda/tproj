@@ -22,6 +22,7 @@ projects:
   # Local project (enabled at startup)
   - path: /Users/<username>/projects/claude/tproj
     alias: tproj
+    # keep_warm_hours: 1   # Local Claude column only; 1, 3, 6, or 12. Omit for Off.
 
   # Local project (disabled at startup, can be added later)
   - path: /Users/<username>/projects/claude/statusline
@@ -52,6 +53,11 @@ projects:
 #           false means excluded at startup but available via --add.
 #           When a workspace session is stopped from the GUI, the current running set
 #           is written back here and becomes the next manual Start set.
+#
+# keep_warm_hours : 1 | 3 | 6 | 12 (optional, default: Off)
+#           Prompt-cache keep-warm for a local Claude column only. Remote and
+#           Codex columns are never poked. The GUI requires the local owner
+#           service to report a pokeable session nearing cache expiry.
 
 # ===== Advanced options =====
 #
