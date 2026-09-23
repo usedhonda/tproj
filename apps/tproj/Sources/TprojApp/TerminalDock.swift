@@ -33,9 +33,6 @@ private final class TerminalSession {
     let path: String
     let view: TrackedTerminalView
     let startupDirectory: URL
-    var hasRunCommand = false
-    var commandRunning = false
-    var hidden = false
     var shellPID: pid_t?
     var shellStartSeconds: UInt64?
 
@@ -71,44 +68,62 @@ private final class TerminalSession {
 @MainActor
 final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerminalViewDelegate {
     @Published private(set) var visibleProjectPath: String?
-    @Published private(set) var displayName = ""
+    @Published private(set) var tabPaths: [String] = []
     @Published private(set) var sidebarWidth: CGFloat = 242
     private var sessions: [String: TerminalSession] = [:]
+    private var titles: [String: String] = [:]
+    private var closingPaths: Set<String> = []
     private weak var window: NSWindow?
     private var originalOrigin: NSPoint?
     private let dockWidth: CGFloat = 620
 
     func toggle(projectPath: String, title: String, in mainWindow: NSWindow?) {
         guard FileManager.default.fileExists(atPath: projectPath) else { return }
-        if visibleProjectPath == projectPath { hide(); return }
-        if visibleProjectPath != nil { hide() }
+        if tabPaths.contains(projectPath) { closeTab(path: projectPath); return }
+        guard !closingPaths.contains(projectPath) else { return }
         guard let session = sessions[projectPath] ?? createSession(path: projectPath) else { return }
         sessions[projectPath] = session
-        session.hidden = false
-        window = mainWindow ?? NSApp.windows.first(where: { $0.title == "tproj" })
-        sidebarWidth = window?.frame.width ?? sidebarWidth
-        originalOrigin = window?.frame.origin
-        displayName = title
+        titles[projectPath] = title
+        if !tabPaths.contains(projectPath) { tabPaths.append(projectPath) }
+        if visibleProjectPath == nil {
+            window = mainWindow ?? NSApp.windows.first(where: { $0.title == "tproj" })
+            sidebarWidth = window?.frame.width ?? sidebarWidth
+            originalOrigin = window?.frame.origin
+            resizeWindow(expanded: true)
+        }
         visibleProjectPath = projectPath
-        resizeWindow(expanded: true)
         window?.makeKeyAndOrderFront(nil)
     }
 
     func hide() {
-        guard let path = visibleProjectPath else { return }
+        guard visibleProjectPath != nil else { return }
         visibleProjectPath = nil
-        sessions[path]?.hidden = true
         resizeWindow(expanded: false)
-        if let session = sessions[path], session.hasRunCommand && !session.commandRunning {
-            release(path: path)
-        }
     }
 
     func end() {
         guard let path = visibleProjectPath else { return }
-        hide()
+        closeTab(path: path)
+    }
+
+    func selectTab(path: String) {
+        guard tabPaths.contains(path) else { return }
+        visibleProjectPath = path
+    }
+
+    func closeTab(path: String) {
+        guard let index = tabPaths.firstIndex(of: path) else { return }
+        tabPaths.remove(at: index)
+        titles.removeValue(forKey: path)
+        closingPaths.insert(path)
+        if visibleProjectPath == path {
+            if tabPaths.isEmpty { hide() }
+            else { visibleProjectPath = tabPaths[min(index, tabPaths.count - 1)] }
+        }
         release(path: path)
     }
+
+    func title(for path: String) -> String { titles[path] ?? URL(fileURLWithPath: path).lastPathComponent }
 
     func openFinder() {
         guard let path = visibleProjectPath else { return }
@@ -126,7 +141,8 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
 
     private func handleTermination(source: TerminalView) {
         guard let path = sessions.first(where: { $0.value.view === source })?.key else { return }
-        if visibleProjectPath == path { hide() }
+        if tabPaths.contains(path) { closeTab(path: path) }
+        closingPaths.remove(path)
         sessions.removeValue(forKey: path)?.cleanup()
     }
 
@@ -155,16 +171,13 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
         view.processDelegate = self
         view.marker = nonce
         let session = TerminalSession(path: path, view: view, startupDirectory: startup)
-        view.onCommandState = { [weak self, weak session] running, pid in
-            guard let self, let session else { return }
+        view.onCommandState = { [weak session] _, pid in
+            guard let session else { return }
             if session.shellPID == nil, let info = TerminalSession.processInfo(pid), info.pbi_ppid == getpid() {
                 session.shellPID = pid
                 session.shellStartSeconds = info.pbi_start_tvsec
             }
             guard session.shellPID == pid else { return }
-            if running { session.hasRunCommand = true }
-            session.commandRunning = running
-            if !running && session.hidden && session.hasRunCommand { self.release(path: path) }
         }
         var environment = ProcessInfo.processInfo.environment
         environment["TERM"] = "xterm-256color"
@@ -205,7 +218,10 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
 
     private func release(path: String) {
         guard let session = sessions[path] else { return }
-        if session.release() { sessions.removeValue(forKey: path) }
+        if session.release() {
+            sessions.removeValue(forKey: path)
+            closingPaths.remove(path)
+        }
     }
 }
 
@@ -236,8 +252,28 @@ struct TerminalDockView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 2) {
+                ForEach(controller.tabPaths, id: \.self) { tabPath in
+                    HStack(spacing: 3) {
+                        Button(controller.title(for: tabPath)) { controller.selectTab(path: tabPath) }
+                            .lineLimit(1)
+                        Button { controller.closeTab(path: tabPath) } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Close \(controller.title(for: tabPath))")
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 5)
+                    .background(tabPath == path ? Color.accentColor.opacity(0.22) : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .background(GhosttyTheme.current.background.opacity(GhosttyTheme.current.appBackgroundOpacity))
             HStack(spacing: 8) {
-                Text(controller.displayName)
+                Text(controller.title(for: path))
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                 Spacer()
