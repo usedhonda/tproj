@@ -10,14 +10,17 @@ It records only the hashed session binding, tmux pane role/id, pane process id,
 event, a small allow-listed `prompt_cache` sample, and the latest numeric token
 sample from the exact hook `transcript_path`. The transcript must be below
 `~/.codex/sessions/` and its `session_meta.payload.id` must equal the hook
-`session_id`; otherwise the token sample is unavailable. Prompt text,
+`session_id`. Its metadata must also identify the root `cli` / `codex-tui` /
+`user` thread; subagent and other same-process sessions write no state.
+Otherwise the token sample is unavailable. Prompt text,
 transcript paths, raw payloads, aliases, owner session names, and the raw
 session identifier are never persisted.
 
 It requires positive evidence that `TMUX_PANE` is a live `codex-pN` pane and
 that the observer's process ancestry reaches that pane's process while
 containing a process whose basename is exactly `codex`; process arguments are
-never read. Missing, ambiguous, dead, or remote identity fails closed and
+never read. Process ancestry alone is not a thread identity: one Codex process
+can host multiple transcripts. Missing, ambiguous, dead, or remote identity fails closed and
 writes nothing. A cache sample is reported as unavailable when the
 payload has no allow-listed `prompt_cache` fields; absence is not evidence that
 Codex lacks caching.

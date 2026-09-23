@@ -109,16 +109,20 @@ def transcript_token_sample(payload):
     raw_path = payload.get("transcript_path")
     session_id = payload.get("session_id")
     if not isinstance(raw_path, str) or not isinstance(session_id, str):
-        return None
+        return False, None
     try:
         path = Path(raw_path).resolve(strict=True)
         sessions = (Path.home() / ".codex/sessions").resolve(strict=True)
         if not path.is_relative_to(sessions) or path.suffix != ".jsonl" or not path.is_file():
-            return None
+            return False, None
         with path.open("rb") as stream:
             first = json.loads(stream.readline(65_537))
-            if first.get("type") != "session_meta" or first.get("payload", {}).get("id") != session_id:
-                return None
+            meta = first.get("payload", {})
+            if (first.get("type") != "session_meta" or meta.get("id") != session_id
+                    or meta.get("source") != "cli"
+                    or meta.get("originator") != "codex-tui"
+                    or meta.get("thread_source") != "user"):
+                return False, None
             size = stream.seek(0, os.SEEK_END)
             stream.seek(max(0, size - 65_536))
             tail = stream.read(65_536)
@@ -134,18 +138,22 @@ def transcript_token_sample(payload):
                 datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
                 if (type(input_tokens) is int and type(cached_tokens) is int
                         and 0 <= cached_tokens <= input_tokens):
-                    return {"at": timestamp, "input_tokens": input_tokens,
-                            "cached_input_tokens": cached_tokens}
+                    return True, {"at": timestamp, "input_tokens": input_tokens,
+                                  "cached_input_tokens": cached_tokens}
             except (KeyError, TypeError, ValueError, AttributeError):
                 continue
+        return True, None
     except (OSError, ValueError, TypeError, AttributeError):
         pass
-    return None
+    return False, None
 
 
 def record(event, payload, identity):
     session_id = payload.get("session_id")
     if not isinstance(session_id, str) or not 0 < len(session_id) <= 128:
+        return
+    transcript_valid, token_sample = transcript_token_sample(payload)
+    if not transcript_valid:
         return
     root = state_dir()
     if root.is_symlink():
@@ -170,7 +178,7 @@ def record(event, payload, identity):
         sample = cache_sample(payload)
         state["cache_sample"] = sample
         state["sample_available"] = sample is not None
-        state["last_token_sample"] = transcript_token_sample(payload)
+        state["last_token_sample"] = token_sample
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root,
                                          prefix=".codex-cache-", delete=False) as tmp:
             os.chmod(tmp.name, 0o600)
