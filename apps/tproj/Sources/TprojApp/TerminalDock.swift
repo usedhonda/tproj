@@ -33,13 +33,15 @@ private final class TerminalSession {
     let path: String
     let view: TrackedTerminalView
     let startupDirectory: URL
+    let backgroundImage: NSImage?
     var shellPID: pid_t?
     var shellStartSeconds: UInt64?
 
-    init(path: String, view: TrackedTerminalView, startupDirectory: URL) {
+    init(path: String, view: TrackedTerminalView, startupDirectory: URL, backgroundImage: NSImage?) {
         self.path = path
         self.view = view
         self.startupDirectory = startupDirectory
+        self.backgroundImage = backgroundImage
     }
 
     @discardableResult
@@ -131,6 +133,7 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
     }
 
     func terminalView(for path: String) -> NSView? { sessions[path]?.view }
+    func backgroundImage(for path: String) -> NSImage? { sessions[path]?.backgroundImage }
 
     nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
@@ -164,13 +167,15 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
     private func createSession(path: String) -> TerminalSession? {
         let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         guard let startup = makeZshStartup(nonce: nonce, projectPath: path) else { return nil }
+        let imagePath = URL(fileURLWithPath: path).appendingPathComponent(".local/tproj-pane-bg/cc.vertical.png").path
+        let backgroundImage = NSImage(contentsOfFile: imagePath)
         let view = TrackedTerminalView(frame: NSRect(x: 0, y: 0, width: dockWidth, height: 520))
         view.nativeForegroundColor = .white
         view.nativeBackgroundColor = NSColor(GhosttyTheme.current.background)
             .withAlphaComponent(GhosttyTheme.current.appBackgroundOpacity)
         view.processDelegate = self
         view.marker = nonce
-        let session = TerminalSession(path: path, view: view, startupDirectory: startup)
+        let session = TerminalSession(path: path, view: view, startupDirectory: startup, backgroundImage: backgroundImage)
         view.onCommandState = { [weak session] _, pid in
             guard let session else { return }
             if session.shellPID == nil, let info = TerminalSession.processInfo(pid), info.pbi_ppid == getpid() {
@@ -302,6 +307,22 @@ struct TerminalDockView: View {
             .frame(height: 36, alignment: .bottom)
             .background(GhosttyTheme.current.backgroundLighter.opacity(GhosttyTheme.current.appBackgroundOpacity))
             TerminalHostView(controller: controller, path: path)
+                .overlay {
+                    if let image = controller.backgroundImage(for: path) {
+                        GeometryReader { geometry in
+                            Image(nsImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: geometry.size.width, height: geometry.size.height)
+                                .clipped()
+                                .saturation(0.6)
+                                .brightness(-0.25)
+                                .opacity(0.20)
+                                .blendMode(.screen)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                }
                 .overlay {
                     RoundedRectangle(cornerRadius: 4)
                         .stroke(GhosttyTheme.current.cardBorder, lineWidth: 1)
