@@ -382,8 +382,17 @@ check_claude_aggregate() {
 }
 
 # --- Main loop ---
+# macOS /bin/bash 3.2 leaks memory in long-running loops full of $(...) and
+# process substitution: after 12 days this daemon held 1.5GB while the system ran out
+# of swap. Exit after MAX_RUNTIME and let launchd KeepAlive start a fresh process.
+MAX_RUNTIME_SEC="${MEMORY_GUARD_MAX_RUNTIME_SEC:-3600}"
+started_at=$(date +%s)
 loop_count=0
 while true; do
+  if (( $(date +%s) - started_at >= MAX_RUNTIME_SEC )); then
+    log "Restarting after ${MAX_RUNTIME_SEC}s to shed bash memory growth"
+    exit 0
+  fi
   # Every loop: check for runaway processes (fast, lightweight)
   check_runaway_processes
 
