@@ -1782,7 +1782,9 @@ final class AppViewModel: ObservableObject {
     @Published var keepWarmSessionsByColumn: [Int: KeepWarmSession] = [:]
     @Published var keepWarmOutcomesByColumn: [Int: KeepWarmPokeOutcome] = [:]
     @Published var claudeCacheObservationsByColumn: [Int: ClaudeCacheObservation] = [:]
-    @Published var codexCacheObservationsByColumn: [Int: CodexCacheObservation] = [:]
+    @Published var codexCacheStatesByColumn: [Int: CodexPaneCacheState] = [:]
+    @Published var codexPaneIDByColumn: [Int: String] = [:]
+    @Published var codexPokeOutcomesByColumn: [Int: KeepWarmPokeOutcome] = [:]
 
     struct KeepWarmPokeOutcome {
         let at: Date
@@ -3798,10 +3800,20 @@ final class AppViewModel: ObservableObject {
         // The CCSB list can be healthy yet omit a Claude session observed by
         // this app. Fill only those gaps with local, display-only observations.
         await refreshLocalCacheObservations()
-        keepWarmSessionsByColumn.merge(mapped) { _, apiSession in apiSession }
+        // CCSB owns tty and pokeable; a time CCSB lacks (it can miss the last user
+        // prompt of a session it started watching late) is filled from this app's
+        // own observer, so the display and the keep-warm window match statusline.
+        keepWarmSessionsByColumn.merge(mapped) { local, api in
+            KeepWarmSession(tty: api.tty,
+                            cacheExpiresAt: api.cacheExpiresAt ?? local.cacheExpiresAt,
+                            lastUserPromptAt: api.lastUserPromptAt ?? local.lastUserPromptAt,
+                            pokeable: api.pokeable,
+                            recacheTokensIfCold: api.recacheTokensIfCold ?? local.recacheTokensIfCold)
+        }
 
         for column in liveColumns where column.hostLabel == "local" {
-            guard let session = mapped[column.column], let tty = session.tty,
+            guard mapped[column.column] != nil, let session = keepWarmSessionsByColumn[column.column],
+                  let tty = session.tty,
                   let expiry = session.cacheExpiresAt else { continue }
             let hours = keepWarmHours(forProjectPath: column.projectPath)
             guard KeepWarmDecision.shouldPoke(session: session, now: Date(), hours: hours),
@@ -3818,7 +3830,7 @@ final class AppViewModel: ObservableObject {
         guard paneResult.exitCode == 0 else {
             keepWarmSessionsByColumn = [:]
             claudeCacheObservationsByColumn = [:]
-            codexCacheObservationsByColumn = [:]
+            codexCacheStatesByColumn = [:]
             return
         }
         let directory = URL(fileURLWithPath: NSHomeDirectory())
@@ -3856,35 +3868,48 @@ final class AppViewModel: ObservableObject {
             observations.count == 1 ? observations[0] : nil
         }
 
-        let codexDirectory = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent(".local/state/tproj/codex-cache", isDirectory: true)
-        let codexFiles = (try? FileManager.default.contentsOfDirectory(
-            at: codexDirectory, includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles])) ?? []
-        let codexObservations = codexFiles.filter { $0.pathExtension == "json" }.compactMap {
-            file -> CodexCacheObservation? in
-            guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
-                  let data = try? Data(contentsOf: file) else { return nil }
-            return try? CodexCacheObservation.decode(data)
+        await refreshCodexCacheStates()
+    }
+
+    private func refreshCodexCacheStates() async {
+        guard let launch = runtimeLaunchCommand(commandName: "tproj-codex-cache-state", arguments: ["list"])
+                ?? fallbackLaunchCommand(commandName: "tproj-codex-cache-state", arguments: ["list"]) else {
+            codexCacheStatesByColumn = [:]
+            return
         }
-        var codexMapped: [Int: [CodexCacheObservation]] = [:]
-        for line in paneResult.stdout.split(separator: "\n") {
-            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-            guard parts.count == 7, parts[2] == "0", let pid = Int(parts[3]),
-                  parts[4].hasPrefix("codex-p"), parts[6] == TmuxTargets.session else { continue }
-            let columns = liveColumns.filter {
-                $0.hostLabel == "local" && $0.codexPaneIDs.contains(parts[0])
+        let result = await runCommandAsync(launch.launchPath, launch.arguments)
+        guard result.exitCode == 0,
+              let states = try? CodexPaneCacheState.decodeMap(Data(result.stdout.utf8)) else {
+            codexCacheStatesByColumn = [:]
+            return
+        }
+        var mapped: [Int: CodexPaneCacheState] = [:]
+        var paneIDs: [Int: String] = [:]
+        for column in liveColumns where column.hostLabel == "local" && column.codexPaneIDs.count == 1 {
+            let paneID = column.codexPaneIDs[0]
+            if let state = states[paneID] {
+                mapped[column.column] = state
+                paneIDs[column.column] = paneID
             }
-            guard columns.count == 1, let column = columns.first else { continue }
-            let matches = codexObservations.filter {
-                $0.matches(paneID: parts[0], panePID: pid, role: parts[4], now: now)
-            }
-            guard matches.count == 1 else { continue }
-            codexMapped[column.column, default: []].append(matches[0])
         }
-        codexCacheObservationsByColumn = codexMapped.compactMapValues { observations in
-            observations.count == 1 ? observations[0] : nil
+        codexCacheStatesByColumn = mapped
+        codexPaneIDByColumn = paneIDs
+    }
+
+    /// Manual Codex Poke. The helper re-checks turn state, log quiet time and prompt
+    /// state at send time and refuses with a reason, so a stale menu cannot misfire.
+    func pokeCodex(column: LiveColumn) async {
+        guard let paneID = codexPaneIDByColumn[column.column],
+              let launch = runtimeLaunchCommand(commandName: "tproj-codex-cache-state", arguments: ["poke", paneID])
+                ?? fallbackLaunchCommand(commandName: "tproj-codex-cache-state", arguments: ["poke", paneID]) else {
+            codexPokeOutcomesByColumn[column.column] = KeepWarmPokeOutcome(at: Date(), result: "unavailable")
+            return
         }
+        let result = await runCommandAsync(launch.launchPath, launch.arguments)
+        let reason = (try? JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any])?["reason"] as? String
+        codexPokeOutcomesByColumn[column.column] = KeepWarmPokeOutcome(
+            at: Date(), result: result.exitCode == 0 ? "sent" : "skipped: \(reason ?? "refused")")
+        await refreshCodexCacheStates()
     }
 
     private func sendKeepWarmPoke(tty: String, expiry: Date, column: Int, baseURL: URL) async {
@@ -5359,10 +5384,16 @@ struct ContentView: View {
                 .help("Drop column #\(column.column)")
             }
 
-            // Keep-warm status and three controls share one line; details remain in the menu tooltip.
+            // Cache status gets its own line so CC and Cdx both stay readable in the
+            // narrow panel; details and controls live in each menu.
+            if column.hostLabel == "local", !(column.claudePaneIDs.isEmpty && column.codexPaneIDs.isEmpty) {
+                HStack(spacing: 8) {
+                    cacheStatusRow(column)
+                    codexCacheStatusRow(column)
+                    Spacer(minLength: 0)
+                }
+            }
             HStack(spacing: 2) {
-                cacheStatusRow(column)
-                codexCacheStatusRow(column)
                 Spacer(minLength: 0)
                 ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
@@ -5908,7 +5939,10 @@ struct ContentView: View {
             let session = vm.keepWarmSessionsByColumn[column.column]
             let outcome = vm.keepWarmOutcomesByColumn[column.column]
             let remaining = session?.cacheExpiresAt?.timeIntervalSinceNow
-            let unavailable = hours > 0 && (session?.lastUserPromptAt == nil || remaining == nil)
+            // Show the cache time whenever the expiry is known (as statusline does).
+            // A missing last-prompt time only means the keep-warm window is unknown.
+            let unavailable = hours > 0 && remaining == nil
+            let windowUnknown = hours > 0 && remaining != nil && session?.lastUserPromptAt == nil
             let windowOver = hours > 0 && session?.lastUserPromptAt.map {
                 Date().timeIntervalSince($0) >= Double(hours * 3600)
             } == true
@@ -5924,7 +5958,7 @@ struct ContentView: View {
                 if hours == 0 { return "\(cacheText) · Off" }
                 if unavailable { return "Awaiting · \(hours)h" }
                 if windowOver { return "Done · \(hours)h" }
-                return "\(cacheText) · \(hours)h\(issue ? " !" : "")"
+                return "\(cacheText) · \(hours)h\(windowUnknown ? "?" : "")\(issue ? " !" : "")"
             }()
             let tint: Color = {
                 if hours == 0 || windowOver || unavailable { return GhosttyTheme.current.textTertiary }
@@ -5950,13 +5984,13 @@ struct ContentView: View {
                 }
                 Button("Recache if cold: ~440k tok") {}.disabled(true)
             } label: {
-                Text(label)
-                    .font(GhosttyTheme.current.font(size: 12, weight: .medium, monospaced: true))
+                Text("CC \(label)")
+                    .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
                     .foregroundStyle(tint)
                     .lineLimit(1)
-                    .truncationMode(.tail)
             }
             .menuStyle(.borderlessButton)
+            .fixedSize()
             .help(keepWarmTooltip(session: session, hours: hours, outcome: outcome))
         }
     }
@@ -5964,34 +5998,45 @@ struct ContentView: View {
     @ViewBuilder
     private func codexCacheStatusRow(_ column: LiveColumn) -> some View {
         if column.hostLabel == "local", !column.codexPaneIDs.isEmpty {
-            let observation = vm.codexCacheObservationsByColumn[column.column]
-            let sample = observation?.lastTokenSample
-            let shortLabel = if let sample, sample.inputTokens > 0 {
-                "Cdx \(Int((Double(sample.cachedInputTokens) / Double(sample.inputTokens) * 100).rounded()))% hit"
-            } else {
-                "Cdx · --"
-            }
-            let diagnostic = if let sample {
-                "latest token sample: input \(sample.inputTokens), cached \(sample.cachedInputTokens)"
-            } else {
-                "latest token sample: unavailable"
-            }
+            let state = vm.codexCacheStatesByColumn[column.column]
+            let sample = state?.lastTokenSample
+            let outcome = vm.codexPokeOutcomesByColumn[column.column]
+            let hit: String = {
+                guard let sample, sample.inputTokens > 0 else { return "--" }
+                return "\(Int((Double(sample.cachedInputTokens) / Double(sample.inputTokens) * 100).rounded()))%"
+            }()
+            let turn = state?.turn ?? "unknown"
+            // A turn cut off mid-run (Esc) never logs task_complete; after 10 quiet
+            // minutes call it stalled rather than busy. Poke stays off either way.
+            let stalled = turn == "working" && (state?.quietSeconds ?? 0) > 600
+            let label = "Cdx \(hit) · \(stalled ? "stalled" : turn == "working" ? "busy" : turn == "idle" ? "idle" : "--")"
+            let blockReason = state == nil ? "no session log" : state?.pokeBlockReason
             Menu {
-                Text(diagnostic)
-                    .font(GhosttyTheme.current.font(size: 11, weight: .regular, monospaced: true))
-                Button("Poke") {}
-                    .disabled(true)
-                Text("Poke disabled: safety is not verified; no pane input is sent.")
-                    .font(GhosttyTheme.current.font(size: 10, weight: .regular))
+                Text("cache hit (last turn): \(hit)")
+                if let sample {
+                    Text("input \(sample.inputTokens) / cached \(sample.cachedInputTokens)")
+                }
+                Text("turn: \(turn), prompt: \(state?.promptState ?? "--")")
+                Button("Poke now") {
+                    Task { await vm.pokeCodex(column: column) }
+                }
+                .disabled(blockReason != nil)
+                if let blockReason {
+                    Text("Poke off: \(blockReason)")
+                }
+                if let outcome {
+                    Text("last poke: \(DateFormatter.localizedString(from: outcome.at, dateStyle: .none, timeStyle: .short)) \(outcome.result)")
+                }
+                Text("Codex has no published cache expiry; poke is manual only.")
             } label: {
-                Text(shortLabel)
+                Text(label)
                     .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
-                    .foregroundStyle(GhosttyTheme.current.textTertiary)
+                    .foregroundStyle(turn == "idle" ? GhosttyTheme.current.textSecondary : GhosttyTheme.current.textTertiary)
                     .lineLimit(1)
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("Diagnostic only: \(diagnostic). Not a cache expiry or human-turn signal.")
+            .help("Codex cache hit of the last turn and turn state. Poke is sent only when the turn is complete, the session log is quiet and the pane is not typing.")
         }
     }
 

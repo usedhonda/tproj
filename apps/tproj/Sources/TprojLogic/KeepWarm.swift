@@ -107,36 +107,30 @@ public struct CodexTokenSample: Decodable, Sendable, Equatable {
     }
 }
 
-/// Read-only diagnostic state written by the local Codex cache observer.
-/// It is not an expiry signal, human-turn signal, or Poke authorization.
-public struct CodexCacheObservation: Decodable, Sendable {
-    public let version: Int
-    public let paneID: String
-    public let panePID: Int
-    public let role: String
-    public let observedAt: Date
+/// Codex pane cache state reported by `tproj-codex-cache-state list`.
+/// Codex publishes no cache expiry, so this is a hit ratio plus the turn state
+/// the manual Poke is gated on; the helper re-checks everything before sending.
+public struct CodexPaneCacheState: Decodable, Sendable {
+    public let turn: String
+    public let quietSeconds: Int?
+    public let promptState: String
     public let lastTokenSample: CodexTokenSample?
 
     enum CodingKeys: String, CodingKey {
-        case version
-        case paneID = "pane_id"
-        case panePID = "pane_pid"
-        case role
-        case observedAt = "observed_at"
+        case turn
+        case quietSeconds = "quiet_seconds"
+        case promptState = "prompt_state"
         case lastTokenSample = "last_token_sample"
     }
 
-    public static func decode(_ data: Data) throws -> Self {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .secondsSince1970
-        return try decoder.decode(Self.self, from: data)
+    public static func decodeMap(_ data: Data) throws -> [String: Self] {
+        try JSONDecoder().decode([String: Self].self, from: data)
     }
 
-    public func matches(paneID: String, panePID: Int, role: String, now: Date) -> Bool {
-        version == 1 && !self.paneID.isEmpty && self.paneID == paneID &&
-        self.panePID == panePID && self.role == role && role.hasPrefix("codex-p") &&
-        observedAt <= now && now.timeIntervalSince(observedAt) <= 300 &&
-        (lastTokenSample.map { $0.inputTokens >= 0 && $0.cachedInputTokens >= 0 &&
-            $0.cachedInputTokens <= $0.inputTokens } ?? true)
+    /// The helper's cheap refusals; the prompt (typing) check runs only at send time.
+    public var pokeBlockReason: String? {
+        if turn != "idle" { return "turn \(turn)" }
+        guard let quietSeconds, quietSeconds >= 20 else { return "log still active" }
+        return nil
     }
 }

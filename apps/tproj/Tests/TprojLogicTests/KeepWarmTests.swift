@@ -58,20 +58,19 @@ final class KeepWarmTests: XCTestCase {
         }
     }
 
-    func testCodexObservationBindsExactLivePaneAndExposesDiagnosticSampleOnly() throws {
+    func testCodexPaneStateBlocksPokeUnlessIdleQuietAndNotTyping() throws {
         let data = Data("""
-        {"version":1,"pane_id":"%21","pane_pid":321,"role":"codex-p2",
-        "observed_at":1800000000,"last_token_sample":{"at":"2026-09-24T02:00:00Z",
-        "input_tokens":12000,"cached_input_tokens":9000}}
+        {"%21":{"turn":"idle","quiet_seconds":45,"prompt_state":"idle",
+          "last_token_sample":{"at":"2026-09-24T02:00:00Z","input_tokens":12000,"cached_input_tokens":9000}},
+         "%22":{"turn":"working","quiet_seconds":1,"prompt_state":"idle","last_token_sample":null},
+         "%23":{"turn":"idle","quiet_seconds":5,"prompt_state":"idle","last_token_sample":null},
+         "%24":{"turn":"idle","quiet_seconds":45,"prompt_state":"typing","last_token_sample":null}}
         """.utf8)
-        let observation = try CodexCacheObservation.decode(data)
-        let now = Date(timeIntervalSince1970: 1_800_000_001)
-
-        XCTAssertTrue(observation.matches(paneID: "%21", panePID: 321, role: "codex-p2", now: now))
-        XCTAssertFalse(observation.matches(paneID: "%22", panePID: 321, role: "codex-p2", now: now))
-        XCTAssertFalse(observation.matches(paneID: "%21", panePID: 322, role: "codex-p2", now: now))
-        XCTAssertFalse(observation.matches(paneID: "%21", panePID: 321, role: "codex-p3", now: now))
-        XCTAssertEqual(observation.lastTokenSample?.inputTokens, 12_000)
-        XCTAssertEqual(observation.lastTokenSample?.cachedInputTokens, 9_000)
+        let states = try CodexPaneCacheState.decodeMap(data)
+        XCTAssertNil(states["%21"]?.pokeBlockReason)
+        XCTAssertEqual(states["%21"]?.lastTokenSample?.cachedInputTokens, 9_000)
+        XCTAssertEqual(states["%22"]?.pokeBlockReason, "turn working")
+        XCTAssertEqual(states["%23"]?.pokeBlockReason, "log still active")
+        XCTAssertNil(states["%24"]?.pokeBlockReason, "typing is checked by the helper at send time")
     }
 }

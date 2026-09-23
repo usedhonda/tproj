@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Read Codex pane cache state from its own session log, and poke it only when idle.
+
+  tproj-codex-cache-state list          JSON: {pane_id: {...}} for every Codex pane
+  tproj-codex-cache-state poke <pane>   send one fixed keep-alive turn, or refuse
+
+Codex writes no expiry, so this reports the last cache hit ratio and the turn
+state, never a countdown. A pane is bound to the newest interactive root session
+log (source cli, interactive originator, user thread) whose cwd is the pane's @project.
+Poke is manual and fail-closed: it sends only when the bound log's last turn has
+completed, the log has been quiet for QUIET_SECONDS, and the pane is not typing.
+"""
+
+import json
+import os
+import shutil
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+SESSIONS = Path.home() / ".codex/sessions"
+QUIET_SECONDS = 20
+SEARCH_DAYS = 14
+TAIL_BYTES = 1_048_576
+POKE_TEXT = '[keep-alive] Reply with just "ok". Do nothing else.'
+
+
+def tmux(*args):
+    result = subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=3)
+    return result.stdout if result.returncode == 0 else ""
+
+
+def codex_panes():
+    out = tmux("list-panes", "-a", "-F",
+               "#{pane_id}|#{pane_dead}|#{@role}|#{@alias}|#{@project}|#{@prompt_state}")
+    panes = {}
+    for line in out.splitlines():
+        parts = line.split("|")
+        if len(parts) == 6 and parts[1] == "0" and parts[2].startswith("codex-p") and parts[4]:
+            panes[parts[0]] = {"alias": parts[3], "project": parts[4], "prompt_state": parts[5]}
+    return panes
+
+
+def resolved_prompt_state(alias):
+    """Use tproj-msg's sendability resolution, not the raw @prompt_state option.
+
+    The raw option goes stale (it kept saying "typing" for minutes over an empty
+    composer); tproj-msg ignores a stale signal and falls back to reading the pane.
+    Returns idle / suggestion / typing / unknown / offline."""
+    try:
+        result = subprocess.run([shutil.which("tproj-msg") or str(Path.home() / "bin/tproj-msg"), "--status", f"{alias}.cdx"],
+                                capture_output=True, text=True, timeout=20,
+                                stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    first = result.stdout.split("\n", 1)[0].split()
+    if len(first) >= 2 and "/" in first[1]:
+        online, state = first[1].split("/", 1)
+        return state if online == "online" else "offline"
+    return "unknown"
+
+
+def root_sessions():
+    """Newest interactive root log per cwd among logs written in the last SEARCH_DAYS.
+
+    Filtered by mtime, not by the date directory: a resumed session keeps
+    appending to the log in the directory of the day it was first created."""
+    cutoff = time.time() - SEARCH_DAYS * 86400
+    best = {}
+    for path in SESSIONS.glob("*/*/*/*.jsonl"):
+        try:
+            mtime = path.stat().st_mtime
+            if mtime < cutoff:
+                continue
+            with path.open("rb") as stream:
+                meta = json.loads(stream.readline(65_537)).get("payload", {})
+        except (OSError, ValueError, AttributeError):
+            continue
+        # Sessions first created by older Codex builds (resumed ever since) say
+        # originator codex_cli_rs and carry no thread_source; subagents have a
+        # dict source and codex exec has source "exec", so both stay excluded.
+        if (meta.get("source") != "cli" or meta.get("originator") not in ("codex-tui", "codex_cli_rs")
+                or meta.get("thread_source") not in ("user", None) or not meta.get("cwd")):
+            continue
+        cwd = os.path.realpath(meta["cwd"])
+        if cwd not in best or mtime > best[cwd][1]:
+            best[cwd] = (path, mtime)
+    return best
+
+
+def read_state(path, mtime):
+    with path.open("rb") as stream:
+        size = stream.seek(0, os.SEEK_END)
+        stream.seek(max(0, size - TAIL_BYTES))
+        tail = stream.read().splitlines()
+    turn, sample = "unknown", None
+    for raw in tail:
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        kind = payload.get("type")
+        if row.get("type") != "event_msg":
+            continue
+        if kind == "task_started":
+            turn = "working"
+        elif kind == "task_complete":
+            turn = "idle"
+        elif kind == "token_count":
+            usage = (payload.get("info") or {}).get("last_token_usage") or {}
+            if type(usage.get("input_tokens")) is int and type(usage.get("cached_input_tokens")) is int:
+                sample = {"at": row.get("timestamp"), "input_tokens": usage["input_tokens"],
+                          "cached_input_tokens": usage["cached_input_tokens"]}
+    return {"turn": turn, "quiet_seconds": int(time.time() - mtime), "last_token_sample": sample,
+            "session_file": path.name}
+
+
+def collect(resolve_prompt=False):
+    sessions = root_sessions()
+    result = {}
+    for pane_id, pane in codex_panes().items():
+        found = sessions.get(os.path.realpath(pane["project"]))
+        state = read_state(*found) if found else {"turn": "unknown", "quiet_seconds": None,
+                                                    "last_token_sample": None, "session_file": None}
+        if resolve_prompt:
+            pane["prompt_state"] = resolved_prompt_state(pane["alias"])
+        result[pane_id] = {**pane, **state}
+    return result
+
+
+def refusal(state):
+    if state is None:
+        return "not-a-codex-pane"
+    if not state.get("session_file"):
+        return "session-log-not-found"
+    if state["turn"] != "idle":
+        return f"turn-{state['turn']}"
+    if state["quiet_seconds"] is None or state["quiet_seconds"] < QUIET_SECONDS:
+        return "log-still-active"
+    if state["prompt_state"] not in ("idle", "suggestion"):
+        return f"prompt-{state['prompt_state'] or 'unknown'}"
+    return None
+
+
+def poke(pane_id):
+    # tproj-msg --status takes seconds per pane, so only the poke path resolves it.
+    state = collect(resolve_prompt=True).get(pane_id)
+    reason = refusal(state)
+    if reason:
+        return {"result": "skipped", "reason": reason}
+    tmux("send-keys", "-t", pane_id, "-l", POKE_TEXT)
+    time.sleep(0.3)
+    tmux("send-keys", "-t", pane_id, "Enter")
+    return {"result": "sent"}
+
+
+def main():
+    if sys.argv[1:] == ["list"]:
+        print(json.dumps(collect()))
+        return 0
+    if len(sys.argv) == 3 and sys.argv[1] == "poke" and sys.argv[2].startswith("%"):
+        outcome = poke(sys.argv[2])
+        print(json.dumps(outcome))
+        return 0 if outcome["result"] == "sent" else 3
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -31,6 +31,7 @@ RUNTIME_FILES = (
     ("extensions/hooks/tproj-cc-cache-observer", "tproj-cc-cache-observer"),
     ("extensions/hooks/tproj-cc-poke", "tproj-cc-poke"),
     ("extensions/hooks/tproj-codex-cache-observer", "tproj-codex-cache-observer"),
+    ("extensions/hooks/tproj-codex-cache-state", "tproj-codex-cache-state"),
     ("extensions/hooks/tproj-cc-statusline-tap", "tproj-cc-statusline-tap"),
 )
 SKILL_SOURCE = Path("extensions/messaging/skill-msg/SKILL.md")
