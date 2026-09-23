@@ -252,38 +252,55 @@ struct TerminalDockView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 2) {
+            HStack(alignment: .bottom, spacing: 3) {
                 ForEach(controller.tabPaths, id: \.self) { tabPath in
-                    HStack(spacing: 3) {
-                        Button(controller.title(for: tabPath)) { controller.selectTab(path: tabPath) }
-                            .lineLimit(1)
-                        Button { controller.closeTab(path: tabPath) } label: {
-                            Image(systemName: "xmark")
+                    let selected = tabPath == path
+                    HStack(spacing: 0) {
+                        Button { controller.selectTab(path: tabPath) } label: {
+                            Text(controller.title(for: tabPath))
+                                .font(.system(size: 12, weight: selected ? .semibold : .medium))
+                                .foregroundStyle(selected ? GhosttyTheme.current.textPrimary : GhosttyTheme.current.textSecondary)
+                                .lineLimit(1)
+                                .frame(minWidth: 80, maxWidth: 135, alignment: .leading)
+                                .padding(.leading, 9)
+                                .frame(height: 32)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        Button { controller.closeTab(path: tabPath) } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .semibold))
+                                .frame(width: 26, height: 32)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(GhosttyTheme.current.textSecondary)
                         .accessibilityLabel("Close \(controller.title(for: tabPath))")
                     }
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 5)
-                    .background(tabPath == path ? Color.accentColor.opacity(0.22) : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .frame(height: 32)
+                    .background {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(selected ? GhosttyTheme.current.background : GhosttyTheme.current.foreground.opacity(0.06))
+                        if selected {
+                            GhosttyTheme.current.background
+                                .frame(height: 6)
+                                .frame(maxHeight: .infinity, alignment: .bottom)
+                        }
+                    }
+                    .overlay(alignment: .top) {
+                        if selected {
+                            GhosttyTheme.current.accentCyan.frame(height: 2)
+                        }
+                    }
                 }
                 Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 8)
-            .background(GhosttyTheme.current.background.opacity(GhosttyTheme.current.appBackgroundOpacity))
-            HStack(spacing: 8) {
-                Text(controller.title(for: path))
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                Spacer()
                 Button("Finder") { controller.openFinder() }
                 Button("Hide") { controller.hide() }
-                Button("End") { controller.end() }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(GhosttyTheme.current.background.opacity(GhosttyTheme.current.appBackgroundOpacity))
+            .font(.system(size: 11, weight: .medium))
+            .padding(.horizontal, 8)
+            .frame(height: 36)
+            .background(GhosttyTheme.current.backgroundLighter.opacity(GhosttyTheme.current.appBackgroundOpacity))
             TerminalHostView(controller: controller, path: path)
         }
         .background(GhosttyTheme.current.background.opacity(GhosttyTheme.current.appBackgroundOpacity))

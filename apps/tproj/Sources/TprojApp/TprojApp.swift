@@ -1088,6 +1088,7 @@ final class WindowLevelController: ObservableObject {
     private weak var appWindow: NSWindow?
     private var activationObserver: NSObjectProtocol?
     private var lastAppliedLevel: NSWindow.Level?
+    private var terminalDockExpanded = false
 
     private let ghosttyBundleID = "com.mitchellh.ghostty"
 
@@ -1119,9 +1120,16 @@ final class WindowLevelController: ObservableObject {
         applyWindowLevel(frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
     }
 
+    func setTerminalDockExpanded(_ expanded: Bool) {
+        terminalDockExpanded = expanded
+        applyWindowLevel(frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+    }
+
     private func applyWindowLevel(frontmostBundleID: String?) {
         guard let window = appWindow else { return }
-        let desiredLevel: NSWindow.Level = (frontmostBundleID == ghosttyBundleID) ? .floating : .normal
+        // The narrow sidebar may float over Ghostty; the expanded terminal must not cover it.
+        let shouldFloat = !terminalDockExpanded && frontmostBundleID == ghosttyBundleID
+        let desiredLevel: NSWindow.Level = shouldFloat ? .floating : .normal
         guard desiredLevel != lastAppliedLevel else { return }
         window.level = desiredLevel
         lastAppliedLevel = desiredLevel
@@ -4651,7 +4659,8 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 normalContentView
                     .frame(width: terminalDock.visibleProjectPath == nil ? nil : terminalDock.sidebarWidth)
-                    .padding(.top, terminalDock.visibleProjectPath == nil ? 0 : 40)
+                    // Keep the sidebar at one vertical origin across dock open/close.
+                    .padding(.top, 28)
                 if let path = terminalDock.visibleProjectPath {
                     TerminalDockView(controller: terminalDock, path: path)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -4662,7 +4671,7 @@ struct ContentView: View {
                     GhosttyTheme.current.background.opacity(GhosttyTheme.current.appBackgroundOpacity)
                 }
             }
-            .ignoresSafeArea(.container, edges: terminalDock.visibleProjectPath == nil ? [] : .top)
+            .ignoresSafeArea(.container, edges: .top)
         }
     }
 
@@ -5065,6 +5074,7 @@ struct ContentView: View {
         }
         .onChange(of: terminalDock.visibleProjectPath) { path in
             ghosttyTracker.suspendDriftDetection = path != nil
+            windowLevelController.setTerminalDockExpanded(path != nil)
             if path == nil { ghosttyTracker.updateSnapOffset() }
         }
         .onChange(of: collapseController.isCollapsed) { collapsed in
@@ -5245,7 +5255,7 @@ struct ContentView: View {
                     Task { await vm.toggleAIPane(role: "claude", for: column) }
                 }
                 .frame(width: 30)
-                ActionButton("Term", tone: column.hostLabel == "local" && terminalDock.visibleProjectPath == column.projectPath ? .primary : (column.terminalPaneID == nil ? .neutral : .primary), isEnabled: !vm.isBusy, dense: true) {
+                ActionButton("Term", tone: column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath) ? .primary : (column.terminalPaneID == nil ? .neutral : .primary), isEnabled: !vm.isBusy, dense: true) {
                     if column.hostLabel == "local" {
                         terminalDock.toggle(projectPath: column.projectPath, title: columnPrimaryName(column), in: (NSApp.delegate as? AppDelegate)?.mainWindow)
                     } else {
