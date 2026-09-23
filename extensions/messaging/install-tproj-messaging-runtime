@@ -28,6 +28,7 @@ RUNTIME_FILES = (
     ("extensions/hooks/tproj-inbox-check", "tproj-inbox-check"),
     ("extensions/hooks/tproj-completion-guard", "tproj-completion-guard"),
     ("extensions/hooks/tproj-mutation-guard", "tproj-mutation-guard"),
+    ("extensions/hooks/tproj-cc-cache-observer", "tproj-cc-cache-observer"),
 )
 SKILL_SOURCE = Path("extensions/messaging/skill-msg/SKILL.md")
 

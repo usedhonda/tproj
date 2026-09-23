@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""One focused fixture for Tproj-owned Claude cache observation."""
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+
+OBSERVER = Path(__file__).resolve().parents[1] / "tproj-cc-cache-observer"
+
+
+class CCCacheObserverTest(unittest.TestCase):
+    def test_statusline_prompt_and_keepalive_are_scoped_and_private(self):
+        with tempfile.TemporaryDirectory() as base:
+            root = Path(base)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_tmux = bin_dir / "tmux"
+            fake_tmux.write_text(
+                "#!/bin/sh\nprintf '%s\\n' '%2|/dev/ttys999|0|111|claude-p1|demo|test-session'\n"
+            )
+            fake_tmux.chmod(0o700)
+            state_dir = root / "state"
+            env = {
+                **os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "TMUX_PANE": "%2", "TPROJ_CC_CACHE_DIR": str(state_dir),
+            }
+
+            def observe(event, payload, override_env=None):
+                result = subprocess.run(
+                    ["python3", str(OBSERVER), event], input=json.dumps(payload),
+                    text=True, capture_output=True, env=override_env or env, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            observe("statusline", {
+                "session_id": "test-session-id",
+                "prompt_cache": {"warm": True, "expires_at": 2_000_000_000,
+                                 "recache_tokens_if_cold": 1234},
+                "transcript_path": "/private/do-not-store",
+            })
+            observe("prompt", {"session_id": "test-session-id", "prompt": "private test text"})
+            files = list(state_dir.glob("*.json"))
+            self.assertEqual(len(files), 1)
+            state = json.loads(files[0].read_text())
+            self.assertEqual(state["cache_expires_at"], 2_000_000_000)
+            self.assertEqual(state["last_user_prompt_at"] > 0, True)
+            self.assertEqual(state["pane_id"], "%2")
+            self.assertEqual(state["owner_session"], "test-session")
+            self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
+            self.assertEqual(state_dir.stat().st_mode & 0o777, 0o700)
+            self.assertNotIn("private test text", files[0].read_text())
+            self.assertNotIn("do-not-store", files[0].read_text())
+
+            previous_prompt_at = state["last_user_prompt_at"]
+            observe("prompt", {"session_id": "test-session-id", "prompt": "[keep-alive] ok"})
+            self.assertEqual(json.loads(files[0].read_text())["last_user_prompt_at"], previous_prompt_at)
+            observe("statusline", {"session_id": "test-session-id", "prompt_cache": {"warm": False}})
+            self.assertIsNone(json.loads(files[0].read_text())["cache_expires_at"])
+
+            observe("prompt", {"session_id": "another-session", "prompt": "ignored"},
+                    {**env, "TMUX_PANE": ""})
+            self.assertEqual(len(list(state_dir.glob("*.json"))), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
