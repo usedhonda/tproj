@@ -2,16 +2,25 @@
 """Focused safety tests for the initially unactivated Claude poke sender."""
 
 import hashlib
+import importlib.machinery
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
-import subprocess
+import contextlib
+from unittest import mock
+import sys
 import tempfile
 import time
 import unittest
 
 
 SENDER = Path(__file__).resolve().parents[1] / "tproj-cc-poke"
+loader = importlib.machinery.SourceFileLoader("tproj_cc_poke_tested", str(SENDER))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+sender = importlib.util.module_from_spec(spec)
+loader.exec_module(sender)
 
 
 class CCPokeTest(unittest.TestCase):
@@ -47,6 +56,7 @@ class CCPokeTest(unittest.TestCase):
             "session_id": "session-1", "pane_id": "%2", "tty": "/dev/ttys999",
             "pane_pid": 111, "role": "claude-p1", "alias": "demo",
             "owner_session": "test-session", "turn_state": "idle_notified",
+            "agent_pid": 222, "agent_pid_start": 1234567890,
             "cache_expires_at": now + 300, "idle_prompt_at": now - 10,
             "last_user_prompt_at": now - 70,
         }
@@ -55,16 +65,20 @@ class CCPokeTest(unittest.TestCase):
         path.write_text(json.dumps(state))
 
     def run_sender(self):
-        return subprocess.run(["python3", str(SENDER), "session-1"], env=self.env,
-                              text=True, capture_output=True)
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, self.env), mock.patch.object(sys, "argv", [str(SENDER), "session-1"]), \
+             mock.patch.object(sender, "agent_binding", return_value={"agent_pid": 222, "agent_pid_start": 1234567890}), \
+             contextlib.redirect_stderr(stderr):
+            code = sender.main()
+        return code, stderr.getvalue()
 
     def test_sends_once_and_atomic_expiry_lock_deduplicates(self):
         self.write_state()
         first = self.run_sender()
         second = self.run_sender()
-        self.assertEqual(first.returncode, 0, first.stderr)
-        self.assertNotEqual(second.returncode, 0)
-        self.assertIn("already claimed", second.stderr)
+        self.assertEqual(first[0], 0, first[1])
+        self.assertNotEqual(second[0], 0)
+        self.assertIn("already claimed", second[1])
         self.assertEqual(self.log.read_text().count("send-keys"), 2)
 
     def test_stop_or_question_or_stale_prompt_refuses_without_send(self):
@@ -72,12 +86,24 @@ class CCPokeTest(unittest.TestCase):
             with self.subTest(changes=changes):
                 self.write_state(**changes)
                 result = self.run_sender()
-                self.assertNotEqual(result.returncode, 0)
+                self.assertNotEqual(result[0], 0)
         fake = self.bin / "tmux"
         fake.write_text(fake.read_text().replace("old output\\n❯", "permission required\\n❯"))
         self.write_state()
         result = self.run_sender()
-        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(result[0], 0)
+        self.assertFalse(self.log.exists())
+
+    def test_old_agent_binding_cannot_send_to_new_or_missing_agent(self):
+        self.write_state(agent_pid=333)
+        result = self.run_sender()
+        self.assertNotEqual(result[0], 0)
+        self.assertIn("agent_pid incarnation mismatch", result[1])
+        self.assertFalse(self.log.exists())
+        self.write_state(agent_pid=222)
+        with mock.patch.dict(os.environ, self.env), mock.patch.object(sys, "argv", [str(SENDER), "session-1"]), \
+             mock.patch.object(sender, "agent_binding", return_value=None), contextlib.redirect_stderr(io.StringIO()):
+            self.assertNotEqual(sender.main(), 0)
         self.assertFalse(self.log.exists())
 
 

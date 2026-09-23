@@ -71,6 +71,39 @@ def pane_identity(pane: str) -> dict[str, object] | None:
             "role": parts[4], "alias": parts[5], "owner_session": parts[6]}
 
 
+def agent_binding(pane_pid: int) -> dict[str, int] | None:
+    """Prove that exactly one live Claude agent occupies this pane incarnation."""
+    try:
+        rows = subprocess.run(["/bin/ps", "-Ao", "pid=,ppid=,comm="],
+                              capture_output=True, text=True, timeout=4, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    children: dict[int, list[tuple[int, str]]] = {}
+    for line in rows.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append((int(parts[0]), parts[2]))
+    matches: list[int] = []
+    pending, seen = [pane_pid], {pane_pid}
+    while pending and len(seen) < 512:
+        for pid, command in children.get(pending.pop(0), ()):
+            if pid in seen:
+                continue
+            seen.add(pid)
+            pending.append(pid)
+            if os.path.basename(command) == "claude":
+                matches.append(pid)
+    if pending or len(matches) != 1:
+        return None
+    try:
+        started = subprocess.run(["/bin/ps", "-p", str(matches[0]), "-o", "lstart="],
+                                 capture_output=True, text=True, timeout=2, check=True).stdout.strip()
+        epoch = int(time.mktime(time.strptime(started, "%a %b %d %H:%M:%S %Y")))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return {"agent_pid": matches[0], "agent_pid_start": epoch} if epoch > 0 else None
+
+
 def capture(pane: str) -> str | None:
     try:
         result = subprocess.run(["tmux", "capture-pane", "-t", pane, "-p", "-S", "-40"],
@@ -109,7 +142,8 @@ def read_state(root: Path, session_id: str) -> tuple[Path, dict[str, object]] | 
 def state_ready(state: dict[str, object], session_id: str, identity: dict[str, object], t: int) -> tuple[bool, str]:
     if state.get("session_id") != session_id:
         return False, "session mismatch"
-    for field in ("pane_id", "tty", "pane_pid", "role", "alias", "owner_session"):
+    for field in ("pane_id", "tty", "pane_pid", "role", "alias", "owner_session",
+                  "agent_pid", "agent_pid_start"):
         if state.get(field) != identity.get(field):
             return False, f"{field} incarnation mismatch"
     if state.get("turn_state") != "idle_notified":
@@ -166,6 +200,10 @@ def main() -> int:
     identity = pane_identity(args.pane)
     if identity is None:
         return fail("current Claude pane unavailable")
+    binding = agent_binding(identity["pane_pid"])
+    if binding is None:
+        return fail("live Claude agent unavailable")
+    identity.update(binding)
     ok, reason = state_ready(state, args.session_id, identity, now())
     if not ok:
         return fail(reason)
@@ -186,6 +224,10 @@ def main() -> int:
     latest_text = capture(args.pane)
     if latest is None or latest_identity is None or latest_text is None:
         return fail("pre-send recheck unavailable")
+    latest_binding = agent_binding(latest_identity["pane_pid"])
+    if latest_binding is None:
+        return fail("pre-send Claude agent unavailable")
+    latest_identity.update(latest_binding)
     _, latest_state = latest
     ok, reason = state_ready(latest_state, args.session_id, latest_identity, now())
     if not ok or latest_identity != identity or not safe_composer_and_state(latest_text):

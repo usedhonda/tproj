@@ -18,6 +18,39 @@ MAX_INPUT_BYTES = 1_048_576
 PANE_FORMAT = "#{pane_id}|#{pane_tty}|#{pane_dead}|#{pane_pid}|#{@role}|#{@alias}|#S"
 
 
+def agent_binding(pane_pid):
+    """Return the sole live Claude descendant, never a pane tag or shell."""
+    try:
+        rows = subprocess.run(["/bin/ps", "-Ao", "pid=,ppid=,comm="],
+                              capture_output=True, text=True, timeout=4, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    children = {}
+    for line in rows.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append((int(parts[0]), parts[2]))
+    matches = []
+    pending, seen = [pane_pid], {pane_pid}
+    while pending and len(seen) < 512:
+        for pid, command in children.get(pending.pop(0), ()):
+            if pid in seen:
+                continue
+            seen.add(pid)
+            pending.append(pid)
+            if os.path.basename(command) == "claude":
+                matches.append(pid)
+    if pending or len(matches) != 1:
+        return None
+    try:
+        started = subprocess.run(["/bin/ps", "-p", str(matches[0]), "-o", "lstart="],
+                                 capture_output=True, text=True, timeout=2, check=True).stdout.strip()
+        epoch = int(time.mktime(time.strptime(started, "%a %b %d %H:%M:%S %Y")))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return {"agent_pid": matches[0], "agent_pid_start": epoch} if epoch > 0 else None
+
+
 def pane_identity():
     pane = os.environ.get("TMUX_PANE", "")
     if not pane.startswith("%") or not pane[1:].isdigit():
@@ -63,6 +96,9 @@ def record(event, payload, identity):
     session_id = payload.get("session_id")
     if not isinstance(session_id, str) or not 0 < len(session_id) <= 128:
         return
+    binding = agent_binding(identity["pane_pid"])
+    if binding is None:
+        return
     root = state_dir()
     if root.is_symlink():
         return
@@ -82,9 +118,11 @@ def record(event, payload, identity):
             previous = {}
         if (previous.get("session_id") != session_id or
                 previous.get("pane_id") != identity["pane_id"] or
-                previous.get("pane_pid") != identity["pane_pid"]):
+                previous.get("pane_pid") != identity["pane_pid"] or
+                previous.get("agent_pid") != binding["agent_pid"] or
+                previous.get("agent_pid_start") != binding["agent_pid_start"]):
             previous = {}
-        state = {**previous, **identity, "version": 1, "session_id": session_id,
+        state = {**previous, **identity, **binding, "version": 1, "session_id": session_id,
                  "observed_at": int(time.time())}
         if event == "statusline":
             state["cache_expires_at"] = cache_expiry(payload)

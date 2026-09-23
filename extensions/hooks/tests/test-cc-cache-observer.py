@@ -2,15 +2,25 @@
 """One focused fixture for Tproj-owned Claude cache observation."""
 
 import json
+import importlib.machinery
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 OBSERVER = Path(__file__).resolve().parents[1] / "tproj-cc-cache-observer"
 TAP = Path(__file__).resolve().parents[1] / "tproj-cc-statusline-tap"
+loader = importlib.machinery.SourceFileLoader("tproj_cc_observer_tested", str(OBSERVER))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+observer = importlib.util.module_from_spec(spec)
+loader.exec_module(observer)
+IDENTITY = {"pane_id": "%2", "tty": "/dev/ttys999", "pane_pid": 111,
+            "role": "claude-p1", "alias": "demo", "owner_session": "test-session"}
+BINDING = {"agent_pid": 222, "agent_pid_start": 1234567890}
 
 
 class CCCacheObserverTest(unittest.TestCase):
@@ -19,10 +29,9 @@ class CCCacheObserverTest(unittest.TestCase):
             root = Path(base)
             home_bin = root / "bin"
             home_bin.mkdir()
-            (home_bin / "tproj-cc-cache-observer").symlink_to(OBSERVER)
-            fake_tmux = home_bin / "tmux"
-            fake_tmux.write_text("#!/bin/sh\nprintf '%s\\n' '%2|/dev/ttys999|0|111|claude-p1|demo|test-session'\n")
-            fake_tmux.chmod(0o700)
+            fake_observer = home_bin / "tproj-cc-cache-observer"
+            fake_observer.write_text("#!/usr/bin/env python3\nimport os, pathlib, sys\npathlib.Path(os.environ['TPROJ_CC_CACHE_DIR']).write_bytes(sys.stdin.buffer.read())\n")
+            fake_observer.chmod(0o700)
             renderer = home_bin / "renderer"
             renderer.write_text("#!/bin/sh\ncat\n")
             renderer.chmod(0o700)
@@ -34,32 +43,17 @@ class CCCacheObserverTest(unittest.TestCase):
                                     input=payload, text=True, capture_output=True, env=env)
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stdout, payload)
-            state_files = list((root / "state").glob("*.json"))
-            self.assertEqual(len(state_files), 1)
-            self.assertEqual(json.loads(state_files[0].read_text())["cache_expires_at"], 2_000_000_001)
+            self.assertEqual((root / "state").read_text(), payload)
 
     def test_statusline_prompt_and_keepalive_are_scoped_and_private(self):
         with tempfile.TemporaryDirectory() as base:
             root = Path(base)
-            bin_dir = root / "bin"
-            bin_dir.mkdir()
-            fake_tmux = bin_dir / "tmux"
-            fake_tmux.write_text(
-                "#!/bin/sh\nprintf '%s\\n' '%2|/dev/ttys999|0|111|claude-p1|demo|test-session'\n"
-            )
-            fake_tmux.chmod(0o700)
             state_dir = root / "state"
-            env = {
-                **os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
-                "TMUX_PANE": "%2", "TPROJ_CC_CACHE_DIR": str(state_dir),
-            }
 
-            def observe(event, payload, override_env=None):
-                result = subprocess.run(
-                    ["python3", str(OBSERVER), event], input=json.dumps(payload),
-                    text=True, capture_output=True, env=override_env or env, check=False,
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
+            def observe(event, payload):
+                with mock.patch.dict(os.environ, {"TPROJ_CC_CACHE_DIR": str(state_dir)}), \
+                     mock.patch.object(observer, "agent_binding", return_value=BINDING):
+                    observer.record(event, payload, IDENTITY)
 
             observe("statusline", {
                 "session_id": "test-session-id",
@@ -76,6 +70,8 @@ class CCCacheObserverTest(unittest.TestCase):
             self.assertEqual(state["pane_id"], "%2")
             self.assertEqual(state["turn_state"], "running")
             self.assertEqual(state["owner_session"], "test-session")
+            self.assertEqual(state["agent_pid"], 222)
+            self.assertEqual(state["agent_pid_start"], 1234567890)
             self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
             self.assertEqual(state_dir.stat().st_mode & 0o777, 0o700)
             self.assertNotIn("private test text", files[0].read_text())
@@ -107,8 +103,22 @@ class CCCacheObserverTest(unittest.TestCase):
             self.assertEqual(len(newer), 1)
             self.assertNotIn("turn_state", json.loads(newer[0].read_text()))
 
-            observe("prompt", {"session_id": "another-session", "prompt": "ignored"},
-                    {**env, "TMUX_PANE": ""})
+            # A resumed Claude under the same pane and session must not inherit
+            # the previous agent incarnation's idle notification or prompt.
+            with mock.patch.dict(os.environ, {"TPROJ_CC_CACHE_DIR": str(state_dir)}), \
+                 mock.patch.object(observer, "agent_binding", return_value={"agent_pid": 333,
+                                                                            "agent_pid_start": 1234567900}):
+                observer.record("statusline", {"session_id": "test-session-id",
+                                               "prompt_cache": {"warm": True,
+                                                                "expires_at": 2_000_000_003}}, IDENTITY)
+            restarted = json.loads(files[0].read_text())
+            self.assertEqual(restarted["agent_pid"], 333)
+            self.assertNotIn("turn_state", restarted)
+            self.assertNotIn("last_user_prompt_at", restarted)
+
+            with mock.patch.dict(os.environ, {"TPROJ_CC_CACHE_DIR": str(state_dir)}), \
+                 mock.patch.object(observer, "agent_binding", return_value=None):
+                observer.record("prompt", {"session_id": "another-session", "prompt": "ignored"}, IDENTITY)
             self.assertEqual(len(list(state_dir.glob("*.json"))), 2)
 
 

@@ -8,14 +8,18 @@ target mode.
 The sender fails closed unless the hashed cache record is a regular file in a
 non-symlink cache directory and all of these hold: session id, pane id, tty,
 pane PID, role, alias, and owner tmux session match a fresh live tagged Claude
-pane; the prompt cache expiry is in the future; a bounded recent non-`[keep-alive]`
+pane; one live `claude` process remains below the pane and its PID plus start
+epoch match the observer's recorded binding; the prompt cache expiry is in the
+future; a bounded recent non-`[keep-alive]`
 user prompt exists; and a fresh `Notification:idle_prompt` follows that prompt.
 `Stop` and an empty prompt glyph alone are never sufficient.
+The observer resets prior turn evidence when the agent binding changes, even
+when a resumed session keeps the same tmux pane and Claude session ID.
 
 It captures the pane immediately before and again immediately before sending.
 The current capture must end at an empty `›`/`❯` composer and contain no
 permission, question, or running-turn evidence. The second identity/state/
-capture check is the race boundary; any change refuses the send. The only
+capture check includes a fresh agent binding; any change refuses the send. The only
 literal body is `[keep-alive]`, sent with tmux literal text followed by Enter.
 
 Deduplication uses an atomic mode-0600 `O_CREAT|O_EXCL` lock keyed by
