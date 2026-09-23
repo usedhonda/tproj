@@ -229,6 +229,7 @@ private struct PaneBackgroundPane: Identifiable, Decodable, Equatable {
 private enum RoleVisualPalette {
     static let conversationMainCC = Color(red: 0.52, green: 0.42, blue: 0.95)
     static let conversationMainCdx = Color(red: 0.16, green: 0.78, blue: 0.84)
+    static let capacityCC = Color(red: 0.95, green: 0.67, blue: 0.55)
     static let paneMain = conversationMainCC
     // There is no separate sub colour. Hue was tried twice (amber, teal) and a lower
     // level once, and each made the sub portrait harder to read than the violet every
@@ -4722,17 +4723,17 @@ struct ContentView: View {
     @ViewBuilder
     private var weeklyPaceBalanceCard: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text("CC")
-                .font(GhosttyTheme.current.font(size: 12, weight: .bold))
-                .foregroundStyle(RoleVisualPalette.conversationMainCC)
-            capacityRow(vm.ccSessionSnapshot, label: "5h Session", tint: RoleVisualPalette.conversationMainCC, showPace: true, preciseReset: true)
-            capacityRow(vm.weeklyPaceSnapshots["claude"], label: "Weekly", tint: RoleVisualPalette.conversationMainCC, showPace: true)
-            capacityRow(vm.weeklyPaceSnapshots["fable"], label: "Fable", tint: RoleVisualPalette.conversationMainCC, showPace: true)
-            Divider().overlay(GhosttyTheme.current.textTertiary.opacity(0.25))
             Text("Cdx")
                 .font(GhosttyTheme.current.font(size: 12, weight: .bold))
                 .foregroundStyle(RoleVisualPalette.conversationMainCdx)
             capacityRow(vm.weeklyPaceSnapshots["codex"], label: "Weekly", tint: RoleVisualPalette.conversationMainCdx, showPace: true)
+            Divider().overlay(GhosttyTheme.current.textTertiary.opacity(0.25))
+            Text("CC")
+                .font(GhosttyTheme.current.font(size: 12, weight: .bold))
+                .foregroundStyle(RoleVisualPalette.capacityCC)
+            capacityRow(vm.ccSessionSnapshot, label: "5h Session", tint: RoleVisualPalette.capacityCC, showPace: true, preciseReset: true)
+            capacityRow(vm.weeklyPaceSnapshots["claude"], label: "Weekly", tint: RoleVisualPalette.capacityCC, showPace: true)
+            capacityRow(vm.weeklyPaceSnapshots["fable"], label: "Fable", tint: RoleVisualPalette.capacityCC, showPace: true)
             weeklyPaceAxisLegend
         }
         .padding(.horizontal, 8)
