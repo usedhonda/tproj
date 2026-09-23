@@ -43,3 +43,47 @@ public enum KeepWarmDecision {
         return remaining > 0 && remaining <= 90 && idle >= 0 && idle < Double(hours * 3600)
     }
 }
+
+public struct ClaudeCacheObservation: Decodable, Sendable {
+    public let version: Int
+    public let sessionID: String
+    public let paneID: String
+    public let tty: String
+    public let panePID: Int
+    public let role: String
+    public let alias: String
+    public let ownerSession: String
+    public let observedAt: Date
+    public let cacheExpiresAt: Date?
+    public let lastUserPromptAt: Date?
+    public let recacheTokensIfCold: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case version, tty, role, alias
+        case sessionID = "session_id", paneID = "pane_id", panePID = "pane_pid"
+        case ownerSession = "owner_session", observedAt = "observed_at"
+        case cacheExpiresAt = "cache_expires_at", lastUserPromptAt = "last_user_prompt_at"
+        case recacheTokensIfCold = "recache_tokens_if_cold"
+    }
+
+    public static func decode(_ data: Data) throws -> Self {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        return try decoder.decode(Self.self, from: data)
+    }
+
+    public func matches(paneID: String, tty: String, panePID: Int, role: String,
+                        alias: String, ownerSession: String, now: Date) -> Bool {
+        version == 1 && !sessionID.isEmpty && !tty.isEmpty && !alias.isEmpty &&
+        self.paneID == paneID && self.tty == tty && self.panePID == panePID &&
+        self.role == role && role.hasPrefix("claude-p") && self.alias == alias &&
+        self.ownerSession == ownerSession && observedAt <= now &&
+        now.timeIntervalSince(observedAt) <= 300
+    }
+
+    public var displaySession: KeepWarmSession {
+        KeepWarmSession(tty: tty, cacheExpiresAt: cacheExpiresAt,
+                        lastUserPromptAt: lastUserPromptAt, pokeable: false,
+                        recacheTokensIfCold: recacheTokensIfCold)
+    }
+}

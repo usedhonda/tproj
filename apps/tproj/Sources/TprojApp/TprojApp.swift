@@ -3739,7 +3739,7 @@ final class AppViewModel: ObservableObject {
 
     private func refreshKeepWarm() async {
         guard let baseURL = keepWarmAPIBaseURL() else {
-            keepWarmSessionsByColumn = [:]
+            await refreshLocalCacheObservations()
             return
         }
         var request = URLRequest(url: baseURL.appendingPathComponent("api/cache"))
@@ -3748,7 +3748,7 @@ final class AppViewModel: ObservableObject {
         do {
             let (data, urlResponse) = try await URLSession.shared.data(for: request)
             guard (urlResponse as? HTTPURLResponse)?.statusCode == 200 else {
-                keepWarmSessionsByColumn = [:]
+                await refreshLocalCacheObservations()
                 NSLog("[tproj keep-warm] cache endpoint returned non-200")
                 return
             }
@@ -3756,7 +3756,7 @@ final class AppViewModel: ObservableObject {
             decoder.dateDecodingStrategy = .secondsSince1970
             response = try decoder.decode(KeepWarmCacheResponse.self, from: data)
         } catch {
-            keepWarmSessionsByColumn = [:]
+            await refreshLocalCacheObservations()
             NSLog("[tproj keep-warm] cache fetch failed: \(error.localizedDescription)")
             return
         }
@@ -3802,6 +3802,46 @@ final class AppViewModel: ObservableObject {
             guard KeepWarmDecision.shouldPoke(session: session, now: Date(), hours: hours),
                   keepWarmAttemptedExpiryByTTY[tty] != expiry else { continue }
             await sendKeepWarmPoke(tty: tty, expiry: expiry, column: column.column, baseURL: baseURL)
+        }
+    }
+
+    private func refreshLocalCacheObservations() async {
+        let paneResult = await runCommandAsync("/usr/bin/env", [
+            "tmux", "list-panes", "-t", "=\(TmuxTargets.devWindow)",
+            "-F", "#{pane_id}|#{pane_tty}|#{pane_dead}|#{pane_pid}|#{@role}|#{@alias}|#S"
+        ])
+        guard paneResult.exitCode == 0 else {
+            keepWarmSessionsByColumn = [:]
+            return
+        }
+        let directory = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".local/state/tproj/cc-cache", isDirectory: true)
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])) ?? []
+        let observations = files.filter { $0.pathExtension == "json" }.compactMap { file -> ClaudeCacheObservation? in
+            guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+                  let data = try? Data(contentsOf: file) else { return nil }
+            return try? ClaudeCacheObservation.decode(data)
+        }
+        let now = Date()
+        var candidates: [Int: [KeepWarmSession]] = [:]
+        for line in paneResult.stdout.split(separator: "\n") {
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 7, parts[2] == "0", let pid = Int(parts[3]),
+                  parts[6] == TmuxTargets.session else { continue }
+            let columns = liveColumns.filter {
+                $0.hostLabel == "local" && $0.claudePaneIDs.contains(parts[0])
+            }
+            guard columns.count == 1, let column = columns.first else { continue }
+            let matches = observations.filter {
+                $0.matches(paneID: parts[0], tty: parts[1], panePID: pid,
+                           role: parts[4], alias: parts[5], ownerSession: parts[6], now: now)
+            }
+            guard matches.count == 1 else { continue }
+            candidates[column.column, default: []].append(matches[0].displaySession)
+        }
+        keepWarmSessionsByColumn = candidates.compactMapValues { sessions in
+            sessions.count == 1 ? sessions[0] : nil
         }
     }
 

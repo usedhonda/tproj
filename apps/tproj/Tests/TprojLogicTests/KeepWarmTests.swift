@@ -2,6 +2,29 @@ import XCTest
 @testable import TprojLogic
 
 final class KeepWarmTests: XCTestCase {
+    func testLocalObservationRequiresExactFreshPaneBindingAndCannotPoke() throws {
+        let data = Data("""
+        {"version":1,"session_id":"claude-session","pane_id":"%12","tty":"/dev/ttys001",\
+        "pane_pid":123,"role":"claude-p1","alias":"project","owner_session":"tproj-workspace",\
+        "observed_at":1800000000,"cache_expires_at":1800000060,\
+        "last_user_prompt_at":1799999900,"recache_tokens_if_cold":42}
+        """.utf8)
+        let observation = try ClaudeCacheObservation.decode(data)
+        let now = Date(timeIntervalSince1970: 1_800_000_001)
+        func matches(alias: String = "project", tty: String = "/dev/ttys001",
+                     now: Date = Date(timeIntervalSince1970: 1_800_000_001)) -> Bool {
+            observation.matches(paneID: "%12", tty: tty, panePID: 123,
+                                role: "claude-p1", alias: alias,
+                                ownerSession: "tproj-workspace", now: now)
+        }
+        XCTAssertTrue(matches())
+        XCTAssertFalse(matches(alias: "other"))
+        XCTAssertFalse(matches(tty: "/dev/ttys002"))
+        XCTAssertFalse(matches(now: now.addingTimeInterval(301)))
+        XCTAssertFalse(observation.displaySession.pokeable)
+        XCTAssertFalse(KeepWarmDecision.shouldPoke(session: observation.displaySession, now: now, hours: 1))
+    }
+
     func testPokeEligibilityBoundaries() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         func session(
