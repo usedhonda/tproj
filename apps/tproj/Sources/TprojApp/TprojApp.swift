@@ -3793,7 +3793,10 @@ final class AppViewModel: ObservableObject {
         if mapped.isEmpty, !response.sessions.isEmpty {
             NSLog("[tproj keep-warm] no unique live Claude tty matches")
         }
-        keepWarmSessionsByColumn = mapped
+        // The CCSB list can be healthy yet omit a Claude session observed by
+        // this app. Fill only those gaps with local, display-only observations.
+        await refreshLocalCacheObservations()
+        keepWarmSessionsByColumn.merge(mapped) { _, apiSession in apiSession }
 
         for column in liveColumns where column.hostLabel == "local" {
             guard let session = mapped[column.column], let tty = session.tty,
