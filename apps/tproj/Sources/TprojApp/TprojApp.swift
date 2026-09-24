@@ -3919,7 +3919,12 @@ final class AppViewModel: ObservableObject {
         for column in liveColumns where column.hostLabel == "local" {
             guard let state = mapped[column.column],
                   state.shouldAutoPoke(hours: cdxKeepWarmHours(forProjectPath: column.projectPath), now: now),
-                  !codexAutoPokeInFlight.contains(column.column) else { continue }
+                  !codexAutoPokeInFlight.contains(column.column),
+                  // A refused send (typing, still active) is retried after 5 minutes,
+                  // not every 30s tick: each attempt runs tproj-msg --status, which
+                  // makes many tmux calls and can stall the server.
+                  (codexPokeOutcomesByColumn[column.column].map { now.timeIntervalSince($0.at) > 300 } ?? true)
+            else { continue }
             codexAutoPokeInFlight.insert(column.column)
             await pokeCodex(column: column)
             codexAutoPokeInFlight.remove(column.column)
