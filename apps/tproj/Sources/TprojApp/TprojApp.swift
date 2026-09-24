@@ -5413,7 +5413,9 @@ struct ContentView: View {
                     Task { await vm.toggleAIPane(role: "claude", for: column) }
                 }
                 .frame(width: 30)
-                ActionButton("Term", tone: column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath) ? .primary : (column.terminalPaneID == nil ? .neutral : .primary), isEnabled: !vm.isBusy, dense: true) {
+                ActionButton("Term", tone: column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath) ? .primary : (column.terminalPaneID == nil ? .neutral : .primary), isEnabled: !vm.isBusy, dense: true,
+                             // A tab kept alive behind Hide shows yellow: Term brings it back.
+                             tint: column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath) && terminalDock.visibleProjectPath != column.projectPath ? GhosttyTheme.current.accentYellow : nil) {
                     if column.hostLabel == "local" {
                         terminalDock.toggle(projectPath: column.projectPath, title: columnPrimaryName(column), in: (NSApp.delegate as? AppDelegate)?.mainWindow)
                     } else {
