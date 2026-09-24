@@ -6012,7 +6012,7 @@ struct ContentView: View {
                     }
                 }
                 if column.hostLabel == "local", vm.claudeCacheObservationsByColumn[column.column] != nil {
-                    Button("Poke now (local)") {
+                    Button("Poke now") {
                         Task { await vm.pokeLocalKeepWarm(column: column) }
                     }
                     .help("Runs the fail-closed local sender for this exact observed session and pane.")
