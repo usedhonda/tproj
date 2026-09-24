@@ -6032,7 +6032,23 @@ struct ContentView: View {
             // A turn cut off mid-run (Esc) never logs task_complete; after 10 quiet
             // minutes call it stalled rather than busy. Poke stays off either way.
             let stalled = turn == "working" && (state?.quietSeconds ?? 0) > 600
-            let label = "Cdx \(hit) · \(stalled ? "stalled" : turn == "working" ? "busy" : turn == "idle" ? "idle" : "--")"
+            // The hit ratio only changes when a turn runs, so the row shows what
+            // moves: how long Cdx has been quiet and when the next auto poke is due.
+            let cdxHours = vm.keepWarmHours(forProjectPath: column.projectPath)
+            let quietMin = (state?.quietSeconds ?? 0) / 60
+            let quietText = quietMin >= 60 ? "\(quietMin / 60)h" : "\(quietMin)m"
+            let windowOpen = state?.lastUserDate.map {
+                Date().timeIntervalSince($0) < Double(cdxHours * 3600)
+            } ?? false
+            let label: String = {
+                if state == nil || turn == "unknown" { return "Cdx --" }
+                if stalled { return "Cdx stalled" }
+                if turn == "working" { return "Cdx busy" }
+                if cdxHours == 0 { return "Cdx idle \(quietText) · Off" }
+                if !windowOpen { return "Cdx idle \(quietText) · done" }
+                let dueMin = max(0, CodexPaneCacheState.autoPokeQuietSeconds / 60 - quietMin)
+                return "Cdx poke in \(dueMin)m · \(cdxHours)h"
+            }()
             let blockReason = state == nil ? "no session log" : state?.pokeBlockReason
             Menu {
                 Text("cache hit (last turn): \(hit)")
