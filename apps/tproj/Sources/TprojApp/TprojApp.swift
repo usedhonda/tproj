@@ -6059,7 +6059,9 @@ struct ContentView: View {
             Button {
                 cachePopoverColumn = column.column
             } label: {
-                Text("♨ " + primary.text)
+                // Both agents at a glance: "CC time / Cdx time" (keep-warm hours are in the popover).
+                let short = { (text: String) in String(text.split(separator: "·").first ?? Substring(text)) }
+                Text("♨ " + [cc, cdx].compactMap { $0.map { short($0.text) } }.joined(separator: " / "))
                     .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
                     .foregroundStyle(primary.tint)
                     .lineLimit(1)
