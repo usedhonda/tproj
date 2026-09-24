@@ -18,8 +18,10 @@ but both show the same row shape and menu.
 
 ## What the GUI shows
 
-Each column shows one cache line: `CC <left> · <setting>` and
-`Cdx <left> · <setting>`.
+Each column is two lines: the name with the Cdx / CC / Term buttons, then a
+settings line such as `Solo  CC 60m·3h  Cdx cold·Off`. Clicking the settings line
+opens one popover (it stays open while you change things) with Mode, Main
+conversation, and each agent's keep-warm picker and Poke now.
 
 | Text | Meaning |
 |---|---|
@@ -34,7 +36,7 @@ Each column shows one cache line: `CC <left> · <setting>` and
 Colors: green means warm, yellow means less than 10 minutes left or the last
 poke failed, grey means off or not applicable.
 
-Each menu has the same two controls:
+For each agent the popover has the same two controls:
 
 - **Keep warm**: Off / 1h / 3h / 6h / 12h. This is the window after your
   last message during which automatic pokes are allowed.

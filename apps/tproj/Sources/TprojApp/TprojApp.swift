@@ -5402,24 +5402,6 @@ struct ContentView: View {
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
                     .lineLimit(1)
                     .help(columnAgentNamesText(column) ?? columnPrimaryName(column))
-                roleModeBadge(projectPath: column.projectPath, isLocal: column.hostLabel == "local")
-                cacheMenu(column)
-                Spacer(minLength: 0)
-                Button {
-                    Task { await vm.removeColumn(column) }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(GhosttyTheme.current.accentRed.opacity(0.8))
-                        .frame(width: 20, height: 18)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(vm.isBusy || vm.isDropPending(column.column))
-                .help("Drop column #\(column.column)")
-            }
-
-            HStack(spacing: 2) {
                 Spacer(minLength: 0)
                 ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
@@ -5439,7 +5421,22 @@ struct ContentView: View {
                     }
                 }
                 .frame(width: 40)
+                Button {
+                    Task { await vm.removeColumn(column) }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(GhosttyTheme.current.accentRed.opacity(0.8))
+                        .frame(width: 20, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(vm.isBusy || vm.isDropPending(column.column))
+                .help("Drop column #\(column.column)")
             }
+
+            // Row 2: every per-column setting behind one pill.
+            columnSettingsPill(column)
         }
         .padding(.vertical, 2)
         .padding(.leading, 10)   // accent bar との間隔確保
@@ -6048,23 +6045,34 @@ struct ContentView: View {
         }
     }
 
-    /// One compact cache control per column. The pill shows CC's time left (Cdx's
-    /// when the column has no CC); clicking opens a popover that stays open while
-    /// both agents' keep-warm hours are changed or poked.
+    /// Every per-column setting behind one pill: role mode, main conversation and
+    /// both agents' keep-warm. The popover stays open while settings change.
     @ViewBuilder
-    private func cacheMenu(_ column: LiveColumn) -> some View {
+    private func columnSettingsPill(_ column: LiveColumn) -> some View {
+        let isLocal = column.hostLabel == "local" && !column.projectPath.isEmpty
+        let mode = isLocal ? vm.roleMode(forProjectPath: column.projectPath) : .collab
+        let main = isLocal ? vm.roleModeMain(forProjectPath: column.projectPath) : ""
         let cc = ccCacheSummary(column)
         let cdx = cdxCacheSummary(column)
-        if let primary = cc ?? cdx {
+        if isLocal {
             Button {
                 cachePopoverColumn = column.column
             } label: {
-                // Both agents at a glance: "CC time / Cdx time" (keep-warm hours are in the popover).
-                let short = { (text: String) in String(text.split(separator: "·").first ?? Substring(text)) }
-                Text("♨ " + [cc, cdx].compactMap { $0.map { short($0.text) } }.joined(separator: " / "))
-                    .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
-                    .foregroundStyle(primary.tint)
-                    .lineLimit(1)
+                // Everything readable before clicking: mode (and main side), then each
+                // agent's cache state with its keep-warm setting, in that agent's color.
+                HStack(spacing: 6) {
+                    pill(roleModeBadgeLabel(mode: mode, main: main), tint: roleModeTint(mode))
+                    if let cc {
+                        Text("CC " + cc.text).foregroundStyle(cc.tint)
+                    }
+                    if let cdx {
+                        Text("Cdx " + cdx.text).foregroundStyle(cdx.tint)
+                    }
+                    Image(systemName: "chevron.down").foregroundStyle(GhosttyTheme.current.textTertiary)
+                }
+                .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                .lineLimit(1)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .fixedSize()
@@ -6073,6 +6081,23 @@ struct ContentView: View {
                 set: { if !$0 { cachePopoverColumn = nil } }
             ), arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Mode").font(GhosttyTheme.current.font(size: 12, weight: .bold))
+                        Picker("Mode", selection: Binding(get: { mode }, set: { value in
+                            Task { await vm.setRoleMode(value, main: main, forProjectPath: column.projectPath) }
+                        })) {
+                            ForEach(RoleMode.allCases, id: \.rawValue) { Text($0.displayName).tag($0) }
+                        }
+                        .pickerStyle(.segmented).labelsHidden().frame(width: 220)
+                        Text("Main conversation").font(GhosttyTheme.current.font(size: 12, weight: .bold))
+                        Picker("Main", selection: Binding(get: { main }, set: { value in
+                            Task { await vm.setRoleMode(mode, main: value, forProjectPath: column.projectPath) }
+                        })) {
+                            Text("CC").tag("cc")
+                            Text("Cdx").tag("cdx")
+                        }
+                        .pickerStyle(.segmented).labelsHidden().frame(width: 220)
+                    }
                     if let cc {
                         cacheAgentControls(title: "CC", summary: cc,
                             hours: vm.keepWarmHours(forProjectPath: column.projectPath),
@@ -6091,6 +6116,12 @@ struct ContentView: View {
                 }
                 .padding(12)
             }
+            .help([cc.map { "CC " + $0.text + "\n" + $0.help }, cdx.map { "Cdx " + $0.text + "\n" + $0.help }]
+                .compactMap { $0 }.joined(separator: "\n\n"))
+        } else {
+            pill(roleModeBadgeLabel(mode: .collab, main: ""), tint: roleModeTint(.collab))
+                .opacity(0.5)
+                .help("role mode: collab (remote)")
         }
     }
 
