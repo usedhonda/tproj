@@ -1400,14 +1400,18 @@ install_pane_focus_hook() {
 
   local autozoom_path="$HOME/bin/tproj-pane-autozoom"
   if [[ -x "$autozoom_path" ]]; then
+    # -b: the resize burst must never hold tmux's command queue. Run inline it
+    # stalled every pane switch (and everything queued behind it) for as long as
+    # the layout lock was held. A late run reads the current active pane, so a
+    # burst of focus changes settles on the last one.
     tmux set-hook -t "$session" 'after-select-pane[30]' \
-      "run-shell '$autozoom_path #{session_name} >/dev/null 2>&1 || true'" 2>/dev/null || true
+      "run-shell -b '$autozoom_path #{session_name} >/dev/null 2>&1 || true'" 2>/dev/null || true
   fi
 
   local mru_tracker="$HOME/bin/tproj-mru-tracker"
   if [[ -x "$mru_tracker" ]]; then
     tmux set-hook -t "$session" 'after-select-pane[40]' \
-      "run-shell '$mru_tracker #{session_name} #{pane_id} >/dev/null 2>&1 || true'" 2>/dev/null || true
+      "run-shell -b '$mru_tracker #{session_name} #{pane_id} >/dev/null 2>&1 || true'" 2>/dev/null || true
   fi
 
   local state_notify="$HOME/bin/tproj-tmux-state-notify"

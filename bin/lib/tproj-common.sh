@@ -90,11 +90,15 @@ phys_mem_mb() {
 # the orphan and continues.
 tproj_layout_lock() {
   local name="${1:-tproj-layout}" orphan_sec="${TPROJ_LAYOUT_ORPHAN_SEC:-30}"
-  local waited=0 holder waiter
+  local ticks=0 waited=0 holder waiter
   tmux wait-for -L "$name" 2>/dev/null &
   waiter=$!
+  # Poll every 50ms so an uncontended lock costs milliseconds, not a whole
+  # second; only look for a dead or missing holder once per second.
   while kill -0 "$waiter" 2>/dev/null; do
-    sleep 1
+    sleep 0.05
+    ticks=$((ticks + 1))
+    (( ticks % 20 == 0 )) || continue
     waited=$((waited + 1))
     holder=$(tmux show-options -gqv @tproj_layout_holder 2>/dev/null)
     if [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; then
