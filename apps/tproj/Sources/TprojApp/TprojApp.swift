@@ -1147,6 +1147,7 @@ struct WorkspaceProject: Identifiable {
     var alias: String
     var enabled: Bool
     var keepWarmHours: Int = 0
+    var cdxKeepWarmHours: Int = 0
     var lastActiveAt: Int = 0
     var sourceOrder: Int = 0
 
@@ -3661,7 +3662,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let query = ".projects[]? | [(.path // \"\"),(.type // \"local\"),(.host // \"\"),(.alias // \"\"),((.enabled // true)|tostring),((.lastActiveAt // 0)|tostring),((.keep_warm_hours // 0)|tostring)] | @tsv"
+        let query = ".projects[]? | [(.path // \"\"),(.type // \"local\"),(.host // \"\"),(.alias // \"\"),((.enabled // true)|tostring),((.lastActiveAt // 0)|tostring),((.keep_warm_hours // 0)|tostring),((.cdx_keep_warm_hours // 0)|tostring)] | @tsv"
         let result = runCommand("/usr/bin/env", ["yq", "-r", query, url.path])
 
         guard result.exitCode == 0 else {
@@ -3689,6 +3690,8 @@ final class AppViewModel: ObservableObject {
             let lastActiveAt = parts.count > 5 ? (Int(parts[5]) ?? 0) : 0
             let parsedHours = parts.count > 6 ? (Int(parts[6]) ?? 0) : 0
             let keepWarmHours = [1, 3, 6, 12].contains(parsedHours) ? parsedHours : 0
+            let parsedCdxHours = parts.count > 7 ? (Int(parts[7]) ?? 0) : 0
+            let cdxKeepWarmHours = [1, 3, 6, 12].contains(parsedCdxHours) ? parsedCdxHours : 0
 
             parsed.append(
                 WorkspaceProject(
@@ -3698,6 +3701,7 @@ final class AppViewModel: ObservableObject {
                     alias: parts[3],
                     enabled: enabled,
                     keepWarmHours: keepWarmHours,
+                    cdxKeepWarmHours: cdxKeepWarmHours,
                     lastActiveAt: lastActiveAt,
                     sourceOrder: sourceOrder
                 )
@@ -3716,12 +3720,17 @@ final class AppViewModel: ObservableObject {
         workspaceProjects.first { normalizedProjectKey($0.path) == normalizedProjectKey(path) }?.keepWarmHours ?? 0
     }
 
-    func setKeepWarmHours(_ hours: Int, forProjectPath path: String) async {
+    func cdxKeepWarmHours(forProjectPath path: String) -> Int {
+        workspaceProjects.first { normalizedProjectKey($0.path) == normalizedProjectKey(path) }?.cdxKeepWarmHours ?? 0
+    }
+
+    func setKeepWarmHours(_ hours: Int, forProjectPath path: String, codex: Bool = false) async {
         guard [0, 1, 3, 6, 12].contains(hours), !path.isEmpty else { return }
         let key = normalizedProjectKey(path)
         guard let index = workspaceProjects.firstIndex(where: { normalizedProjectKey($0.path) == key && $0.type != "remote" }) else { return }
         let previous = workspaceProjects
-        workspaceProjects[index].keepWarmHours = hours
+        if codex { workspaceProjects[index].cdxKeepWarmHours = hours }
+        else { workspaceProjects[index].keepWarmHours = hours }
         if let error = persistWorkspaceProjects(workspaceProjects, createIfMissing: false) {
             workspaceProjects = previous
             statusText = error
@@ -3909,7 +3918,7 @@ final class AppViewModel: ObservableObject {
         let now = Date()
         for column in liveColumns where column.hostLabel == "local" {
             guard let state = mapped[column.column],
-                  state.shouldAutoPoke(hours: keepWarmHours(forProjectPath: column.projectPath), now: now),
+                  state.shouldAutoPoke(hours: cdxKeepWarmHours(forProjectPath: column.projectPath), now: now),
                   !codexAutoPokeInFlight.contains(column.column) else { continue }
             codexAutoPokeInFlight.insert(column.column)
             await pokeCodex(column: column)
@@ -4538,6 +4547,9 @@ final class AppViewModel: ObservableObject {
             // enabled: only write when false (true is default)
             if !project.enabled {
                 lines.append("    enabled: false")
+            }
+            if [1, 3, 6, 12].contains(project.cdxKeepWarmHours) {
+                lines.append("    cdx_keep_warm_hours: \(project.cdxKeepWarmHours)")
             }
             if [1, 3, 6, 12].contains(project.keepWarmHours) {
                 lines.append("    keep_warm_hours: \(project.keepWarmHours)")
@@ -6034,51 +6046,59 @@ struct ContentView: View {
             let stalled = turn == "working" && (state?.quietSeconds ?? 0) > 600
             // The hit ratio only changes when a turn runs, so the row shows what
             // moves: how long Cdx has been quiet and when the next auto poke is due.
-            let cdxHours = vm.keepWarmHours(forProjectPath: column.projectPath)
+            let cdxHours = vm.cdxKeepWarmHours(forProjectPath: column.projectPath)
             let quietMin = (state?.quietSeconds ?? 0) / 60
             let quietText = quietMin >= 60 ? "\(quietMin / 60)h" : "\(quietMin)m"
             let windowOpen = state?.lastUserDate.map {
                 Date().timeIntervalSince($0) < Double(cdxHours * 3600)
             } ?? false
+            // Same shape as the CC row: "<time left> · <keep-warm>". Codex publishes
+            // no expiry, so time left is counted against the 30m auto-poke interval.
+            let leftMin = max(0, CodexPaneCacheState.autoPokeQuietSeconds / 60 - quietMin)
+            let cacheText: String = {
+                if state == nil || turn == "unknown" { return "--" }
+                if stalled { return "stalled" }
+                if turn == "working" { return "busy" }
+                return leftMin == 0 ? "cold" : "\(leftMin)m"
+            }()
             let label: String = {
-                if state == nil || turn == "unknown" { return "Cdx --" }
-                if stalled { return "Cdx stalled" }
-                if turn == "working" { return "Cdx busy" }
-                if cdxHours == 0 { return "Cdx idle \(quietText) · Off" }
-                if !windowOpen { return "Cdx idle \(quietText) · done" }
-                let dueMin = max(0, CodexPaneCacheState.autoPokeQuietSeconds / 60 - quietMin)
-                return "Cdx poke in \(dueMin)m · \(cdxHours)h"
+                if cdxHours == 0 { return "\(cacheText) · Off" }
+                if !windowOpen && turn == "idle" { return "Done · \(cdxHours)h" }
+                return "\(cacheText) · \(cdxHours)h"
+            }()
+            let tint: Color = {
+                if cdxHours == 0 || !windowOpen || turn != "idle" { return GhosttyTheme.current.textTertiary }
+                return leftMin < 10 ? GhosttyTheme.current.accentYellow : GhosttyTheme.current.accentGreen
             }()
             let blockReason = state == nil ? "no session log" : state?.pokeBlockReason
             Menu {
-                Text("cache hit (last turn): \(hit)")
-                if let sample {
-                    Text("input \(sample.inputTokens) / cached \(sample.cachedInputTokens)")
+                Section("Keep warm") {
+                    ForEach([0, 1, 3, 6, 12], id: \.self) { choice in
+                        Button {
+                            Task { await vm.setKeepWarmHours(choice, forProjectPath: column.projectPath, codex: true) }
+                        } label: {
+                            Label(choice == 0 ? "Off" : "\(choice)h", systemImage: choice == cdxHours ? "checkmark" : "circle")
+                        }
+                    }
                 }
-                Text("turn: \(turn)")
-                let hours = vm.keepWarmHours(forProjectPath: column.projectPath)
-                Text(hours == 0 ? "auto poke: off (set Keep warm on the CC menu)"
-                     : "auto poke: after 30m quiet, within \(hours)h of your last message")
                 Button("Poke now") {
                     Task { await vm.pokeCodex(column: column) }
                 }
                 .disabled(blockReason != nil)
-                if let blockReason {
-                    Text("Poke off: \(blockReason)")
-                }
-                if let outcome {
-                    Text("last poke: \(DateFormatter.localizedString(from: outcome.at, dateStyle: .none, timeStyle: .short)) \(outcome.result)")
-                }
-                Text("Codex publishes no cache expiry, so auto poke uses a fixed 30m quiet interval.")
+                Button("Last turn cached: \(hit)") {}.disabled(true)
             } label: {
-                Text(label)
+                Text("Cdx \(label)")
                     .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
-                    .foregroundStyle(turn == "idle" ? GhosttyTheme.current.textSecondary : GhosttyTheme.current.textTertiary)
+                    .foregroundStyle(tint)
                     .lineLimit(1)
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("Codex cache hit of the last turn and turn state. Poke is sent only when the turn is complete, the session log is quiet and the pane is not typing.")
+            .help([
+                "Quiet for \(quietText); auto poke after 30m quiet while within the keep-warm hours of your last message.",
+                blockReason.map { "Poke now is off: \($0)" },
+                outcome.map { "Last poke: \(DateFormatter.localizedString(from: $0.at, dateStyle: .none, timeStyle: .short)) \($0.result)" }
+            ].compactMap { $0 }.joined(separator: "\n"))
         }
     }
 
