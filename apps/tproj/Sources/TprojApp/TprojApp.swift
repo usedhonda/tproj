@@ -4778,6 +4778,7 @@ struct ContentView: View {
     @AppStorage("workspaceProjectOrder") private var workspaceProjectOrderRaw = WorkspaceProjectOrder.recent.rawValue
     @AppStorage("autoZoomEnabled") private var autoZoomEnabled = false
     @State private var draggingColumnID: Int?
+    @State private var cachePopoverColumn: Int?
     @State private var dropInsertionIndex: Int?
     @State private var isDragActive = false
     @State private var didRecoverWindowFrame = false
@@ -5402,6 +5403,7 @@ struct ContentView: View {
                     .lineLimit(1)
                     .help(columnAgentNamesText(column) ?? columnPrimaryName(column))
                 roleModeBadge(projectPath: column.projectPath, isLocal: column.hostLabel == "local")
+                cacheMenu(column)
                 Spacer(minLength: 0)
                 Button {
                     Task { await vm.removeColumn(column) }
@@ -5417,17 +5419,12 @@ struct ContentView: View {
                 .help("Drop column #\(column.column)")
             }
 
-            // Each agent's cache status sits just left of its own button, so the
-            // row stays two lines: header, then status+button pairs.
             HStack(spacing: 2) {
                 Spacer(minLength: 0)
-                codexCacheStatusRow(column)
                 ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
                 }
                 .frame(width: 36)
-                cacheStatusRow(column)
-                    .padding(.leading, 4)
                 ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cc" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "claude", for: column) }
                 }
@@ -5963,9 +5960,9 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
-    private func cacheStatusRow(_ column: LiveColumn) -> some View {
-        if column.hostLabel == "local", !column.claudePaneIDs.isEmpty {
+    private func ccCacheSummary(_ column: LiveColumn) -> (text: String, tint: Color, help: String)? {
+        guard column.hostLabel == "local", !column.claudePaneIDs.isEmpty else { return nil }
+        do {
             let hours = vm.keepWarmHours(forProjectPath: column.projectPath)
             let session = vm.keepWarmSessionsByColumn[column.column]
             let outcome = vm.keepWarmOutcomesByColumn[column.column]
@@ -5997,38 +5994,13 @@ struct ContentView: View {
                 return GhosttyTheme.current.accentGreen
             }()
 
-            Menu {
-                Section("Keep warm") {
-                    ForEach([0, 1, 3, 6, 12], id: \.self) { choice in
-                        Button {
-                            Task { await vm.setKeepWarmHours(choice, forProjectPath: column.projectPath) }
-                        } label: {
-                            Label(choice == 0 ? "Off" : "\(choice)h", systemImage: choice == hours ? "checkmark" : "circle")
-                        }
-                    }
-                }
-                if column.hostLabel == "local", vm.claudeCacheObservationsByColumn[column.column] != nil {
-                    Button("Poke now") {
-                        Task { await vm.pokeLocalKeepWarm(column: column) }
-                    }
-                    .help("Runs the fail-closed local sender for this exact observed session and pane.")
-                }
-                Button("Recache if cold: ~440k tok") {}.disabled(true)
-            } label: {
-                Text(label)
-                    .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help(keepWarmTooltip(session: session, hours: hours, outcome: outcome))
+            return (label, tint, keepWarmTooltip(session: session, hours: hours, outcome: outcome))
         }
     }
 
-    @ViewBuilder
-    private func codexCacheStatusRow(_ column: LiveColumn) -> some View {
-        if column.hostLabel == "local", !column.codexPaneIDs.isEmpty {
+    private func cdxCacheSummary(_ column: LiveColumn) -> (text: String, tint: Color, help: String)? {
+        guard column.hostLabel == "local", !column.codexPaneIDs.isEmpty else { return nil }
+        do {
             let state = vm.codexCacheStatesByColumn[column.column]
             let sample = state?.lastTokenSample
             let outcome = vm.codexPokeOutcomesByColumn[column.column]
@@ -6067,35 +6039,82 @@ struct ContentView: View {
                 return leftMin < 10 ? GhosttyTheme.current.accentYellow : GhosttyTheme.current.accentGreen
             }()
             let blockReason = state == nil ? "no session log" : state?.pokeBlockReason
-            Menu {
-                Section("Keep warm") {
-                    ForEach([0, 1, 3, 6, 12], id: \.self) { choice in
-                        Button {
-                            Task { await vm.setKeepWarmHours(choice, forProjectPath: column.projectPath, codex: true) }
-                        } label: {
-                            Label(choice == 0 ? "Off" : "\(choice)h", systemImage: choice == cdxHours ? "checkmark" : "circle")
-                        }
-                    }
-                }
-                Button("Poke now") {
-                    Task { await vm.pokeCodex(column: column) }
-                }
-                .disabled(blockReason != nil)
-                Button("Last turn cached: \(hit)") {}.disabled(true)
-            } label: {
-                Text(label)
-                    .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help([
+            let help = "Last turn cached: \(hit)\n" + [
                 "Quiet for \(quietText); auto poke after 30m quiet while within the keep-warm hours of your last message.",
                 blockReason.map { "Poke now is off: \($0)" },
                 outcome.map { "Last poke: \(DateFormatter.localizedString(from: $0.at, dateStyle: .none, timeStyle: .short)) \($0.result)" }
-            ].compactMap { $0 }.joined(separator: "\n"))
+            ].compactMap { $0 }.joined(separator: "\n")
+            return (label, tint, help)
         }
+    }
+
+    /// One compact cache control per column. The pill shows CC's time left (Cdx's
+    /// when the column has no CC); clicking opens a popover that stays open while
+    /// both agents' keep-warm hours are changed or poked.
+    @ViewBuilder
+    private func cacheMenu(_ column: LiveColumn) -> some View {
+        let cc = ccCacheSummary(column)
+        let cdx = cdxCacheSummary(column)
+        if let primary = cc ?? cdx {
+            Button {
+                cachePopoverColumn = column.column
+            } label: {
+                Text("♨ " + primary.text)
+                    .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                    .foregroundStyle(primary.tint)
+                    .lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            .popover(isPresented: Binding(
+                get: { cachePopoverColumn == column.column },
+                set: { if !$0 { cachePopoverColumn = nil } }
+            ), arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let cc {
+                        cacheAgentControls(title: "CC", summary: cc,
+                            hours: vm.keepWarmHours(forProjectPath: column.projectPath),
+                            canPoke: vm.claudeCacheObservationsByColumn[column.column] != nil,
+                            setHours: { await vm.setKeepWarmHours($0, forProjectPath: column.projectPath) },
+                            poke: { await vm.pokeLocalKeepWarm(column: column) })
+                    }
+                    if let cdx {
+                        let state = vm.codexCacheStatesByColumn[column.column]
+                        cacheAgentControls(title: "Cdx", summary: cdx,
+                            hours: vm.cdxKeepWarmHours(forProjectPath: column.projectPath),
+                            canPoke: state != nil && state?.pokeBlockReason == nil,
+                            setHours: { await vm.setKeepWarmHours($0, forProjectPath: column.projectPath, codex: true) },
+                            poke: { await vm.pokeCodex(column: column) })
+                    }
+                }
+                .padding(12)
+            }
+        }
+    }
+
+    private func cacheAgentControls(title: String, summary: (text: String, tint: Color, help: String),
+                                    hours: Int, canPoke: Bool,
+                                    setHours: @escaping (Int) async -> Void,
+                                    poke: @escaping () async -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(GhosttyTheme.current.font(size: 12, weight: .bold))
+                Text(summary.text)
+                    .font(GhosttyTheme.current.font(size: 12, weight: .medium, monospaced: true))
+                    .foregroundStyle(summary.tint)
+                Spacer()
+                Button("Poke now") { Task { await poke() } }
+                    .disabled(!canPoke)
+            }
+            Picker("Keep warm", selection: Binding(get: { hours }, set: { value in Task { await setHours(value) } })) {
+                ForEach([0, 1, 3, 6, 12], id: \.self) { Text($0 == 0 ? "Off" : "\($0)h").tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 220)
+            .help(summary.help)
+        }
+        .help(summary.help)
     }
 
     private func keepWarmTooltip(session: KeepWarmSession?, hours: Int, outcome: AppViewModel.KeepWarmPokeOutcome?) -> String {
