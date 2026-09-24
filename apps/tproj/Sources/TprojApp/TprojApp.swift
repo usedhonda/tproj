@@ -5417,21 +5417,17 @@ struct ContentView: View {
                 .help("Drop column #\(column.column)")
             }
 
-            // Cache status gets its own line so CC and Cdx both stay readable in the
-            // narrow panel; details and controls live in each menu.
-            if column.hostLabel == "local", !(column.claudePaneIDs.isEmpty && column.codexPaneIDs.isEmpty) {
-                HStack(spacing: 8) {
-                    cacheStatusRow(column)
-                    codexCacheStatusRow(column)
-                    Spacer(minLength: 0)
-                }
-            }
+            // Each agent's cache status sits just left of its own button, so the
+            // row stays two lines: header, then status+button pairs.
             HStack(spacing: 2) {
                 Spacer(minLength: 0)
+                codexCacheStatusRow(column)
                 ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
                 }
                 .frame(width: 36)
+                cacheStatusRow(column)
+                    .padding(.leading, 4)
                 ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cc" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "claude", for: column) }
                 }
@@ -5990,10 +5986,10 @@ struct ContentView: View {
                 return "\(Int(ceil(remaining / 60)))m"
             }()
             let label: String = {
-                if hours == 0 { return "\(cacheText) · Off" }
-                if unavailable { return "Awaiting · \(hours)h" }
-                if windowOver { return "Done · \(hours)h" }
-                return "\(cacheText) · \(hours)h\(windowUnknown ? "?" : "")\(issue ? " !" : "")"
+                if hours == 0 { return "\(cacheText)·Off" }
+                if unavailable { return "wait·\(hours)h" }
+                if windowOver { return "Done·\(hours)h" }
+                return "\(cacheText)·\(hours)h\(windowUnknown ? "?" : "")\(issue ? " !" : "")"
             }()
             let tint: Color = {
                 if hours == 0 || windowOver || unavailable { return GhosttyTheme.current.textTertiary }
@@ -6019,7 +6015,7 @@ struct ContentView: View {
                 }
                 Button("Recache if cold: ~440k tok") {}.disabled(true)
             } label: {
-                Text("CC \(label)")
+                Text(label)
                     .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
                     .foregroundStyle(tint)
                     .lineLimit(1)
@@ -6062,9 +6058,9 @@ struct ContentView: View {
                 return leftMin == 0 ? "cold" : "\(leftMin)m"
             }()
             let label: String = {
-                if cdxHours == 0 { return "\(cacheText) · Off" }
-                if !windowOpen && turn == "idle" { return "Done · \(cdxHours)h" }
-                return "\(cacheText) · \(cdxHours)h"
+                if cdxHours == 0 { return "\(cacheText)·Off" }
+                if !windowOpen && turn == "idle" { return "Done·\(cdxHours)h" }
+                return "\(cacheText)·\(cdxHours)h"
             }()
             let tint: Color = {
                 if cdxHours == 0 || !windowOpen || turn != "idle" { return GhosttyTheme.current.textTertiary }
@@ -6087,7 +6083,7 @@ struct ContentView: View {
                 .disabled(blockReason != nil)
                 Button("Last turn cached: \(hit)") {}.disabled(true)
             } label: {
-                Text("Cdx \(label)")
+                Text(label)
                     .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))
                     .foregroundStyle(tint)
                     .lineLimit(1)
