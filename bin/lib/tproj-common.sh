@@ -79,3 +79,40 @@ avail_mem_mb() {
 phys_mem_mb() {
   echo $(( $(sysctl -n hw.memsize 2>/dev/null || echo 25769803776) / 1024 / 1024 ))
 }
+
+# --- Shared tmux layout lock with stale recovery ------------------------------
+# tproj-layout is a tmux wait-for lock shared by add-column, drop-column,
+# rebalance and autozoom. tmux keeps such a lock until someone unlocks it, so a
+# holder that dies without running its trap (SIGKILL, a killed hook job) left it
+# locked forever and every later layout change, pane switch and autozoom queued
+# behind it. The holder now records its pid in @tproj_layout_holder; a waiter that
+# finds that pid dead, or no holder recorded for TPROJ_LAYOUT_ORPHAN_SEC, unlocks
+# the orphan and continues.
+tproj_layout_lock() {
+  local name="${1:-tproj-layout}" orphan_sec="${TPROJ_LAYOUT_ORPHAN_SEC:-30}"
+  local waited=0 holder waiter
+  tmux wait-for -L "$name" 2>/dev/null &
+  waiter=$!
+  while kill -0 "$waiter" 2>/dev/null; do
+    sleep 1
+    waited=$((waited + 1))
+    holder=$(tmux show-options -gqv @tproj_layout_holder 2>/dev/null)
+    if [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; then
+      tmux set-option -gu @tproj_layout_holder 2>/dev/null
+      tmux wait-for -U "$name" 2>/dev/null
+    elif [[ -z "$holder" && "$waited" -ge "$orphan_sec" ]]; then
+      waited=0
+      tmux wait-for -U "$name" 2>/dev/null
+    fi
+  done
+  wait "$waiter" 2>/dev/null || return 1
+  tmux set-option -g @tproj_layout_holder "$$" 2>/dev/null
+  return 0
+}
+
+tproj_layout_unlock() {
+  local name="${1:-tproj-layout}"
+  [[ "$(tmux show-options -gqv @tproj_layout_holder 2>/dev/null)" == "$$" ]] \
+    && tmux set-option -gu @tproj_layout_holder 2>/dev/null
+  tmux wait-for -U "$name" 2>/dev/null || true
+}

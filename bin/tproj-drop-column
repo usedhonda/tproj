@@ -74,7 +74,7 @@ restore_hook() {
 cleanup() {
   restore_hook
   if [[ "$LOCK_HELD" == "true" ]]; then
-    tmux wait-for -U "$LOCK_NAME" 2>/dev/null || true
+    tproj_layout_unlock "$LOCK_NAME"
     LOCK_HELD=false
   fi
 }
@@ -193,7 +193,7 @@ tmux list-panes -t "$WINDOW" >/dev/null 2>&1 || {
 start_ms="$(now_ms)"
 before_count=$(pane_count)
 
-tmux wait-for -L "$LOCK_NAME"
+tproj_layout_lock "$LOCK_NAME"
 LOCK_HELD=true
 
 hook_line=$(tmux show-hooks -t "$SESSION" after-kill-pane 2>/dev/null | head -n 1 || true)

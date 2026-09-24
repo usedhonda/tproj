@@ -560,7 +560,7 @@ acquire_layout_lock() {
   done
   # (2) tmux ロック取得 (drop-column / rebalance / autozoom と共有)。空くまで
   #     ブロックする。PID を既に握っているので、tmux 保持者が解放し次第取得。
-  if tmux wait-for -L "$TPROJ_LAYOUT_LOCK_NAME" 2>/dev/null; then
+  if tproj_layout_lock "$TPROJ_LAYOUT_LOCK_NAME"; then
     TPROJ_LAYOUT_TMUX_HELD=true
   fi
   return 0
@@ -572,7 +572,7 @@ release_layout_lock() {
     TPROJ_LAYOUT_LOCK_HELD=false
   fi
   if [[ "$TPROJ_LAYOUT_TMUX_HELD" == "true" ]]; then
-    tmux wait-for -U "$TPROJ_LAYOUT_LOCK_NAME" 2>/dev/null || true
+    tproj_layout_unlock "$TPROJ_LAYOUT_LOCK_NAME"
     TPROJ_LAYOUT_TMUX_HELD=false
   fi
 }

@@ -1,4 +1,15 @@
 #!/bin/bash
+
+# Load shared helpers (bin/lib/tproj-common.sh) for the layout lock, resolving our
+# own location so it works both from the repo (bin/) and the deployed ~/bin/.
+__tc_self="$0"
+case "$__tc_self" in */*) :;; *) __tc_self="$(command -v "$__tc_self" 2>/dev/null || echo "$__tc_self")";; esac
+__tc_dir="$(cd "$(dirname "$__tc_self")" 2>/dev/null && pwd)"
+[[ -r "$__tc_dir/lib/tproj-common.sh" ]] && source "$__tc_dir/lib/tproj-common.sh"
+unset __tc_self __tc_dir
+# Without the lib, fall back to the plain tmux lock (no stale recovery).
+declare -F tproj_layout_lock >/dev/null || tproj_layout_lock() { tmux wait-for -L "${1:-tproj-layout}" 2>/dev/null; }
+declare -F tproj_layout_unlock >/dev/null || tproj_layout_unlock() { tmux wait-for -U "${1:-tproj-layout}" 2>/dev/null || true; }
 # tproj-pane-autozoom - resize active pane and column to dominate the window.
 #
 # Triggered by after-select-pane hook (via tproj-pane-focus-hook) or directly
@@ -51,7 +62,7 @@ LAYOUT_LOCK_NAME="tproj-layout"
 AZ_LOCK_HELD=false
 az_release_lock() {
   if [ "$AZ_LOCK_HELD" = "true" ]; then
-    tmux wait-for -U "$LAYOUT_LOCK_NAME" 2>/dev/null || true
+    tproj_layout_unlock "$LAYOUT_LOCK_NAME"
     AZ_LOCK_HELD=false
   fi
 }
@@ -202,7 +213,7 @@ fi
 # minimum possible window. The per-column idempotent skips inside the loop stay
 # intact — the lock is an ADDITIONAL safety layer, not a replacement for the
 # no-op-when-settled behavior that keeps SIGWINCH quiet.
-tmux wait-for -L "$LAYOUT_LOCK_NAME" 2>/dev/null && AZ_LOCK_HELD=true || AZ_LOCK_HELD=false
+tproj_layout_lock "$LAYOUT_LOCK_NAME" && AZ_LOCK_HELD=true || AZ_LOCK_HELD=false
 
 # Resize every column except the rightmost (LAST_COL). The last column
 # absorbs the rounding remainder so we get a deterministic layout.

@@ -1,6 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
+# Load shared helpers (bin/lib/tproj-common.sh) for the layout lock, resolving our
+# own location so it works both from the repo (bin/) and the deployed ~/bin/.
+__tc_self="$0"
+case "$__tc_self" in */*) :;; *) __tc_self="$(command -v "$__tc_self" 2>/dev/null || echo "$__tc_self")";; esac
+__tc_dir="$(cd "$(dirname "$__tc_self")" 2>/dev/null && pwd)"
+[[ -r "$__tc_dir/lib/tproj-common.sh" ]] && source "$__tc_dir/lib/tproj-common.sh"
+unset __tc_self __tc_dir
+# Without the lib, fall back to the plain tmux lock (no stale recovery).
+declare -F tproj_layout_lock >/dev/null || tproj_layout_lock() { tmux wait-for -L "${1:-tproj-layout}" 2>/dev/null; }
+declare -F tproj_layout_unlock >/dev/null || tproj_layout_unlock() { tmux wait-for -U "${1:-tproj-layout}" 2>/dev/null || true; }
+
 # Shared tmux layout lock (same name used by tproj-drop-column, tproj add-column,
 # and tproj-pane-autozoom) so concurrent layout mutations are serialized instead
 # of interleaving and corrupting the pane tree.
@@ -8,7 +19,7 @@ LAYOUT_LOCK_NAME="tproj-layout"
 RB_LOCK_HELD=false
 rb_release_lock() {
   if [[ "$RB_LOCK_HELD" == "true" ]]; then
-    tmux wait-for -U "$LAYOUT_LOCK_NAME" 2>/dev/null || true
+    tproj_layout_unlock "$LAYOUT_LOCK_NAME"
     RB_LOCK_HELD=false
   fi
 }
@@ -61,7 +72,7 @@ fi
 # invoke us mid-transaction and pass TPROJ_LAYOUT_LOCK_INHERITED=1) so we do not
 # deadlock against that holder — tmux wait-for locks are not reentrant.
 if [[ "${TPROJ_LAYOUT_LOCK_INHERITED:-0}" != "1" ]]; then
-  tmux wait-for -L "$LAYOUT_LOCK_NAME" 2>/dev/null && RB_LOCK_HELD=true || RB_LOCK_HELD=false
+  tproj_layout_lock "$LAYOUT_LOCK_NAME" && RB_LOCK_HELD=true || RB_LOCK_HELD=false
 fi
 
 # 右端は残差を吸収させる。tmuxの木構造都合で1回で収束しないため複数回実行。
