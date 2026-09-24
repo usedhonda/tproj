@@ -94,7 +94,7 @@ def read_state(path, mtime):
         size = stream.seek(0, os.SEEK_END)
         stream.seek(max(0, size - TAIL_BYTES))
         tail = stream.read().splitlines()
-    turn, sample = "unknown", None
+    turn, sample, last_user_at = "unknown", None, None
     for raw in tail:
         try:
             row = json.loads(raw)
@@ -102,6 +102,14 @@ def read_state(path, mtime):
             continue
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
         kind = payload.get("type")
+        if row.get("type") == "response_item" and kind == "message" and payload.get("role") == "user":
+            texts = [c.get("text", "") for c in payload.get("content") or [] if isinstance(c, dict)]
+            text = next((t.strip() for t in texts if t.strip()), "")
+            # Injected context (<environment_context>, <heartbeat>, ...) and our own
+            # keep-alive turns are not the person using the pane.
+            if text and not text.startswith("<") and not text.startswith(POKE_TEXT.split("]")[0]):
+                last_user_at = row.get("timestamp")
+            continue
         if row.get("type") != "event_msg":
             continue
         if kind == "task_started":
@@ -114,7 +122,7 @@ def read_state(path, mtime):
                 sample = {"at": row.get("timestamp"), "input_tokens": usage["input_tokens"],
                           "cached_input_tokens": usage["cached_input_tokens"]}
     return {"turn": turn, "quiet_seconds": int(time.time() - mtime), "last_token_sample": sample,
-            "session_file": path.name}
+            "last_user_at": last_user_at, "session_file": path.name}
 
 
 def collect(resolve_prompt=False):
@@ -123,7 +131,8 @@ def collect(resolve_prompt=False):
     for pane_id, pane in codex_panes().items():
         found = sessions.get(os.path.realpath(pane["project"]))
         state = read_state(*found) if found else {"turn": "unknown", "quiet_seconds": None,
-                                                    "last_token_sample": None, "session_file": None}
+                                                    "last_token_sample": None, "last_user_at": None,
+                                                    "session_file": None}
         if resolve_prompt:
             pane["prompt_state"] = resolved_prompt_state(pane["alias"])
         result[pane_id] = {**pane, **state}

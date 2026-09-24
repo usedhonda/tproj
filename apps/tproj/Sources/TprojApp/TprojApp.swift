@@ -1795,6 +1795,7 @@ final class AppViewModel: ObservableObject {
     @Published var codexCacheStatesByColumn: [Int: CodexPaneCacheState] = [:]
     @Published var codexPaneIDByColumn: [Int: String] = [:]
     @Published var codexPokeOutcomesByColumn: [Int: KeepWarmPokeOutcome] = [:]
+    private var codexAutoPokeInFlight: Set<Int> = []
 
     struct KeepWarmPokeOutcome {
         let at: Date
@@ -3904,6 +3905,16 @@ final class AppViewModel: ObservableObject {
         }
         codexCacheStatesByColumn = mapped
         codexPaneIDByColumn = paneIDs
+
+        let now = Date()
+        for column in liveColumns where column.hostLabel == "local" {
+            guard let state = mapped[column.column],
+                  state.shouldAutoPoke(hours: keepWarmHours(forProjectPath: column.projectPath), now: now),
+                  !codexAutoPokeInFlight.contains(column.column) else { continue }
+            codexAutoPokeInFlight.insert(column.column)
+            await pokeCodex(column: column)
+            codexAutoPokeInFlight.remove(column.column)
+        }
     }
 
     /// Manual Codex Poke. The helper re-checks turn state, log quiet time and prompt
@@ -5414,8 +5425,8 @@ struct ContentView: View {
                 }
                 .frame(width: 30)
                 ActionButton("Term", tone: column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath) ? .primary : (column.terminalPaneID == nil ? .neutral : .primary), isEnabled: !vm.isBusy, dense: true,
-                             // A tab kept alive behind Hide shows yellow: Term brings it back.
-                             tint: column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath) && terminalDock.visibleProjectPath != column.projectPath ? GhosttyTheme.current.accentYellow : nil) {
+                             // Only while the whole dock is hidden: a background tab of an open dock is not hidden.
+                             tint: column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath) && terminalDock.visibleProjectPath == nil ? GhosttyTheme.current.accentYellow : nil) {
                     if column.hostLabel == "local" {
                         terminalDock.toggle(projectPath: column.projectPath, title: columnPrimaryName(column), in: (NSApp.delegate as? AppDelegate)?.mainWindow)
                     } else {
@@ -6028,7 +6039,10 @@ struct ContentView: View {
                 if let sample {
                     Text("input \(sample.inputTokens) / cached \(sample.cachedInputTokens)")
                 }
-                Text("turn: \(turn), prompt: \(state?.promptState ?? "--")")
+                Text("turn: \(turn)")
+                let hours = vm.keepWarmHours(forProjectPath: column.projectPath)
+                Text(hours == 0 ? "auto poke: off (set Keep warm on the CC menu)"
+                     : "auto poke: after 30m quiet, within \(hours)h of your last message")
                 Button("Poke now") {
                     Task { await vm.pokeCodex(column: column) }
                 }
@@ -6039,7 +6053,7 @@ struct ContentView: View {
                 if let outcome {
                     Text("last poke: \(DateFormatter.localizedString(from: outcome.at, dateStyle: .none, timeStyle: .short)) \(outcome.result)")
                 }
-                Text("Codex has no published cache expiry; poke is manual only.")
+                Text("Codex publishes no cache expiry, so auto poke uses a fixed 30m quiet interval.")
             } label: {
                 Text(label)
                     .font(GhosttyTheme.current.font(size: 11, weight: .medium, monospaced: true))

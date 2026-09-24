@@ -73,4 +73,20 @@ final class KeepWarmTests: XCTestCase {
         XCTAssertEqual(states["%23"]?.pokeBlockReason, "log still active")
         XCTAssertNil(states["%24"]?.pokeBlockReason, "typing is checked by the helper at send time")
     }
+
+    func testCodexAutoPokeNeedsQuietIdleAndRecentHumanMessage() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func state(quiet: Int, turn: String = "idle", lastUser: Double?) throws -> CodexPaneCacheState {
+            let user = lastUser.map { "\"" + ISO8601DateFormatter().string(from: now.addingTimeInterval(-$0)) + "\"" } ?? "null"
+            return try CodexPaneCacheState.decodeMap(Data("""
+            {"%1":{"turn":"\(turn)","quiet_seconds":\(quiet),"prompt_state":"idle","last_token_sample":null,"last_user_at":\(user)}}
+            """.utf8))["%1"]!
+        }
+        XCTAssertTrue(try state(quiet: 1800, lastUser: 3000).shouldAutoPoke(hours: 1, now: now))
+        XCTAssertFalse(try state(quiet: 1799, lastUser: 3000).shouldAutoPoke(hours: 1, now: now))
+        XCTAssertFalse(try state(quiet: 1800, lastUser: 3600).shouldAutoPoke(hours: 1, now: now))
+        XCTAssertFalse(try state(quiet: 1800, turn: "working", lastUser: 60).shouldAutoPoke(hours: 1, now: now))
+        XCTAssertFalse(try state(quiet: 1800, lastUser: nil).shouldAutoPoke(hours: 3, now: now))
+        XCTAssertFalse(try state(quiet: 1800, lastUser: 60).shouldAutoPoke(hours: 0, now: now))
+    }
 }

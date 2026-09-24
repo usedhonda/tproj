@@ -115,12 +115,34 @@ public struct CodexPaneCacheState: Decodable, Sendable {
     public let quietSeconds: Int?
     public let promptState: String
     public let lastTokenSample: CodexTokenSample?
+    /// Last message typed by a person (injected context and keep-alive turns excluded).
+    public let lastUserAt: String?
 
     enum CodingKeys: String, CodingKey {
         case turn
         case quietSeconds = "quiet_seconds"
         case promptState = "prompt_state"
         case lastTokenSample = "last_token_sample"
+        case lastUserAt = "last_user_at"
+    }
+
+    public var lastUserDate: Date? {
+        guard let lastUserAt else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: lastUserAt) ?? ISO8601DateFormatter().date(from: lastUserAt)
+    }
+
+    /// Codex publishes no expiry, so auto keep-warm pokes after a fixed quiet
+    /// interval, only inside the column's keep-warm window since the last human
+    /// message. The helper still re-checks turn, quiet time and typing at send time.
+    public static let autoPokeQuietSeconds = 30 * 60
+
+    public func shouldAutoPoke(hours: Int, now: Date) -> Bool {
+        guard [1, 3, 6, 12].contains(hours), pokeBlockReason == nil,
+              let quietSeconds, quietSeconds >= Self.autoPokeQuietSeconds,
+              let lastUser = lastUserDate else { return false }
+        return now.timeIntervalSince(lastUser) < Double(hours * 3600)
     }
 
     public static func decodeMap(_ data: Data) throws -> [String: Self] {
