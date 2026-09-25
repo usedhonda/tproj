@@ -115,12 +115,6 @@ projects:
 #                       # tproj stop/kill does not close GUI
 #                       # false closes GUI on stop/kill
 #
-#   # Optional fixed GUI app path (recommended for development)
-#   # Accepts either:
-#   #   /path/to/tproj.app
-#   #   /path/to/tproj.app/Contents/MacOS/tproj
-#   app_path: /Users/<username>/projects/claude/tproj/apps/tproj/dist/tproj.app
-#
 #   # Extra directories to add to the GUI app's PATH
 #   # Builtin defaults (~/bin, /opt/homebrew/bin, /usr/local/bin) are always included
 #   extra_paths:

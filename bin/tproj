@@ -604,8 +604,7 @@ TPROJ_GUI_PIDFILE="${TMPDIR:-/tmp}/tproj-gui.pid"
 # GUI 起動ターゲット選択
 # 優先順位:
 #   1) TPROJ_GUI_APP_PATH 環境変数（明示的オーバーライド）
-#   2) gui.app_path in workspace.yaml（yaml で指定した場合）
-#   3) debug バイナリ auto-detect (.build/.../debug/tproj)
+#   2) current SwiftPM debug binary (.build/debug/tproj)
 _find_gui_target() {
   local p gui_bin
 
@@ -615,26 +614,13 @@ _find_gui_target() {
     return 0
   fi
 
-  # (2) debug バイナリ（enabled + disabled 全プロジェクト + root を検索）
+  # (2) current debug binary（enabled + disabled 全プロジェクト + root を検索）
   for p in "${PROJECT_PATHS[@]}" "${CATALOG_PATHS[@]}" "$root"; do
-    gui_bin="$p/apps/tproj/.build/arm64-apple-macosx/debug/tproj"
+    gui_bin="$p/apps/tproj/.build/debug/tproj"
     [[ -x "$gui_bin" ]] && { echo "$gui_bin"; return 0; }
   done
 
-  # (3) /Applications/tproj.app (Homebrew cask install)
-  local app_bin="/Applications/tproj.app/Contents/MacOS/tproj"
-  if [[ -x "$app_bin" ]]; then
-    echo "$app_bin"
-    return 0
-  fi
-
-  # (4) dist release bundle in tproj repo
-  for p in "${PROJECT_PATHS[@]}" "${CATALOG_PATHS[@]}" "$root"; do
-    gui_bin="$p/apps/tproj/dist/tproj.app/Contents/MacOS/tproj"
-    [[ -x "$gui_bin" ]] && { echo "$gui_bin"; return 0; }
-  done
-
-  echo "tproj: warning: GUI app not found - build it with 'cd apps/tproj && ./dev-app.sh', or set TPROJ_GUI_APP_PATH (the CLI workspace runs fine without it)" >&2
+  echo "tproj: warning: current GUI app not found - build it with 'cd apps/tproj && swift build', or set TPROJ_GUI_APP_PATH (the CLI workspace runs fine without it)" >&2
   return 1
 }
 
@@ -1251,13 +1237,6 @@ parse_global_workspace_config() {
 
   ws_string_array '.launch.claude.args' GLOBAL_CLAUDE_ARGS
   ws_string_array '.launch.codex.args' GLOBAL_CODEX_ARGS
-
-  # GUI app path from workspace.yaml (env var takes precedence)
-  local yaml_app_path
-  yaml_app_path="$(ws_string '.gui.app_path' '')"
-  if [[ -n "$yaml_app_path" && -z "${TPROJ_GUI_APP_PATH:-}" ]]; then
-    TPROJ_GUI_APP_PATH="$yaml_app_path"
-  fi
 
   # Batch-read all tmux_ui settings in a single jq call (TSV output)
   local ui_line

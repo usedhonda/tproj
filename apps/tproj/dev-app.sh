@@ -21,7 +21,7 @@ done
 # --- Build ---
 if [[ "$PREBUILT" == true ]]; then
   [[ "$MODE" == "debug" ]] || { echo "--prebuilt cannot be combined with --release" >&2; exit 2; }
-  DEBUG_BIN="$SCRIPT_DIR/.build/arm64-apple-macosx/debug/tproj"
+  DEBUG_BIN="$SCRIPT_DIR/.build/debug/tproj"
   [[ -x "$DEBUG_BIN" ]] || { echo "prebuilt app missing: $DEBUG_BIN" >&2; exit 1; }
 elif [[ "$MODE" == "debug" ]]; then
   echo "==> Build app (debug)"
@@ -34,14 +34,21 @@ else
   "$SCRIPT_DIR/build-app.sh"
 fi
 
-# --- Stop ALL previous GUI processes (PID file + pattern) ---
-echo "==> Stop previous GUI processes"
+previous_pid=""
 if [[ -f "$TPROJ_GUI_PIDFILE" ]]; then
-  kill "$(<"$TPROJ_GUI_PIDFILE")" 2>/dev/null || true
-  rm -f "$TPROJ_GUI_PIDFILE"
+  previous_pid="$(<"$TPROJ_GUI_PIDFILE")"
 fi
-pkill -f 'apps/tproj/dist/tproj.app/Contents/MacOS/tproj|\.build/.*/debug/tproj|tproj-gui' 2>/dev/null || true
-sleep 0.3
+
+retire_previous_gui() {
+  local new_pid="$1" previous_command=""
+  echo "$new_pid" > "$TPROJ_GUI_PIDFILE"
+  [[ "$previous_pid" =~ ^[0-9]+$ && "$previous_pid" != "$new_pid" ]] || return 0
+  previous_command="$(ps -p "$previous_pid" -o command= 2>/dev/null || true)"
+  case "$previous_command" in
+    "$SCRIPT_DIR"/.build/*/tproj|"$SCRIPT_DIR"/.build/*/tproj\ --server|"$SCRIPT_DIR"/dist/tproj.app/Contents/MacOS/tproj)
+      kill "$previous_pid" 2>/dev/null || true ;;
+  esac
+}
 
 launch_gui() {
   local executable="$1"
@@ -62,21 +69,21 @@ launch_gui() {
 if [[ "$MODE" == "debug" ]]; then
   echo "==> Launch app (debug)"
   local_pid="$(launch_gui "$DEBUG_BIN")"
-  echo "$local_pid" > "$TPROJ_GUI_PIDFILE"
   sleep 1
   if ! kill -0 "$local_pid" 2>/dev/null; then
     echo "debug process (pid $local_pid) not detected; check $TPROJ_GUI_LOG" >&2
     exit 1
   fi
+  retire_previous_gui "$local_pid"
   echo "Done: $DEBUG_BIN (pid $local_pid)"
 else
   echo "==> Launch app (release)"
   local_pid="$(launch_gui "$APP_BUNDLE/Contents/MacOS/tproj")"
-  echo "$local_pid" > "$TPROJ_GUI_PIDFILE"
   sleep 1
   if ! kill -0 "$local_pid" 2>/dev/null; then
     echo "app process (pid $local_pid) not detected; check $TPROJ_GUI_LOG" >&2
     exit 1
   fi
+  retire_previous_gui "$local_pid"
   echo "Done: $APP_BUNDLE (pid $local_pid)"
 fi

@@ -4,23 +4,11 @@ Native macOS app for controlling and monitoring `tproj` workspaces.
 
 ## Development Run
 
-For a quick smoke test only — **not** the normal launch (see Runtime Rule below; for day-to-day development use `./dev-app.sh`):
+## Runtime Rule: Current SwiftPM GUI
 
-```bash
-cd apps/tproj
-swift run tproj
-```
-
-## Runtime Rule: Single GUI Artifact
-
-To avoid stale UI and duplicate binaries, runtime must use only `apps/tproj/dist/tproj.app`.
-
-Forbidden for normal launch:
-
-- `apps/tproj/.build/.../debug/tproj`
-- `~/bin/tproj-gui`
-
-After code changes, always rebuild `.app` and relaunch:
+The development launcher uses SwiftPM's current `.build/debug/tproj` artifact.
+The legacy `.build/arm64-apple-macosx/debug/tproj` and old `dist/tproj.app`
+artifacts are not auto-selected. Use the wrapper for development launches:
 
 ```bash
 cd apps/tproj
@@ -34,16 +22,15 @@ cd apps/tproj
 ./dev-setup.sh
 ```
 
-`dev-setup.sh` does three things:
+`dev-setup.sh` does two things:
 
-1. build + launch `dist/tproj.app`
+1. build + launch the current SwiftPM debug GUI
 2. sync latest `bin/tproj` into `~/bin/tproj`
-3. set `~/.config/tproj/workspace.yaml` -> `gui.app_path`
 
 Verification rule:
 
 - Only one `tproj` GUI process should be running.
-- The running process must be `apps/tproj/dist/tproj.app/Contents/MacOS/tproj`.
+- The running process must be `apps/tproj/.build/debug/tproj` (or its SwiftPM-resolved target).
 
 ## Recommended Development Command
 
@@ -56,9 +43,9 @@ cd apps/tproj
 
 This command runs:
 
-1. `build-app.sh`
-2. stop previous GUI process
-3. `open -ga dist/tproj.app`
+1. `swift build`
+2. launch the new GUI and confirm its process is alive
+3. retire only the previous GUI PID, leaving tmux and agent panes untouched
 
 ## Build `.app`
 
