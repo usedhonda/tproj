@@ -31,6 +31,8 @@ projects:
 
   # Remote project over SSH
   - path: /Users/<username>/projects/my-api-server
+    # local_path: /Users/<username>/projects/my-api-server
+    # remote_path: /Users/<username>/projects/my-api-server
     type: remote
     host: remote-host
     alias: api
@@ -39,7 +41,8 @@ projects:
 #
 # path    : string (required)
 #           Project path. Use absolute paths for local projects.
-#           Remote projects use paths on the remote host (supports ~).
+#           Remote projects use absolute paths on the remote host.
+# local_path / remote_path : optional GUI location-switch history. path is active.
 #
 # type    : local | remote (optional, default: local)
 #

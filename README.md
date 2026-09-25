@@ -157,6 +157,24 @@ projects:
 
 See `config/workspace.yaml.example` for the full field reference.
 
+### Persistent remote projects
+
+In the GUI, **Projects** selects **This Mac** or **macmini / SSH** for each
+project. Enter the SSH host alias and the absolute project path on that host.
+Use **Start** to launch remote CC/Cdx without opening a local column, or
+**Open** to attach local display panes to those same remote tmux sessions.
+Closing the local Mac disconnects the display; the remote panes keep running.
+
+The remote Mac needs `tmux` and the agent CLIs installed and authenticated
+under its own account. From this repository, run
+`./bin/tproj-remote-setup SSH_HOST` once to install the
+small helper and a user-login restore job. No Ghostty or tproj GUI is needed
+on the remote Mac. A plain SSH connection can reattach with
+`~/bin/tproj-remote-host attach --path /absolute/project/path --role cc`
+(or `cdx`). After a host restart, saved conversations are resumed when the
+user logs in or on the next attach; in-flight work and unsent input cannot be
+restored. The login job does not make the host reachable before login.
+
 ## GUI App
 
 A native SwiftUI app for session control and monitoring. Features:
