@@ -119,7 +119,10 @@ if action == "register":
     existing = next((e for e in entries if e["path"] == path), None)
     if existing:
         if alias != existing["alias"] and args[1]:
-            fail("path is already registered with another alias")
+            if any(e["alias"] == alias and e["path"] != path for e in entries):
+                fail("alias is already registered")
+            existing["alias"] = alias
+            save(entries)
     else:
         if any(e["alias"] == alias for e in entries):
             fail("alias is already registered")
@@ -318,7 +321,18 @@ case "$action" in
     ;;
   register)
     [[ -n "$project_path" && -z "$role" ]] || usage; validate_path "$project_path"; validate_field "$project_path"
+    previous_alias=$(catalog alias "$project_path" 2>/dev/null || true)
     catalog register "$project_path" "$alias_name"
+    current_alias=$(catalog alias "$project_path")
+    if [[ -n "$previous_alias" && "$previous_alias" != "$current_alias" ]]; then
+      # Keep the running panes and PIDs; only their routing identity changes.
+      for session_name in "$(shared_session_for "$project_path")" "$(session_for cc "$project_path")" "$(session_for cdx "$project_path")"; do
+        while IFS='|' read -r pane_id pane_project; do
+          [[ -n "$pane_id" && "$pane_project" == "$project_path" ]] || continue
+          tmux_run set-option -pt "$pane_id" @alias "$current_alias"
+        done < <(tmux_run list-panes -t "=$session_name:dev" -F '#{pane_id}|#{@project}' 2>/dev/null || true)
+      done
+    fi
     ;;
   unregister)
     [[ -n "$project_path" && -z "$role$alias_name" ]] || usage; [[ "$project_path" == /* ]] || usage

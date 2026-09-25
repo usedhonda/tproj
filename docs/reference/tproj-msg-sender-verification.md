@@ -15,6 +15,14 @@ live `sshd`/`sshd-session` ancestor and resolves exactly one live pane in the
 exact session's `dev` window. The destination applies the ordinary prompt,
 draft, and selection gates, but a blocked target causes an error, not a queue.
 SSH failure is a delivery failure; no offline store is created.
+For ordinary `alias.role` chat, the sending Mac's `workspace.yaml` can select
+one remote project with that alias and route through this same verified path.
+An enabled local project with the same alias is an ambiguity error. The remote
+session is resolved from the host's live status by path and role; no second
+server-authored alias overrides the client YAML. On a persistent host, a
+registered alias in another local tmux session similarly resolves to that
+session after sender verification. Cross-session sends are plain live chat
+only, with the normal destination sendability gate and no queue.
 On macOS the live `sshd-session` process title may include a suffix such as
 `sshd-session: account@notty`; the ingress accepts that process-name form but
 still requires it to be in the caller's actual parent chain.

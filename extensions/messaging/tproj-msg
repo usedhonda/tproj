@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+ORIGINAL_ARGS=("$@")
 
 # tproj-msg - Inter-pane messaging CLI for tproj
 #
@@ -647,6 +648,32 @@ if [[ "$LIST_MODE" != "true" && "$READ_MODE" != "true" && "$FLUSH_MODE" != "true
     [[ ${#POSITIONAL_ARGS[@]} -ge 2 ]] || { echo "Error: requires <target> <message>" >&2; show_usage; exit 1; }
     TARGET="${POSITIONAL_ARGS[0]}"
     MESSAGE="${POSITIONAL_ARGS[@]:1}"
+  fi
+fi
+
+# A plain alias.role send follows this Mac's workspace YAML. The host is a
+# transport namespace, not another project alias. Re-exec through the existing
+# verified --remote path; control/task modes remain excluded by that path.
+if [[ "$SEND_MODE" == "true" && "$STDIN_MODE" != "true" && -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "true" \
+      && "$TARGET" =~ ^[A-Za-z0-9_-]+\.(cc|cdx)$ ]]; then
+  workspace_file="$HOME/.config/tproj/workspace.yaml"
+  if [[ -f "$workspace_file" ]] && command -v yq >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    remote_rows=$(yq -o json "$workspace_file" 2>/dev/null | jq -r --arg alias "${TARGET%.*}" \
+      '.projects // [] | .[] | select(.type == "remote" and .alias == $alias) | [.host, .path] | @tsv' 2>/dev/null || true)
+    if [[ -n "$remote_rows" ]]; then
+      [[ "$remote_rows" != *$'\n'* ]] || { echo "Error: ambiguous remote alias '${TARGET%.*}' in workspace.yaml" >&2; exit 1; }
+      local_conflict=$(yq -o json "$workspace_file" 2>/dev/null | jq -r --arg alias "${TARGET%.*}" \
+        '[.projects // [] | .[] | select((.type // "local") == "local" and .alias == $alias and .enabled != false)] | length' 2>/dev/null || true)
+      [[ "$local_conflict" == 0 ]] || { echo "Error: alias '${TARGET%.*}' is active on both local and remote projects" >&2; exit 1; }
+      IFS=$'\t' read -r route_host route_path <<< "$remote_rows"
+      remote_client="$HOME/bin/tproj-remote-client"
+      [[ -x "$remote_client" ]] || { echo "Error: remote client is not installed" >&2; exit 1; }
+      route_status=$("$remote_client" status "$route_host" "$route_path" "${TARGET##*.}") || exit $?
+      [[ "$route_status" == running\|* ]] || { echo "Error: remote target '$TARGET' is not running" >&2; exit 1; }
+      route_session="${route_status#running|}"
+      route_session="${route_session%%|*}"
+      exec "$0" --remote "$route_host" --remote-session "$route_session" "${ORIGINAL_ARGS[@]}"
+    fi
   fi
 fi
 
@@ -1585,6 +1612,34 @@ else
       AS_CALLER_VERIFIED=false
       CALLER_VERIFY_REASON="pane_ancestry_mismatch"
       AUTH_PATH="pane-derived-rejected"
+    fi
+  fi
+fi
+
+# On a persistent host, other registered projects occupy separate tmux
+# sessions. Resolve the same alias.role through the host catalog after sender
+# verification; changing the destination never changes the verified origin.
+CROSS_SESSION_CHAT=false
+if [[ -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "true" \
+      && ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) \
+      && "$TARGET" =~ ^[A-Za-z0-9_-]+\.(cc|cdx)$ \
+      && -x "$HOME/bin/tproj-remote-host" ]]; then
+  host_rows=$("$HOME/bin/tproj-remote-host" list 2>/dev/null | awk -F '|' -v alias="${TARGET%.*}" 'NR > 1 && $2 == alias {print $3}' || true)
+  if [[ -n "$host_rows" ]]; then
+    [[ "$host_rows" != *$'\n'* ]] || { echo "Error: ambiguous host alias '${TARGET%.*}'" >&2; exit 1; }
+    host_status=$("$HOME/bin/tproj-remote-host" status --path "$host_rows" --role "${TARGET##*.}" 2>/dev/null || true)
+    if [[ "$host_status" == running\|* ]]; then
+      destination_session="${host_status#running|}"
+      destination_session="${destination_session%%|*}"
+      if [[ "$SESSION" != "$destination_session" ]]; then
+        if [[ "$SEND_MODE" == "true" ]]; then
+          [[ "$NEW_TASK_MODE" == "false" && "$ROLE_HANDOFF_MODE" == "false" && "$FORCE_MODE" == "false" && "$FIRE_MODE" == "false" ]] \
+            || { echo "Error: cross-session alias routing accepts only plain chat" >&2; exit 1; }
+          CROSS_SESSION_CHAT=true
+        fi
+        SESSION="$destination_session"
+        IS_WORKSPACE=true
+      fi
     fi
   fi
 fi
@@ -4400,7 +4455,7 @@ if ! is_target_online "$TARGET_PANE"; then
   exit 1
 fi
 
-if [[ "$REMOTE_INGRESS" == "true" ]]; then
+if [[ "$REMOTE_INGRESS" == "true" || "$CROSS_SESSION_CHAT" == "true" ]]; then
   # No queue or force path exists for remote chat: a blocked pane is offline
   # for this operation, and the originating SSH command receives a failure.
   send_block_reason "$TARGET_PANE"
@@ -4408,7 +4463,11 @@ if [[ "$REMOTE_INGRESS" == "true" ]]; then
     echo "Error: remote target '$TARGET' is blocked ($SEND_BLOCK_REASON); not queued" >&2
     exit 1
   fi
-  HEADER="[from:Remote Host]"
+  if [[ "$REMOTE_INGRESS" == "true" ]]; then
+    HEADER="[from:Remote Host]"
+  else
+    HEADER="[from:${MY_ALIAS}.${MY_ROLE}]"
+  fi
   raw_send
   exit $?
 fi

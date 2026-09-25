@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: tproj-remote-client list|cache-status HOST | status|ensure|attach|stop HOST REMOTE_PATH cc|cdx | register|unregister HOST REMOTE_PATH [--alias NAME] | cache-set HOST REMOTE_PATH cc|cdx HOURS" >&2
+  echo "usage: tproj-remote-client list|cache-status HOST | status|ensure|attach|stop HOST REMOTE_PATH cc|cdx | register|unregister HOST REMOTE_PATH [--alias NAME] | cache-set HOST REMOTE_PATH cc|cdx HOURS | mode-status HOST REMOTE_PATH | mode-set HOST REMOTE_PATH collab|assist|solo cc|cdx|derived" >&2
   exit 2
 fi
 
@@ -16,6 +16,11 @@ case "$action" in
     elif [[ $# -eq 3 || ($# -eq 4 && ( "$role" == cc || "$role" == cdx )) ]]; then :
     else exit 2; fi ;;
   unregister) [[ $# -eq 3 || ($# -eq 4 && ( "$role" == cc || "$role" == cdx )) ]] || exit 2 ;;
+  mode-status) [[ $# -eq 3 ]] || exit 2 ;;
+  mode-set)
+    [[ $# -eq 5 ]] || exit 2
+    case "$role" in collab|assist|solo) ;; *) exit 2 ;; esac
+    case "$5" in cc|cdx|derived) ;; *) exit 2 ;; esac ;;
   cache-set)
     [[ $# -eq 5 ]] || exit 2
     case "$role" in cc|cdx) ;; *) exit 2 ;; esac
@@ -27,12 +32,19 @@ if [[ ! "$host" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || ( "$action" != list && "$acti
   exit 2
 fi
 
-if [[ "$action" == cache-status || "$action" == cache-set ]]; then
+if [[ "$action" == mode-status || "$action" == mode-set ]]; then
+  printf -v path_arg '%q' "$remote_path"
+  remote_command='PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" "$HOME/bin/model-role-router" mode'
+  if [[ "$action" == mode-set ]]; then
+    remote_command+=" $role --main $5 --set-by gui --source tproj-gui"
+  fi
+  remote_command+=" --json --project $path_arg"
+elif [[ "$action" == cache-status || "$action" == cache-set ]]; then
   remote_command="\$HOME/bin/tproj-remote-cache ${action#cache-}"
 else
   remote_command="\$HOME/bin/tproj-remote-host $action"
 fi
-if [[ "$action" != list && "$action" != cache-status ]]; then
+if [[ "$action" != list && "$action" != cache-status && "$action" != mode-status && "$action" != mode-set ]]; then
   printf -v path_arg '%q' "$remote_path"
   remote_command+=" --path $path_arg"
 fi

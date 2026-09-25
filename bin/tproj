@@ -406,6 +406,9 @@ build_pane_label() {
   local project_name
   if [[ -n "$project_alias" ]]; then
     project_name="$project_alias"
+    if [[ "$project_type" == "remote" && -n "$project_host" ]]; then
+      project_name="${project_name%@${project_host}}"
+    fi
   else
     project_name="$(basename "$project_path" 2>/dev/null || true)"
     [[ -z "$project_name" || "$project_name" == "." || "$project_name" == "/" ]] && project_name="unknown"
@@ -601,26 +604,19 @@ collect_session_descendants() {
 # PID file for GUI process coordination (shared with dev-app.sh)
 TPROJ_GUI_PIDFILE="${TMPDIR:-/tmp}/tproj-gui.pid"
 
-# GUI 起動ターゲット選択
-# 優先順位:
-#   1) TPROJ_GUI_APP_PATH 環境変数（明示的オーバーライド）
-#   2) current SwiftPM debug binary (.build/debug/tproj)
+# GUI target is the one local workspace project named tproj. Never search
+# arbitrary projects or accept an external app path that can revive stale GUIs.
 _find_gui_target() {
-  local p gui_bin
-
-  # (1) 環境変数による明示的オーバーライド
-  if [[ -n "${TPROJ_GUI_APP_PATH:-}" && -x "${TPROJ_GUI_APP_PATH}" ]]; then
-    realpath "$TPROJ_GUI_APP_PATH"
-    return 0
-  fi
-
-  # (2) current debug binary（enabled + disabled 全プロジェクト + root を検索）
-  for p in "${PROJECT_PATHS[@]}" "${CATALOG_PATHS[@]}" "$root"; do
-    gui_bin="$p/apps/tproj/.build/debug/tproj"
-    [[ -x "$gui_bin" ]] && { realpath "$gui_bin"; return 0; }
+  local i gui_bin found=""
+  for ((i=0; i<${#CATALOG_ALIASES[@]}; i++)); do
+    [[ "${CATALOG_ALIASES[$i]}" == "tproj" && "${CATALOG_TYPES[$i]}" == "local" ]] || continue
+    [[ -z "$found" ]] || { echo "tproj: multiple local projects named tproj; GUI target is ambiguous" >&2; return 1; }
+    found="${CATALOG_PATHS[$i]}"
   done
-
-  echo "tproj: warning: current GUI app not found - build it with 'cd apps/tproj && swift build', or set TPROJ_GUI_APP_PATH (the CLI workspace runs fine without it)" >&2
+  [[ -n "$found" ]] || { echo "tproj: GUI source project (local alias tproj) not configured" >&2; return 1; }
+  gui_bin="$found/apps/tproj/.build/debug/tproj"
+  [[ -x "$gui_bin" ]] && { realpath "$gui_bin"; return 0; }
+  echo "tproj: warning: current GUI not built at $gui_bin (CLI workspace still runs)" >&2
   return 1
 }
 
@@ -632,7 +628,7 @@ _tproj_gui_kill_all() {
     if [[ "$previous_pid" == <-> ]]; then
       previous_command="$(ps -p "$previous_pid" -o command= 2>/dev/null || true)"
       case "$previous_command" in
-        */apps/tproj/.build/*/tproj|*/apps/tproj/dist/tproj.app/Contents/MacOS/tproj|/Applications/tproj.app/Contents/MacOS/tproj)
+        */apps/tproj/.build/*/tproj|*/apps/tproj/dist/release-app/tproj.app/Contents/MacOS/tproj|/Applications/tproj.app/Contents/MacOS/tproj)
           kill "$previous_pid" 2>/dev/null || true ;;
       esac
     fi
@@ -676,7 +672,7 @@ launch_tproj_gui() {
     local old_command
     old_command="$(ps -p "$old_pid" -o command= 2>/dev/null || true)"
     case "$old_command" in
-      */apps/tproj/.build/*/tproj|*/apps/tproj/dist/tproj.app/Contents/MacOS/tproj|/Applications/tproj.app/Contents/MacOS/tproj)
+      */apps/tproj/.build/*/tproj|*/apps/tproj/dist/release-app/tproj.app/Contents/MacOS/tproj|/Applications/tproj.app/Contents/MacOS/tproj)
         kill "$old_pid" 2>/dev/null || true ;;
     esac
   fi
@@ -1440,7 +1436,7 @@ repair_workspace_tags() {
   local session="$1"
   local repaired=0
   local pane_id role project alias column tool_kind
-  local clean_project i label_kind proj_type proj_host parsed title
+  local clean_project i label_kind proj_type proj_host parsed title runtime_alias
 
   while IFS=$'\t' read -r pane_id role project; do
     [[ -z "$role" || "$role" == "(null)" ]] && continue
@@ -1455,15 +1451,22 @@ repair_workspace_tags() {
     alias=""
     clean_project="${project%/}"
     for ((i=0; i<${#CATALOG_PATHS[@]}; i++)); do
-      if [[ "${CATALOG_PATHS[$i]%/}" == "$clean_project" ]]; then
+      if [[ "${CATALOG_PATHS[$i]%/}" == "$clean_project" ]] ||
+         [[ "${CATALOG_TYPES[$i]}" == "remote" && "ssh://${CATALOG_HOSTS[$i]}/${CATALOG_PATHS[$i]%/}" == "$clean_project" ]]; then
         alias="${CATALOG_ALIASES[$i]}"
         break
       fi
     done
     [[ -z "$alias" ]] && alias="$(basename "$clean_project" 2>/dev/null || echo "unknown")"
 
-    # Set tags
-    tmux set-option -pt "$pane_id" @alias "$alias" 2>/dev/null || true
+    # Local display panes use a host-qualified routing identity so an equally
+    # named local project remains unambiguous to tproj-msg.
+    runtime_alias="$alias"
+    if [[ "$project" == ssh://* ]]; then
+      parsed="${project#ssh://}"
+      runtime_alias="${alias}@${parsed%%/*}"
+    fi
+    tmux set-option -pt "$pane_id" @alias "$runtime_alias" 2>/dev/null || true
     tmux set-option -pt "$pane_id" @column "$column" 2>/dev/null || true
 
     # CC panes: prevent title override
@@ -1671,15 +1674,25 @@ fi
 
 resolve_alias_to_project() {
   local target_alias="$1"
-  local i
+  local i matched=-1 count=0
   for ((i=0; i<${#CATALOG_ALIASES[@]}; i++)); do
-    if [[ "${CATALOG_ALIASES[$i]}" == "$target_alias" ]]; then
+    if [[ "${CATALOG_TYPES[$i]}" == "remote" && "${CATALOG_ALIASES[$i]}@${CATALOG_HOSTS[$i]}" == "$target_alias" ]]; then
       RESOLVED_PATH="${CATALOG_PATHS[$i]}"
       RESOLVED_TYPE="${CATALOG_TYPES[$i]}"
       RESOLVED_HOST="${CATALOG_HOSTS[$i]}"
       return 0
     fi
+    if [[ "${CATALOG_ALIASES[$i]}" == "$target_alias" ]]; then
+      matched=$i
+      ((count++)) || true
+    fi
   done
+  if ((count == 1)); then
+    RESOLVED_PATH="${CATALOG_PATHS[$matched]}"
+    RESOLVED_TYPE="${CATALOG_TYPES[$matched]}"
+    RESOLVED_HOST="${CATALOG_HOSTS[$matched]}"
+    return 0
+  fi
   return 1
 }
 
@@ -1974,8 +1987,10 @@ create_workspace_layout() {
     tmux set-option -pt "$claude_pane" @role "claude-p$i"
     tmux set-option -pt "$codex_pane" @column "$i"
     tmux set-option -pt "$claude_pane" @column "$i"
-    tmux set-option -pt "$codex_pane" @alias "${aliases[$((i-1))]}"
-    tmux set-option -pt "$claude_pane" @alias "${aliases[$((i-1))]}"
+    local pane_alias="${aliases[$((i-1))]}"
+    [[ "$proj_type" == "remote" ]] && pane_alias="${pane_alias}@${proj_host}"
+    tmux set-option -pt "$codex_pane" @alias "$pane_alias"
+    tmux set-option -pt "$claude_pane" @alias "$pane_alias"
 
     # Keep pane alive if shell dies (tproj-respawn-guard respawns it via the pane-died hook)
     tmux set-option -pt "$codex_pane" remain-on-exit on 2>/dev/null || true

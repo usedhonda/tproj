@@ -36,6 +36,13 @@ cdx_session=$(run ensure --path "$TMP/project" --role cdx)
 [[ $(run list | tail -n 1) == *'|demo|'*'|running|running' ]]
 [[ $(tm list-panes -t "=$cc_session:dev" -F '#{@role}|#{@alias}|#{@column}|#{@project}') == "claude-p1|demo|1|$TMP/project" ]]
 [[ $(tm list-panes -t "=$cdx_session:dev" -F '#{@role}|#{@alias}|#{@column}|#{@project}') == "codex-p1|demo|1|$TMP/project" ]]
+cc_pid_before=$(tm display-message -t "=$cc_session:dev" -p '#{pane_pid}')
+cdx_pid_before=$(tm display-message -t "=$cdx_session:dev" -p '#{pane_pid}')
+run register --path "$TMP/project" --alias renamed
+[[ $(run list | tail -n 1) == *'|renamed|'*'|running|running' ]]
+[[ $(tm display-message -t "=$cc_session:dev" -p '#{@alias}|#{pane_pid}') == "renamed|$cc_pid_before" ]]
+[[ $(tm display-message -t "=$cdx_session:dev" -p '#{@alias}|#{pane_pid}') == "renamed|$cdx_pid_before" ]]
+run register --path "$TMP/project" --alias demo
 run unregister --path "$TMP/project"
 tm has-session -t "=$cc_session"
 run register --path "$TMP/project" --alias demo

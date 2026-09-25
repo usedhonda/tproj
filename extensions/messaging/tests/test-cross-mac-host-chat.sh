@@ -41,6 +41,29 @@ reject 'ingress rejects as claim' 'only plain --stdin chat' --remote-ingress --s
 reject 'ingress rejects non-SSH ancestry' 'live SSH session ancestor' --remote-ingress --session tproj-workspace --stdin exact.cc <<<hello
 reject 'relay ingress rejects absent listener' 'live relay ancestor' --remote-relay-ingress "$tmp/absent.sock" --session tproj-workspace --stdin exact.cc <<<hello
 
+# A plain alias in this Mac's YAML selects the remote host before local pane
+# resolution; an unverified caller must still be refused before SSH sends.
+mkdir -p "$tmp/home/.config/tproj" "$tmp/home/bin"
+cat > "$tmp/home/.config/tproj/workspace.yaml" <<'EOF'
+projects:
+  - path: /remote/chi
+    type: remote
+    host: paired
+    alias: chi
+EOF
+cat > "$tmp/home/bin/tproj-remote-client" <<'EOF'
+#!/bin/sh
+echo 'running|tproj-remote-cc-test|123'
+EOF
+chmod +x "$tmp/home/bin/tproj-remote-client"
+if HOME="$tmp/home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --as exact.cc chi.cc hello >"$tmp/out" 2>"$tmp/err"; then
+  echo 'FAIL: YAML route accepted an unverified sender' >&2
+  exit 1
+fi
+grep -Fq 'verified local sender' "$tmp/err"
+[[ ! -e "$SSH_CALLED_MARKER" ]]
+echo 'ok: YAML alias routes remotely but preserves sender verification'
+
 # Exercise the reverse Unix transport with a fake destination program; actual
 # target/liveness behavior remains owned by tproj-msg's focused sendability test.
 cp "$repo/extensions/messaging/tproj-remote-relay" "$tmp/tproj-remote-relay"

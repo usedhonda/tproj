@@ -1162,6 +1162,10 @@ struct WorkspaceProject: Identifiable {
         return URL(fileURLWithPath: trimmed).lastPathComponent
     }
 
+    var routingAlias: String {
+        type == "remote" ? "\(effectiveAlias)@\(host)" : effectiveAlias
+    }
+
     var projectName: String {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return "(no-path)" }
@@ -1793,6 +1797,7 @@ final class AppViewModel: ObservableObject {
     // (tilde-expanded) project path. Absent key == collab with no lead. Derived by
     // `model-role-router mode --json`, which owns `<project>/.local/role-mode.json`.
     @Published var roleModeStatuses: [String: RoleModeStatus] = [:]
+    private var lastRemoteRolePollAt: Date = .distantPast
     @Published var weeklyPaceSnapshots: [String: WeeklyPaceSnapshot] = [:]
     @Published var ccSessionSnapshot: WeeklyPaceSnapshot?
     @Published var keepWarmSessionsByColumn: [Int: KeepWarmSession] = [:]
@@ -2661,7 +2666,7 @@ final class AppViewModel: ObservableObject {
             if result.exitCode == 0 {
                 statusText = "Added column: \(alias)"
                 await loadLiveColumnsAsync()
-                if let projectPath = self.workspaceProjects.first(where: { $0.effectiveAlias == alias })?.path {
+                if let projectPath = self.workspaceProjects.first(where: { $0.routingAlias == alias })?.path {
                     let helper = "\(NSHomeDirectory())/bin/voice-identity-sync"
                     if FileManager.default.isExecutableFile(atPath: helper) {
                         Task.detached(priority: .background) {
@@ -3305,6 +3310,12 @@ final class AppViewModel: ObservableObject {
         "\(project.host)|\(project.path)"
     }
 
+    private func remoteBaseAlias(_ project: WorkspaceProject) -> String {
+        let suffix = "@\(project.host)"
+        let alias = project.effectiveAlias
+        return alias.hasSuffix(suffix) ? String(alias.dropLast(suffix.count)) : alias
+    }
+
     func remoteState(_ project: WorkspaceProject) -> String {
         remoteProjectStates[remoteKey(project)] ?? "Unknown"
     }
@@ -3375,9 +3386,11 @@ final class AppViewModel: ObservableObject {
             let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
             guard fields.count == 5, fields[2].hasPrefix("/") else { continue }
             let prior = workspaceProjects.first { $0.type == "remote" && $0.host == host && $0.path == fields[2] }
+            // The local YAML owns the display alias. The host catalog's alias
+            // is a routing mirror, never a reason to rewrite this Mac's name.
             var project = prior ?? WorkspaceProject(path: fields[2], type: "remote", host: host,
-                                                    alias: fields[1], enabled: false)
-            project.alias = fields[1]
+                                                    alias: URL(fileURLWithPath: fields[2]).lastPathComponent,
+                                                    enabled: false)
             project.remotePath = fields[2]
             remote.append(project)
             let running = [fields[3], fields[4]].filter { $0 == "running" }.count
@@ -3441,7 +3454,7 @@ final class AppViewModel: ObservableObject {
             statusText = "Remote client not installed"
             return
         }
-        let registered = await runCommandAsync(client, ["register", project.host, project.path, "--alias", project.effectiveAlias])
+        let registered = await runCommandAsync(client, ["register", project.host, project.path, "--alias", remoteBaseAlias(project)])
         guard registered.exitCode == 0 else {
             statusText = "Remote setup failed: \(trimmedError(registered))"
             return
@@ -3455,7 +3468,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func saveConfiguredProjects(_ projects: [WorkspaceProject]) async -> Bool {
-        let aliases = projects.map { $0.effectiveAlias.lowercased() }
+        let aliases = projects.map { $0.routingAlias.lowercased() }
         guard Set(aliases).count == aliases.count else {
             statusText = "Project aliases must be unique"
             return false
@@ -3471,8 +3484,7 @@ final class AppViewModel: ObservableObject {
             }
         }
         for old in workspaceProjects where liveColumns.contains(where: { $0.projectPath == old.path }) {
-            guard let updated = projects.first(where: { $0.effectiveAlias == old.effectiveAlias }),
-                  updated.path == old.path && updated.type == old.type && updated.host == old.host else {
+            guard projects.contains(where: { $0.path == old.path && $0.type == old.type && $0.host == old.host }) else {
                 statusText = "Close the live column before changing its location"
                 return false
             }
@@ -3481,7 +3493,7 @@ final class AppViewModel: ObservableObject {
         let client = NSHomeDirectory() + "/bin/tproj-remote-client"
         for project in projects where project.type == "remote" {
             let registration = await runCommandAsync(client, ["register", project.host, project.path,
-                                                             "--alias", project.effectiveAlias])
+                                                             "--alias", remoteBaseAlias(project)])
             guard registration.exitCode == 0 else {
                 statusText = "Remote registration failed: \(trimmedError(registration))"
                 return false
@@ -3861,7 +3873,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func normalizeSelection() {
-        let aliases = workspaceProjects.map { $0.effectiveAlias }
+        let aliases = workspaceProjects.map { $0.routingAlias }
         if aliases.isEmpty {
             selectedAlias = ""
             return
@@ -4219,27 +4231,33 @@ final class AppViewModel: ObservableObject {
         (path as NSString).expandingTildeInPath
     }
 
+    private func roleModeKey(_ path: String, host: String?) -> String {
+        let key = normalizedProjectKey(path)
+        guard let host, !host.isEmpty else { return key }
+        return "remote|\(host)|\(key)"
+    }
+
     private var roleModeRouterPath: String {
         "\(NSHomeDirectory())/bin/model-role-router"
     }
 
     // Current mode for a project; collab when unknown.
-    func roleMode(forProjectPath path: String) -> RoleMode {
+    func roleMode(forProjectPath path: String, host: String? = nil) -> RoleMode {
         guard !path.isEmpty else { return .collab }
-        return roleModeStatuses[normalizedProjectKey(path)]?.mode ?? .collab
+        return roleModeStatuses[roleModeKey(path, host: host)]?.mode ?? .collab
     }
 
     // Which side leads a project ("cc" / "cdx" / "" when unknown).
-    func roleModeLead(forProjectPath path: String) -> String {
+    func roleModeLead(forProjectPath path: String, host: String? = nil) -> String {
         guard !path.isEmpty else { return "" }
-        return roleModeStatuses[normalizedProjectKey(path)]?.lead ?? ""
+        return roleModeStatuses[roleModeKey(path, host: host)]?.lead ?? ""
     }
 
     // User-selected conversation side. When unset, preserve the previous UI
     // behaviour by following the router's derived role lead.
-    func roleModeMain(forProjectPath path: String) -> String {
+    func roleModeMain(forProjectPath path: String, host: String? = nil) -> String {
         guard !path.isEmpty else { return "" }
-        let status = roleModeStatuses[normalizedProjectKey(path)]
+        let status = roleModeStatuses[roleModeKey(path, host: host)]
         return roleModeConversationMain(
             mode: status?.mode ?? .collab,
             main: status?.main ?? "",
@@ -4345,32 +4363,47 @@ final class AppViewModel: ObservableObject {
         }.value
     }
 
-    // Ask `model-role-router mode --json` for every known local project so mode
+    // Ask the router on the machine that runs each project so mode
     // AND lead come from the single derived source. The router spawns a small
     // process, so the calls run off the main thread (runCommandAsync dispatches
     // to a background queue) and in parallel; cheap enough to run on the refresh
     // path and a light poll so an external `tproj-role` change surfaces within a
     // few seconds.
     private func loadRoleModes() async {
-        var paths = Set<String>()
-        for project in workspaceProjects where project.type != "remote" {
+        let pollRemote = Date().timeIntervalSince(lastRemoteRolePollAt) >= 15
+        if pollRemote { lastRemoteRolePollAt = Date() }
+        var requests: [String: (path: String, host: String?)] = [:]
+        for project in workspaceProjects {
             let trimmed = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { paths.insert(trimmed) }
+            guard !trimmed.isEmpty else { continue }
+            let host = project.type == "remote" ? project.host : nil
+            if host == nil || pollRemote {
+                requests[roleModeKey(trimmed, host: host)] = (trimmed, host)
+            }
         }
-        for column in liveColumns where column.hostLabel == "local" {
-            if !column.projectPath.isEmpty { paths.insert(column.projectPath) }
+        for column in liveColumns where !column.projectPath.isEmpty {
+            let host = column.hostLabel.hasPrefix("remote@")
+                ? String(column.hostLabel.dropFirst("remote@".count)) : nil
+            if host == nil || pollRemote {
+                requests[roleModeKey(column.projectPath, host: host)] = (column.projectPath, host)
+            }
         }
 
         let router = roleModeRouterPath
         guard fileManager.isExecutableFile(atPath: router) else { return }
 
-        var statuses: [String: RoleModeStatus] = [:]
+        var statuses: [String: RoleModeStatus] = pollRemote ? [:] : roleModeStatuses.filter { $0.key.hasPrefix("remote|") }
         await withTaskGroup(of: (String, RoleModeStatus).self) { group in
-            for path in paths {
-                let key = normalizedProjectKey(path)
+            for (key, request) in requests {
                 group.addTask { [weak self] in
                     guard let self else { return (key, RoleModeStatus(mode: .collab, lead: "")) }
-                    let result = await self.runCommandAsync(router, ["mode", "--json", "--project", key])
+                    let result: CommandResult
+                    if let host = request.host, !host.isEmpty {
+                        result = await self.runCommandAsync(NSHomeDirectory() + "/bin/tproj-remote-client",
+                                                            ["mode-status", host, request.path])
+                    } else {
+                        result = await self.runCommandAsync(router, ["mode", "--json", "--project", request.path])
+                    }
                     let data = result.exitCode == 0 ? Data(result.stdout.utf8) : nil
                     return (key, RoleMode.parseStatus(data))
                 }
@@ -4403,18 +4436,23 @@ final class AppViewModel: ObservableObject {
     // Set mode and the user's preferred conversation side through the canonical
     // router. The preference is display/navigation state only; role authority
     // continues to come from the router's independently derived `lead`.
-    func setRoleMode(_ mode: RoleMode, main: String, forProjectPath path: String) async {
+    func setRoleMode(_ mode: RoleMode, main: String, forProjectPath path: String, host: String? = nil) async {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let key = normalizedProjectKey(trimmed)
+        let key = roleModeKey(trimmed, host: host)
         let previous = roleModeStatuses[key] ?? RoleModeStatus(mode: .collab, lead: "")
         let mainValue = (main == "cc" || main == "cdx") ? main : ""
         roleModeStatuses[key] = RoleModeStatus(mode: mode, lead: previous.lead, main: mainValue)
 
-        let result = await runCommandAsync(
-            roleModeRouterPath,
-            roleModeSetArguments(mode: mode, main: mainValue, projectPath: key)
-        )
+        let result: CommandResult
+        if let host, !host.isEmpty {
+            result = await runCommandAsync(NSHomeDirectory() + "/bin/tproj-remote-client",
+                                           ["mode-set", host, trimmed, mode.rawValue,
+                                            mainValue.isEmpty ? "derived" : mainValue])
+        } else {
+            result = await runCommandAsync(roleModeRouterPath,
+                                           roleModeSetArguments(mode: mode, main: mainValue, projectPath: key))
+        }
         guard result.exitCode == 0 else {
             roleModeStatuses[key] = previous
             statusText = "Role mode write failed: \(trimmedError(result))"
@@ -5764,7 +5802,7 @@ struct ContentView: View {
                     .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
                     .foregroundStyle(GhosttyTheme.current.foreground.opacity(0.5))
                     .lineLimit(1)
-                roleModeBadge(projectPath: project.path, isLocal: project.type != "remote")
+                roleModeBadge(projectPath: project.path, host: project.type == "remote" ? project.host : nil)
                 if project.type == "remote" {
                     Text(vm.remoteState(project))
                         .font(GhosttyTheme.current.font(size: 9, weight: .medium))
@@ -5802,7 +5840,7 @@ struct ContentView: View {
                     }
                     .frame(width: 42)
                     ActionButton("Open", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
-                        Task { await vm.addColumnByAlias(project.effectiveAlias) }
+                        Task { await vm.addColumnByAlias(project.routingAlias) }
                     }
                     .frame(width: 42)
                     ActionButton("Stop", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
@@ -5830,7 +5868,7 @@ struct ContentView: View {
                     ActionButton("Term", tone: .neutral, isEnabled: false, dense: true) {}
                         .frame(width: 38)
                     ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
-                        Task { await vm.addColumnByAlias(project.effectiveAlias) }
+                        Task { await vm.addColumnByAlias(project.routingAlias) }
                     }
                     .frame(width: 38)
                 }
@@ -6233,17 +6271,17 @@ struct ContentView: View {
     // Per-project role-mode menu. Mode and conversation main are separate
     // choices at the first level; the latter is UI preference, not role authority.
     @ViewBuilder
-    private func roleModeBadge(projectPath: String, isLocal: Bool) -> some View {
-        let canWrite = isLocal && !projectPath.isEmpty
-        let mode = canWrite ? vm.roleMode(forProjectPath: projectPath) : .collab
-        let main = canWrite ? vm.roleModeMain(forProjectPath: projectPath) : ""
+    private func roleModeBadge(projectPath: String, host: String?) -> some View {
+        let canWrite = !projectPath.isEmpty && (host == nil || host?.isEmpty == false)
+        let mode = canWrite ? vm.roleMode(forProjectPath: projectPath, host: host) : .collab
+        let main = canWrite ? vm.roleModeMain(forProjectPath: projectPath, host: host) : ""
 
         if canWrite {
             Menu {
                 Section("Mode") {
                     ForEach(RoleMode.allCases, id: \.rawValue) { candidate in
                         Button {
-                            Task { await vm.setRoleMode(candidate, main: main, forProjectPath: projectPath) }
+                            Task { await vm.setRoleMode(candidate, main: main, forProjectPath: projectPath, host: host) }
                         } label: {
                             Label(candidate.displayName, systemImage: candidate == mode ? "checkmark" : "circle")
                         }
@@ -6251,12 +6289,12 @@ struct ContentView: View {
                 }
                 Section("Main conversation") {
                     Button {
-                        Task { await vm.setRoleMode(mode, main: "cdx", forProjectPath: projectPath) }
+                        Task { await vm.setRoleMode(mode, main: "cdx", forProjectPath: projectPath, host: host) }
                     } label: {
                         Label("Cdx", systemImage: main == "cdx" ? "checkmark" : "circle")
                     }
                     Button {
-                        Task { await vm.setRoleMode(mode, main: "cc", forProjectPath: projectPath) }
+                        Task { await vm.setRoleMode(mode, main: "cc", forProjectPath: projectPath, host: host) }
                     } label: {
                         Label("CC", systemImage: main == "cc" ? "checkmark" : "circle")
                     }
@@ -6367,11 +6405,14 @@ struct ContentView: View {
     @ViewBuilder
     private func columnSettingsPill(_ column: LiveColumn) -> some View {
         let isLocal = column.hostLabel == "local" && !column.projectPath.isEmpty
-        let mode = isLocal ? vm.roleMode(forProjectPath: column.projectPath) : .collab
-        let main = isLocal ? vm.roleModeMain(forProjectPath: column.projectPath) : ""
+        let host = column.hostLabel.hasPrefix("remote@")
+            ? String(column.hostLabel.dropFirst("remote@".count)) : nil
+        let canWrite = !column.projectPath.isEmpty && (isLocal || host != nil)
+        let mode = canWrite ? vm.roleMode(forProjectPath: column.projectPath, host: host) : .collab
+        let main = canWrite ? vm.roleModeMain(forProjectPath: column.projectPath, host: host) : ""
         let cc = ccCacheSummary(column)
         let cdx = cdxCacheSummary(column)
-        if isLocal {
+        if canWrite {
             Button {
                 cachePopoverColumn = column.column
             } label: {
@@ -6401,14 +6442,14 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Mode").font(GhosttyTheme.current.font(size: 12, weight: .bold))
                         Picker("Mode", selection: Binding(get: { mode }, set: { value in
-                            Task { await vm.setRoleMode(value, main: main, forProjectPath: column.projectPath) }
+                            Task { await vm.setRoleMode(value, main: main, forProjectPath: column.projectPath, host: host) }
                         })) {
                             ForEach(RoleMode.allCases, id: \.rawValue) { Text($0.displayName).tag($0) }
                         }
                         .pickerStyle(.segmented).labelsHidden().frame(width: 220)
                         Text("Main conversation").font(GhosttyTheme.current.font(size: 12, weight: .bold))
                         Picker("Main", selection: Binding(get: { main }, set: { value in
-                            Task { await vm.setRoleMode(mode, main: value, forProjectPath: column.projectPath) }
+                            Task { await vm.setRoleMode(mode, main: value, forProjectPath: column.projectPath, host: host) }
                         })) {
                             Text("CC").tag("cc")
                             Text("Cdx").tag("cdx")
@@ -6792,17 +6833,17 @@ struct TprojApp: App {
             return
         }
 
-        // 2. Development build: resolve from executable path
-        //    .build/arm64-apple-macosx/debug/tproj -> ../../../Resources/AppIcon.icns
+        // 2. Development build: walk up from the current SwiftPM executable.
         let execURL = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
             .resolvingSymlinksInPath()
-        let devIcon = execURL
-            .deletingLastPathComponent()  // debug/
-            .deletingLastPathComponent()  // arm64-apple-macosx/
-            .deletingLastPathComponent()  // .build/
-            .appendingPathComponent("Resources/AppIcon.icns")
-        if let icon = NSImage(contentsOfFile: devIcon.path) {
-            NSApplication.shared.applicationIconImage = icon
+        var parent = execURL.deletingLastPathComponent()
+        for _ in 0..<5 {
+            let devIcon = parent.appendingPathComponent("Resources/AppIcon.icns")
+            if let icon = NSImage(contentsOfFile: devIcon.path) {
+                NSApplication.shared.applicationIconImage = icon
+                return
+            }
+            parent.deleteLastPathComponent()
         }
     }
 
