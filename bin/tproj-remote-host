@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# tproj-remote-host - persistent remote Claude/Codex tmux sessions.
+set -euo pipefail
+
+usage() { printf '%s\n' 'Usage: tproj-remote-host status|ensure|attach --path ABSOLUTE_PATH --role cc|cdx' >&2; exit 2; }
+die() { printf 'tproj-remote-host: %s\n' "$*" >&2; exit 1; }
+
+action=${1:-}; case "$action" in status|ensure|attach) shift ;; register|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
+project_path=; role=
+while (($#)); do
+  case "$1" in
+    --path) (($# >= 2)) || usage; project_path=$2; shift 2 ;;
+    --role) (($# >= 2)) || usage; role=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+state_dir=${TPROJ_REMOTE_STATE_DIR:-${HOME:?}/.config/tproj-remote}
+projects_file=$state_dir/projects
+tmux_run() { if [[ -n "${TPROJ_TMUX_SOCKET:-}" ]]; then tmux -L "$TPROJ_TMUX_SOCKET" "$@"; else tmux "$@"; fi; }
+validate_path() { [[ "$1" == /* ]] || die '--path must be an absolute path'; [[ -d "$1" ]] || die "project path does not exist or is not a directory: $1"; }
+validate_role() { case "$1" in cc|cdx) ;; *) die '--role must be cc or cdx' ;; esac; }
+cli_for_role() { [[ "$1" == cc ]] && printf claude || printf codex; }
+session_for() {
+  local r=$1 p=$2 input digest
+  input=$(printf '%s\0%s' "$r" "$p")
+  if command -v sha256sum >/dev/null 2>&1; then digest=$(printf '%s' "$input" | sha256sum | awk '{print substr($1,1,16)}')
+  elif command -v shasum >/dev/null 2>&1; then digest=$(printf '%s' "$input" | shasum -a 256 | awk '{print substr($1,1,16)}')
+  else digest=$(printf '%s' "$input" | cksum | awk '{print $1}'); fi
+  printf 'tproj-remote-%s-%s' "$r" "$digest"
+}
+agent_status() {
+  local s=$1 c=$2 pid cmd
+  pid=$(tmux_run display-message -t "$s" -p '#{pane_pid}' 2>/dev/null || true)
+  cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
+  [[ -n "$pid" && "$cmd" == *"$c"* ]] && printf '%s' "$pid"
+}
+ensure_one() {
+  local p=$1 r=$2 c s pid q start
+  validate_path "$p"; validate_role "$r"; c=$(cli_for_role "$r"); command -v "$c" >/dev/null 2>&1 || die "required CLI not found on PATH: $c"
+  s=$(session_for "$r" "$p")
+  if tmux_run has-session -t "$s" 2>/dev/null; then
+    pid=$(agent_status "$s" "$c") || true
+    [[ -n "$pid" ]] || die "session exists but is not running $c: $s"
+    printf '%s\n' "$s"; return
+  fi
+  q=$(printf '%q' "$(command -v "$c")")
+  [[ "$r" == cc ]] && start="$q --continue" || start="$q resume --last"
+  tmux_run new-session -d -s "$s" -c "$p" "$start" || die "could not create tmux session: $s"
+  printf '%s\n' "$s"
+}
+
+case "$action" in
+  register)
+    [[ -n "$project_path" ]] || usage; validate_path "$project_path"; mkdir -p "$state_dir"
+    touch "$projects_file"
+    grep -Fqx -- "$project_path" "$projects_file" 2>/dev/null || printf '%s\n' "$project_path" >> "$projects_file"
+    ;;
+  ensure-all)
+    [[ -r "$projects_file" ]] || exit 0
+    while IFS= read -r p; do [[ -n "$p" ]] || continue; ensure_one "$p" cc >/dev/null; ensure_one "$p" cdx >/dev/null; done < "$projects_file"
+    ;;
+  status|ensure|attach)
+    [[ -n "$project_path" && -n "$role" ]] || usage; validate_path "$project_path"; validate_role "$role"
+    c=$(cli_for_role "$role"); command -v "$c" >/dev/null 2>&1 || die "required CLI not found on PATH: $c"; s=$(session_for "$role" "$project_path")
+    if [[ "$action" == status ]]; then
+      if tmux_run has-session -t "$s" 2>/dev/null && pid=$(agent_status "$s" "$c"); [[ -n "$pid" ]]; then printf 'running|%s|%s\n' "$s" "$pid"; else printf 'stopped|%s|-\n' "$s"; fi
+    elif [[ "$action" == ensure ]]; then ensure_one "$project_path" "$role"
+    else tmux_run has-session -t "$s" 2>/dev/null || die "session does not exist; run ensure first: $s"; tmux_run attach-session -t "$s"; fi
+    ;;
+esac
