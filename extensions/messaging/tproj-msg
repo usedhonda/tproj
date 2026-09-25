@@ -87,6 +87,10 @@ Usage:
   tproj-msg --desktop --drain          Codex Desktop side: ack-all clear this desktop's own mailbox
   tproj-msg --status [target]          Show idle/busy state + queue info
   tproj-msg --flush                    Deliver all queued messages to idle targets
+  tproj-msg --remote <host> --session <local-session> --as <alias.role> <alias.role> <msg>
+                                       Live host-scoped SSH chat (no queue)
+  tproj-msg --remote-client <socket> --session <local-session> --as <alias.role> <alias.role> <msg>
+                                       Live reverse-SSH Unix-socket chat (no queue)
   Note: Desktop is a data-plane mailbox only -- no pane injection, no task tracking, no control flags
   Note: duplicate control tags ([Control:*], [ACK:*]) are blocked for 10m per target
   Note: relay-like message body is blocked by default ([from:], [Control:], [ACK:], [Persona Sync/Check])
@@ -258,7 +262,9 @@ DESKTOP_MODE=false
 MAILBOX_MODE=false
 DRAIN_MODE=false
 REMOTE_HOST=""
+REMOTE_CLIENT_SOCKET=""
 REMOTE_INGRESS=false
+REMOTE_RELAY_SOCKET=""
 EXPLICIT_SESSION=""
 EXPLICIT_AS=""
 TARGET=""
@@ -406,6 +412,19 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --remote-ingress)
+      REMOTE_INGRESS=true
+      shift
+      ;;
+    --remote-client)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --remote-client requires a Unix socket" >&2; exit 1; }
+      REMOTE_CLIENT_SOCKET="$1"
+      shift
+      ;;
+    --remote-relay-ingress)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --remote-relay-ingress requires a Unix socket" >&2; exit 1; }
+      REMOTE_RELAY_SOCKET="$1"
       REMOTE_INGRESS=true
       shift
       ;;
@@ -1347,16 +1366,39 @@ remote_ingress_ssh_ancestor() {
   return 1
 }
 
+remote_ingress_relay_ancestor() {
+  local record="${REMOTE_RELAY_SOCKET}.pid" reg_pid reg_started reg_script
+  local live_started live_cmd expected_script
+  [[ "$REMOTE_RELAY_SOCKET" == /* && -S "$REMOTE_RELAY_SOCKET" && -f "$record" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  reg_pid=$(jq -r '.pid // 0' "$record" 2>/dev/null)
+  reg_started=$(jq -r '.started // empty' "$record" 2>/dev/null)
+  reg_script=$(jq -r '.script // empty' "$record" 2>/dev/null)
+  expected_script="$(dirname "$SELF_PATH")/tproj-remote-relay"
+  [[ "$reg_pid" =~ ^[0-9]+$ && "$reg_pid" -gt 1 && -n "$reg_started" \
+     && "$reg_script" == "$expected_script" ]] || return 1
+  find_registry_ancestor_match "$reg_pid" >/dev/null 2>&1 || return 1
+  live_started=$(ps -p "$reg_pid" -o lstart= 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  [[ "$live_started" == "$reg_started" ]] || return 1
+  live_cmd=$(ps -ww -p "$reg_pid" -o command= 2>/dev/null || true)
+  [[ "$live_cmd" == *"$expected_script"* && "$live_cmd" == *"serve"* ]]
+}
+
 if [[ "$REMOTE_INGRESS" == "true" ]]; then
-  [[ -z "$REMOTE_HOST" && -z "$EXPLICIT_AS" && -n "$EXPLICIT_SESSION" && "$STDIN_MODE" == "true" \
+  [[ -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && -z "$EXPLICIT_AS" && -n "$EXPLICIT_SESSION" && "$STDIN_MODE" == "true" \
      && "$SEND_MODE" == "true" && "$NEW_TASK_MODE" == "false" && "$ROLE_HANDOFF_MODE" == "false" \
      && "$FORCE_MODE" == "false" && "$FIRE_MODE" == "false" && "$ALLOW_RELAY" == "false" \
      && "$ALLOW_FANOUT" == "false" && "$ALLOW_CHI_RETRY" == "false" && "$MSG_KIND" != "consult" ]] \
     || { echo "Error: remote ingress accepts only plain --stdin chat" >&2; exit 1; }
   [[ "$TARGET" =~ ^[A-Za-z0-9_-]+\.(cc|cdx)$ ]] \
     || { echo "Error: remote ingress requires an exact alias.role target" >&2; exit 1; }
-  remote_ingress_ssh_ancestor \
-    || { echo "Error: remote ingress requires a live SSH session ancestor" >&2; exit 1; }
+  if [[ -n "$REMOTE_RELAY_SOCKET" ]]; then
+    remote_ingress_relay_ancestor \
+      || { echo "Error: remote ingress requires a live relay ancestor" >&2; exit 1; }
+  else
+    remote_ingress_ssh_ancestor \
+      || { echo "Error: remote ingress requires a live SSH session ancestor" >&2; exit 1; }
+  fi
   SESSION="$EXPLICIT_SESSION"
   IS_WORKSPACE=true
   MY_PANE=""
@@ -1366,9 +1408,17 @@ if [[ "$REMOTE_INGRESS" == "true" ]]; then
   AS_CLAIMED_IDENTITY="Remote Host"
   AS_CALLER_VERIFIED=true
   AUTH_PATH="remote-ssh-host"
-elif [[ -n "$REMOTE_HOST" ]]; then
+elif [[ -n "$REMOTE_HOST" || -n "$REMOTE_CLIENT_SOCKET" ]]; then
+  [[ -z "$REMOTE_HOST" || -z "$REMOTE_CLIENT_SOCKET" ]] \
+    || { echo "Error: --remote and --remote-client are exclusive" >&2; exit 1; }
+  if [[ -n "$REMOTE_CLIENT_SOCKET" ]]; then
+    [[ "$REMOTE_CLIENT_SOCKET" == /* ]] \
+      || { echo "Error: --remote-client requires an absolute Unix socket path" >&2; exit 1; }
+  fi
+  if [[ -n "$REMOTE_HOST" ]]; then
   [[ "$REMOTE_HOST" =~ ^[A-Za-z0-9_.@-]+$ && "$REMOTE_HOST" != -* ]] \
     || { echo "Error: invalid SSH host" >&2; exit 1; }
+  fi
   [[ "$SEND_MODE" == "true" && "$NEW_TASK_MODE" == "false" && "$ROLE_HANDOFF_MODE" == "false" \
      && "$FORCE_MODE" == "false" && "$FIRE_MODE" == "false" && "$ALLOW_RELAY" == "false" \
      && "$ALLOW_FANOUT" == "false" && "$ALLOW_CHI_RETRY" == "false" && "$MSG_KIND" != "consult" ]] \
@@ -4992,7 +5042,7 @@ do_desktop_session_side() {
 }
 
 dispatch_mode() {
-if [[ -n "$REMOTE_HOST" ]]; then
+if [[ -n "$REMOTE_HOST" || -n "$REMOTE_CLIENT_SOCKET" ]]; then
   [[ "${AS_CALLER_VERIFIED:-false}" == "true" ]] \
     || { echo "Error: remote send requires a verified local sender" >&2; exit 1; }
   [[ -n "${MESSAGE//[[:space:]]/}" ]] \
@@ -5005,8 +5055,15 @@ if [[ -n "$REMOTE_HOST" ]]; then
     echo "Error: cross-host control/sender markers are not allowed" >&2
     exit 1
   fi
-  printf '%s' "$MESSAGE" | ssh -o BatchMode=yes -o ConnectTimeout=5 -- "$REMOTE_HOST" \
-    tproj-msg --remote-ingress --session tproj-workspace --stdin "$TARGET"
+  if [[ -n "$REMOTE_HOST" ]]; then
+    printf '%s' "$MESSAGE" | ssh -T -o BatchMode=yes -o ConnectTimeout=5 -- "$REMOTE_HOST" \
+      tproj-msg --remote-ingress --session tproj-workspace --stdin "$TARGET"
+  else
+    local_relay="$(dirname "$SELF_PATH")/tproj-remote-relay"
+    [[ -f "$local_relay" ]] || { echo "Error: missing remote relay helper" >&2; exit 1; }
+    printf '%s' "$MESSAGE" | python3 "$local_relay" send --socket "$REMOTE_CLIENT_SOCKET" \
+      --session tproj-workspace --target "$TARGET"
+  fi
   exit $?
 fi
 # === Desktop mailbox target (data-plane only; no pane) ===

@@ -25,7 +25,47 @@ process that can run commands through the trusted SSH account can originate
 host-scoped chat, but cannot forge the locally verified alias/role header via
 this route. Treat its body as untrusted text. The reverse direction requires a
 separate, client-initiated reverse-socket receiver and is not supplied by this
-one-way SSH command path.
+one-way SSH command path. The reverse direction instead uses the opt-in
+`tproj-remote-relay` Unix-socket listener on the local Mac and an SSH `-R`
+Unix-socket forward **initiated by that same local Mac**. No listener port,
+SSH daemon setting, offline queue, or privileged setup is added. The remote
+sender must pass its own local PID/registry verification before
+`--remote-client <socket>` connects. The receiving `--remote-relay-ingress`
+verifies the live relay ancestor against the private socket's PID/start/script
+record. It reuses the same non-authoritative header and target safety gates.
+
+To operate the reverse path from a repo checkout, choose absolute socket paths
+under ignored, private `.local/` directories on both Macs. In one local
+terminal:
+
+```bash
+mkdir -p .local/cross-mac && chmod 700 .local/cross-mac
+LOCAL_SOCKET="$PWD/.local/cross-mac/local.sock"
+python3 extensions/messaging/tproj-remote-relay serve --socket "$LOCAL_SOCKET"
+```
+
+In another local terminal, after making the remote socket directory mode 0700,
+keep the **client-initiated** SSH forward running:
+
+```bash
+ssh -N -T -o ExitOnForwardFailure=yes \
+  -R "$REMOTE_SOCKET:$LOCAL_SOCKET" "$SSH_HOST"
+```
+
+`REMOTE_SOCKET` is the remote Mac's absolute private socket path and
+`SSH_HOST` is its existing SSH destination. From a verified pane on that Mac:
+
+```bash
+tproj-msg --session tproj-workspace --as project.cdx \
+  --remote-client "$REMOTE_SOCKET" project.cc "plain chat"
+```
+
+Stop the tunnel and listener with Ctrl-C in their respective terminals. If
+either is absent, the send fails synchronously with no queue or replay. A
+stale socket/PID record after a crash causes the listener to fail closed until
+the operator inspects and removes those runtime files. The receiver's
+`tproj-msg` and relay helper must be installed from the same revision for the
+process-path check to pass.
 
 Canonical contract for how `tproj-msg` authenticates the sender of a
 `--session --as ...` message, and what a message body can and cannot
