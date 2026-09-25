@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_BUNDLE="$SCRIPT_DIR/dist/tproj.app"
 DEBUG_BIN=""
 MODE="debug"
+PREBUILT=false
 TPROJ_GUI_PIDFILE="${TMPDIR:-/tmp}/tproj-gui.pid"
 TPROJ_GUI_LOG="${TMPDIR:-/tmp}/tproj-gui.log"
 
@@ -14,10 +15,15 @@ fi
 APP_ARGUMENTS=()
 for arg in "$@"; do
   if [[ "$arg" == "--server" ]]; then APP_ARGUMENTS+=("--server"); fi
+  if [[ "$arg" == "--prebuilt" ]]; then PREBUILT=true; fi
 done
 
 # --- Build ---
-if [[ "$MODE" == "debug" ]]; then
+if [[ "$PREBUILT" == true ]]; then
+  [[ "$MODE" == "debug" ]] || { echo "--prebuilt cannot be combined with --release" >&2; exit 2; }
+  DEBUG_BIN="$SCRIPT_DIR/.build/arm64-apple-macosx/debug/tproj"
+  [[ -x "$DEBUG_BIN" ]] || { echo "prebuilt app missing: $DEBUG_BIN" >&2; exit 1; }
+elif [[ "$MODE" == "debug" ]]; then
   echo "==> Build app (debug)"
   pushd "$SCRIPT_DIR" >/dev/null
   swift build
@@ -41,9 +47,15 @@ launch_gui() {
   local executable="$1"
 
   : > "$TPROJ_GUI_LOG"
-  /usr/bin/python3 -c \
-    'import subprocess, sys; log = open(sys.argv[3], "ab", buffering=0); process = subprocess.Popen([sys.argv[2], *sys.argv[4:]], cwd=sys.argv[1], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True); print(process.pid)' \
-    "$SCRIPT_DIR" "$executable" "$TPROJ_GUI_LOG" "${APP_ARGUMENTS[@]}"
+  if (( ${#APP_ARGUMENTS[@]} )); then
+    /usr/bin/python3 -c \
+      'import subprocess, sys; log = open(sys.argv[3], "ab", buffering=0); process = subprocess.Popen([sys.argv[2], *sys.argv[4:]], cwd=sys.argv[1], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True); print(process.pid)' \
+      "$SCRIPT_DIR" "$executable" "$TPROJ_GUI_LOG" "${APP_ARGUMENTS[@]}"
+  else
+    /usr/bin/python3 -c \
+      'import subprocess, sys; log = open(sys.argv[3], "ab", buffering=0); process = subprocess.Popen([sys.argv[2], *sys.argv[4:]], cwd=sys.argv[1], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True); print(process.pid)' \
+      "$SCRIPT_DIR" "$executable" "$TPROJ_GUI_LOG"
+  fi
 }
 
 # --- Launch ---
