@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Observe registered remote caches and optionally warm Claude sessions."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -115,9 +116,12 @@ def status(entries, settings):
     for entry in entries.values():
         for role in ("cc", "cdx"):
             hours = settings.get(entry["id"], {}).get(role, 0)
+            shared_session = "tproj-remote-" + hashlib.sha256(entry["path"].encode()).hexdigest()[:16]
+            legacy_session = "tproj-remote-" + role + "-" + hashlib.sha256(
+                role.encode() + b"\0" + entry["path"].encode()).hexdigest()[:16]
             matching = [p for p in live if p["path"] == entry["path"] and
                         p["role"].startswith("claude-p" if role == "cc" else "codex-p") and
-                        p["session"].startswith("tproj-remote-" + role + "-")]
+                        p["session"] in (shared_session, legacy_session)]
             item = {"id": entry["id"], "alias": entry["alias"], "role": role,
                     "hours": hours, "state": "unobserved", "auto_poke": "disabled"}
             if len(matching) == 1 and entry[role] == "running":

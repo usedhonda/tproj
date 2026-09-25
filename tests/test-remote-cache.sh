@@ -11,7 +11,7 @@ printf 'id|alias|path|cc|cdx\n0123456789abcdef|sample|/tmp/sample|running|runnin
 EOF
 cat > "$tmp/bin/tmux" <<'EOF'
 #!/bin/sh
-printf '%%1|0|claude-p1|/tmp/sample|tproj-remote-cc-test\n%%2|0|codex-p1|/tmp/sample|tproj-remote-cdx-test\n'
+printf '%%1|0|claude-p1|/tmp/sample|tproj-remote-205020bab56eb1d8\n%%2|0|codex-p1|/tmp/sample|tproj-remote-cdx-52d6af9d5ddb2b6e\n'
 EOF
 cat > "$tmp/bin/tproj-codex-cache-state" <<'EOF'
 #!/bin/sh
