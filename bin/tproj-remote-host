@@ -5,7 +5,7 @@ set -euo pipefail
 usage() { printf '%s\n' 'Usage: tproj-remote-host status|ensure|attach --path ABSOLUTE_PATH --role cc|cdx' >&2; exit 2; }
 die() { printf 'tproj-remote-host: %s\n' "$*" >&2; exit 1; }
 
-action=${1:-}; case "$action" in status|ensure|attach) shift ;; register|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
+action=${1:-}; case "$action" in status|ensure|attach) shift ;; register|unregister|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
 project_path=; role=
 while (($#)); do
   case "$1" in
@@ -44,7 +44,7 @@ ensure_one() {
     printf '%s\n' "$s"; return
   fi
   q=$(printf '%q' "$(command -v "$c")")
-  [[ "$r" == cc ]] && start="$q --continue" || start="$q resume --last"
+  [[ "$r" == cc ]] && start="$q --continue || exec $q" || start="$q resume --last || exec $q"
   tmux_run new-session -d -s "$s" -c "$p" "$start" || die "could not create tmux session: $s"
   printf '%s\n' "$s"
 }
@@ -55,9 +55,26 @@ case "$action" in
     touch "$projects_file"
     grep -Fqx -- "$project_path" "$projects_file" 2>/dev/null || printf '%s\n' "$project_path" >> "$projects_file"
     ;;
+  unregister)
+    [[ -n "$project_path" ]] || usage; validate_path "$project_path"
+    [[ -r "$projects_file" ]] || exit 0
+    tmp_file=$(mktemp "${projects_file}.tmp.XXXXXX")
+    awk -v target="$project_path" '$0 != target' "$projects_file" > "$tmp_file"
+    mv "$tmp_file" "$projects_file"
+    ;;
   ensure-all)
     [[ -r "$projects_file" ]] || exit 0
-    while IFS= read -r p; do [[ -n "$p" ]] || continue; ensure_one "$p" cc >/dev/null; ensure_one "$p" cdx >/dev/null; done < "$projects_file"
+    failures=0
+    while IFS= read -r p; do
+      [[ -n "$p" ]] || continue
+      for r in cc cdx; do
+        if ! err=$(ensure_one "$p" "$r" >/dev/null 2>&1); then
+          printf 'ensure-all: failed %s %s\n' "$r" "$p" >&2
+          failures=1
+        fi
+      done
+    done < "$projects_file"
+    exit "$failures"
     ;;
   status|ensure|attach)
     [[ -n "$project_path" && -n "$role" ]] || usage; validate_path "$project_path"; validate_role "$role"
@@ -65,6 +82,9 @@ case "$action" in
     if [[ "$action" == status ]]; then
       if tmux_run has-session -t "$s" 2>/dev/null && pid=$(agent_status "$s" "$c"); [[ -n "$pid" ]]; then printf 'running|%s|%s\n' "$s" "$pid"; else printf 'stopped|%s|-\n' "$s"; fi
     elif [[ "$action" == ensure ]]; then ensure_one "$project_path" "$role"
-    else tmux_run has-session -t "$s" 2>/dev/null || die "session does not exist; run ensure first: $s"; tmux_run attach-session -t "$s"; fi
+    else
+      if ! tmux_run has-session -t "$s" 2>/dev/null; then ensure_one "$project_path" "$role" >/dev/null; fi
+      tmux_run attach-session -t "$s"
+    fi
     ;;
 esac
