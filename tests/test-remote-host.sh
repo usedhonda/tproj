@@ -34,6 +34,7 @@ EOF
 chmod +x "$TMP/bin/tmux"
 run attach --path "$TMP/project" --role cc
 grep -Fqx "attach-session -t $cc" "$TMP/attach-target"
+grep -Fqx "$TMP/project" "$HOME/.config/tproj-remote/projects"
 run register --path "$TMP/project"; run register --path "$TMP/project"; [[ $(wc -l < "$HOME/.config/tproj-remote/projects") -eq 1 ]]
 run unregister --path "$TMP/project"; [[ ! -s "$HOME/.config/tproj-remote/projects" ]]
 run register --path "$TMP/project"
