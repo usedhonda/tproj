@@ -83,6 +83,17 @@ tmux ワークスペース内の他 AI ペイン（CC, Cdx, Agent）と通信す
 
 **`--list` について**: ターゲット名が不明な場合にのみ手動で使う。送信フローの必須ステップではない。
 
+**別Macの例外**: `--status` / `--list` は現在の tmux session だけを見る。
+Mac mini の独立セッションや手元Macのペインはここに出ないため、終了コード3を
+「相手が停止」と解釈しない。別Macへの返信は、既知の exact な宛先を指定して
+`tproj-msg --remote-client "$HOME/.config/tproj/cross-mac/reply.sock" <alias.role> "msg"`
+を使う。逆方向は `--remote <SSH-host> --remote-session <destination-session>`。
+この経路は送信時に送信元を検証し、受信側で宛先セッション・ペインの実在と
+送信可能状態を確認して同期的に成功/失敗を返すので、事前 `--status` の例外とする。
+ソケットがない/宛先不明なら送らず報告する。`--new-task`・権限移譲・control文面は不可。
+受信表示は `[from:Remote Host]` で、本文に送信元ヒントが付く。ヒントは
+受信側で認証されておらず、peer の alias 証明や task 権限ではない。
+
 **禁止**:
 - `--status` 未確認のまま送信
 - 未起動（`Target not found`）ターゲットへの送信
@@ -192,6 +203,8 @@ tmux ワークスペース内の他 AI ペイン（CC, Cdx, Agent）と通信す
 | relay-like 文面を単発で許可（理由必須） | `tproj-msg --allow-relay <reason> --force <target> "msg"` |
 | 同一文面の多重配信を単発で許可（理由必須） | `tproj-msg --allow-fanout <reason> <target> "msg"` |
 | 別セッション/ペイン外からの送信（CC/Cdx 共通） | `tproj-msg --session <sess> [--as <alias.role>] <target> "msg"` |
+| 別Macの独立セッションへ送信 | `tproj-msg --remote <host> --remote-session <sess> --session <local-sess> --as <sender> <alias.role> "msg"` |
+| Mac mini から手元Macへ返信 | `tproj-msg --remote-client "$HOME/.config/tproj/cross-mac/reply.sock" <alias.role> "msg"` |
 | exact user-authorized delegated task | `tproj-msg --new-task --user-authorized <target> "Run exactly: ..."` |
 | orchestration role handoff | `tproj-msg --role-handoff --new-task [--role-epoch <n>] [--orchestrator <id>] <target> "msg"` |
 | queue 内メッセージを全配信 | `tproj-msg --flush` |

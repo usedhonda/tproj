@@ -4,13 +4,20 @@
 
 `tproj-msg --remote <SSH-host> --session <local-session> --as
 <local-alias.role> <remote-alias.role> <message>` is a live-only chat path.
+For a remote agent held in its own tmux session, add `--remote-session
+<destination-session>`; the default remains `tproj-workspace`. The destination
+session name is validated as a single tmux name, and the receiver still
+requires the exact live pane and its normal sendability gates.
 The local sender must pass the unchanged registry/PID-ancestry verifier before
 SSH is invoked. The destination command uses `--remote-ingress --session
-tproj-workspace --stdin <exact-alias.role>`; it accepts only a process with a
+<destination-session> --stdin <exact-alias.role>`; it accepts only a process with a
 live `sshd`/`sshd-session` ancestor and resolves exactly one live pane in the
 exact session's `dev` window. The destination applies the ordinary prompt,
 draft, and selection gates, but a blocked target causes an error, not a queue.
 SSH failure is a delivery failure; no offline store is created.
+On macOS the live `sshd-session` process title may include a suffix such as
+`sshd-session: account@notty`; the ingress accepts that process-name form but
+still requires it to be in the caller's actual parent chain.
 
 This path conveys **host origin only**, not the identity of a remote pane or
 agent process. The receiver's generated header is `[from:Remote Host]`, never
@@ -19,6 +26,9 @@ consult, relay, or fan-out flags; the body cannot contain sender/control/task
 markers. A host chat therefore never transfers delegated authority or a
 model-role epoch. SSH host-key and account authentication remain the operator's
 existing SSH configuration; this change does not modify SSH access settings.
+The sending CLI prepends `Sender hint (not receiver-verified): <alias.role>;`
+after it verifies its own pane locally. This makes the conversation readable,
+but the receiver must still treat that hint as untrusted text, not peer binding.
 
 `--remote-ingress` is deliberately not an authenticated pane-sender API. A
 process that can run commands through the trusted SSH account can originate

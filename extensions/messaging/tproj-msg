@@ -87,7 +87,7 @@ Usage:
   tproj-msg --desktop --drain          Codex Desktop side: ack-all clear this desktop's own mailbox
   tproj-msg --status [target]          Show idle/busy state + queue info
   tproj-msg --flush                    Deliver all queued messages to idle targets
-  tproj-msg --remote <host> --session <local-session> --as <alias.role> <alias.role> <msg>
+  tproj-msg --remote <host> [--remote-session <destination-session>] --session <local-session> --as <alias.role> <alias.role> <msg>
                                        Live host-scoped SSH chat (no queue)
   tproj-msg --remote-client <socket> --session <local-session> --as <alias.role> <alias.role> <msg>
                                        Live reverse-SSH Unix-socket chat (no queue)
@@ -262,6 +262,7 @@ DESKTOP_MODE=false
 MAILBOX_MODE=false
 DRAIN_MODE=false
 REMOTE_HOST=""
+REMOTE_SESSION="tproj-workspace"
 REMOTE_CLIENT_SOCKET=""
 REMOTE_INGRESS=false
 REMOTE_RELAY_SOCKET=""
@@ -409,6 +410,12 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 ]] || { echo "Error: --remote requires an SSH host" >&2; exit 1; }
       REMOTE_HOST="$1"
+      shift
+      ;;
+    --remote-session)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --remote-session requires a tmux session" >&2; exit 1; }
+      REMOTE_SESSION="$1"
       shift
       ;;
     --remote-ingress)
@@ -1361,7 +1368,7 @@ remote_ingress_ssh_ancestor() {
     p=$(ps -p "$p" -o ppid= 2>/dev/null | tr -d ' ')
     [[ "$p" =~ ^[0-9]+$ && "$p" -gt 1 ]] || return 1
     comm=$(ps -p "$p" -o comm= 2>/dev/null || true)
-    case "${comm##*/}" in sshd|sshd-session) return 0 ;; esac
+    case "${comm##*/}" in sshd|sshd:*|sshd-session|sshd-session:*) return 0 ;; esac
   done
   return 1
 }
@@ -1409,6 +1416,8 @@ if [[ "$REMOTE_INGRESS" == "true" ]]; then
   AS_CALLER_VERIFIED=true
   AUTH_PATH="remote-ssh-host"
 elif [[ -n "$REMOTE_HOST" || -n "$REMOTE_CLIENT_SOCKET" ]]; then
+  [[ "$REMOTE_SESSION" =~ ^[A-Za-z0-9_-]+$ ]] \
+    || { echo "Error: invalid remote tmux session" >&2; exit 1; }
   [[ -z "$REMOTE_HOST" || -z "$REMOTE_CLIENT_SOCKET" ]] \
     || { echo "Error: --remote and --remote-client are exclusive" >&2; exit 1; }
   if [[ -n "$REMOTE_CLIENT_SOCKET" ]]; then
@@ -5055,14 +5064,20 @@ if [[ -n "$REMOTE_HOST" || -n "$REMOTE_CLIENT_SOCKET" ]]; then
     echo "Error: cross-host control/sender markers are not allowed" >&2
     exit 1
   fi
+  # The destination authenticates the host transport, not this pane identity.
+  # Show a useful source hint without upgrading it to a [from:alias] authority.
+  sender_hint="${AS_CLAIMED_IDENTITY:-${MY_ALIAS:+${MY_ALIAS}.}${MY_ROLE:-}}"
+  if [[ "$sender_hint" =~ ^[A-Za-z0-9_-]+\.(cc|cdx)$ ]]; then
+    MESSAGE="Sender hint (not receiver-verified): ${sender_hint}; ${MESSAGE}"
+  fi
   if [[ -n "$REMOTE_HOST" ]]; then
     printf '%s' "$MESSAGE" | ssh -T -o BatchMode=yes -o ConnectTimeout=5 -- "$REMOTE_HOST" \
-      tproj-msg --remote-ingress --session tproj-workspace --stdin "$TARGET"
+      "PATH=\"\$HOME/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH\" exec \"\$HOME/bin/tproj-msg\" --remote-ingress --session '$REMOTE_SESSION' --stdin '$TARGET'"
   else
     local_relay="$(dirname "$SELF_PATH")/tproj-remote-relay"
     [[ -f "$local_relay" ]] || { echo "Error: missing remote relay helper" >&2; exit 1; }
     printf '%s' "$MESSAGE" | python3 "$local_relay" send --socket "$REMOTE_CLIENT_SOCKET" \
-      --session tproj-workspace --target "$TARGET"
+      --session "$REMOTE_SESSION" --target "$TARGET"
   fi
   exit $?
 fi

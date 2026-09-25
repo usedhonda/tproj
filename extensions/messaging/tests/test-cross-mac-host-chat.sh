@@ -36,6 +36,7 @@ reject() {
 reject 'remote rejects task control' 'only plain chat' --remote paired --new-task exact.cc hello
 reject 'remote requires exact target' 'exact alias.role target' --remote paired cc hello
 reject 'remote rejects unverified sender' 'verified local sender' --session tproj-workspace --as exact.cc --remote paired exact.cc hello
+reject 'remote rejects invalid destination session' 'invalid remote tmux session' --remote paired --remote-session '../dev' --session tproj-workspace --as exact.cc exact.cc hello
 reject 'ingress rejects as claim' 'only plain --stdin chat' --remote-ingress --session tproj-workspace --as exact.cc --stdin exact.cc <<<hello
 reject 'ingress rejects non-SSH ancestry' 'live SSH session ancestor' --remote-ingress --session tproj-workspace --stdin exact.cc <<<hello
 reject 'relay ingress rejects absent listener' 'live relay ancestor' --remote-relay-ingress "$tmp/absent.sock" --session tproj-workspace --stdin exact.cc <<<hello
