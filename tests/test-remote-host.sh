@@ -20,6 +20,7 @@ wait_for_log() { for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -f "$MOCK_LOG" ]] && retur
 cc=$(run ensure --path "$TMP/project" --role cc); [[ "$(run ensure --path "$TMP/project" --role cc)" == "$cc" ]]; wait_for_log; [[ $(grep -c ':--continue$' "$MOCK_LOG") -eq 1 ]]
 [[ "$(run status --path "$TMP/project" --role cc)" == running\|"$cc"\|* ]]
 cdx=$(run ensure --path "$TMP/project" --role cdx); [[ "$(run ensure --path "$TMP/project" --role cdx)" == "$cdx" ]]; for _ in 1 2 3 4 5 6 7 8 9 10; do [[ $(grep -c ':resume --last$' "$MOCK_LOG" 2>/dev/null || true) -eq 1 ]] && break; sleep 0.1; done; [[ $(grep -c ':resume --last$' "$MOCK_LOG") -eq 1 ]]
+fresh_status=$(run status --path "$TMP/fresh" --role cdx); [[ "$fresh_status" == stopped\|*\|- ]]
 fresh_cc=$(run ensure --path "$TMP/fresh" --role cc); fresh_cdx=$(run ensure --path "$TMP/fresh" --role cdx)
 for _ in 1 2 3 4 5 6 7 8 9 10; do [[ $(grep -c "$TMP/fresh:claude:" "$MOCK_LOG" 2>/dev/null || true) -ge 2 ]] && break; sleep 0.1; done
 [[ $(grep -c "$TMP/fresh:claude:.*--continue" "$MOCK_LOG") -eq 1 ]]; [[ $(grep -c "$TMP/fresh:claude:$" "$MOCK_LOG") -eq 1 ]]

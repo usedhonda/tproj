@@ -95,6 +95,7 @@ case "$action" in
     [[ -n "$project_path" && -n "$role" ]] || usage; validate_path "$project_path"; validate_role "$role"
     c_name=$(cli_for_role "$role"); c=$(resolve_cli "$c_name"); [[ -n "$c" ]] || die "required CLI not found on PATH: $c_name"; s=$(session_for "$role" "$project_path")
     if [[ "$action" == status ]]; then
+      pid=
       if tmux_run has-session -t "$s" 2>/dev/null && pid=$(agent_status "$s" "$c"); [[ -n "$pid" ]]; then printf 'running|%s|%s\n' "$s" "$pid"; else printf 'stopped|%s|-\n' "$s"; fi
     elif [[ "$action" == ensure ]]; then ensure_one "$project_path" "$role"
     else
