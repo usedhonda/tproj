@@ -343,6 +343,9 @@ case "$action" in
       shared=$(shared_session_for "$project_path")
       if [[ "$s" == "$shared" ]]; then
         pane=$(pane_for "$shared" "$role" "$project_path") || die "role pane not found in shared session: $shared"
+        # Two local display panes attach with different heights. Keep the
+        # remote pair sized for the larger client instead of the last attach.
+        tmux_run set-window-option -t "=$shared:dev" window-size largest
         tmux_run select-pane -t "$pane"
       fi
       tmux_run attach-session -t "$s"
