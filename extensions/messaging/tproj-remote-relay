@@ -99,6 +99,12 @@ def send(socket_path, session, target):
 
 
 def main():
+    # Keep the daemon's process command line bound to the canonical script
+    # path even when launched from a relative repo command. The ingress gate
+    # compares that path to the recorded live ancestor.
+    if sys.argv[0] != str(Path(__file__).resolve()):
+        os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()),
+                                  *sys.argv[1:]])
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="action", required=True)
     service = sub.add_parser("serve")
