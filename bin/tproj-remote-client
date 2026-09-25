@@ -2,21 +2,31 @@
 # Connect a local tproj pane to a persistent agent pane on an SSH host.
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-  echo "usage: tproj-remote-client status|ensure|attach|register|unregister HOST REMOTE_PATH cc|cdx" >&2
+if [[ $# -lt 2 ]]; then
+  echo "usage: tproj-remote-client list HOST | status|ensure|attach|stop HOST REMOTE_PATH cc|cdx | register|unregister HOST REMOTE_PATH" >&2
   exit 2
 fi
 
-action="$1" host="$2" remote_path="$3" role="$4"
-case "$action" in status|ensure|attach|register|unregister) ;; *) echo "invalid action: $action" >&2; exit 2 ;; esac
-case "$role" in cc|cdx) ;; *) echo "invalid role: $role" >&2; exit 2 ;; esac
-if [[ ! "$host" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "$remote_path" != /* ]]; then
+action="$1" host="$2" remote_path="${3:-}" role="${4:-}"
+case "$action" in
+  list) [[ $# -eq 2 ]] || exit 2 ;;
+  status|ensure|attach|stop) [[ $# -eq 4 ]] || exit 2; case "$role" in cc|cdx) ;; *) echo "invalid role: $role" >&2; exit 2 ;; esac ;;
+  register|unregister) [[ $# -eq 3 || ($# -eq 4 && "$role" == cc) || ($# -eq 4 && "$role" == cdx) ]] || exit 2 ;;
+  *) echo "invalid action: $action" >&2; exit 2 ;;
+esac
+if [[ ! "$host" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || ( "$action" != list && "$remote_path" != /* ) ]]; then
   echo "remote host and absolute path are required" >&2
   exit 2
 fi
 
-printf -v path_arg '%q' "$remote_path"
-remote_command="\$HOME/bin/tproj-remote-host $action --path $path_arg --role $role"
+remote_command="\$HOME/bin/tproj-remote-host $action"
+if [[ "$action" != list ]]; then
+  printf -v path_arg '%q' "$remote_path"
+  remote_command+=" --path $path_arg"
+fi
+if [[ "$action" == status || "$action" == ensure || "$action" == attach || "$action" == stop ]]; then
+  remote_command+=" --role $role"
+fi
 if [[ "$action" == attach ]]; then
   exec ssh -tt -- "$host" "$remote_command"
 else

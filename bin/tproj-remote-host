@@ -15,24 +15,131 @@ for path_entry in "${path_prefix[@]}"; do
 done
 export PATH
 
-usage() { printf '%s\n' 'Usage: tproj-remote-host status|ensure|attach --path ABSOLUTE_PATH --role cc|cdx' >&2; exit 2; }
+usage() { printf '%s\n' 'Usage: tproj-remote-host list|ensure-all|register|unregister|status|ensure|attach|stop [--path ABSOLUTE_PATH] [--role cc|cdx] [--alias NAME]' >&2; exit 2; }
 die() { printf 'tproj-remote-host: %s\n' "$*" >&2; exit 1; }
 
-action=${1:-}; case "$action" in status|ensure|attach) shift ;; register|unregister|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
-project_path=; role=
+action=${1:-}; case "$action" in list|status|ensure|attach|stop|register|unregister|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
+project_path=; role=; alias_name=
 while (($#)); do
   case "$1" in
     --path) (($# >= 2)) || usage; project_path=$2; shift 2 ;;
     --role) (($# >= 2)) || usage; role=$2; shift 2 ;;
+    --alias) (($# >= 2)) || usage; alias_name=$2; shift 2 ;;
     *) usage ;;
   esac
 done
 
 state_dir=${TPROJ_REMOTE_STATE_DIR:-${HOME:?}/.config/tproj-remote}
 projects_file=$state_dir/projects
+catalog_file=$state_dir/catalog.yml
 tmux_bin=$(command -v tmux || true)
 tmux_run() { [[ -n "$tmux_bin" ]] || die 'required CLI not found on PATH: tmux'; if [[ -n "${TPROJ_TMUX_SOCKET:-}" ]]; then "$tmux_bin" -L "$TPROJ_TMUX_SOCKET" "$@"; else "$tmux_bin" "$@"; fi; }
 validate_path() { [[ "$1" == /* ]] || die '--path must be an absolute path'; [[ -d "$1" ]] || die "project path does not exist or is not a directory: $1"; }
+validate_field() { [[ "$1" != *$'\n'* && "$1" != *$'\t'* && "$1" != *'|'* ]] || die 'path or alias contains an unsupported delimiter'; }
+catalog() {
+  mkdir -p "$state_dir"
+  python3 - "$catalog_file" "$projects_file" "$@" <<'PY'
+import hashlib
+import json
+import os
+import re
+import sys
+import tempfile
+
+catalog, legacy, action, *args = sys.argv[1:]
+def fail(message):
+    raise SystemExit("tproj-remote-host: " + message)
+def ident(path):
+    return hashlib.sha256(path.encode()).hexdigest()[:16]
+def default_alias(path):
+    name = os.path.basename(path.rstrip("/"))
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", name).strip("-")
+    return name or ident(path)
+def validate(entry):
+    if set(entry) != {"id", "path", "alias"}:
+        fail("invalid catalog entry")
+    if not isinstance(entry["path"], str) or not entry["path"].startswith("/") or any(c in entry["path"] for c in "\n\t|"):
+        fail("invalid catalog path")
+    if entry["id"] != ident(entry["path"]):
+        fail("invalid catalog id")
+    if not isinstance(entry["alias"], str) or not re.fullmatch(r"[A-Za-z0-9._-]+", entry["alias"]):
+        fail("invalid catalog alias")
+def load():
+    if os.path.exists(catalog):
+        lines = open(catalog, encoding="utf-8").read().splitlines()
+        if lines[:2] != ["version: 1", "projects:"]:
+            fail("invalid catalog header")
+        entries = []
+        rest = lines[2:]
+        if len(rest) % 3:
+            fail("invalid catalog structure")
+        for i in range(0, len(rest), 3):
+            match = [re.fullmatch(prefix + r"(\"(?:[^\"\\]|\\.)*\")", line) for prefix, line in zip(("  - id: ", "    path: ", "    alias: "), rest[i:i+3])]
+            if not all(match):
+                fail("invalid catalog structure")
+            entry = dict(zip(("id", "path", "alias"), (json.loads(m.group(1)) for m in match)))
+            validate(entry)
+            entries.append(entry)
+    else:
+        entries = []
+        if os.path.exists(legacy):
+            for path in open(legacy, encoding="utf-8").read().splitlines():
+                if not path:
+                    continue
+                entry = {"id": ident(path), "path": path, "alias": default_alias(path)}
+                validate(entry)
+                if any(e["path"] == path for e in entries):
+                    continue
+                if any(e["alias"] == entry["alias"] for e in entries):
+                    entry["alias"] += "-" + entry["id"][:6]
+                entries.append(entry)
+        save(entries)
+    if len({e["id"] for e in entries}) != len(entries) or len({e["alias"] for e in entries}) != len(entries):
+        fail("duplicate catalog identity")
+    return entries
+def save(entries):
+    data = "version: 1\nprojects:\n" + "".join(
+        "  - id: " + json.dumps(e["id"]) + "\n    path: " + json.dumps(e["path"]) +
+        "\n    alias: " + json.dumps(e["alias"]) + "\n" for e in entries)
+    fd, tmp = tempfile.mkstemp(prefix=".catalog.", dir=os.path.dirname(catalog))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), 0o600)
+            f.write(data)
+        os.replace(tmp, catalog)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+entries = load()
+if action == "register":
+    path, alias = args
+    alias = alias or default_alias(path)
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", alias):
+        fail("alias must contain only letters, digits, dot, underscore, or hyphen")
+    existing = next((e for e in entries if e["path"] == path), None)
+    if existing:
+        if alias != existing["alias"] and args[1]:
+            fail("path is already registered with another alias")
+    else:
+        if any(e["alias"] == alias for e in entries):
+            fail("alias is already registered")
+        entries.append({"id": ident(path), "path": path, "alias": alias})
+        save(entries)
+elif action == "unregister":
+    path = args[0]
+    updated = [e for e in entries if e["path"] != path]
+    if len(updated) != len(entries):
+        save(updated)
+elif action == "contains":
+    if not any(e["path"] == args[0] for e in entries):
+        fail("path is not registered")
+elif action == "list":
+    for e in entries:
+        print(e["id"] + "\t" + e["path"] + "\t" + e["alias"])
+else:
+    fail("invalid catalog operation")
+PY
+}
 validate_role() { case "$1" in cc|cdx) ;; *) die '--role must be cc or cdx' ;; esac; }
 cli_for_role() { [[ "$1" == cc ]] && printf claude || printf codex; }
 resolve_cli() { command -v "$1" 2>/dev/null || true; }
@@ -65,22 +172,37 @@ ensure_one() {
 }
 
 case "$action" in
+  list)
+    [[ -z "$project_path$role$alias_name" ]] || usage
+    entries=$(catalog list) || exit 1
+    printf 'id|alias|path|cc|cdx\n'
+    while IFS=$'\t' read -r id p name; do
+      [[ -n "$id" ]] || continue
+      row="$id|$name|$p"
+      for r in cc cdx; do
+        s=$(session_for "$r" "$p")
+        if tmux_run has-session -t "$s" 2>/dev/null; then
+          c=$(resolve_cli "$(cli_for_role "$r")")
+          if [[ -n "$c" ]] && [[ -n "$(agent_status "$s" "$c")" ]]; then state=running; else state=occupied; fi
+        else state=stopped; fi
+        row+="|$state"
+      done
+      printf '%s\n' "$row"
+    done <<< "$entries"
+    ;;
   register)
-    [[ -n "$project_path" ]] || usage; validate_path "$project_path"; mkdir -p "$state_dir"
-    touch "$projects_file"
-    grep -Fqx -- "$project_path" "$projects_file" 2>/dev/null || printf '%s\n' "$project_path" >> "$projects_file"
+    [[ -n "$project_path" && -z "$role" ]] || usage; validate_path "$project_path"; validate_field "$project_path"
+    catalog register "$project_path" "$alias_name"
     ;;
   unregister)
-    [[ -n "$project_path" ]] || usage; validate_path "$project_path"
-    [[ -r "$projects_file" ]] || exit 0
-    tmp_file=$(mktemp "${projects_file}.tmp.XXXXXX")
-    awk -v target="$project_path" '$0 != target' "$projects_file" > "$tmp_file"
-    mv "$tmp_file" "$projects_file"
+    [[ -n "$project_path" && -z "$role$alias_name" ]] || usage; [[ "$project_path" == /* ]] || usage
+    catalog unregister "$project_path"
     ;;
   ensure-all)
-    [[ -r "$projects_file" ]] || exit 0
+    [[ -z "$project_path$role$alias_name" ]] || usage
+    entries=$(catalog list) || exit 1
     failures=0
-    while IFS= read -r p; do
+    while IFS=$'\t' read -r id p name; do
       [[ -n "$p" ]] || continue
       for r in cc cdx; do
         if ! err=$(ensure_one "$p" "$r" >/dev/null 2>&1); then
@@ -88,20 +210,26 @@ case "$action" in
           failures=1
         fi
       done
-    done < "$projects_file"
+    done <<< "$entries"
     exit "$failures"
     ;;
-  status|ensure|attach)
-    [[ -n "$project_path" && -n "$role" ]] || usage; validate_path "$project_path"; validate_role "$role"
+  status|ensure|attach|stop)
+    [[ -n "$project_path" && -n "$role" && -z "$alias_name" ]] || usage; validate_path "$project_path"; validate_field "$project_path"; validate_role "$role"
     c_name=$(cli_for_role "$role"); c=$(resolve_cli "$c_name"); [[ -n "$c" ]] || die "required CLI not found on PATH: $c_name"; s=$(session_for "$role" "$project_path")
     if [[ "$action" == status ]]; then
       pid=
       if tmux_run has-session -t "$s" 2>/dev/null && pid=$(agent_status "$s" "$c"); [[ -n "$pid" ]]; then printf 'running|%s|%s\n' "$s" "$pid"; else printf 'stopped|%s|-\n' "$s"; fi
     elif [[ "$action" == ensure ]]; then ensure_one "$project_path" "$role"
+    elif [[ "$action" == stop ]]; then
+      catalog contains "$project_path"
+      if tmux_run has-session -t "$s" 2>/dev/null; then
+        pid=$(agent_status "$s" "$c") || true
+        [[ -n "$pid" ]] || die "session exists but is not running $c: $s"
+        tmux_run kill-session -t "$s"
+      fi
+      printf 'stopped|%s|-\n' "$s"
     else
-      mkdir -p "$state_dir"
-      touch "$projects_file"
-      grep -Fqx -- "$project_path" "$projects_file" 2>/dev/null || printf '%s\n' "$project_path" >> "$projects_file"
+      catalog register "$project_path" ""
       if ! tmux_run has-session -t "$s" 2>/dev/null; then ensure_one "$project_path" "$role" >/dev/null; fi
       tmux_run attach-session -t "$s"
     fi

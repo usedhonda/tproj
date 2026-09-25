@@ -35,13 +35,39 @@ EOF
 chmod +x "$TMP/bin/tmux"
 run attach --path "$TMP/project" --role cc
 grep -Fqx "attach-session -t $cc" "$TMP/attach-target"
-grep -Fqx "$TMP/project" "$HOME/.config/tproj-remote/projects"
-run register --path "$TMP/project"; run register --path "$TMP/project"; [[ $(wc -l < "$HOME/.config/tproj-remote/projects") -eq 1 ]]
-run unregister --path "$TMP/project"; [[ ! -s "$HOME/.config/tproj-remote/projects" ]]
+[[ $(run list | wc -l) -eq 2 ]]
+grep -Fq "|${TMP}/project|running|running" <(run list)
+run register --path "$TMP/project"; run register --path "$TMP/project"; [[ $(run list | wc -l) -eq 2 ]]
+run unregister --path "$TMP/project"; [[ $(run list | wc -l) -eq 1 ]]
+tmux -L "$SOCKET" has-session -t "$cc"
 run register --path "$TMP/project"
+[[ -s "$HOME/.config/tproj-remote/catalog.yml" ]]
+if run register --path "$TMP/fresh" --alias project 2>/dev/null; then exit 1; fi
+run register --path "$TMP/fresh" --alias fresh
+[[ $(run list | wc -l) -eq 3 ]]
+[[ $(run stop --path "$TMP/project" --role cc) == stopped\|"$cc"\|- ]]
+if tmux -L "$SOCKET" has-session -t "$cc" 2>/dev/null; then exit 1; fi
+[[ $(run stop --path "$TMP/project" --role cc) == stopped\|"$cc"\|- ]]
+cc=$(run ensure --path "$TMP/project" --role cc)
 tmux -L "$SOCKET" kill-session -t "$cc"; tmux -L "$SOCKET" kill-session -t "$cdx"
 run ensure-all
-for _ in 1 2 3 4 5 6 7 8 9 10; do [[ $(grep -c '^claude:--continue$' "$MOCK_LOG" 2>/dev/null || true) -eq 2 ]] && break; sleep 0.1; done
-[[ $(grep -c '^claude:--continue$' "$MOCK_LOG") -eq 2 ]]
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ $(grep -c '^claude:--continue$' "$MOCK_LOG" 2>/dev/null || true) -ge 3 ]] && break; sleep 0.1; done
+[[ $(grep -c '^claude:--continue$' "$MOCK_LOG") -eq 3 ]]
 [[ $(grep -c '^codex:resume --last$' "$MOCK_LOG") -eq 2 ]]
-printf 'PASS  remote host ensure/status/register\n'
+mkdir -p "$TMP/migrate"
+printf '%s\n' "$TMP/project" > "$TMP/migrate/projects"
+TPROJ_REMOTE_STATE_DIR="$TMP/migrate" run list | grep -Fq "|$TMP/project|"
+[[ -s "$TMP/migrate/catalog.yml" ]]
+cat > "$TMP/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "${SSH_LOG:?}"
+EOF
+chmod +x "$TMP/bin/ssh"
+export SSH_LOG="$TMP/ssh-args"
+"$ROOT/bin/tproj-remote-client" list example-host
+grep -Fqx '$HOME/bin/tproj-remote-host list' "$SSH_LOG"
+"$ROOT/bin/tproj-remote-client" stop example-host "$TMP/project" cc
+grep -Fq '$HOME/bin/tproj-remote-host stop --path ' "$SSH_LOG"
+grep -Fq ' --role cc' "$SSH_LOG"
+if "$ROOT/bin/tproj-remote-client" stop 'bad;host' "$TMP/project" cc 2>/dev/null; then exit 1; fi
+printf 'PASS  remote host catalog/lifecycle\n'
