@@ -5985,7 +5985,7 @@ struct ContentView: View {
                 return "\(Int(ceil(remaining / 60)))m"
             }()
             let label: String = {
-                if hours == 0 { return "\(cacheText)·Off" }
+                if hours == 0 { return "Off" }
                 if unavailable { return "wait·\(hours)h" }
                 if windowOver { return "Done·\(hours)h" }
                 return "\(cacheText)·\(hours)h\(windowUnknown ? "?" : "")\(issue ? " !" : "")"
@@ -6032,7 +6032,7 @@ struct ContentView: View {
                 return leftMin == 0 ? "cold" : "\(leftMin)m"
             }()
             let label: String = {
-                if cdxHours == 0 { return "\(cacheText)·Off" }
+                if cdxHours == 0 { return "Off" }
                 if !windowOpen && turn == "idle" { return "Done·\(cdxHours)h" }
                 return "\(cacheText)·\(cdxHours)h"
             }()
