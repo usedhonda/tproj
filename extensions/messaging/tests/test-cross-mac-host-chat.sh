@@ -70,3 +70,32 @@ if printf 'hello' | python3 "$tmp/tproj-remote-relay" send \
   exit 1
 fi
 echo 'ok: missing reverse socket fails closed'
+
+# Replace the fake destination with the real CLI: a live relay ancestor must
+# pass authentication and then fail at the exact-session target gate here.
+kill "$server_pid"
+wait "$server_pid" 2>/dev/null || true
+rm -f "$tmp/local.sock" "$tmp/local.sock.pid"
+cp "$msg" "$tmp/tproj-msg"
+python3 "$tmp/tproj-remote-relay" serve --socket "$tmp/local.sock" >"$tmp/server.out" 2>"$tmp/server.err" &
+server_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -S "$tmp/local.sock" ]] && break
+  sleep 0.1
+done
+[[ -S "$tmp/local.sock" ]] || { cat "$tmp/server.err" >&2; exit 1; }
+if printf 'hello' | python3 "$tmp/tproj-remote-relay" send \
+    --socket "$tmp/local.sock" --session nonexistent-cross-mac-session \
+    --target exact.cc >"$tmp/out" 2>"$tmp/err"; then
+  echo 'FAIL: missing destination session accepted' >&2
+  exit 1
+fi
+if grep -Fq 'live relay ancestor' "$tmp/err"; then
+  echo 'FAIL: relay ancestry was rejected' >&2
+  exit 1
+fi
+if ! grep -Fq 'not a live tmux session' "$tmp/err"; then
+  cat "$tmp/err" >&2
+  exit 1
+fi
+echo 'ok: relay ingress reaches exact-session gate'
