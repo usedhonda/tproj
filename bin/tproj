@@ -1019,7 +1019,7 @@ add_workspace_column() {
   local parsed parsed_host parsed_path
   local max_col new_col
   local right_claude new_claude new_codex
-  local claude_title codex_title claude_cmd
+  local claude_title codex_title claude_cmd remote_client
 
   acquire_layout_lock || {
     echo "Error: failed to acquire layout lock" >&2
@@ -1082,6 +1082,14 @@ add_workspace_column() {
       }
       src_dir="$src_path"
     fi
+  fi
+
+  if [[ "$src_type" == "remote" ]]; then
+    remote_client="$(quoted_runtime_bin_path tproj-remote-client)"
+    [[ -n "$remote_client" ]] || {
+      echo "Error: tproj-remote-client not installed" >&2
+      exit 1
+    }
   fi
 
   max_col="$(tmux list-panes -t "$session:dev" -F '#{@column}' 2>/dev/null \
@@ -1151,20 +1159,15 @@ add_workspace_column() {
   # Add 時は npm update をスキップ（既存セッションで CC/Cdx は更新済み前提）
   NO_UPDATE=true
 
-  local claude_cmd codex_cmd include_cd="true"
-  [[ "$src_type" == "remote" ]] && include_cd="false"
-  claude_cmd="$(build_claude_launch_shell "$src_path" "$src_type" "$include_cd")"
-  codex_cmd="$(build_codex_launch_shell "$src_path" "$src_type" "$include_cd")"
-
   if [[ "$src_type" == "remote" ]]; then
-    tmux send-keys -t "$new_claude" "ssh -t $src_host 'cd $src_path && exec \$SHELL -l'" C-m
-    tmux send-keys -t "$new_codex" "ssh -t $src_host 'cd $src_path && exec \$SHELL -l'" C-m
-    sleep 2
-
-    tmux send-keys -t "$new_claude" "$(with_claude_update_prefix "$claude_cmd")" C-m
+    claude_cmd="$remote_client attach $(printf '%q' "$src_host") $(printf '%q' "$src_path") cc"
+    codex_cmd="$remote_client attach $(printf '%q' "$src_host") $(printf '%q' "$src_path") cdx"
+    tmux send-keys -t "$new_claude" "$claude_cmd" C-m
     sleep 0.2
-    tmux send-keys -t "$new_codex" "$(with_codex_update_prefix "$codex_cmd")" C-m
+    tmux send-keys -t "$new_codex" "$codex_cmd" C-m
   else
+    claude_cmd="$(build_claude_launch_shell "$src_path" "$src_type" "true")"
+    codex_cmd="$(build_codex_launch_shell "$src_path" "$src_type" "true")"
     tmux send-keys -t "$new_claude" "$(with_claude_update_prefix "$claude_cmd")" C-m
     sleep 0.2
     tmux send-keys -t "$new_codex" "$(with_codex_update_prefix "$codex_cmd")" C-m
