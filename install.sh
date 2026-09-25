@@ -16,7 +16,7 @@ ALL_EXTENSIONS=false
 CHECK_ONLY=false
 
 # Core scripts copied to ~/bin (single source of truth for install + --check).
-CORE_BINS=(tproj tproj-role tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-focus-hook tproj-pane-clear-rank tproj-pane-autozoom tproj-tmux-state-notify tproj-mru-tracker tproj-respawn-guard tproj-postmortem tproj-mem-trace rebalance-workspace-columns sign-codex wait-for-pane-text)
+CORE_BINS=(tproj tproj-remote-client tproj-role tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-focus-hook tproj-pane-clear-rank tproj-pane-autozoom tproj-tmux-state-notify tproj-mru-tracker tproj-respawn-guard tproj-postmortem tproj-mem-trace rebalance-workspace-columns sign-codex wait-for-pane-text)
 # Persona scripts copied verbatim to ~/bin (single source of truth for install +
 # --check, same as CORE_BINS). project-bootstrap is not here: it is a symlink into
 # the general checkout and has its own chain validation.

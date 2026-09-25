@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Connect a local tproj pane to a persistent agent pane on an SSH host.
+set -euo pipefail
+
+if [[ $# -ne 4 ]]; then
+  echo "usage: tproj-remote-client status|ensure|attach|register|unregister HOST REMOTE_PATH cc|cdx" >&2
+  exit 2
+fi
+
+action="$1" host="$2" remote_path="$3" role="$4"
+case "$action" in status|ensure|attach|register|unregister) ;; *) echo "invalid action: $action" >&2; exit 2 ;; esac
+case "$role" in cc|cdx) ;; *) echo "invalid role: $role" >&2; exit 2 ;; esac
+if [[ ! "$host" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "$remote_path" != /* ]]; then
+  echo "remote host and absolute path are required" >&2
+  exit 2
+fi
+
+printf -v path_arg '%q' "$remote_path"
+remote_command="\$HOME/bin/tproj-remote-host $action --path $path_arg --role $role"
+if [[ "$action" == attach ]]; then
+  exec ssh -tt -- "$host" "$remote_command"
+else
+  exec ssh -o BatchMode=yes -o ConnectTimeout=5 -T -- "$host" "$remote_command"
+fi

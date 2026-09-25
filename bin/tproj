@@ -2052,11 +2052,11 @@ start_codex_for_column() {
   codex_cmd="$(build_codex_launch_shell "$proj_path" "$proj_type" "$include_cd")"
 
   if [[ "$proj_type" == "remote" ]]; then
-    tmux send-keys -t "$codex_pane" \
-      "ssh -t $proj_host 'cd $proj_path && exec \$SHELL -l'" C-m
-    sleep 2
-    tmux send-keys -t "$codex_pane" \
-      "$(with_codex_update_prefix "$codex_cmd" "$no_update")" C-m
+    local remote_client
+    remote_client="$(quoted_runtime_bin_path tproj-remote-client)"
+    [[ -n "$remote_client" ]] || { echo "Error: tproj-remote-client not installed" >&2; return 1; }
+    codex_cmd="$remote_client attach $(printf '%q' "$proj_host") $(printf '%q' "$proj_path") cdx"
+    tmux send-keys -t "$codex_pane" "$codex_cmd" C-m
   else
     # cdx: false のときはシェルで cd だけ
     if [[ "$cdx_launch" != "true" ]]; then
@@ -2090,10 +2090,11 @@ start_claude_for_column() {
   claude_cmd="$(build_claude_launch_shell "$proj_path" "$proj_type" "$include_cd")"
 
   if [[ "$proj_type" == "remote" ]]; then
-    tmux send-keys -t "$claude_pane" \
-      "ssh -t $proj_host 'cd $proj_path && exec \$SHELL -l'" C-m
-    sleep 2
-    tmux send-keys -t "$claude_pane" "$(with_claude_update_prefix "$claude_cmd" "$no_update")" C-m
+    local remote_client
+    remote_client="$(quoted_runtime_bin_path tproj-remote-client)"
+    [[ -n "$remote_client" ]] || { echo "Error: tproj-remote-client not installed" >&2; return 1; }
+    claude_cmd="$remote_client attach $(printf '%q' "$proj_host") $(printf '%q' "$proj_path") cc"
+    tmux send-keys -t "$claude_pane" "$claude_cmd" C-m
   else
     # cc: false のときはシェルで cd だけ
     if [[ "$cc_launch" != "true" ]]; then
