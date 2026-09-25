@@ -24,21 +24,20 @@ wait_panes() {
   return 1
 }
 run register --path "$TMP/project" --alias demo
-shared=$(run ensure --path "$TMP/project" --role cc)
-wait_panes "$shared"
-[[ $(run ensure --path "$TMP/project" --role cdx) == "$shared" ]]
-[[ $(run status --path "$TMP/project" --role cc) == running\|"$shared"\|* ]]
-[[ $(run status --path "$TMP/project" --role cdx) == running\|"$shared"\|* ]]
+cc_session=$(run ensure --path "$TMP/project" --role cc)
+cdx_session=$(run ensure --path "$TMP/project" --role cdx)
+[[ "$cc_session" != "$cdx_session" ]]
+[[ $(run status --path "$TMP/project" --role cc) == running\|"$cc_session"\|* ]]
+[[ $(run status --path "$TMP/project" --role cdx) == running\|"$cdx_session"\|* ]]
 [[ $(run list | tail -n 1) == *'|demo|'*'|running|running' ]]
-[[ $(tm list-windows -t "=$shared" -F '#{window_name}') == dev ]]
-[[ $(tm list-panes -t "=$shared:dev" -F '#{@role}|#{@alias}|#{@column}|#{@project}' | sort) == "$(printf 'claude-p1|demo|1|%s\ncodex-p1|demo|1|%s' "$TMP/project" "$TMP/project")" ]]
+[[ $(tm list-panes -t "=$cc_session:dev" -F '#{@role}|#{@alias}|#{@column}|#{@project}') == "claude-p1|demo|1|$TMP/project" ]]
+[[ $(tm list-panes -t "=$cdx_session:dev" -F '#{@role}|#{@alias}|#{@column}|#{@project}') == "codex-p1|demo|1|$TMP/project" ]]
 run unregister --path "$TMP/project"
-tm has-session -t "=$shared"
+tm has-session -t "=$cc_session"
 run register --path "$TMP/project" --alias demo
-[[ $(run stop --path "$TMP/project" --role cc) == stopped\|"$shared"\|- ]]
-[[ $(tm list-panes -t "=$shared:dev" -F '#{@role}') == codex-p1 ]]
+[[ $(run stop --path "$TMP/project" --role cc) == stopped\|"$cc_session"\|- ]]
+tm has-session -t "=$cdx_session"
 run ensure --path "$TMP/project" --role cc >/dev/null
-wait_panes "$shared"
 
 # Legacy migration moves live panes into the shared topology without changing PIDs.
 run register --path "$TMP/legacy" --alias old
@@ -54,4 +53,8 @@ wait_panes "$migrated"
 [[ $(tm list-panes -t "=$migrated:dev" -F '#{@role}|#{pane_pid}' | sort) == "$(printf 'claude-p1|%s\ncodex-p1|%s' "$cc_pid" "$cdx_pid")" ]]
 if tm has-session -t "=$cc_legacy" 2>/dev/null || tm has-session -t "=$cdx_legacy" 2>/dev/null; then exit 1; fi
 if run migrate --path "$TMP/legacy" 2>/dev/null; then exit 1; fi
-printf 'PASS  remote host paired panes and migration\n'
+[[ $(run separate --path "$TMP/legacy") == "$cc_legacy|$cdx_legacy" ]]
+[[ $(tm list-panes -t "=$cc_legacy" -F '#{pane_pid}') == "$cc_pid" ]]
+[[ $(tm list-panes -t "=$cdx_legacy" -F '#{pane_pid}') == "$cdx_pid" ]]
+if tm has-session -t "=$migrated" 2>/dev/null; then exit 1; fi
+printf 'PASS  remote host role sessions and live separation\n'

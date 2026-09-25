@@ -15,10 +15,10 @@ for path_entry in "${path_prefix[@]}"; do
 done
 export PATH
 
-usage() { printf '%s\n' 'Usage: tproj-remote-host list|ensure-all|register|unregister|status|ensure|attach|stop|migrate [--path ABSOLUTE_PATH] [--role cc|cdx] [--alias NAME]' >&2; exit 2; }
+usage() { printf '%s\n' 'Usage: tproj-remote-host list|ensure-all|register|unregister|status|ensure|attach|stop|migrate|separate [--path ABSOLUTE_PATH] [--role cc|cdx] [--alias NAME]' >&2; exit 2; }
 die() { printf 'tproj-remote-host: %s\n' "$*" >&2; exit 1; }
 
-action=${1:-}; case "$action" in list|status|ensure|attach|stop|migrate|register|unregister|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
+action=${1:-}; case "$action" in list|status|ensure|attach|stop|migrate|separate|register|unregister|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
 project_path=; role=; alias_name=
 while (($#)); do
   case "$1" in
@@ -222,22 +222,34 @@ ensure_one() {
     [[ -n "$pid" ]] || die "session exists but is not running $c: $s"
     printf '%s\n' "$s"; return
   fi
-  other=cc; [[ "$r" == cc ]] && other=cdx
-  legacy_other=$(session_for "$other" "$p")
-  if tmux_run has-session -t "=$legacy_other" 2>/dev/null; then
-    start=$(start_command "$r")
-    tmux_run new-session -d -s "$s" -c "$p" "$start" || die "could not create legacy peer session: $s"
-    printf '%s\n' "$s"; return
-  fi
   alias_name=$(catalog alias "$p") || { catalog register "$p" ""; alias_name=$(catalog alias "$p"); }
-  start_command "$other" >/dev/null
   start=$(start_command "$r")
-  tmux_run new-session -d -s "$shared" -n dev -c "$p" "$start" || die "could not create shared session: $shared"
-  pane=$(tmux_run display-message -t "=$shared:dev" -p '#{pane_id}')
+  tmux_run new-session -d -s "$s" -n dev -c "$p" "$start" || die "could not create role session: $s"
+  pane=$(tmux_run display-message -t "=$s:dev" -p '#{pane_id}')
   tag_pane "$pane" "$r" "$p" "$alias_name"
-  pane=$(tmux_run split-window -d -P -F '#{pane_id}' -t "=$shared:dev" -c "$p" "$(start_command "$other")") || die "could not split shared session: $shared"
-  tag_pane "$pane" "$other" "$p" "$alias_name"
-  printf '%s\n' "$shared"
+  printf '%s\n' "$s"
+}
+separate_pair() {
+  local p=$1 shared cc_pane cdx_pane cc_session cdx_session cc_pid cdx_pid
+  shared=$(shared_session_for "$p")
+  tmux_run has-session -t "=$shared" 2>/dev/null || die "shared session missing: $shared"
+  cc_pane=$(pane_for "$shared" cc "$p") || die 'CC pane missing'
+  cdx_pane=$(pane_for "$shared" cdx "$p") || die 'Cdx pane missing'
+  cc_pid=$(agent_status "$cc_pane" "$(resolve_cli claude)") || die 'CC agent not running'
+  cdx_pid=$(agent_status "$cdx_pane" "$(resolve_cli codex)") || die 'Cdx agent not running'
+  cc_session=$(session_for cc "$p"); cdx_session=$(session_for cdx "$p")
+  if tmux_run has-session -t "=$cc_session" 2>/dev/null || tmux_run has-session -t "=$cdx_session" 2>/dev/null; then
+    die 'role session already exists; refusing to move live panes'
+  fi
+  tmux_run new-session -d -s "$cc_session" -n hold -c "$p" 'sleep 3600'
+  tmux_run new-session -d -s "$cdx_session" -n hold -c "$p" 'sleep 3600'
+  tmux_run break-pane -d -s "$cdx_pane" -t "=$cdx_session:1" -n dev || die 'could not separate Cdx pane'
+  tmux_run move-window -s "=$shared:dev" -t "=$cc_session:1" || die 'could not move CC window'
+  tmux_run kill-window -t "=$cc_session:0"
+  tmux_run kill-window -t "=$cdx_session:0"
+  [[ "$(tmux_run display-message -t "$cc_pane" -p '#{pane_pid}')" == "$cc_pid" ]] || die 'CC pane PID changed'
+  [[ "$(tmux_run display-message -t "$cdx_pane" -p '#{pane_pid}')" == "$cdx_pid" ]] || die 'Cdx pane PID changed'
+  printf '%s|%s\n' "$cc_session" "$cdx_session"
 }
 migrate_pair() {
   local p=$1 shared cc_session cdx_session cc_pane cdx_pane alias_name cc_pid cdx_pid
@@ -291,6 +303,11 @@ case "$action" in
     validate_path "$project_path"; validate_field "$project_path"
     migrate_pair "$project_path"
     ;;
+  separate)
+    [[ -n "$project_path" && -z "$role$alias_name" ]] || usage
+    validate_path "$project_path"; catalog contains "$project_path"
+    separate_pair "$project_path"
+    ;;
   register)
     [[ -n "$project_path" && -z "$role" ]] || usage; validate_path "$project_path"; validate_field "$project_path"
     catalog register "$project_path" "$alias_name"
@@ -341,13 +358,7 @@ case "$action" in
       catalog register "$project_path" ""
       s=$(ensure_one "$project_path" "$role")
       shared=$(shared_session_for "$project_path")
-      if [[ "$s" == "$shared" ]]; then
-        pane=$(pane_for "$shared" "$role" "$project_path") || die "role pane not found in shared session: $shared"
-        # Two local display panes attach with different heights. Keep the
-        # remote pair sized for the larger client instead of the last attach.
-        tmux_run set-window-option -t "=$shared:dev" window-size largest
-        tmux_run select-pane -t "$pane"
-      fi
+      [[ "$s" != "$shared" ]] || die 'shared pair needs separate --path before role attach'
       tmux_run attach-session -t "$s"
     fi
     ;;
