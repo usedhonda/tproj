@@ -2,7 +2,6 @@ import SwiftUI
 import CryptoKit
 
 private struct ServerProject: Identifiable {
-    let alias: String
     let path: String
     let cc: String
     let cdx: String
@@ -63,7 +62,6 @@ private enum ServerCommand {
 struct ServerModeView: View {
     @State private var projects: [ServerProject] = []
     @State private var path = ""
-    @State private var alias = ""
     @State private var busy = false
     @State private var errorMessage: String?
     @State private var cacheHours: [String: Int] = [:]
@@ -79,9 +77,8 @@ struct ServerModeView: View {
 
             HStack {
                 TextField("Absolute project path", text: $path)
-                TextField("Alias", text: $alias).frame(width: 140)
                 Button("Add") { addProject() }
-                    .disabled(busy || !path.hasPrefix("/") || alias.isEmpty)
+                    .disabled(busy || !path.hasPrefix("/"))
             }
 
             if let errorMessage {
@@ -91,7 +88,7 @@ struct ServerModeView: View {
             List(projects) { project in
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text(project.alias).font(.headline)
+                        Text(URL(fileURLWithPath: project.path).lastPathComponent).font(.headline)
                         Spacer()
                         Button("Unregister") {
                             perform(["unregister", "--path", project.path])
@@ -121,7 +118,7 @@ struct ServerModeView: View {
             }
             .overlay {
                 if projects.isEmpty && !busy {
-                    Text("No projects. Add an absolute path and alias.")
+                    Text("No projects. Add an absolute path.")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -145,10 +142,8 @@ struct ServerModeView: View {
 
     private func addProject() {
         let newPath = path
-        let newAlias = alias
-        perform(["register", "--path", newPath, "--alias", newAlias]) {
+        perform(["register", "--path", newPath]) {
             path = ""
-            alias = ""
         }
     }
 
@@ -185,7 +180,7 @@ struct ServerModeView: View {
                     projects = output.split(separator: "\n").dropFirst().compactMap { line in
                         let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
                         guard fields.count == 5 else { return nil }
-                        return ServerProject(alias: fields[1], path: fields[2], cc: fields[3], cdx: fields[4])
+                        return ServerProject(path: fields[2], cc: fields[3], cdx: fields[4])
                     }
                     if case .success(let cacheOutput) = cacheResult,
                        let rows = try? JSONSerialization.jsonObject(with: Data(cacheOutput.utf8)) as? [[String: Any]] {
