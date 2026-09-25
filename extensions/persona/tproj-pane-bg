@@ -3179,6 +3179,20 @@ resolve_pane_project() {
   local project_hint="$1"
   local pane_cwd="$2"
   local resolved=""
+  local remote_path=""
+
+  # Remote SSH panes run a local ssh client whose cwd is often /private/tmp.
+  # Their @project tag is the remote identity, and the local checkout at the
+  # same path supplies the cached image shown by this Mac's GUI.
+  if [[ "$project_hint" == ssh://* ]]; then
+    remote_path="${project_hint#ssh://*/}"
+    if [[ "$remote_path" == /* && -d "$remote_path" ]]; then
+      if resolved="$(normalize_dir "$remote_path" 2>/dev/null)"; then
+        printf '%s' "$resolved"
+        return 0
+      fi
+    fi
+  fi
 
   if [[ -n "$project_hint" ]]; then
     if resolved="$(normalize_dir "$project_hint" 2>/dev/null)"; then
