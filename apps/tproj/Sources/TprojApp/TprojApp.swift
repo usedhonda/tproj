@@ -5690,8 +5690,10 @@ struct ContentView: View {
         let isDragging = draggingColumnID == column.column
         // Conversation-main side + mode tint. This is the pane the user chose to
         // talk to, not necessarily the higher-tier or orchestrating side.
-        let main = column.hostLabel == "local" ? vm.roleModeMain(forProjectPath: column.projectPath) : ""
-        let leadTint = roleModeTint(vm.roleMode(forProjectPath: column.projectPath))
+        let host = column.hostLabel.hasPrefix("remote@")
+            ? String(column.hostLabel.dropFirst("remote@".count)) : nil
+        let main = vm.roleModeMain(forProjectPath: column.projectPath, host: host)
+        let leadTint = roleModeTint(vm.roleMode(forProjectPath: column.projectPath, host: host))
         let mainTint = leadTint
 
         return VStack(alignment: .leading, spacing: 3) {
