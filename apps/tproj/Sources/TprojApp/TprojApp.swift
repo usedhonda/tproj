@@ -2144,6 +2144,9 @@ final class AppViewModel: ObservableObject {
             }
 
             await refreshAll()
+            for host in Set(workspaceProjects.filter { $0.type == "remote" }.map(\.host)) {
+                await syncRemoteCatalog(host: host)
+            }
             for project in workspaceProjects where project.type == "remote" {
                 Task { await refreshRemoteState(project) }
             }
@@ -3303,6 +3306,67 @@ final class AppViewModel: ObservableObject {
         remoteProjectStates[remoteKey(project)] ?? "Unknown"
     }
 
+    /// The host catalog is authoritative; workspace.yaml is only this Mac's display mirror.
+    func syncRemoteCatalog(host: String) async {
+        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        guard fileManager.isExecutableFile(atPath: client), !host.isEmpty else { return }
+        let result = await runCommandAsync(client, ["list", host])
+        guard result.exitCode == 0 else {
+            statusText = "Remote catalog unavailable: \(host)"
+            return
+        }
+        let lines = result.stdout.split(separator: "\n").map(String.init)
+        guard lines.first == "id|alias|path|cc|cdx" else {
+            statusText = "Remote catalog format error: \(host)"
+            return
+        }
+        var remote: [WorkspaceProject] = []
+        for line in lines.dropFirst() {
+            let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 5, fields[2].hasPrefix("/") else { continue }
+            let prior = workspaceProjects.first { $0.type == "remote" && $0.host == host && $0.path == fields[2] }
+            var project = prior ?? WorkspaceProject(path: fields[2], type: "remote", host: host,
+                                                    alias: fields[1], enabled: false)
+            project.alias = fields[1]
+            project.remotePath = fields[2]
+            remote.append(project)
+            let running = [fields[3], fields[4]].filter { $0 == "running" }.count
+            remoteProjectStates[remoteKey(project)] = running == 2 ? "Running" :
+                (running == 1 ? "Partial" : (fields[3] == "occupied" || fields[4] == "occupied" ? "Occupied" : "Stopped"))
+        }
+        let other = workspaceProjects.filter { $0.type != "remote" || $0.host != host }
+        let merged = other + remote
+        if let error = persistWorkspaceProjects(merged, createIfMissing: false) {
+            statusText = error
+            return
+        }
+        loadWorkspaceProjects()
+        normalizeSelection()
+    }
+
+    func stopRemoteProject(_ project: WorkspaceProject) async {
+        guard project.type == "remote" else { return }
+        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        let cc = await runCommandAsync(client, ["stop", project.host, project.path, "cc"])
+        let cdx = await runCommandAsync(client, ["stop", project.host, project.path, "cdx"])
+        await refreshRemoteState(project)
+        statusText = cc.exitCode == 0 && cdx.exitCode == 0 ? "Stopped remote CC/Cdx" :
+            "Remote stop incomplete: \(trimmedError(cc.exitCode == 0 ? cdx : cc))"
+    }
+
+    func unregisterRemoteProject(_ project: WorkspaceProject) async {
+        guard project.type == "remote",
+              !liveColumns.contains(where: { $0.projectPath == project.path && $0.hostLabel != "local" }) else {
+            statusText = "Close the remote display column first"
+            return
+        }
+        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        let result = await runCommandAsync(client, ["unregister", project.host, project.path])
+        guard result.exitCode == 0 else { statusText = trimmedError(result); return }
+        await syncRemoteCatalog(host: project.host)
+        statusText = "Unregistered remote project; running panes were left untouched"
+    }
+
     func refreshRemoteState(_ project: WorkspaceProject) async {
         guard project.type == "remote" else { return }
         let client = NSHomeDirectory() + "/bin/tproj-remote-client"
@@ -3327,7 +3391,7 @@ final class AppViewModel: ObservableObject {
             statusText = "Remote client not installed"
             return
         }
-        let registered = await runCommandAsync(client, ["register", project.host, project.path, "cc"])
+        let registered = await runCommandAsync(client, ["register", project.host, project.path, "--alias", project.effectiveAlias])
         guard registered.exitCode == 0 else {
             statusText = "Remote setup failed: \(trimmedError(registered))"
             return
@@ -3364,15 +3428,23 @@ final class AppViewModel: ObservableObject {
             }
         }
         let previousRemotes = workspaceProjects.filter { $0.type == "remote" }
+        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        for project in projects where project.type == "remote" {
+            let registration = await runCommandAsync(client, ["register", project.host, project.path,
+                                                             "--alias", project.effectiveAlias])
+            guard registration.exitCode == 0 else {
+                statusText = "Remote registration failed: \(trimmedError(registration))"
+                return false
+            }
+        }
         // This sheet never edits enabled; retain each draft row's value even when
         // another machine has a project with the same absolute path.
         guard let error = persistWorkspaceProjects(projects, createIfMissing: false) else {
             loadWorkspaceProjects()
             let currentRemotes = workspaceProjects.filter { $0.type == "remote" }
-            let client = NSHomeDirectory() + "/bin/tproj-remote-client"
             if fileManager.isExecutableFile(atPath: client) {
                 for old in previousRemotes where !currentRemotes.contains(where: { $0.host == old.host && $0.path == old.path }) {
-                    _ = await runCommandAsync(client, ["unregister", old.host, old.path, "cc"])
+                    _ = await runCommandAsync(client, ["unregister", old.host, old.path])
                 }
             }
             statusText = "Saved project locations"
@@ -5664,8 +5736,16 @@ struct ContentView: View {
                         Task { await vm.addColumnByAlias(project.effectiveAlias) }
                     }
                     .frame(width: 42)
+                    ActionButton("Stop", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                        Task { await vm.stopRemoteProject(project) }
+                    }
+                    .frame(width: 42)
+                    ActionButton("Remove", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                        Task { await vm.unregisterRemoteProject(project) }
+                    }
+                    .frame(width: 52)
                     ActionButton("↻", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                        Task { await vm.refreshRemoteState(project) }
+                        Task { await vm.syncRemoteCatalog(host: project.host) }
                     }
                     .frame(width: 25)
                 } else {
