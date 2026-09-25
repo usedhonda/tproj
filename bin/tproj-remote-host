@@ -15,10 +15,10 @@ for path_entry in "${path_prefix[@]}"; do
 done
 export PATH
 
-usage() { printf '%s\n' 'Usage: tproj-remote-host list|ensure-all|register|unregister|status|ensure|attach|stop [--path ABSOLUTE_PATH] [--role cc|cdx] [--alias NAME]' >&2; exit 2; }
+usage() { printf '%s\n' 'Usage: tproj-remote-host list|ensure-all|register|unregister|status|ensure|attach|stop|migrate [--path ABSOLUTE_PATH] [--role cc|cdx] [--alias NAME]' >&2; exit 2; }
 die() { printf 'tproj-remote-host: %s\n' "$*" >&2; exit 1; }
 
-action=${1:-}; case "$action" in list|status|ensure|attach|stop|register|unregister|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
+action=${1:-}; case "$action" in list|status|ensure|attach|stop|migrate|register|unregister|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
 project_path=; role=; alias_name=
 while (($#)); do
   case "$1" in
@@ -133,6 +133,11 @@ elif action == "unregister":
 elif action == "contains":
     if not any(e["path"] == args[0] for e in entries):
         fail("path is not registered")
+elif action == "alias":
+    entry = next((e for e in entries if e["path"] == args[0]), None)
+    if entry is None:
+        fail("path is not registered")
+    print(entry["alias"])
 elif action == "list":
     for e in entries:
         print(e["id"] + "\t" + e["path"] + "\t" + e["alias"])
@@ -150,25 +155,115 @@ session_for() {
   else digest=$(printf '%s\0%s' "$r" "$p" | cksum | awk '{print $1}'); fi
   printf 'tproj-remote-%s-%s' "$r" "$digest"
 }
+shared_session_for() {
+  local p=$1 digest
+  if command -v sha256sum >/dev/null 2>&1; then digest=$(printf '%s' "$p" | sha256sum | awk '{print substr($1,1,16)}')
+  elif command -v shasum >/dev/null 2>&1; then digest=$(printf '%s' "$p" | shasum -a 256 | awk '{print substr($1,1,16)}')
+  else digest=$(printf '%s' "$p" | cksum | awk '{print $1}'); fi
+  printf 'tproj-remote-%s' "$digest"
+}
+role_tag() { [[ "$1" == cc ]] && printf claude-p1 || printf codex-p1; }
+pane_for() {
+  local s=$1 r=$2 tag pane role project
+  tag=$(role_tag "$r")
+  while IFS='|' read -r pane role project; do
+    [[ "$role" == "$tag" && "$project" == "$3" ]] && { printf '%s' "$pane"; return 0; }
+  done < <(tmux_run list-panes -t "=$s:dev" -F '#{pane_id}|#{@role}|#{@project}' 2>/dev/null)
+  return 1
+}
+tag_pane() {
+  local pane=$1 r=$2 p=$3 alias_name=$4
+  tmux_run set-option -pt "$pane" @role "$(role_tag "$r")"
+  tmux_run set-option -pt "$pane" @alias "$alias_name"
+  tmux_run set-option -pt "$pane" @column 1
+  tmux_run set-option -pt "$pane" @project "$p"
+}
 agent_status() {
   local s=$1 c=$2 pid cmd
   pid=$(tmux_run display-message -t "$s" -p '#{pane_pid}' 2>/dev/null || true)
   cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
   [[ -n "$pid" && "$cmd" == *"$c"* ]] && printf '%s' "$pid"
 }
+start_command() {
+  local r=$1 c q
+  c=$(resolve_cli "$(cli_for_role "$r")")
+  [[ -n "$c" ]] || die "required CLI not found on PATH: $(cli_for_role "$r")"
+  q=$(printf '%q' "$c")
+  [[ "$r" == cc ]] && printf '%s --continue || exec %s' "$q" "$q" || printf '%s resume --last || exec %s' "$q" "$q"
+}
+shared_pane_status() {
+  local p=$1 r=$2 s pane c pid
+  s=$(shared_session_for "$p")
+  pane=$(pane_for "$s" "$r" "$p") || return 1
+  c=$(resolve_cli "$(cli_for_role "$r")")
+  [[ -n "$c" ]] || return 1
+  pid=$(agent_status "$pane" "$c") || return 1
+  printf '%s|%s|%s' "$s" "$pane" "$pid"
+}
 ensure_one() {
-  local p=$1 r=$2 c_name c s pid q start
+  local p=$1 r=$2 c_name c s pid start shared pane alias_name other legacy_other
   validate_path "$p"; validate_role "$r"; c_name=$(cli_for_role "$r"); c=$(resolve_cli "$c_name"); [[ -n "$c" ]] || die "required CLI not found on PATH: $c_name"
+  shared=$(shared_session_for "$p")
+  if tmux_run has-session -t "=$shared" 2>/dev/null; then
+    if pane=$(pane_for "$shared" "$r" "$p"); then
+      pid=$(agent_status "$pane" "$c") || true
+      [[ -n "$pid" ]] || die "shared pane exists but is not running $c: $pane"
+    else
+      alias_name=$(catalog alias "$p") || return 1
+      start=$(start_command "$r")
+      pane=$(tmux_run split-window -d -P -F '#{pane_id}' -t "=$shared:dev" -c "$p" "$start") || die "could not split shared session: $shared"
+      tag_pane "$pane" "$r" "$p" "$alias_name"
+    fi
+    printf '%s\n' "$shared"; return
+  fi
   s=$(session_for "$r" "$p")
   if tmux_run has-session -t "$s" 2>/dev/null; then
     pid=$(agent_status "$s" "$c") || true
     [[ -n "$pid" ]] || die "session exists but is not running $c: $s"
     printf '%s\n' "$s"; return
   fi
-  q=$(printf '%q' "$(command -v "$c")")
-  [[ "$r" == cc ]] && start="$q --continue || exec $q" || start="$q resume --last || exec $q"
-  tmux_run new-session -d -s "$s" -c "$p" "$start" || die "could not create tmux session: $s"
-  printf '%s\n' "$s"
+  other=cc; [[ "$r" == cc ]] && other=cdx
+  legacy_other=$(session_for "$other" "$p")
+  if tmux_run has-session -t "=$legacy_other" 2>/dev/null; then
+    start=$(start_command "$r")
+    tmux_run new-session -d -s "$s" -c "$p" "$start" || die "could not create legacy peer session: $s"
+    printf '%s\n' "$s"; return
+  fi
+  alias_name=$(catalog alias "$p") || { catalog register "$p" ""; alias_name=$(catalog alias "$p"); }
+  start_command "$other" >/dev/null
+  start=$(start_command "$r")
+  tmux_run new-session -d -s "$shared" -n dev -c "$p" "$start" || die "could not create shared session: $shared"
+  pane=$(tmux_run display-message -t "=$shared:dev" -p '#{pane_id}')
+  tag_pane "$pane" "$r" "$p" "$alias_name"
+  pane=$(tmux_run split-window -d -P -F '#{pane_id}' -t "=$shared:dev" -c "$p" "$(start_command "$other")") || die "could not split shared session: $shared"
+  tag_pane "$pane" "$other" "$p" "$alias_name"
+  printf '%s\n' "$shared"
+}
+migrate_pair() {
+  local p=$1 shared cc_session cdx_session cc_pane cdx_pane alias_name cc_pid cdx_pid
+  catalog contains "$p"
+  shared=$(shared_session_for "$p")
+  if tmux_run has-session -t "=$shared" 2>/dev/null; then die "shared session already exists: $shared"; fi
+  cc_session=$(session_for cc "$p"); cdx_session=$(session_for cdx "$p")
+  tmux_run has-session -t "=$cc_session" 2>/dev/null || die "legacy CC session missing: $cc_session"
+  tmux_run has-session -t "=$cdx_session" 2>/dev/null || die "legacy Cdx session missing: $cdx_session"
+  cc_pane=$(tmux_run list-panes -t "=$cc_session" -F '#{pane_id}')
+  cdx_pane=$(tmux_run list-panes -t "=$cdx_session" -F '#{pane_id}')
+  [[ "$cc_pane" == %* && "$cdx_pane" == %* && "$cc_pane" != *$'\n'* && "$cdx_pane" != *$'\n'* ]] || die 'legacy sessions must contain exactly one pane each'
+  cc_pid=$(agent_status "$cc_pane" "$(resolve_cli claude)") || die 'legacy CC pane is not running Claude'
+  cdx_pid=$(agent_status "$cdx_pane" "$(resolve_cli codex)") || die 'legacy Cdx pane is not running Codex'
+  alias_name=$(catalog alias "$p")
+  # A temporary window is needed to establish the new session; both agent panes move unchanged.
+  tmux_run new-session -d -s "$shared" -n hold -c "$p" 'sleep 30' || die "could not create migration target: $shared"
+  tmux_run move-window -s "=$cc_session:0" -t "=$shared:1" || die 'could not move CC window'
+  tmux_run kill-window -t "=$shared:0"
+  tmux_run rename-window -t "=$shared:1" dev
+  tmux_run join-pane -d -s "$cdx_pane" -t "$cc_pane" || die 'could not join Cdx pane'
+  tag_pane "$cc_pane" cc "$p" "$alias_name"
+  tag_pane "$cdx_pane" cdx "$p" "$alias_name"
+  [[ "$(tmux_run display-message -t "$cc_pane" -p '#{pane_pid}')" == "$cc_pid" ]] || die 'CC pane PID changed during migration'
+  [[ "$(tmux_run display-message -t "$cdx_pane" -p '#{pane_pid}')" == "$cdx_pid" ]] || die 'Cdx pane PID changed during migration'
+  printf '%s\n' "$shared"
 }
 
 case "$action" in
@@ -181,7 +276,8 @@ case "$action" in
       row="$id|$name|$p"
       for r in cc cdx; do
         s=$(session_for "$r" "$p")
-        if tmux_run has-session -t "$s" 2>/dev/null; then
+        if shared_pane_status "$p" "$r" >/dev/null; then state=running
+        elif tmux_run has-session -t "$s" 2>/dev/null; then
           c=$(resolve_cli "$(cli_for_role "$r")")
           if [[ -n "$c" ]] && [[ -n "$(agent_status "$s" "$c")" ]]; then state=running; else state=occupied; fi
         else state=stopped; fi
@@ -189,6 +285,11 @@ case "$action" in
       done
       printf '%s\n' "$row"
     done <<< "$entries"
+    ;;
+  migrate)
+    [[ -n "$project_path" && -z "$role$alias_name" ]] || usage
+    validate_path "$project_path"; validate_field "$project_path"
+    migrate_pair "$project_path"
     ;;
   register)
     [[ -n "$project_path" && -z "$role" ]] || usage; validate_path "$project_path"; validate_field "$project_path"
@@ -218,11 +319,19 @@ case "$action" in
     c_name=$(cli_for_role "$role"); c=$(resolve_cli "$c_name"); [[ -n "$c" ]] || die "required CLI not found on PATH: $c_name"; s=$(session_for "$role" "$project_path")
     if [[ "$action" == status ]]; then
       pid=
-      if tmux_run has-session -t "$s" 2>/dev/null && pid=$(agent_status "$s" "$c"); [[ -n "$pid" ]]; then printf 'running|%s|%s\n' "$s" "$pid"; else printf 'stopped|%s|-\n' "$s"; fi
+      if shared_info=$(shared_pane_status "$project_path" "$role"); then
+        printf 'running|%s|%s\n' "${shared_info%%|*}" "${shared_info##*|}"
+      elif tmux_run has-session -t "$s" 2>/dev/null && pid=$(agent_status "$s" "$c"); [[ -n "$pid" ]]; then printf 'running|%s|%s\n' "$s" "$pid"; else printf 'stopped|%s|-\n' "$s"; fi
     elif [[ "$action" == ensure ]]; then ensure_one "$project_path" "$role"
     elif [[ "$action" == stop ]]; then
       catalog contains "$project_path"
-      if tmux_run has-session -t "$s" 2>/dev/null; then
+      shared=$(shared_session_for "$project_path")
+      if tmux_run has-session -t "=$shared" 2>/dev/null; then
+        pane=$(pane_for "$shared" "$role" "$project_path") || die "role pane not found in shared session: $shared"
+        pid=$(agent_status "$pane" "$c") || die "shared pane is not running $c: $pane"
+        tmux_run kill-pane -t "$pane"
+        s=$shared
+      elif tmux_run has-session -t "$s" 2>/dev/null; then
         pid=$(agent_status "$s" "$c") || true
         [[ -n "$pid" ]] || die "session exists but is not running $c: $s"
         tmux_run kill-session -t "$s"
@@ -230,7 +339,12 @@ case "$action" in
       printf 'stopped|%s|-\n' "$s"
     else
       catalog register "$project_path" ""
-      if ! tmux_run has-session -t "$s" 2>/dev/null; then ensure_one "$project_path" "$role" >/dev/null; fi
+      s=$(ensure_one "$project_path" "$role")
+      shared=$(shared_session_for "$project_path")
+      if [[ "$s" == "$shared" ]]; then
+        pane=$(pane_for "$shared" "$role" "$project_path") || die "role pane not found in shared session: $shared"
+        tmux_run select-pane -t "$pane"
+      fi
       tmux_run attach-session -t "$s"
     fi
     ;;
