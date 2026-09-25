@@ -29,6 +29,8 @@ cdx_session=$(run ensure --path "$TMP/project" --role cdx)
 [[ "$cc_session" != "$cdx_session" ]]
 [[ $(tm show-options -t "$cc_session" -v status) == off ]]
 [[ $(tm show-options -t "$cdx_session" -v status) == off ]]
+[[ $(tm show-options -t "$cc_session" -v mouse) == on ]]
+[[ $(tm show-options -t "$cdx_session" -v mouse) == on ]]
 [[ $(run status --path "$TMP/project" --role cc) == running\|"$cc_session"\|* ]]
 [[ $(run status --path "$TMP/project" --role cdx) == running\|"$cdx_session"\|* ]]
 [[ $(run list | tail -n 1) == *'|demo|'*'|running|running' ]]
@@ -58,6 +60,8 @@ if run migrate --path "$TMP/legacy" 2>/dev/null; then exit 1; fi
 [[ $(run separate --path "$TMP/legacy") == "$cc_legacy|$cdx_legacy" ]]
 [[ $(tm show-options -t "$cc_legacy" -v status) == off ]]
 [[ $(tm show-options -t "$cdx_legacy" -v status) == off ]]
+[[ $(tm show-options -t "$cc_legacy" -v mouse) == on ]]
+[[ $(tm show-options -t "$cdx_legacy" -v mouse) == on ]]
 [[ $(tm list-panes -t "=$cc_legacy" -F '#{pane_pid}') == "$cc_pid" ]]
 [[ $(tm list-panes -t "=$cdx_legacy" -F '#{pane_pid}') == "$cdx_pid" ]]
 if tm has-session -t "=$migrated" 2>/dev/null; then exit 1; fi
