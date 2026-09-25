@@ -22,11 +22,10 @@ validate_path() { [[ "$1" == /* ]] || die '--path must be an absolute path'; [[ 
 validate_role() { case "$1" in cc|cdx) ;; *) die '--role must be cc or cdx' ;; esac; }
 cli_for_role() { [[ "$1" == cc ]] && printf claude || printf codex; }
 session_for() {
-  local r=$1 p=$2 input digest
-  input=$(printf '%s\0%s' "$r" "$p")
-  if command -v sha256sum >/dev/null 2>&1; then digest=$(printf '%s' "$input" | sha256sum | awk '{print substr($1,1,16)}')
-  elif command -v shasum >/dev/null 2>&1; then digest=$(printf '%s' "$input" | shasum -a 256 | awk '{print substr($1,1,16)}')
-  else digest=$(printf '%s' "$input" | cksum | awk '{print $1}'); fi
+  local r=$1 p=$2 digest
+  if command -v sha256sum >/dev/null 2>&1; then digest=$(printf '%s\0%s' "$r" "$p" | sha256sum | awk '{print substr($1,1,16)}')
+  elif command -v shasum >/dev/null 2>&1; then digest=$(printf '%s\0%s' "$r" "$p" | shasum -a 256 | awk '{print substr($1,1,16)}')
+  else digest=$(printf '%s\0%s' "$r" "$p" | cksum | awk '{print $1}'); fi
   printf 'tproj-remote-%s-%s' "$r" "$digest"
 }
 agent_status() {
