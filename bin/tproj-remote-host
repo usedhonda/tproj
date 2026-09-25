@@ -220,6 +220,7 @@ ensure_one() {
   if tmux_run has-session -t "$s" 2>/dev/null; then
     pid=$(agent_status "$s" "$c") || true
     [[ -n "$pid" ]] || die "session exists but is not running $c: $s"
+    tmux_run set-option -t "$s" status off
     printf '%s\n' "$s"; return
   fi
   alias_name=$(catalog alias "$p") || { catalog register "$p" ""; alias_name=$(catalog alias "$p"); }
@@ -227,6 +228,7 @@ ensure_one() {
   tmux_run new-session -d -s "$s" -n dev -c "$p" "$start" || die "could not create role session: $s"
   pane=$(tmux_run display-message -t "=$s:dev" -p '#{pane_id}')
   tag_pane "$pane" "$r" "$p" "$alias_name"
+  tmux_run set-option -t "$s" status off
   printf '%s\n' "$s"
 }
 separate_pair() {
@@ -247,6 +249,8 @@ separate_pair() {
   tmux_run move-window -s "=$shared:dev" -t "=$cc_session:1" || die 'could not move CC window'
   tmux_run kill-window -t "=$cc_session:0"
   tmux_run kill-window -t "=$cdx_session:0"
+  tmux_run set-option -t "$cc_session" status off
+  tmux_run set-option -t "$cdx_session" status off
   [[ "$(tmux_run display-message -t "$cc_pane" -p '#{pane_pid}')" == "$cc_pid" ]] || die 'CC pane PID changed'
   [[ "$(tmux_run display-message -t "$cdx_pane" -p '#{pane_pid}')" == "$cdx_pid" ]] || die 'Cdx pane PID changed'
   printf '%s|%s\n' "$cc_session" "$cdx_session"

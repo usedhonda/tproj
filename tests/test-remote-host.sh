@@ -27,6 +27,8 @@ run register --path "$TMP/project" --alias demo
 cc_session=$(run ensure --path "$TMP/project" --role cc)
 cdx_session=$(run ensure --path "$TMP/project" --role cdx)
 [[ "$cc_session" != "$cdx_session" ]]
+[[ $(tm show-options -t "$cc_session" -v status) == off ]]
+[[ $(tm show-options -t "$cdx_session" -v status) == off ]]
 [[ $(run status --path "$TMP/project" --role cc) == running\|"$cc_session"\|* ]]
 [[ $(run status --path "$TMP/project" --role cdx) == running\|"$cdx_session"\|* ]]
 [[ $(run list | tail -n 1) == *'|demo|'*'|running|running' ]]
@@ -54,6 +56,8 @@ wait_panes "$migrated"
 if tm has-session -t "=$cc_legacy" 2>/dev/null || tm has-session -t "=$cdx_legacy" 2>/dev/null; then exit 1; fi
 if run migrate --path "$TMP/legacy" 2>/dev/null; then exit 1; fi
 [[ $(run separate --path "$TMP/legacy") == "$cc_legacy|$cdx_legacy" ]]
+[[ $(tm show-options -t "$cc_legacy" -v status) == off ]]
+[[ $(tm show-options -t "$cdx_legacy" -v status) == off ]]
 [[ $(tm list-panes -t "=$cc_legacy" -F '#{pane_pid}') == "$cc_pid" ]]
 [[ $(tm list-panes -t "=$cdx_legacy" -F '#{pane_pid}') == "$cdx_pid" ]]
 if tm has-session -t "=$migrated" 2>/dev/null; then exit 1; fi
