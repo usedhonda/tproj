@@ -166,7 +166,8 @@ if [[ "$rc" -eq 1 ]] && printf '%s' "$out" | grep -q "refusing to start" \
 else
   fail "exec:tproj refuses to start above the column limit" "rc=$rc output: $(printf '%s' "$out" | tail -3 | tr '\n' '|')"
 fi
-TMUX_TMPDIR="$cap_home" tmux kill-server >/dev/null 2>&1 || true
+# TMUX from an invoking live pane overrides TMUX_TMPDIR; never target that server.
+env -u TMUX TMUX_TMPDIR="$cap_home" tmux kill-server >/dev/null 2>&1 || true
 rm -rf "$cap_home"
 
 echo "----"
