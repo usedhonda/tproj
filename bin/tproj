@@ -610,33 +610,37 @@ _find_gui_target() {
 
   # (1) 環境変数による明示的オーバーライド
   if [[ -n "${TPROJ_GUI_APP_PATH:-}" && -x "${TPROJ_GUI_APP_PATH}" ]]; then
-    echo "$TPROJ_GUI_APP_PATH"
+    realpath "$TPROJ_GUI_APP_PATH"
     return 0
   fi
 
   # (2) current debug binary（enabled + disabled 全プロジェクト + root を検索）
   for p in "${PROJECT_PATHS[@]}" "${CATALOG_PATHS[@]}" "$root"; do
     gui_bin="$p/apps/tproj/.build/debug/tproj"
-    [[ -x "$gui_bin" ]] && { echo "$gui_bin"; return 0; }
+    [[ -x "$gui_bin" ]] && { realpath "$gui_bin"; return 0; }
   done
 
   echo "tproj: warning: current GUI app not found - build it with 'cd apps/tproj && swift build', or set TPROJ_GUI_APP_PATH (the CLI workspace runs fine without it)" >&2
   return 1
 }
 
-# 全 GUI プロセスを確実に停止
+# Stop only the GUI recorded in the PID file; never sweep unrelated processes.
 _tproj_gui_kill_all() {
-  # PID file で正確に殺す
   if [[ -f "$TPROJ_GUI_PIDFILE" ]]; then
-    kill "$(<"$TPROJ_GUI_PIDFILE")" 2>/dev/null || true
+    local previous_pid previous_command
+    previous_pid="$(<"$TPROJ_GUI_PIDFILE")"
+    if [[ "$previous_pid" == <-> ]]; then
+      previous_command="$(ps -p "$previous_pid" -o command= 2>/dev/null || true)"
+      case "$previous_command" in
+        */apps/tproj/.build/*/tproj|*/apps/tproj/dist/tproj.app/Contents/MacOS/tproj|/Applications/tproj.app/Contents/MacOS/tproj)
+          kill "$previous_pid" 2>/dev/null || true ;;
+      esac
+    fi
     rm -f "$TPROJ_GUI_PIDFILE"
   fi
-  # パターンで残党掃討
-  pkill -f 'apps/tproj/dist/tproj.app/Contents/MacOS/tproj|\.build/.*/debug/tproj|/Applications/tproj.app/Contents/MacOS/tproj|tproj-gui' 2>/dev/null || true
-  sleep 0.3
 }
 
-# TprojApp GUI を起動（kill-then-launch 方式）
+# TprojApp GUI を起動（新プロセス確認後に旧 GUI のみ停止）
 launch_tproj_gui() {
   [[ "$NO_GUI" == "true" ]] && return 0
 
@@ -657,12 +661,25 @@ launch_tproj_gui() {
     fi
   fi
 
-  # 全プロセス停止してから起動
-  _tproj_gui_kill_all
-
+  local old_pid=""
+  [[ -f "$TPROJ_GUI_PIDFILE" ]] && old_pid="$(<"$TPROJ_GUI_PIDFILE")"
   "$gui_path" &
+  local new_pid=$!
+  sleep 1
+  if ! kill -0 "$new_pid" 2>/dev/null; then
+    echo "tproj: warning: GUI did not start: $gui_path" >&2
+    return 0
+  fi
   disown
-  echo "$!" > "$TPROJ_GUI_PIDFILE"
+  echo "$new_pid" > "$TPROJ_GUI_PIDFILE"
+  if [[ "$old_pid" == <-> && "$old_pid" != "$new_pid" ]]; then
+    local old_command
+    old_command="$(ps -p "$old_pid" -o command= 2>/dev/null || true)"
+    case "$old_command" in
+      */apps/tproj/.build/*/tproj|*/apps/tproj/dist/tproj.app/Contents/MacOS/tproj|/Applications/tproj.app/Contents/MacOS/tproj)
+        kill "$old_pid" 2>/dev/null || true ;;
+    esac
+  fi
 }
 
 # レイアウト確定後フック（private 拡張用）
