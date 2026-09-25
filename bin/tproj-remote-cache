@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Observe registered remote caches and optionally warm Claude sessions."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+HOURS = (0, 1, 3, 6, 12)
+os.environ["PATH"] = os.pathsep.join(dict.fromkeys(
+    [*os.environ.get("PATH", "").split(os.pathsep),
+     str(Path.home() / "bin"), str(Path.home() / ".local/bin"),
+     "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]))
+STATE = Path(os.environ.get("TPROJ_REMOTE_STATE_DIR", Path.home() / ".config/tproj-remote"))
+CONFIG = STATE / "cache-hours.json"
+CC_CACHE = Path(os.environ.get("TPROJ_CC_CACHE_DIR", Path.home() / ".local/state/tproj/cc-cache"))
+
+
+def run(args, timeout=10):
+    return subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=True).stdout
+
+
+def registered():
+    helper = shutil.which("tproj-remote-host") or str(Path(__file__).with_name("tproj-remote-host"))
+    rows = run([helper, "list"]).splitlines()
+    result = {}
+    for row in rows[1:]:
+        parts = row.split("|")
+        if len(parts) == 5 and re.fullmatch(r"[0-9a-f]{16}", parts[0]):
+            result[parts[0]] = dict(zip(("id", "alias", "path", "cc", "cdx"), parts))
+    return result
+
+
+def config():
+    try:
+        value = json.loads(CONFIG.read_text())
+    except FileNotFoundError:
+        return {}
+    if not isinstance(value, dict) or any(not isinstance(v, dict) or any(
+            role not in ("cc", "cdx") or hours not in HOURS for role, hours in v.items())
+            for v in value.values()):
+        raise ValueError("invalid cache-hours.json")
+    return value
+
+
+def save(value):
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".cache-hours.", dir=STATE)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(value, stream, sort_keys=True)
+            stream.write("\n")
+        os.replace(name, CONFIG)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def panes():
+    try:
+        rows = run(["tmux", "list-panes", "-a", "-F", "#{pane_id}|#{pane_dead}|#{@role}|#{@project}|#S"]).splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return []
+    result = []
+    for row in rows:
+        parts = row.split("|")
+        if len(parts) == 5 and re.fullmatch(r"%[0-9]+", parts[0]) and parts[1] == "0":
+            result.append(dict(zip(("pane", "dead", "role", "path", "session"), parts)))
+    return result
+
+
+def cc_records():
+    result = {}
+    if not CC_CACHE.is_dir() or CC_CACHE.is_symlink():
+        return result
+    for path in CC_CACHE.glob("*.json"):
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            value = json.loads(path.read_text())
+            pane = value.get("pane_id")
+            if isinstance(pane, str) and re.fullmatch(r"%[0-9]+", pane):
+                result[pane] = value
+        except (OSError, ValueError, AttributeError):
+            continue
+    return result
+
+
+def iso_epoch(value):
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def status(entries, settings):
+    live = panes()
+    records = cc_records()
+    codex = {}
+    helper = shutil.which("tproj-codex-cache-state") or str(Path(__file__).resolve().parents[1] / "extensions/hooks/tproj-codex-cache-state")
+    if Path(helper).exists():
+        try:
+            codex = json.loads(run([helper, "list"], timeout=30))
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+    now = time.time()
+    result = []
+    for entry in entries.values():
+        for role in ("cc", "cdx"):
+            hours = settings.get(entry["id"], {}).get(role, 0)
+            matching = [p for p in live if p["path"] == entry["path"] and
+                        p["role"].startswith("claude-p" if role == "cc" else "codex-p") and
+                        p["session"].startswith("tproj-remote-" + role + "-")]
+            item = {"id": entry["id"], "alias": entry["alias"], "role": role,
+                    "hours": hours, "state": "unobserved", "auto_poke": "disabled"}
+            if len(matching) == 1 and entry[role] == "running":
+                pane = matching[0]["pane"]
+                item["pane"] = pane
+                if role == "cc":
+                    record = records.get(pane, {})
+                    expiry = record.get("cache_expires_at")
+                    prompt = record.get("last_user_prompt_at")
+                    session_id = record.get("session_id")
+                    if (type(expiry) is int and type(prompt) is int and isinstance(session_id, str)
+                            and re.fullmatch(r"[A-Za-z0-9-]{1,128}", session_id)):
+                        remaining = expiry - now
+                        item.update(state="warm" if remaining > 0 else "expired",
+                                    remaining_seconds=int(remaining), last_user_prompt_at=prompt)
+                        if hours and 0 <= remaining <= 90 and 0 <= now - prompt <= hours * 3600:
+                            item["auto_poke"] = "eligible"
+                            item["session_id"] = session_id
+                else:
+                    state = codex.get(pane, {})
+                    item.update(state=state.get("turn", "unobserved"),
+                                quiet_seconds=state.get("quiet_seconds"),
+                                last_user_at=state.get("last_user_at"),
+                                auto_poke="disabled-unproven-composer-and-turn")
+            result.append(item)
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    set_cmd = sub.add_parser("set")
+    set_cmd.add_argument("--path", required=True)
+    set_cmd.add_argument("--role", choices=("cc", "cdx"), required=True)
+    set_cmd.add_argument("--hours", type=int, choices=HOURS, required=True)
+    sub.add_parser("status")
+    sub.add_parser("tick")
+    args = parser.parse_args()
+    entries = registered()
+    settings = config()
+    if args.command == "set":
+        found = next((e for e in entries.values() if e["path"] == args.path), None)
+        if not found:
+            parser.error("path is not registered")
+        settings.setdefault(found["id"], {})[args.role] = args.hours
+        save(settings)
+        print(json.dumps({"id": found["id"], "role": args.role, "hours": args.hours}))
+        return
+    items = status(entries, settings)
+    if args.command == "tick":
+        for item in items:
+            if item["role"] == "cc" and item["auto_poke"] == "eligible":
+                sender = shutil.which("tproj-cc-poke") or str(Path(__file__).resolve().parents[1] / "extensions/hooks/tproj-cc-poke")
+                try:
+                    outcome = subprocess.run([sender, item["session_id"], "--pane", item["pane"]],
+                                             capture_output=True, text=True, timeout=15)
+                    item["poke_result"] = "sent" if outcome.returncode == 0 else "refused"
+                except (OSError, subprocess.SubprocessError):
+                    item["poke_result"] = "unavailable"
+            item.pop("session_id", None)
+    print(json.dumps(items))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        print(f"tproj-remote-cache: {exc}", file=sys.stderr)
+        sys.exit(1)
