@@ -1150,6 +1150,8 @@ struct WorkspaceProject: Identifiable {
     var cdxKeepWarmHours: Int = 0
     var lastActiveAt: Int = 0
     var sourceOrder: Int = 0
+    var localPath: String = ""
+    var remotePath: String = ""
 
     var effectiveAlias: String {
         if !alias.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1764,6 +1766,7 @@ private final class MIDIPaneActivator {
 @MainActor
 final class AppViewModel: ObservableObject {
     @Published var workspaceProjects: [WorkspaceProject] = []
+    @Published var remoteProjectStates: [String: String] = [:]
     @Published var liveColumns: [LiveColumn] = []
     @Published var selectedAlias: String = ""
     @Published var statusText: String = "Ready"
@@ -2141,6 +2144,9 @@ final class AppViewModel: ObservableObject {
             }
 
             await refreshAll()
+            for project in workspaceProjects where project.type == "remote" {
+                Task { await refreshRemoteState(project) }
+            }
             await refreshMemoryStatus()
             startMemoryPolling()
             startRoleModePolling()
@@ -2849,14 +2855,15 @@ final class AppViewModel: ObservableObject {
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_host", host])
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_path", column.projectPath])
 
+            let remoteClient = shellSingleQuote(NSHomeDirectory() + "/bin/tproj-remote-client")
+            let remotePath = shellSingleQuote(column.projectPath)
+            let remoteHost = shellSingleQuote(host)
             let remoteCmd: String
             switch role {
             case "claude":
-                let remotePath = shellDoubleQuote(column.projectPath)
-                remoteCmd = "ssh -t \(shellSingleQuote(host)) \"cd \(remotePath) && claude --continue 2>/dev/null || claude\""
+                remoteCmd = "\(remoteClient) attach \(remoteHost) \(remotePath) cc"
             case "codex":
-                let remotePath = shellDoubleQuote(column.projectPath)
-                remoteCmd = "ssh -t \(shellSingleQuote(host)) \"cd \(remotePath) && codex resume --last -s danger-full-access -a never --search\""
+                remoteCmd = "\(remoteClient) attach \(remoteHost) \(remotePath) cdx"
             default: return
             }
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, remoteCmd, "C-m"])
@@ -3288,6 +3295,93 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func remoteKey(_ project: WorkspaceProject) -> String {
+        "\(project.host)|\(project.path)"
+    }
+
+    func remoteState(_ project: WorkspaceProject) -> String {
+        remoteProjectStates[remoteKey(project)] ?? "Unknown"
+    }
+
+    func refreshRemoteState(_ project: WorkspaceProject) async {
+        guard project.type == "remote" else { return }
+        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        guard fileManager.isExecutableFile(atPath: client) else {
+            remoteProjectStates[remoteKey(project)] = "Setup needed"
+            return
+        }
+        let cc = await runCommandAsync(client, ["status", project.host, project.path, "cc"])
+        let cdx = await runCommandAsync(client, ["status", project.host, project.path, "cdx"])
+        if cc.exitCode != 0 || cdx.exitCode != 0 {
+            remoteProjectStates[remoteKey(project)] = "Unavailable"
+        } else {
+            let running = [cc, cdx].filter { $0.stdout.hasPrefix("running|") }.count
+            remoteProjectStates[remoteKey(project)] = running == 2 ? "Running" : (running == 1 ? "Partial" : "Stopped")
+        }
+    }
+
+    func startRemoteProject(_ project: WorkspaceProject) async {
+        guard project.type == "remote" else { return }
+        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        guard fileManager.isExecutableFile(atPath: client) else {
+            statusText = "Remote client not installed"
+            return
+        }
+        let registered = await runCommandAsync(client, ["register", project.host, project.path, "cc"])
+        guard registered.exitCode == 0 else {
+            statusText = "Remote setup failed: \(trimmedError(registered))"
+            return
+        }
+        let cc = await runCommandAsync(client, ["ensure", project.host, project.path, "cc"])
+        let cdx = await runCommandAsync(client, ["ensure", project.host, project.path, "cdx"])
+        await refreshRemoteState(project)
+        statusText = cc.exitCode == 0 && cdx.exitCode == 0
+            ? "Remote CC/Cdx ready: \(project.effectiveAlias)"
+            : "Remote start incomplete: \(trimmedError(cc.exitCode == 0 ? cdx : cc))"
+    }
+
+    func saveConfiguredProjects(_ projects: [WorkspaceProject]) async -> Bool {
+        let aliases = projects.map { $0.effectiveAlias.lowercased() }
+        guard Set(aliases).count == aliases.count else {
+            statusText = "Project aliases must be unique"
+            return false
+        }
+        for project in projects {
+            guard project.path.hasPrefix("/") else {
+                statusText = "Project paths must be absolute"
+                return false
+            }
+            if project.type == "remote" && project.host.trimmingCharacters(in: .whitespaces).isEmpty {
+                statusText = "Remote host is required"
+                return false
+            }
+        }
+        for old in workspaceProjects where liveColumns.contains(where: { $0.projectPath == old.path }) {
+            guard let updated = projects.first(where: { $0.effectiveAlias == old.effectiveAlias }),
+                  updated.path == old.path && updated.type == old.type && updated.host == old.host else {
+                statusText = "Close the live column before changing its location"
+                return false
+            }
+        }
+        let previousRemotes = workspaceProjects.filter { $0.type == "remote" }
+        // This sheet never edits enabled; retain each draft row's value even when
+        // another machine has a project with the same absolute path.
+        guard let error = persistWorkspaceProjects(projects, createIfMissing: false) else {
+            loadWorkspaceProjects()
+            let currentRemotes = workspaceProjects.filter { $0.type == "remote" }
+            let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+            if fileManager.isExecutableFile(atPath: client) {
+                for old in previousRemotes where !currentRemotes.contains(where: { $0.host == old.host && $0.path == old.path }) {
+                    _ = await runCommandAsync(client, ["unregister", old.host, old.path, "cc"])
+                }
+            }
+            statusText = "Saved project locations"
+            return true
+        }
+        statusText = error
+        return false
+    }
+
     func openWorkspaceYAML() {
         let path = workspacePath
         guard fileManager.fileExists(atPath: path) else {
@@ -3662,7 +3756,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let query = ".projects[]? | [(.path // \"\"),(.type // \"local\"),(.host // \"\"),(.alias // \"\"),(.enabled|tostring),((.lastActiveAt // 0)|tostring),((.keep_warm_hours // 0)|tostring),((.cdx_keep_warm_hours // 0)|tostring)] | @tsv"
+        let query = ".projects[]? | [(.path // \"\"),(.type // \"local\"),(.host // \"\"),(.alias // \"\"),(.enabled|tostring),((.lastActiveAt // 0)|tostring),((.keep_warm_hours // 0)|tostring),((.cdx_keep_warm_hours // 0)|tostring),(.local_path // \"\"),(.remote_path // \"\")] | @tsv"
         let result = runCommand("/usr/bin/env", ["yq", "-r", query, url.path])
 
         guard result.exitCode == 0 else {
@@ -3704,7 +3798,9 @@ final class AppViewModel: ObservableObject {
                     keepWarmHours: keepWarmHours,
                     cdxKeepWarmHours: cdxKeepWarmHours,
                     lastActiveAt: lastActiveAt,
-                    sourceOrder: sourceOrder
+                    sourceOrder: sourceOrder,
+                    localPath: parts.count > 8 && !parts[8].isEmpty ? parts[8] : (parts[1] == "remote" ? "" : parts[0]),
+                    remotePath: parts.count > 9 && !parts[9].isEmpty ? parts[9] : (parts[1] == "remote" ? parts[0] : "")
                 )
             )
         }
@@ -4555,6 +4651,12 @@ final class AppViewModel: ObservableObject {
 
         for project in projects {
             lines.append("  - path: \(yamlQuote(project.path))")
+            if !project.localPath.isEmpty {
+                lines.append("    local_path: \(yamlQuote(project.localPath))")
+            }
+            if !project.remotePath.isEmpty {
+                lines.append("    remote_path: \(yamlQuote(project.remotePath))")
+            }
 
             // type: only write when remote (local is default)
             if project.type == "remote" {
@@ -4807,6 +4909,8 @@ struct ContentView: View {
     @State private var isDragActive = false
     @State private var didRecoverWindowFrame = false
     @State private var remainingSectionsHeight: CGFloat = 0
+    @State private var showProjectLocations = false
+    @State private var locationDraft: [WorkspaceProject] = []
 
     private func setDragLock(_ locked: Bool) {
         ghosttyTracker.isDragSuspended = locked
@@ -4817,6 +4921,7 @@ struct ContentView: View {
     }
 
     var body: some View {
+        Group {
         if collapseController.isCollapsed {
             CollapsedBarView {
                 collapseController.toggle(ghosttyTracker: ghosttyTracker)
@@ -4853,6 +4958,15 @@ struct ContentView: View {
                 }
             }
             .ignoresSafeArea(.container, edges: .top)
+        }
+        }
+        .sheet(isPresented: $showProjectLocations) {
+            ProjectLocationSheet(
+                projects: $locationDraft,
+                statusText: $vm.statusText,
+                livePaths: Set(vm.liveColumns.map(\.projectPath)),
+                save: { await vm.saveConfiguredProjects(locationDraft) }
+            )
         }
     }
 
@@ -5133,6 +5247,12 @@ struct ContentView: View {
             Divider()
                 .overlay(GhosttyTheme.current.cardBorder.opacity(0.55))
             HStack(spacing: 6) {
+                ActionButton("Projects", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                    locationDraft = vm.workspaceProjects
+                    showProjectLocations = true
+                }
+                .fixedSize()
+                .help("Choose which projects run on this Mac or a remote host")
                 ActionButton("YAML", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
                     vm.openWorkspaceYAML()
                 }
@@ -5523,24 +5643,45 @@ struct ContentView: View {
                     .foregroundStyle(GhosttyTheme.current.foreground.opacity(0.5))
                     .lineLimit(1)
                 roleModeBadge(projectPath: project.path, isLocal: project.type != "remote")
+                if project.type == "remote" {
+                    Text(vm.remoteState(project))
+                        .font(GhosttyTheme.current.font(size: 9, weight: .medium))
+                        .foregroundStyle(GhosttyTheme.current.textTertiary)
+                        .lineLimit(1)
+                }
                 Spacer()
             }
 
-            // Button row (Cdx/CC/Yazi/Term disabled, Add enabled)
+            // A remote project can run on the host without a local display pane.
             HStack(spacing: 1) {
                 Spacer()
-                ActionButton("Cdx", tone: .neutral, isEnabled: false, dense: true) {}
+                if project.type == "remote" {
+                    ActionButton("Start", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                        Task { await vm.startRemoteProject(project) }
+                    }
+                    .frame(width: 42)
+                    ActionButton("Open", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
+                        Task { await vm.addColumnByAlias(project.effectiveAlias) }
+                    }
+                    .frame(width: 42)
+                    ActionButton("↻", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                        Task { await vm.refreshRemoteState(project) }
+                    }
+                    .frame(width: 25)
+                } else {
+                    ActionButton("Cdx", tone: .neutral, isEnabled: false, dense: true) {}
+                        .frame(width: 38)
+                    ActionButton("CC", tone: .neutral, isEnabled: false, dense: true) {}
+                        .frame(width: 38)
+                    ActionButton("Yazi", tone: .neutral, isEnabled: false, dense: true) {}
+                        .frame(width: 38)
+                    ActionButton("Term", tone: .neutral, isEnabled: false, dense: true) {}
+                        .frame(width: 38)
+                    ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
+                        Task { await vm.addColumnByAlias(project.effectiveAlias) }
+                    }
                     .frame(width: 38)
-                ActionButton("CC", tone: .neutral, isEnabled: false, dense: true) {}
-                    .frame(width: 38)
-                ActionButton("Yazi", tone: .neutral, isEnabled: false, dense: true) {}
-                    .frame(width: 38)
-                ActionButton("Term", tone: .neutral, isEnabled: false, dense: true) {}
-                    .frame(width: 38)
-                ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
-                    Task { await vm.addColumnByAlias(project.effectiveAlias) }
                 }
-                .frame(width: 38)
             }
         }
         .padding(.vertical, 2)
