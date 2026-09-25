@@ -6521,13 +6521,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var mainWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if ProcessInfo.processInfo.arguments.contains("--server") { return }
         // tproj is controlled from its window and menu-bar item. Keeping it an
         // accessory app prevents a disposable running-app icon in the Dock.
         NSApp.setActivationPolicy(.accessory)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false
+        ProcessInfo.processInfo.arguments.contains("--server")
     }
 
     private func logMainWindowEvent(_ event: String, window: NSWindow?) {
@@ -6600,6 +6601,7 @@ private struct FlipSideButton: View {
 @main
 struct TprojApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    private let serverMode = ProcessInfo.processInfo.arguments.contains("--server")
 
     init() {
         migrateLegacyAutoZoomPreference()
@@ -6608,17 +6610,24 @@ struct TprojApp: App {
     }
 
     var body: some Scene {
-        Window("tproj", id: "main") {
-            ContentView()
-                .frame(minWidth: 14, maxWidth: 1400, minHeight: 520, idealHeight: 980, maxHeight: 2200)
+        Window(serverMode ? "tproj server" : "tproj", id: "main") {
+            if serverMode {
+                ServerModeView()
+                    .frame(minWidth: 520, minHeight: 360)
+            } else {
+                ContentView()
+                    .frame(minWidth: 14, maxWidth: 1400, minHeight: 520, idealHeight: 980, maxHeight: 2200)
+            }
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 242, height: 585)
+        .defaultSize(width: serverMode ? 680 : 242, height: serverMode ? 480 : 585)
         .windowResizability(.contentMinSize)
 
         MenuBarExtra("tproj", systemImage: "rectangle.split.3x1") {
-            FlipSideButton()
-            Divider()
+            if !serverMode {
+                FlipSideButton()
+                Divider()
+            }
             Button("Quit tproj") { NSApp.terminate(nil) }
         }
     }

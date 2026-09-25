@@ -11,6 +11,10 @@ TPROJ_GUI_LOG="${TMPDIR:-/tmp}/tproj-gui.log"
 if [[ "${1:-}" == "--release" ]]; then
   MODE="release"
 fi
+APP_ARGUMENTS=()
+for arg in "$@"; do
+  if [[ "$arg" == "--server" ]]; then APP_ARGUMENTS+=("--server"); fi
+done
 
 # --- Build ---
 if [[ "$MODE" == "debug" ]]; then
@@ -38,8 +42,8 @@ launch_gui() {
 
   : > "$TPROJ_GUI_LOG"
   /usr/bin/python3 -c \
-    'import subprocess, sys; log = open(sys.argv[3], "ab", buffering=0); process = subprocess.Popen([sys.argv[2]], cwd=sys.argv[1], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True); print(process.pid)' \
-    "$SCRIPT_DIR" "$executable" "$TPROJ_GUI_LOG"
+    'import subprocess, sys; log = open(sys.argv[3], "ab", buffering=0); process = subprocess.Popen([sys.argv[2], *sys.argv[4:]], cwd=sys.argv[1], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True); print(process.pid)' \
+    "$SCRIPT_DIR" "$executable" "$TPROJ_GUI_LOG" "${APP_ARGUMENTS[@]}"
 }
 
 # --- Launch ---
