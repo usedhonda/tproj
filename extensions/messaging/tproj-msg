@@ -257,6 +257,8 @@ STDIN_MODE=false
 DESKTOP_MODE=false
 MAILBOX_MODE=false
 DRAIN_MODE=false
+REMOTE_HOST=""
+REMOTE_INGRESS=false
 EXPLICIT_SESSION=""
 EXPLICIT_AS=""
 TARGET=""
@@ -395,6 +397,16 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -lt 1 ]] && { echo "Error: --as requires <alias.role>" >&2; exit 1; }
       EXPLICIT_AS="$1"
+      shift
+      ;;
+    --remote)
+      shift
+      [[ $# -gt 0 ]] || { echo "Error: --remote requires an SSH host" >&2; exit 1; }
+      REMOTE_HOST="$1"
+      shift
+      ;;
+    --remote-ingress)
+      REMOTE_INGRESS=true
       shift
       ;;
     --status)
@@ -1321,8 +1333,54 @@ if [[ -n "$EXPLICIT_AS" && -z "$EXPLICIT_SESSION" ]]; then
   exit 1
 fi
 
+# A remote host is a transport identity, never a pane identity. The ingress
+# process must be a child of the authenticated SSH session; the sender supplied
+# alias (if any) is deliberately discarded. This mode is plain chat only.
+remote_ingress_ssh_ancestor() {
+  local p=$$ comm n
+  for n in 1 2 3 4 5 6 7 8; do
+    p=$(ps -p "$p" -o ppid= 2>/dev/null | tr -d ' ')
+    [[ "$p" =~ ^[0-9]+$ && "$p" -gt 1 ]] || return 1
+    comm=$(ps -p "$p" -o comm= 2>/dev/null || true)
+    case "${comm##*/}" in sshd|sshd-session) return 0 ;; esac
+  done
+  return 1
+}
+
+if [[ "$REMOTE_INGRESS" == "true" ]]; then
+  [[ -z "$REMOTE_HOST" && -z "$EXPLICIT_AS" && -n "$EXPLICIT_SESSION" && "$STDIN_MODE" == "true" \
+     && "$SEND_MODE" == "true" && "$NEW_TASK_MODE" == "false" && "$ROLE_HANDOFF_MODE" == "false" \
+     && "$FORCE_MODE" == "false" && "$FIRE_MODE" == "false" && "$ALLOW_RELAY" == "false" \
+     && "$ALLOW_FANOUT" == "false" && "$ALLOW_CHI_RETRY" == "false" && "$MSG_KIND" != "consult" ]] \
+    || { echo "Error: remote ingress accepts only plain --stdin chat" >&2; exit 1; }
+  [[ "$TARGET" =~ ^[A-Za-z0-9_-]+\.(cc|cdx)$ ]] \
+    || { echo "Error: remote ingress requires an exact alias.role target" >&2; exit 1; }
+  remote_ingress_ssh_ancestor \
+    || { echo "Error: remote ingress requires a live SSH session ancestor" >&2; exit 1; }
+  SESSION="$EXPLICIT_SESSION"
+  IS_WORKSPACE=true
+  MY_PANE=""
+  MY_ALIAS=""
+  MY_ROLE="remote-host"
+  MY_COLUMN=""
+  AS_CLAIMED_IDENTITY="Remote Host"
+  AS_CALLER_VERIFIED=true
+  AUTH_PATH="remote-ssh-host"
+elif [[ -n "$REMOTE_HOST" ]]; then
+  [[ "$REMOTE_HOST" =~ ^[A-Za-z0-9_.@-]+$ && "$REMOTE_HOST" != -* ]] \
+    || { echo "Error: invalid SSH host" >&2; exit 1; }
+  [[ "$SEND_MODE" == "true" && "$NEW_TASK_MODE" == "false" && "$ROLE_HANDOFF_MODE" == "false" \
+     && "$FORCE_MODE" == "false" && "$FIRE_MODE" == "false" && "$ALLOW_RELAY" == "false" \
+     && "$ALLOW_FANOUT" == "false" && "$ALLOW_CHI_RETRY" == "false" && "$MSG_KIND" != "consult" ]] \
+    || { echo "Error: --remote accepts only plain chat" >&2; exit 1; }
+  [[ "$TARGET" =~ ^[A-Za-z0-9_-]+\.(cc|cdx)$ ]] \
+    || { echo "Error: --remote requires an exact alias.role target" >&2; exit 1; }
+fi
+
 # === Pre-flight: tmux check ===
-if [[ -n "$EXPLICIT_SESSION" ]]; then
+if [[ "$REMOTE_INGRESS" == "true" ]]; then
+  :
+elif [[ -n "$EXPLICIT_SESSION" ]]; then
   # External caller (e.g. ClawGate) specified session explicitly
   SESSION="$EXPLICIT_SESSION"
   IS_WORKSPACE=true
@@ -4283,6 +4341,19 @@ if ! is_target_online "$TARGET_PANE"; then
   exit 1
 fi
 
+if [[ "$REMOTE_INGRESS" == "true" ]]; then
+  # No queue or force path exists for remote chat: a blocked pane is offline
+  # for this operation, and the originating SSH command receives a failure.
+  send_block_reason "$TARGET_PANE"
+  if [[ "$SEND_BLOCK_REASON" != "none" ]]; then
+    echo "Error: remote target '$TARGET' is blocked ($SEND_BLOCK_REASON); not queued" >&2
+    exit 1
+  fi
+  HEADER="[from:Remote Host]"
+  raw_send
+  exit $?
+fi
+
 # === Build message header ===
 if [[ "$IS_WORKSPACE" == "true" && -n "$MY_ALIAS" && "$MY_ALIAS" != "null" ]]; then
   HEADER="[from:${MY_ALIAS}.${MY_ROLE}]"
@@ -4921,6 +4992,23 @@ do_desktop_session_side() {
 }
 
 dispatch_mode() {
+if [[ -n "$REMOTE_HOST" ]]; then
+  [[ "${AS_CALLER_VERIFIED:-false}" == "true" ]] \
+    || { echo "Error: remote send requires a verified local sender" >&2; exit 1; }
+  [[ -n "${MESSAGE//[[:space:]]/}" ]] \
+    || { echo "Error: refusing empty remote message" >&2; exit 1; }
+  [[ "$MESSAGE" != *$'\n'* && "$MESSAGE" != *$'\r'* ]] \
+    || { echo "Error: cross-host chat must be one line" >&2; exit 1; }
+  # Cross-host traffic is non-authoritative. Reject even embedded lifecycle or
+  # forged sender markers; the receiver applies the same rule independently.
+  if [[ "$MESSAGE" =~ \[(from:|Control:|ACK:|Task:|Role-Handoff:|DONE:|BLOCK:) ]]; then
+    echo "Error: cross-host control/sender markers are not allowed" >&2
+    exit 1
+  fi
+  printf '%s' "$MESSAGE" | ssh -o BatchMode=yes -o ConnectTimeout=5 -- "$REMOTE_HOST" \
+    tproj-msg --remote-ingress --session tproj-workspace --stdin "$TARGET"
+  exit $?
+fi
 # === Desktop mailbox target (data-plane only; no pane) ===
 if is_desktop_target "$TARGET"; then
   do_desktop_session_side
@@ -4933,6 +5021,14 @@ if [[ "$READ_MODE" != "true" ]]; then
   if [[ -z "${MESSAGE//[[:space:]]/}" ]]; then
     echo "Error: refusing to send empty / whitespace-only message" >&2
     exit "$EMPTY_BODY_EXIT"
+  fi
+  if [[ "$REMOTE_INGRESS" == "true" ]] && [[ "$MESSAGE" =~ \[(from:|Control:|ACK:|Task:|Role-Handoff:|DONE:|BLOCK:) ]]; then
+    echo "Error: cross-host control/sender markers are not allowed" >&2
+    exit 1
+  fi
+  if [[ "$REMOTE_INGRESS" == "true" ]] && [[ "$MESSAGE" == *$'\n'* || "$MESSAGE" == *$'\r'* ]]; then
+    echo "Error: cross-host chat must be one line" >&2
+    exit 1
   fi
   dlog "send precheck: target=${TARGET} force=${FORCE_MODE:-?} fire=${FIRE_MODE:-?} bytes=${#MESSAGE}"
   if enforce_send_policy "$TARGET" "$MESSAGE"; then

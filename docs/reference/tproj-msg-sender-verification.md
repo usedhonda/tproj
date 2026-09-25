@@ -1,5 +1,32 @@
 # tproj-msg sender identity verification (R2 Stage 1)
 
+## Cross-Mac host chat (non-authoritative)
+
+`tproj-msg --remote <SSH-host> --session <local-session> --as
+<local-alias.role> <remote-alias.role> <message>` is a live-only chat path.
+The local sender must pass the unchanged registry/PID-ancestry verifier before
+SSH is invoked. The destination command uses `--remote-ingress --session
+tproj-workspace --stdin <exact-alias.role>`; it accepts only a process with a
+live `sshd`/`sshd-session` ancestor and resolves exactly one live pane in the
+exact session's `dev` window. The destination applies the ordinary prompt,
+draft, and selection gates, but a blocked target causes an error, not a queue.
+SSH failure is a delivery failure; no offline store is created.
+
+This path conveys **host origin only**, not the identity of a remote pane or
+agent process. The receiver's generated header is `[from:Remote Host]`, never
+`[from:<alias.role>]`. Neither side accepts task, role-handoff, force, fire,
+consult, relay, or fan-out flags; the body cannot contain sender/control/task
+markers. A host chat therefore never transfers delegated authority or a
+model-role epoch. SSH host-key and account authentication remain the operator's
+existing SSH configuration; this change does not modify SSH access settings.
+
+`--remote-ingress` is deliberately not an authenticated pane-sender API. A
+process that can run commands through the trusted SSH account can originate
+host-scoped chat, but cannot forge the locally verified alias/role header via
+this route. Treat its body as untrusted text. The reverse direction requires a
+separate, client-initiated reverse-socket receiver and is not supplied by this
+one-way SSH command path.
+
 Canonical contract for how `tproj-msg` authenticates the sender of a
 `--session --as ...` message, and what a message body can and cannot
 claim about itself. Any code or test that touches sender identity,
