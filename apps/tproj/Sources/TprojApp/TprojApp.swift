@@ -3732,7 +3732,9 @@ final class AppViewModel: ObservableObject {
         let previous = workspaceProjects
         if codex { workspaceProjects[index].cdxKeepWarmHours = hours }
         else { workspaceProjects[index].keepWarmHours = hours }
-        if let error = persistWorkspaceProjects(workspaceProjects, createIfMissing: false) {
+        // A keep-warm change must never alter which projects start: take enabled from
+        // the file as it is now, not from the in-memory copy.
+        if let error = persistWorkspaceProjects(withEnabledOnDisk(workspaceProjects), createIfMissing: false) {
             workspaceProjects = previous
             statusText = error
             return
@@ -4490,6 +4492,22 @@ final class AppViewModel: ObservableObject {
             return String(column.hostLabel.dropFirst("remote@".count))
         }
         return nil
+    }
+
+    /// The projects with `enabled` as workspace.yaml currently has it (a project the file lacks is unchanged).
+    private func withEnabledOnDisk(_ projects: [WorkspaceProject]) -> [WorkspaceProject] {
+        let result = runCommand("/usr/bin/env", ["yq", "-r", ".projects[]? | [(.path // \"\"),(.enabled|tostring)] | @tsv", workspacePath])
+        guard result.exitCode == 0 else { return projects }
+        var onDisk: [String: Bool] = [:]
+        for row in result.stdout.split(separator: "\n") {
+            let parts = row.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            if parts.count == 2 { onDisk[normalizedProjectKey(parts[0])] = parts[1] != "false" }
+        }
+        return projects.map { project in
+            var copy = project
+            if let enabled = onDisk[normalizedProjectKey(project.path)] { copy.enabled = enabled }
+            return copy
+        }
     }
 
     private func persistWorkspaceProjects(_ projects: [WorkspaceProject], createIfMissing: Bool) -> String? {
