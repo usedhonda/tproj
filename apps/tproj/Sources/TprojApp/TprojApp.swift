@@ -3662,7 +3662,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let query = ".projects[]? | [(.path // \"\"),(.type // \"local\"),(.host // \"\"),(.alias // \"\"),((.enabled // true)|tostring),((.lastActiveAt // 0)|tostring),((.keep_warm_hours // 0)|tostring),((.cdx_keep_warm_hours // 0)|tostring)] | @tsv"
+        let query = ".projects[]? | [(.path // \"\"),(.type // \"local\"),(.host // \"\"),(.alias // \"\"),(.enabled|tostring),((.lastActiveAt // 0)|tostring),((.keep_warm_hours // 0)|tostring),((.cdx_keep_warm_hours // 0)|tostring)] | @tsv"
         let result = runCommand("/usr/bin/env", ["yq", "-r", query, url.path])
 
         guard result.exitCode == 0 else {
@@ -3686,7 +3686,8 @@ final class AppViewModel: ObservableObject {
             if parts.count < 5 { continue }
 
             let enabledRaw = parts[4].lowercased()
-            let enabled = enabledRaw == "true"
+            // yq's `//` treats false as missing, so read the raw value: only an explicit false disables.
+            let enabled = enabledRaw != "false"
             let lastActiveAt = parts.count > 5 ? (Int(parts[5]) ?? 0) : 0
             let parsedHours = parts.count > 6 ? (Int(parts[6]) ?? 0) : 0
             let keepWarmHours = [1, 3, 6, 12].contains(parsedHours) ? parsedHours : 0
