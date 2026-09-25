@@ -116,6 +116,7 @@ Options:
   --repair           Repair pane tags (@alias, @column, pane_title) from @role + @project
   --sync-ui          Reapply pane title format + hooks to live tproj sessions
   -c, --columns N    Start with only the first N projects from workspace.yaml
+                     (more than TPROJ_MAX_COLUMNS, default 8, enabled projects refuse to start)
   -s, --single       Force single-project mode (ignore workspace.yaml)
   -r, --remote HOST  SSH remote connection
   -h, --help         Show this help message
@@ -1712,18 +1713,14 @@ if [[ "$FORCE_SINGLE_MODE" == "false" && -f "$WORKSPACE_CONFIG" ]]; then
       exit 1
     fi
 
-    # プロジェクト数警告（10超）
-    if [[ ${#PROJECT_PATHS[@]} -gt 10 ]]; then
-      echo "⚠️  Warning: ${#PROJECT_PATHS[@]} projects configured (panes may be narrow)" >&2
-      printf "Continue anyway? [y/N] " >&2
-      read -r answer
-      case "$answer" in
-        [yY]) ;;
-        *)
-          echo "Tip: Use 'tproj -s' for single-project mode" >&2
-          exit 0
-          ;;
-      esac
+    # 有効列の上限。超えたら既存セッションに触れる前に起動を拒否する
+    # （enabled: false が消えた yaml で全プロジェクト同時起動→マシンが落ちるのを防ぐ）
+    local_max_cols="${TPROJ_MAX_COLUMNS:-8}"
+    if [[ ${#PROJECT_PATHS[@]} -gt $local_max_cols ]]; then
+      echo "❌ Error: ${#PROJECT_PATHS[@]} projects are enabled (limit $local_max_cols); refusing to start" >&2
+      echo "  Set 'enabled: false' in $WORKSPACE_CONFIG, or use 'tproj -c N'" >&2
+      echo "  (raise the limit with TPROJ_MAX_COLUMNS=N)" >&2
+      exit 1
     fi
 
     WORKSPACE_MODE=true

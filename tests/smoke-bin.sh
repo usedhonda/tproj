@@ -151,6 +151,24 @@ else
   fail "exec:tproj-role" "not executable"
 fi
 
+# tproj refuses to start when more columns are enabled than the limit, before it
+# touches any tmux session (a yaml that lost its `enabled: false` flags once
+# started every project at once). Isolated HOME and tmux socket dir.
+cap_home=$(mktemp -d /tmp/tpcap.XXXXXX)
+mkdir -p "$cap_home/.config/tproj" "$cap_home/p1" "$cap_home/p2" "$cap_home/p3"
+printf 'projects:\n  - path: %s/p1\n  - path: %s/p2\n  - path: %s/p3\n' \
+  "$cap_home" "$cap_home" "$cap_home" > "$cap_home/.config/tproj/workspace.yaml"
+out=$(cd "$cap_home" && run_bounded 20 env -u TMUX HOME="$cap_home" TMUX_TMPDIR="$cap_home" \
+  TPROJ_MAX_COLUMNS=2 "$BIN_DIR/tproj" </dev/null 2>&1); rc=$?
+if [[ "$rc" -eq 1 ]] && printf '%s' "$out" | grep -q "refusing to start" \
+   && ! TMUX_TMPDIR="$cap_home" tmux ls >/dev/null 2>&1; then
+  pass "exec:tproj refuses to start above the column limit"
+else
+  fail "exec:tproj refuses to start above the column limit" "rc=$rc output: $(printf '%s' "$out" | tail -3 | tr '\n' '|')"
+fi
+TMUX_TMPDIR="$cap_home" tmux kill-server >/dev/null 2>&1 || true
+rm -rf "$cap_home"
+
 echo "----"
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
