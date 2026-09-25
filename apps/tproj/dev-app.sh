@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_BUNDLE="$SCRIPT_DIR/dist/tproj.app"
+APP_BUNDLE="$SCRIPT_DIR/dist/release-app/tproj.app"
 DEBUG_BIN=""
 MODE="debug"
 PREBUILT=false
@@ -45,9 +45,20 @@ retire_previous_gui() {
   [[ "$previous_pid" =~ ^[0-9]+$ && "$previous_pid" != "$new_pid" ]] || return 0
   previous_command="$(ps -p "$previous_pid" -o command= 2>/dev/null || true)"
   case "$previous_command" in
-    "$SCRIPT_DIR"/.build/*/tproj|"$SCRIPT_DIR"/.build/*/tproj\ --server|"$SCRIPT_DIR"/dist/tproj.app/Contents/MacOS/tproj)
+    "$SCRIPT_DIR"/.build/*/tproj|"$SCRIPT_DIR"/.build/*/tproj\ --server|"$APP_BUNDLE"/Contents/MacOS/tproj)
       kill "$previous_pid" 2>/dev/null || true ;;
   esac
+}
+
+retire_stale_gui_variants() {
+  local new_pid="$1" pid command
+  while read -r pid command; do
+    [[ "$pid" =~ ^[0-9]+$ && "$pid" != "$new_pid" ]] || continue
+    case "$command" in
+      "$SCRIPT_DIR"/.build/*/tproj|"$APP_BUNDLE"/Contents/MacOS/tproj)
+        kill "$pid" 2>/dev/null || true ;;
+    esac
+  done < <(ps -axo pid=,command=)
 }
 
 launch_gui() {
@@ -75,6 +86,7 @@ if [[ "$MODE" == "debug" ]]; then
     exit 1
   fi
   retire_previous_gui "$local_pid"
+  retire_stale_gui_variants "$local_pid"
   echo "Done: $DEBUG_BIN (pid $local_pid)"
 else
   echo "==> Launch app (release)"
@@ -85,5 +97,6 @@ else
     exit 1
   fi
   retire_previous_gui "$local_pid"
+  retire_stale_gui_variants "$local_pid"
   echo "Done: $APP_BUNDLE (pid $local_pid)"
 fi

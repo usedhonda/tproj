@@ -7,8 +7,8 @@ Native macOS app for controlling and monitoring `tproj` workspaces.
 ## Runtime Rule: Current SwiftPM GUI
 
 The development launcher uses SwiftPM's current `.build/debug/tproj` artifact.
-The legacy `.build/arm64-apple-macosx/debug/tproj` and old `dist/tproj.app`
-artifacts are not auto-selected. Use the wrapper for development launches:
+Only the current SwiftPM debug artifact is selected for development. Use the
+wrapper for development launches:
 
 ```bash
 cd apps/tproj
@@ -52,12 +52,12 @@ This command runs:
 ```bash
 cd apps/tproj
 ./build-app.sh
-open dist/tproj.app
+open dist/release-app/tproj.app
 ```
 
 Output:
 
-- `apps/tproj/dist/tproj.app`
+- `apps/tproj/dist/release-app/tproj.app`
 
 ## Build Distribution DMG
 
