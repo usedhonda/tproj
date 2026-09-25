@@ -1,4 +1,5 @@
 import SwiftUI
+import CryptoKit
 
 private struct ServerProject: Identifiable {
     let alias: String
@@ -12,13 +13,13 @@ private struct ServerProject: Identifiable {
 private enum ServerCommand {
     static let executable = NSHomeDirectory() + "/bin/tproj-remote-host"
 
-    static func run(_ arguments: [String]) throws -> String {
-        guard FileManager.default.isExecutableFile(atPath: executable) else {
+    static func run(_ arguments: [String], helper: String = executable) throws -> String {
+        guard FileManager.default.isExecutableFile(atPath: helper) else {
             throw NSError(domain: "tproj server", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Install tproj-remote-host at ~/bin/tproj-remote-host"])
+                          userInfo: [NSLocalizedDescriptionKey: "Install \(URL(fileURLWithPath: helper).lastPathComponent) in ~/bin"])
         }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
+        process.executableURL = URL(fileURLWithPath: helper)
         process.arguments = arguments
         let output = Pipe()
         process.standardOutput = output
@@ -65,6 +66,8 @@ struct ServerModeView: View {
     @State private var alias = ""
     @State private var busy = false
     @State private var errorMessage: String?
+    @State private var cacheHours: [String: Int] = [:]
+    @State private var cacheState: [String: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -96,6 +99,18 @@ struct ServerModeView: View {
                     }
                     Text(project.path).font(.caption).foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                    HStack {
+                        Text("CC cache: \(cacheState[project.path] ?? "unobserved")")
+                            .font(.caption)
+                        Spacer()
+                        Menu("Keep warm \(cacheHours[project.path] ?? 0)h") {
+                            ForEach([0, 1, 3, 6, 12], id: \.self) { hours in
+                                Button(hours == 0 ? "Off" : "\(hours) hours") {
+                                    setCacheHours(path: project.path, hours: hours)
+                                }
+                            }
+                        }
+                    }
                     HStack(spacing: 8) {
                         roleControls("CC", role: "cc", status: project.cc, path: project.path)
                         Spacer(minLength: 12)
@@ -160,6 +175,9 @@ struct ServerModeView: View {
         errorMessage = nil
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try ServerCommand.run(["list"]) }
+            let cacheResult = Result {
+                try ServerCommand.run(["status"], helper: NSHomeDirectory() + "/bin/tproj-remote-cache")
+            }
             DispatchQueue.main.async {
                 busy = false
                 switch result {
@@ -169,9 +187,40 @@ struct ServerModeView: View {
                         guard fields.count == 5 else { return nil }
                         return ServerProject(alias: fields[1], path: fields[2], cc: fields[3], cdx: fields[4])
                     }
+                    if case .success(let cacheOutput) = cacheResult,
+                       let rows = try? JSONSerialization.jsonObject(with: Data(cacheOutput.utf8)) as? [[String: Any]] {
+                        cacheHours = [:]
+                        cacheState = [:]
+                        for row in rows where row["role"] as? String == "cc" {
+                            guard let id = row["id"] as? String,
+                                  let path = projects.first(where: { ServerModeView.catalogID($0.path) == id })?.path else { continue }
+                            cacheHours[path] = row["hours"] as? Int ?? 0
+                            cacheState[path] = row["state"] as? String ?? "unobserved"
+                        }
+                    }
                 case .failure(let error):
                     errorMessage = error.localizedDescription
                 }
+            }
+        }
+    }
+
+    private static func catalogID(_ path: String) -> String {
+        let digest = SHA256.hash(data: Data(path.utf8))
+        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func setCacheHours(path: String, hours: Int) {
+        busy = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result {
+                try ServerCommand.run(["set", "--path", path, "--role", "cc", "--hours", String(hours)],
+                                      helper: NSHomeDirectory() + "/bin/tproj-remote-cache")
+            }
+            DispatchQueue.main.async {
+                busy = false
+                if case .failure(let error) = result { errorMessage = error.localizedDescription }
+                else { refresh() }
             }
         }
     }

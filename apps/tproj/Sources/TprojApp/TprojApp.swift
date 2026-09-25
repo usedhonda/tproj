@@ -1767,6 +1767,8 @@ private final class MIDIPaneActivator {
 final class AppViewModel: ObservableObject {
     @Published var workspaceProjects: [WorkspaceProject] = []
     @Published var remoteProjectStates: [String: String] = [:]
+    @Published var remoteCacheStates: [String: String] = [:]
+    @Published var remoteCCCacheHours: [String: Int] = [:]
     @Published var liveColumns: [LiveColumn] = []
     @Published var selectedAlias: String = ""
     @Published var statusText: String = "Ready"
@@ -2146,6 +2148,7 @@ final class AppViewModel: ObservableObject {
             await refreshAll()
             for host in Set(workspaceProjects.filter { $0.type == "remote" }.map(\.host)) {
                 await syncRemoteCatalog(host: host)
+                await refreshRemoteCache(host: host)
             }
             for project in workspaceProjects where project.type == "remote" {
                 Task { await refreshRemoteState(project) }
@@ -3304,6 +3307,53 @@ final class AppViewModel: ObservableObject {
 
     func remoteState(_ project: WorkspaceProject) -> String {
         remoteProjectStates[remoteKey(project)] ?? "Unknown"
+    }
+
+    func remoteCacheState(_ project: WorkspaceProject) -> String {
+        remoteCacheStates[remoteKey(project)] ?? "Cache: unknown"
+    }
+
+    func remoteCacheHours(_ project: WorkspaceProject) -> Int {
+        remoteCCCacheHours[remoteKey(project)] ?? 0
+    }
+
+    func refreshRemoteCache(host: String) async {
+        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        let result = await runCommandAsync(client, ["cache-status", host])
+        guard result.exitCode == 0,
+              let rows = try? JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [[String: Any]] else {
+            statusText = "Remote cache unavailable: \(host)"
+            return
+        }
+        for row in rows {
+            guard let id = row["id"] as? String,
+                  let role = row["role"] as? String,
+                  let project = workspaceProjects.first(where: {
+                      $0.type == "remote" && $0.host == host && Self.remoteCatalogID($0.path) == id
+                  }) else { continue }
+            let key = remoteKey(project)
+            if role == "cc" {
+                remoteCCCacheHours[key] = row["hours"] as? Int ?? 0
+                remoteCacheStates[key] = "CC cache: \(row["state"] as? String ?? "unobserved")"
+            } else if role == "cdx" {
+                remoteCacheStates[key, default: "CC cache: unobserved"] +=
+                    ", Cdx: \(row["state"] as? String ?? "unobserved") (diagnostic)"
+            }
+        }
+    }
+
+    private static func remoteCatalogID(_ path: String) -> String {
+        let digest = SHA256.hash(data: Data(path.utf8))
+        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func setRemoteCCCacheHours(_ hours: Int, project: WorkspaceProject) async {
+        guard [0, 1, 3, 6, 12].contains(hours), project.type == "remote" else { return }
+        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        let result = await runCommandAsync(client, ["cache-set", project.host, project.path, "cc", String(hours)])
+        guard result.exitCode == 0 else { statusText = trimmedError(result); return }
+        await refreshRemoteCache(host: project.host)
+        statusText = "Remote CC cache window: \(hours == 0 ? "off" : "\(hours)h")"
     }
 
     /// The host catalog is authoritative; workspace.yaml is only this Mac's display mirror.
@@ -5724,6 +5774,25 @@ struct ContentView: View {
                 Spacer()
             }
 
+            if project.type == "remote" {
+                HStack {
+                    Text(vm.remoteCacheState(project))
+                        .font(GhosttyTheme.current.font(size: 9, weight: .regular))
+                        .foregroundStyle(GhosttyTheme.current.textTertiary)
+                        .lineLimit(1)
+                    Spacer()
+                    Menu("CC cache \(vm.remoteCacheHours(project))h") {
+                        ForEach([0, 1, 3, 6, 12], id: \.self) { hours in
+                            Button(hours == 0 ? "Off" : "\(hours) hours") {
+                                Task { await vm.setRemoteCCCacheHours(hours, project: project) }
+                            }
+                        }
+                    }
+                    .font(GhosttyTheme.current.font(size: 9, weight: .regular))
+                    .fixedSize()
+                }
+            }
+
             // A remote project can run on the host without a local display pane.
             HStack(spacing: 1) {
                 Spacer()
@@ -5745,7 +5814,10 @@ struct ContentView: View {
                     }
                     .frame(width: 52)
                     ActionButton("↻", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                        Task { await vm.syncRemoteCatalog(host: project.host) }
+                        Task {
+                            await vm.syncRemoteCatalog(host: project.host)
+                            await vm.refreshRemoteCache(host: project.host)
+                        }
                     }
                     .frame(width: 25)
                 } else {
