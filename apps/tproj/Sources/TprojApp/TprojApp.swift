@@ -5806,6 +5806,12 @@ struct ContentView: View {
                         .lineLimit(1)
                 }
                 Spacer()
+                if project.type != "remote" {
+                    ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
+                        Task { await vm.addColumnByAlias(project.routingAlias) }
+                    }
+                    .frame(width: 38)
+                }
             }
 
             if project.type == "remote" {
@@ -5828,9 +5834,9 @@ struct ContentView: View {
             }
 
             // A remote project can run on the host without a local display pane.
-            HStack(spacing: 1) {
-                Spacer()
-                if project.type == "remote" {
+            if project.type == "remote" {
+                HStack(spacing: 1) {
+                    Spacer()
                     ActionButton("Start", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
                         Task { await vm.startRemoteProject(project) }
                     }
@@ -5854,19 +5860,6 @@ struct ContentView: View {
                         }
                     }
                     .frame(width: 25)
-                } else {
-                    ActionButton("Cdx", tone: .neutral, isEnabled: false, dense: true) {}
-                        .frame(width: 38)
-                    ActionButton("CC", tone: .neutral, isEnabled: false, dense: true) {}
-                        .frame(width: 38)
-                    ActionButton("Yazi", tone: .neutral, isEnabled: false, dense: true) {}
-                        .frame(width: 38)
-                    ActionButton("Term", tone: .neutral, isEnabled: false, dense: true) {}
-                        .frame(width: 38)
-                    ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
-                        Task { await vm.addColumnByAlias(project.routingAlias) }
-                    }
-                    .frame(width: 38)
                 }
             }
         }
