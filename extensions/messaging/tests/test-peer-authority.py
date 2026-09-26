@@ -3,6 +3,7 @@
 import importlib.machinery
 import importlib.util
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -26,13 +27,33 @@ class AuthorityTest(unittest.TestCase):
         record.parent.mkdir(parents=True)
         record.write_text(json.dumps({'alias': 'project.cc', 'project': str(self.project),
             'pid': 100, 'pid_start': 1000, 'observed_at': 10000,
-            'role': 'worker', 'role_epoch': 4}))
+            'role': 'worker', 'role_epoch': 4, 'orchestrator_alias': 'project.cdx'}))
         self.envelope = {'session': 'workspace', 'sender': 'project.cc',
             'target': 'project.cdx', 'role': 'worker', 'epoch': 4,
             'kind': 'task', 'task_id': 'task-1', 'body': 'hello'}
-        with patch.object(a, 'process', return_value=(1, 3000, 501)), patch.object(a.os, 'getuid', return_value=501):
+        self.metadata = {
+            'message_id': 'msg-1', 'task_id': 'task-1', 'origin_host': 'host-a',
+            'destination_host': 'host-b', 'origin_project': 'project-a',
+            'destination_project': 'project-b', 'owner_session': 'workspace',
+            'destination_session': 'remote-workspace', 'owner_alias': 'project.cc',
+            'sender': 'project.cc', 'sender_role': 'worker', 'target': 'project.cdx',
+            'role_epoch': 4, 'orchestrator_alias': 'project.cdx',
+            'task_kind': 'delegated', 'intent_hash': 'a' * 64,
+            'user_authorized_exact': True, 'body_hash': hashlib.sha256(b'hello').hexdigest(),
+            'ttl_sec': 900, 'issued_at': 1000}
+        self.v2 = {'version': 2, 'metadata': self.metadata, 'kind': 'task', 'body': 'hello'}
+        self.db_path = self.root / 'outbox.sqlite'
+        db = a.outbox.open_db(self.db_path)
+        a.outbox.mutate(db, 'prepare', self.metadata)
+        db.close()
+        route = {'source_host': 'host-a', 'destination_host': 'host-b',
+                 'source_project': 'project-a', 'destination_project': 'project-b',
+                 'owner_session': 'workspace', 'destination_session': 'remote-workspace',
+                 'target': 'project.cdx'}
+        with patch.object(a, 'process', side_effect=lambda pid: (1, 1000 if pid == 100 else 3000, 501)), patch.object(a.os, 'getuid', return_value=501):
             self.authority = a.Authority(self.root / 'registry', self.project,
-                                         'workspace', 'project.cdx', 200)
+                                         'workspace', 'project.cdx', 200, route=route,
+                                         outbox_path=self.db_path)
 
     def bind(self, envelope=None, *, inspect=None):
         return a.bind_sender(101, envelope or self.envelope, self.root / 'registry',
@@ -57,18 +78,34 @@ class AuthorityTest(unittest.TestCase):
 
     def test_nonce_exact_once_and_receiver_bound(self):
         with patch.object(a, 'bind_sender', return_value=None):
-            minted = self.authority.mint(101, self.envelope)
-        with patch.object(a, 'process', return_value=(1, 3000, 501)), patch.object(a.os, 'getuid', return_value=501):
+            minted = self.authority.mint(101, self.v2)
+        with patch.object(a, 'process', side_effect=lambda pid: (1, 1000 if pid == 100 else 3000, 501)), patch.object(a.os, 'getuid', return_value=501):
             with self.assertRaisesRegex(a.Refused, 'wrong receiver'):
-                self.authority.consume(999, minted['nonce'], self.envelope)
-            with self.assertRaisesRegex(a.Refused, 'mismatched'):
-                self.authority.consume(200, minted['nonce'], dict(self.envelope, body='forged'))
+                self.authority.consume(999, minted['nonce'], self.v2)
+            with self.assertRaisesRegex(a.Refused, 'mismatch'):
+                self.authority.consume(200, minted['nonce'], dict(self.v2, body='forged'))
         with patch.object(a, 'bind_sender', return_value=None):
-            minted = self.authority.mint(101, self.envelope)
-        with patch.object(a, 'process', return_value=(1, 3000, 501)), patch.object(a.os, 'getuid', return_value=501):
-            self.assertTrue(self.authority.consume(200, minted['nonce'], self.envelope)['ok'])
+            minted = self.authority.mint(101, self.v2)
+        with patch.object(a, 'process', side_effect=lambda pid: (1, 1000 if pid == 100 else 3000, 501)), patch.object(a.os, 'getuid', return_value=501):
+            self.assertTrue(self.authority.consume(200, minted['nonce'], self.v2)['ok'])
             with self.assertRaisesRegex(a.Refused, 'absent'):
-                self.authority.consume(200, minted['nonce'], self.envelope)
+                self.authority.consume(200, minted['nonce'], self.v2)
+
+    def test_route_tombstone_and_reconnect_fail_closed(self):
+        with self.assertRaisesRegex(a.Refused, 'route mismatch'):
+            self.authority.validate_envelope({'version': 2, 'metadata':
+                dict(self.metadata, destination_host='other'), 'kind': 'task', 'body': 'hello'})
+        with patch.object(a, 'bind_sender', return_value=None):
+            minted = self.authority.mint(101, self.v2)
+        with patch.object(a, 'process', side_effect=lambda pid: (1, 1000 if pid == 100 else 3001, 501)), patch.object(a.os, 'getuid', return_value=501):
+            with self.assertRaisesRegex(a.Refused, 'process changed'):
+                self.authority.consume(200, minted['nonce'], self.v2)
+        db = a.outbox.open_db(self.db_path)
+        a.outbox.mutate(db, 'tombstone', self.metadata, 'c' * 64)
+        db.close()
+        with patch.object(a, 'process', side_effect=lambda pid: (1, 1000 if pid == 100 else 3000, 501)), patch.object(a.os, 'getuid', return_value=501):
+            with self.assertRaisesRegex(a.Refused, 'tombstoned'):
+                self.authority.consume(200, minted['nonce'], self.v2)
 
 
 if __name__ == '__main__':

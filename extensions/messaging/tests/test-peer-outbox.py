@@ -18,7 +18,8 @@ def row(**changes):
              'destination_host': 'host-b', 'origin_project': 'project-a',
              'destination_project': 'project-b', 'owner_session': 'session-a',
              'destination_session': 'session-b', 'owner_alias': 'project.cc',
-             'sender': 'project.cc', 'target': 'remote.cdx', 'role_epoch': 4,
+             'sender': 'project.cc', 'sender_role': 'orchestrator',
+             'target': 'remote.cdx', 'role_epoch': 4,
              'orchestrator_alias': 'project.cc', 'task_kind': 'delegated',
              'intent_hash': 'a' * 64, 'user_authorized_exact': True,
              'body_hash': 'b' * 64, 'ttl_sec': 900, 'issued_at': 1000}

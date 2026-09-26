@@ -17,7 +17,7 @@ HEX = re.compile(r'^[0-9a-f]{64}$')
 FIELDS = frozenset({
     'message_id', 'task_id', 'origin_host', 'destination_host',
     'origin_project', 'destination_project', 'owner_session',
-    'destination_session', 'owner_alias', 'sender', 'target',
+    'destination_session', 'owner_alias', 'sender', 'sender_role', 'target',
     'role_epoch', 'orchestrator_alias', 'task_kind', 'intent_hash',
     'user_authorized_exact', 'body_hash', 'ttl_sec', 'issued_at',
 })
@@ -48,6 +48,9 @@ def validate(record):
             raise Refused(f'invalid {key}')
     if record['owner_alias'] != record['sender']:
         raise Refused('sender is not task owner')
+    if not isinstance(record['sender_role'], str) or record['sender_role'] not in (
+            'orchestrator', 'worker', 'solo-fallback'):
+        raise Refused('invalid sender role')
     if record['task_kind'] not in ('delegated', 'role_handoff'):
         raise Refused('invalid task kind')
     if not isinstance(record['intent_hash'], str) or (record['intent_hash'] and not HEX.fullmatch(record['intent_hash'])):

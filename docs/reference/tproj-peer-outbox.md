@@ -11,7 +11,7 @@ The database must be an owner-owned regular mode-0600 file. SQLite uses a
 transaction (`BEGIN IMMEDIATE`), WAL, and `synchronous=FULL`; one message ID and
 one `(owner_session, owner_alias, target, task_id)` identify a task. The
 metadata contains exact origin/destination host and project IDs, owner and
-destination sessions, owner/sender/target alias.role, role epoch, orchestrator
+destination sessions, owner/sender/target alias.role, sender role, role epoch, orchestrator
 alias, task kind, intent/body SHA-256 hashes, exact authorization bit, TTL,
 and issued time. All identifier components reject `/`, `.` and `..`; fields
 outside the exact schema fail. `sender` must equal `owner_alias`. An exact

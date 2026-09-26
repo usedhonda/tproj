@@ -3,6 +3,8 @@
 
 import argparse
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -10,6 +12,7 @@ import re
 import secrets
 import socket
 import socketserver
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -19,6 +22,13 @@ MAX_LINE = 65536
 TTL = 30
 IDENTITY = re.compile(r'^[A-Za-z0-9_-]+\.(cc|cdx)$')
 SESSION = re.compile(r'^[A-Za-z0-9_-]+$')
+HASH = re.compile(r'^[0-9a-f]{64}$')
+
+OUTBOX_PATH = Path(__file__).resolve().with_name('tproj-peer-outbox')
+loader = importlib.machinery.SourceFileLoader('peer_outbox', str(OUTBOX_PATH))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+outbox = importlib.util.module_from_spec(spec)
+loader.exec_module(outbox)
 
 
 class Refused(ValueError):
@@ -64,7 +74,7 @@ def cwd(pid):
 
 
 def bind_sender(pid, envelope, registry_root, project, session, *, inspect=process,
-                inspect_cwd=cwd, now=None):
+                inspect_cwd=cwd, now=None, expected_orchestrator=None):
     now = int(time.time() if now is None else now)
     if not isinstance(envelope, dict) or set(envelope) != {'session', 'sender', 'target', 'role', 'epoch', 'kind', 'task_id', 'body'}:
         raise Refused('invalid envelope fields')
@@ -103,6 +113,8 @@ def bind_sender(pid, envelope, registry_root, project, session, *, inspect=proce
     if (record.get('project') != str(project) or record.get('role') != envelope['role'] or
             record.get('role_epoch') != envelope['epoch']):
         raise Refused('registry metadata mismatch')
+    if expected_orchestrator is not None and record.get('orchestrator_alias') != expected_orchestrator:
+        raise Refused('registry orchestrator mismatch')
     caller_cwd = inspect_cwd(pid)
     if caller_cwd != project and project not in caller_cwd.parents:
         raise Refused('caller outside project')
@@ -123,13 +135,26 @@ def bind_sender(pid, envelope, registry_root, project, session, *, inspect=proce
 
 
 class Authority:
-    def __init__(self, registry_root, project, session, target, receiver_pid):
+    def __init__(self, registry_root, project, session, target, receiver_pid,
+                 *, route, outbox_path):
         if not SESSION.fullmatch(session) or not IDENTITY.fullmatch(target) or receiver_pid <= 1:
             raise Refused('invalid fixed receiver')
+        if set(route) != {'source_host', 'destination_host', 'source_project',
+                          'destination_project', 'owner_session',
+                          'destination_session', 'target'}:
+            raise Refused('invalid fixed route')
+        if route['owner_session'] != session or route['target'] != target:
+            raise Refused('route/session mismatch')
+        for field in ('source_host', 'destination_host', 'source_project',
+                      'destination_project', 'owner_session', 'destination_session'):
+            if not outbox.component(route[field]):
+                raise Refused('invalid route component')
         self.registry_root = registry_root
         self.project = project
         self.session = session
         self.target = target
+        self.route = route.copy()
+        self.outbox_path = Path(outbox_path).resolve(strict=True)
         _, self.receiver_start, receiver_uid = process(receiver_pid)
         if receiver_uid != os.getuid():
             raise Refused('receiver UID mismatch')
@@ -137,10 +162,73 @@ class Authority:
         self.pending = {}
         self.lock = threading.Lock()
 
+    def validate_envelope(self, envelope):
+        if not isinstance(envelope, dict) or set(envelope) != {'version', 'metadata', 'kind', 'body'}:
+            raise Refused('invalid v2 envelope')
+        if type(envelope['version']) is not int or envelope['version'] != 2:
+            raise Refused('invalid envelope version')
+        record = outbox.validate(envelope['metadata'])
+        if envelope['kind'] not in ('task', 'role_handoff') or not isinstance(envelope['body'], str):
+            raise Refused('unsupported control kind')
+        if (envelope['kind'] == 'role_handoff') != (record['task_kind'] == 'role_handoff'):
+            raise Refused('task kind mismatch')
+        if not HASH.fullmatch(record['body_hash']) or hashlib.sha256(envelope['body'].encode()).hexdigest() != record['body_hash']:
+            raise Refused('body hash mismatch')
+        pairs = {'source_host': 'origin_host', 'destination_host': 'destination_host',
+                 'source_project': 'origin_project', 'destination_project': 'destination_project',
+                 'owner_session': 'owner_session', 'destination_session': 'destination_session',
+                 'target': 'target'}
+        if any(record[value] != self.route[key] for key, value in pairs.items()):
+            raise Refused('fixed route mismatch')
+        if len(canonical(envelope)) > MAX_LINE:
+            raise Refused('envelope too large')
+        return record
+
+    def verify_outbox(self, record, allowed_states=('prepared',)):
+        db = sqlite3.connect(f'{self.outbox_path.as_uri()}?mode=ro', uri=True)
+        try:
+            row = db.execute('SELECT metadata,state FROM tasks WHERE message_id=?',
+                             (record['message_id'],)).fetchone()
+        finally:
+            db.close()
+        if not row or row[0] != outbox.canonical(record) or row[1] not in allowed_states:
+            raise Refused('outbox row absent, conflicting, or tombstoned')
+
+    def verify_live_epoch(self, record):
+        matches = []
+        for path in (Path(self.registry_root) / self.session).glob('**/*.json'):
+            if path.is_symlink():
+                continue
+            try:
+                state = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if state.get('alias') == record['sender']:
+                matches.append(state)
+        if len(matches) != 1:
+            raise Refused('live sender registry absent or ambiguous')
+        state = matches[0]
+        if (state.get('project') != str(Path(self.project).resolve(strict=True)) or
+                state.get('role') != record['sender_role'] or
+                state.get('role_epoch') != record['role_epoch'] or
+                state.get('orchestrator_alias') != record['orchestrator_alias']):
+            raise Refused('live sender epoch changed')
+        pid, started = state.get('pid'), state.get('pid_start')
+        if type(pid) is not int or type(started) is not int or pid <= 1 or started <= 0:
+            raise Refused('invalid live sender PID')
+        _, actual_start, uid = process(pid)
+        if actual_start != started or uid != os.getuid():
+            raise Refused('live sender process changed')
+
     def mint(self, caller_pid, envelope):
-        if envelope.get('target') != self.target:
-            raise Refused('wrong target')
-        bind_sender(caller_pid, envelope, self.registry_root, self.project, self.session)
+        record = self.validate_envelope(envelope)
+        self.verify_outbox(record)
+        sender_claim = {'session': self.session, 'sender': record['sender'],
+                        'target': record['target'], 'role': record['sender_role'],
+                        'epoch': record['role_epoch'], 'kind': 'task',
+                        'task_id': record['task_id'], 'body': envelope['body']}
+        bind_sender(caller_pid, sender_claim, self.registry_root, self.project,
+                    self.session, expected_orchestrator=record['orchestrator_alias'])
         digest = hashlib.sha256(canonical(envelope)).hexdigest()
         nonce = secrets.token_hex(32)
         with self.lock:
@@ -156,6 +244,9 @@ class Authority:
             raise Refused('receiver process changed')
         if not isinstance(nonce, str) or not re.fullmatch(r'[0-9a-f]{64}', nonce):
             raise Refused('invalid nonce')
+        record = self.validate_envelope(envelope)
+        self.verify_outbox(record, ('prepared', 'committed'))
+        self.verify_live_epoch(record)
         digest = hashlib.sha256(canonical(envelope)).hexdigest()
         with self.lock:
             entry = self.pending.pop(nonce, None)
@@ -216,10 +307,20 @@ def main():
     parser.add_argument('--session', required=True)
     parser.add_argument('--target', required=True)
     parser.add_argument('--receiver-pid', required=True, type=int)
+    parser.add_argument('--outbox-db', required=True)
+    for name in ('source-host', 'destination-host', 'source-project',
+                 'destination-project', 'destination-session'):
+        parser.add_argument('--' + name, required=True)
     args = parser.parse_args()
     try:
+        route = {'source_host': args.source_host, 'destination_host': args.destination_host,
+                 'source_project': args.source_project,
+                 'destination_project': args.destination_project,
+                 'owner_session': args.session, 'destination_session': args.destination_session,
+                 'target': args.target}
         serve(args.socket, Authority(args.registry_root, args.project, args.session,
-                                     args.target, args.receiver_pid))
+                                     args.target, args.receiver_pid, route=route,
+                                     outbox_path=args.outbox_db))
         return 0
     except (OSError, ValueError) as exc:
         print(f'Error: peer authority {exc}', file=sys.stderr)
