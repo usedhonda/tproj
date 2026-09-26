@@ -34,6 +34,11 @@ client="$repo/bin/tproj-remote-client"
 [[ "$(cat "$TEST_LOG")" == *'tproj-remote-host status'* ]]
 
 : > "$TEST_LOG"
+"$client" identity mini /remote/project cc
+[[ "$(wc -l < "$TEST_LOG")" -eq 1 ]]
+[[ "$(cat "$TEST_LOG")" == *'tproj-remote-host identity --path /remote/project --role cc'* ]]
+
+: > "$TEST_LOG"
 "$client" register mini /remote/project --alias project
 [[ "$(wc -l < "$TEST_LOG")" -eq 3 ]]
 [[ "$(sed -n '3p' "$TEST_LOG")" == *'tproj-remote-host register'* ]]

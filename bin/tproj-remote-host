@@ -15,10 +15,10 @@ for path_entry in "${path_prefix[@]}"; do
 done
 export PATH
 
-usage() { printf '%s\n' 'Usage: tproj-remote-host list|ensure-all|register|unregister|status|ensure|attach|stop|migrate|separate [--path ABSOLUTE_PATH] [--role cc|cdx] [--alias NAME]' >&2; exit 2; }
+usage() { printf '%s\n' 'Usage: tproj-remote-host list|ensure-all|register|unregister|status|identity|ensure|attach|stop|migrate|separate [--path ABSOLUTE_PATH] [--role cc|cdx] [--alias NAME]' >&2; exit 2; }
 die() { printf 'tproj-remote-host: %s\n' "$*" >&2; exit 1; }
 
-action=${1:-}; case "$action" in list|status|ensure|attach|stop|migrate|separate|register|unregister|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
+action=${1:-}; case "$action" in list|status|identity|ensure|attach|stop|migrate|separate|register|unregister|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
 project_path=; role=; alias_name=
 while (($#)); do
   case "$1" in
@@ -203,6 +203,72 @@ shared_pane_status() {
   pid=$(agent_status "$pane" "$c") || return 1
   printf '%s|%s|%s' "$s" "$pane" "$pid"
 }
+read_identity() {
+  local p=$1 r=$2 s pane fields
+  s=$(shared_session_for "$p")
+  if ! pane=$(pane_for "$s" "$r" "$p"); then
+    s=$(session_for "$r" "$p")
+    pane=$(pane_for "$s" "$r" "$p") || die 'target pane not found'
+  fi
+  fields=$(tmux_run display-message -t "$pane" -p '#{pane_id}|#{pane_pid}|#{pane_dead}|#{pane_current_command}|#{@alias}|#{@project}|#{@role}|#{@role_epoch}|#{@orchestration_role}') || die 'target pane unavailable'
+  python3 - "$s" "$p" "$r" "$fields" <<'PY'
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+
+session, project, platform, fields = sys.argv[1:]
+def fail():
+    raise SystemExit('tproj-remote-host: target identity unavailable')
+parts = fields.split('|')
+if len(parts) != 9:
+    fail()
+pane, pane_pid, dead, command, alias, pane_project, tag, epoch, role = parts
+expected = 'claude-p1' if platform == 'cc' else 'codex-p1'
+if (not pane.startswith('%') or not pane_pid.isdigit() or int(pane_pid) <= 0 or
+        dead != '0' or pane_project != project or tag != expected or
+        not re.fullmatch(r'[A-Za-z0-9._-]+', alias) or
+        not epoch.isdigit() or int(epoch) <= 0):
+    fail()
+if not command.strip():
+    fail()
+safe = lambda value: re.sub(r'[^A-Za-z0-9_.-]+', '_', value) or 'unknown'
+state = Path(os.environ.get('MODEL_ROLE_CACHE', str(Path.home() / '.cache/tproj-model-role'))) / safe(session) / (safe(alias) + '.json')
+try:
+    record = json.loads(state.read_text())
+    pid, started = record['pid'], record['pid_start']
+    if (type(pid) is not int or pid <= 0 or type(started) is not int or started <= 0 or
+            record.get('alias') != alias or record.get('project') != project or
+            record.get('role_epoch') != int(epoch) or record.get('role') != role or
+            record.get('session') != session):
+        fail()
+    result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart='], capture_output=True, text=True, timeout=2)
+    if result.returncode or int(time.mktime(time.strptime(result.stdout.strip(), '%a %b %d %H:%M:%S %Y'))) != started:
+        fail()
+    agent_command = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'command='], capture_output=True, text=True, timeout=2)
+    agent_text = agent_command.stdout.lower()
+    if agent_command.returncode or (platform == 'cc' and 'claude' not in agent_text) or (platform == 'cdx' and not ('codex' in agent_text or 'node' in agent_text)):
+        fail()
+    current = pid
+    for _ in range(32):
+        if current == int(pane_pid):
+            break
+        result = subprocess.run(['/bin/ps', '-p', str(current), '-o', 'ppid='], capture_output=True, text=True, timeout=2)
+        current = int(result.stdout.strip()) if result.returncode == 0 else 0
+        if current <= 1:
+            fail()
+    else:
+        fail()
+except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired, json.JSONDecodeError):
+    fail()
+print(json.dumps({'session': session, 'pane': pane, 'alias': alias, 'project': project,
+                  'platform': platform, 'pid': pid, 'pid_start': started,
+                  'role': record.get('role'), 'role_epoch': int(epoch)}, separators=(',', ':')))
+PY
+}
 ensure_one() {
   local p=$1 r=$2 c_name c s pid start shared pane alias_name other legacy_other
   validate_path "$p"; validate_role "$r"; c_name=$(cli_for_role "$r"); c=$(resolve_cli "$c_name"); [[ -n "$c" ]] || die "required CLI not found on PATH: $c_name"
@@ -353,10 +419,11 @@ case "$action" in
     done <<< "$entries"
     exit "$failures"
     ;;
-  status|ensure|attach|stop)
+  status|identity|ensure|attach|stop)
     [[ -n "$project_path" && -n "$role" && -z "$alias_name" ]] || usage; validate_path "$project_path"; validate_field "$project_path"; validate_role "$role"
     c_name=$(cli_for_role "$role"); c=$(resolve_cli "$c_name"); [[ -n "$c" ]] || die "required CLI not found on PATH: $c_name"; s=$(session_for "$role" "$project_path")
-    if [[ "$action" == status ]]; then
+    if [[ "$action" == identity ]]; then read_identity "$project_path" "$role"
+    elif [[ "$action" == status ]]; then
       pid=
       if shared_info=$(shared_pane_status "$project_path" "$role"); then
         printf 'running|%s|%s\n' "${shared_info%%|*}" "${shared_info##*|}"

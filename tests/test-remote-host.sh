@@ -33,6 +33,23 @@ cdx_session=$(run ensure --path "$TMP/project" --role cdx)
 [[ $(tm show-options -t "$cdx_session" -v mouse) == on ]]
 [[ $(run status --path "$TMP/project" --role cc) == running\|"$cc_session"\|* ]]
 [[ $(run status --path "$TMP/project" --role cdx) == running\|"$cdx_session"\|* ]]
+cc_pane=$(tm list-panes -t "=$cc_session:dev" -F '#{pane_id}')
+cc_pid=$(tm display-message -t "$cc_pane" -p '#{pane_pid}')
+tm set-option -pt "$cc_pane" @role_epoch 7
+tm set-option -pt "$cc_pane" @orchestration_role worker
+mkdir -p "$HOME/.cache/tproj-model-role/$cc_session"
+python3 - "$HOME/.cache/tproj-model-role/$cc_session/demo.json" "$TMP/project" "$cc_session" "$cc_pid" <<'PY'
+import json, subprocess, sys, time
+file, project, session, pid = sys.argv[1:]
+started = int(time.mktime(time.strptime(subprocess.check_output(['/bin/ps', '-p', pid, '-o', 'lstart='], text=True).strip(), '%a %b %d %H:%M:%S %Y')))
+with open(file, 'w') as stream:
+    json.dump(dict(alias='demo', project=project, session=session, pid=int(pid), pid_start=started, role='worker', role_epoch=7), stream)
+PY
+identity=$(run identity --path "$TMP/project" --role cc)
+[[ $(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["role_epoch"])' "$identity") == 7 ]]
+tm set-option -pt "$cc_pane" @role_epoch 8
+if run identity --path "$TMP/project" --role cc >/dev/null 2>&1; then exit 1; fi
+tm set-option -pt "$cc_pane" @role_epoch 7
 [[ $(run list | tail -n 1) == *'|demo|'*'|running|running' ]]
 [[ $(tm list-panes -t "=$cc_session:dev" -F '#{@role}|#{@alias}|#{@column}|#{@project}') == "claude-p1|demo|1|$TMP/project" ]]
 [[ $(tm list-panes -t "=$cdx_session:dev" -F '#{@role}|#{@alias}|#{@column}|#{@project}') == "codex-p1|demo|1|$TMP/project" ]]
