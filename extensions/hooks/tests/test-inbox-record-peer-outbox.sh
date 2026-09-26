@@ -26,7 +26,7 @@ esac
 TMUX
 chmod +x "$tmp/bin/tmux"
 
-record='{"message_id":"msg-1","task_id":"task-1","origin_host":"host-a","destination_host":"host-b","origin_project":"project-a","destination_project":"project-b","owner_session":"testsession","destination_session":"session-b","owner_alias":"artist.cc","sender":"artist.cc","sender_role":"worker","target":"remote.cdx","role_epoch":4,"orchestrator_alias":"artist.cc","task_kind":"delegated","intent_hash":"","user_authorized_exact":false,"body_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ttl_sec":900,"issued_at":1000}'
+record='{"message_id":"msg-1","task_id":"task-1","origin_host":"host-a","destination_host":"host-b","origin_project":"project-a","destination_project":"project-b","owner_session":"testsession","destination_session":"session-b","owner_alias":"artist.cc","sender":"artist.cc","sender_role":"worker","target":"remote.cdx","role_epoch":4,"target_epoch":7,"orchestrator_alias":"artist.cc","task_kind":"delegated","intent_hash":"","user_authorized_exact":false,"body_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ttl_sec":900,"issued_at":1000}'
 printf '%s\n' "$record" | "$HOME/bin/tproj-peer-outbox" --db "$TPROJ_PEER_OUTBOX_DB" prepare >/dev/null
 payload='{"tool_name":"Bash","tool_input":{"command":"tproj-msg --new-task remote.cdx text"},"tool_response":{"stderr":"TASK_ID=task-1 TASK_TARGET=remote.cdx TASK_TTL_SEC=900 TASK_SENT_AT=1000 TASK_KIND=delegated TASK_USER_AUTHORIZED_EXACT=0"}}'
 printf '%s\n' "$payload" | TPROJ_HOOK_ENABLED=1 "$HOME/bin/tproj-inbox-record"
