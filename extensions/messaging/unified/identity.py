@@ -44,8 +44,17 @@ def peer_credentials(sock: socket.socket) -> tuple[int, int]:
             if pid <= 1:
                 raise IdentityError("invalid peer PID")
             if not hasattr(sock, "getpeereid"):
-                raise IdentityError("getpeereid unavailable")
-            uid, _gid = sock.getpeereid()
+                # Python on newer macOS builds omits getpeereid but exposes
+                # LOCAL_PEERCRED (xucred: version, uid, groups...).
+                option = getattr(socket, "LOCAL_PEERCRED", None)
+                if option is None:
+                    raise IdentityError("getpeereid unavailable")
+                cred = sock.getsockopt(getattr(socket, "SOL_SOCKET", 0), option, 12)
+                if len(cred) < 8:
+                    raise IdentityError("invalid peer credentials")
+                uid = int.from_bytes(cred[4:8], sys.byteorder, signed=False)
+            else:
+                uid, _gid = sock.getpeereid()
             return pid, int(uid)
         raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
         pid = int.from_bytes(raw[0:4], sys.byteorder, signed=True)
