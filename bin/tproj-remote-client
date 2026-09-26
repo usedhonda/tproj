@@ -3,13 +3,13 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: tproj-remote-client list|cache-status HOST | status|ensure|attach|stop HOST REMOTE_PATH cc|cdx | register|unregister HOST REMOTE_PATH [--alias NAME] | cache-set HOST REMOTE_PATH cc|cdx HOURS | mode-status HOST REMOTE_PATH | mode-set HOST REMOTE_PATH collab|assist|solo cc|cdx|derived" >&2
+  echo "usage: tproj-remote-client sync|list|cache-status HOST | status|ensure|attach|stop HOST REMOTE_PATH cc|cdx | register|unregister HOST REMOTE_PATH [--alias NAME] | cache-set HOST REMOTE_PATH cc|cdx HOURS | mode-status HOST REMOTE_PATH | mode-set HOST REMOTE_PATH collab|assist|solo cc|cdx|derived" >&2
   exit 2
 fi
 
 action="$1" host="$2" remote_path="${3:-}" role="${4:-}" alias="" hours="${5:-}"
 case "$action" in
-  list|cache-status) [[ $# -eq 2 ]] || exit 2 ;;
+  sync|list|cache-status) [[ $# -eq 2 ]] || exit 2 ;;
   status|ensure|attach|stop) [[ $# -eq 4 ]] || exit 2; case "$role" in cc|cdx) ;; *) echo "invalid role: $role" >&2; exit 2 ;; esac ;;
   register)
     if [[ $# -eq 5 && "$4" == --alias ]]; then alias="$5"
@@ -27,9 +27,25 @@ case "$action" in
     case "$hours" in 0|1|3|6|12) ;; *) exit 2 ;; esac ;;
   *) echo "invalid action: $action" >&2; exit 2 ;;
 esac
-if [[ ! "$host" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || ( "$action" != list && "$action" != cache-status && "$remote_path" != /* ) ]]; then
+if [[ ! "$host" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || ( "$action" != sync && "$action" != list && "$action" != cache-status && "$remote_path" != /* ) ]]; then
   echo "remote host and absolute path are required" >&2
   exit 2
+fi
+
+sync_peer_ledger() {
+  local ledger="$HOME/bin/tproj-peer-ledger" snapshot
+  [[ -x "$ledger" ]] || { echo "tproj-peer-ledger is not installed" >&2; return 1; }
+  snapshot="$("$ledger" refresh)" || return 1
+  printf '%s\n' "$snapshot" | ssh -o BatchMode=yes -o ConnectTimeout=5 -T -- "$host" \
+    '$HOME/bin/tproj-peer-ledger import --stdin'
+}
+
+if [[ "$action" == sync ]]; then
+  sync_peer_ledger
+  exit
+fi
+if [[ "$action" == ensure || "$action" == attach || "$action" == register ]]; then
+  sync_peer_ledger || exit 1
 fi
 
 if [[ "$action" == mode-status || "$action" == mode-set ]]; then
