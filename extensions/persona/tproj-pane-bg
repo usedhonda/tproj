@@ -401,25 +401,34 @@ CONVERSATION_MAIN_RESULT=""
 # miss starts the router (python, ~55ms), and on a twelve-pane workspace those calls
 # were essentially the entire cost of a resize.
 load_conversation_main() {
-  local project="$1" cached
+  local project="$1" remote_host="${2:-}" remote_path="${3:-}" cached cache_key="$1"
   CONVERSATION_MAIN_RESULT="cdx"
-  [[ "$project" == /* ]] || return 1
-  cached="${CONVERSATION_MAIN_CACHE#*$'\n'${project}=}"
+  [[ "$project" == /* || ( -n "$remote_host" && "$remote_path" == /* ) ]] || return 1
+  if [[ -n "$remote_host" && "$remote_path" == /* ]]; then
+    cache_key="remote|${remote_host}|${remote_path}"
+  fi
+  cached="${CONVERSATION_MAIN_CACHE#*$'\n'${cache_key}=}"
   if [[ "$cached" != "$CONVERSATION_MAIN_CACHE" ]]; then
     CONVERSATION_MAIN_RESULT="${cached%%$'\n'*}"
     return 0
   fi
-  CONVERSATION_MAIN_RESULT="$(conversation_main_for_project "$project" 2>/dev/null || printf 'cdx')"
-  CONVERSATION_MAIN_CACHE="${CONVERSATION_MAIN_CACHE}${project}=${CONVERSATION_MAIN_RESULT}"$'\n'
+  CONVERSATION_MAIN_RESULT="$(conversation_main_for_project "$project" "$remote_host" "$remote_path" 2>/dev/null || printf 'cdx')"
+  CONVERSATION_MAIN_CACHE="${CONVERSATION_MAIN_CACHE}${cache_key}=${CONVERSATION_MAIN_RESULT}"$'\n'
   return 0
 }
 
 conversation_main_for_project() {
-  local project="$1" router="$MODEL_ROLE_ROUTER" mode_json main
-  [[ "$project" == /* ]] || return 1
-  [[ -x "$router" ]] || router="$(command -v model-role-router 2>/dev/null || true)"
-  if [[ -x "$router" ]]; then
-    mode_json="$("$router" mode --json --project "$project" 2>/dev/null || true)"
+  local project="$1" remote_host="${2:-}" remote_path="${3:-}" router="$MODEL_ROLE_ROUTER" mode_json="" main=""
+  [[ "$project" == /* || ( -n "$remote_host" && "$remote_path" == /* ) ]] || return 1
+  if [[ -n "$remote_host" && "$remote_path" == /* ]]; then
+    mode_json="$("$HOME/bin/tproj-remote-client" mode-status "$remote_host" "$remote_path" 2>/dev/null || true)"
+  else
+    [[ -x "$router" ]] || router="$(command -v model-role-router 2>/dev/null || true)"
+    if [[ -x "$router" ]]; then
+      mode_json="$("$router" mode --json --project "$project" 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -n "$mode_json" ]]; then
     main="$(printf '%s' "$mode_json" | jq -r '
       if (.main == "cc" or .main == "cdx") then .main
       elif (.lead == "cc" or .lead == "cdx") then .lead
@@ -3663,7 +3672,7 @@ sync_session() {
     [[ -n "${client_width:-}" && "$client_width" =~ ^[0-9]+$ ]] || client_width="$window_width"
     [[ -n "${client_height:-}" && "$client_height" =~ ^[0-9]+$ ]] || client_height="$window_height"
 
-    tmux list-panes -t "$target" -F '#{pane_id}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{pane_current_path}|#{@role}|#{@alias}|#{@column}|#{@project}|#{pane_active}' > "$pane_rows_file"
+    tmux list-panes -t "$target" -F '#{pane_id}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{pane_current_path}|#{@role}|#{@alias}|#{@column}|#{@project}|#{pane_active}|#{@remote_host}|#{@remote_path}' > "$pane_rows_file"
     # Which side of a column is the conversation main cannot change because a pane
     # was resized, and asking the router costs ~85ms of python per project -- on this
     # workspace that single question was most of a fast sync. So the fast path seeds
@@ -3685,7 +3694,7 @@ sync_session() {
       ' "$manifest_path" 2>/dev/null || true)
     fi
 
-    while IFS='|' read -r pane_id pane_left pane_top pane_width pane_height pane_cwd tmux_role pane_alias pane_column project_hint pane_active <&3; do
+    while IFS='|' read -r pane_id pane_left pane_top pane_width pane_height pane_cwd tmux_role pane_alias pane_column project_hint pane_active remote_host remote_path <&3; do
       [[ -n "$pane_id" ]] || continue
       if ! role="$(classify_tmux_role "$tmux_role" 2>/dev/null)"; then
         continue
@@ -3696,9 +3705,15 @@ sync_session() {
       image_path=""
       meta_path=""
       placeholder_path=""
-      if project="$(resolve_pane_project "$project_hint" "$pane_cwd" 2>/dev/null)"; then
-        load_conversation_main "$project" || true
+      if [[ -n "$remote_host" && "$remote_path" == /* ]]; then
+        load_conversation_main "" "$remote_host" "$remote_path" || true
         conversation_main="$CONVERSATION_MAIN_RESULT"
+      fi
+      if project="$(resolve_pane_project "$project_hint" "$pane_cwd" 2>/dev/null)"; then
+        if [[ -z "$remote_host" || "$remote_path" != /* ]]; then
+          load_conversation_main "$project" || true
+          conversation_main="$CONVERSATION_MAIN_RESULT"
+        fi
         if asset_fields="$(resolve_cached_background "$project" "$role" 2>/dev/null)"; then
           IFS=$'\t' read -r image_path meta_path <<< "$asset_fields"
           if [[ -z "$meta_path" && "$sync_mode" != "fast" ]]; then

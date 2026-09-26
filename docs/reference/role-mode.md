@@ -26,8 +26,9 @@ mode, and tier still decides role authority under `collab`.
 - The file's location is its scope. Declaring a mode in one project never affects a
   neighbouring column, and two projects hold different modes at the same time.
 - **Absent means `collab` with no main preference.** So does an unreadable file, an unrecognized mode value,
-  and a project that cannot be resolved to a local absolute root (remote `ssh://`
-  projects have no local state directory and always read as `collab`).
+  and a project that cannot be resolved to a local absolute root. A local router
+  cannot read an `ssh://` tag as a project root; remote projects are queried on
+  their host using their absolute remote path instead.
 - Declaring plain `collab` deletes the file. `collab --main cc|cdx` keeps a file only to
   retain the conversation preference; role resolution remains ordinary `collab`.
 - The file is **not** cached into pane options. Every hook reads it on every turn,
@@ -131,8 +132,11 @@ derived lead. `--main derived` clears the preference.
   The compact badge shows only the mode (`Collab`, `Assist`, or `Solo`); clicking
   it exposes the detailed checked choices. The chosen conversation side's button
   is the sole always-visible main indicator and is tinted with the mode colour.
-  The GUI reads and writes only through
-  `model-role-router mode`.
+  The GUI reads and writes through `model-role-router mode` on the machine
+  running the project. For remote projects, `tproj-remote-client mode-status` /
+  `mode-set` calls that router over SSH. Pane backgrounds use the same remote
+  status for the conversation-main marker, including when no same-path local
+  checkout exists.
 - In every mode, the GUI reads CodexBar's selected-account history snapshots
   from Application Support every five minutes: CC's `session` window must be
   300 minutes, and CC/Cdx weekly windows retain the existing weekly validation.
