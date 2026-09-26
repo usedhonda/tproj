@@ -8,6 +8,25 @@ from extensions.messaging.unified import cli
 
 
 class CliTest(unittest.TestCase):
+    def test_inbox_forwards_cursor_and_limit_for_next_page(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw); sock_path = root / "mailbox.sock"; cfg = root / "config.json"
+            server = socket.socket(socket.AF_UNIX); server.bind(str(sock_path)); server.listen(1)
+            def serve():
+                conn, _ = server.accept()
+                with conn, conn.makefile("rwb") as stream:
+                    request = json.loads(stream.readline())
+                    self.assertEqual(request["op"], "inbox")
+                    self.assertEqual(request["cursor"], 100)
+                    self.assertEqual(request["limit"], 100)
+                    stream.write(b'{"ok":true,"result":{"messages":[],"next_cursor":200}}\n'); stream.flush()
+                server.close()
+            thread = threading.Thread(target=serve, daemon=True); thread.start()
+            cfg.write_text(json.dumps({"socket": str(sock_path)}))
+            with patch.object(cli, "DEFAULT_CONFIG", cfg):
+                self.assertEqual(cli.main(["inbox", "--cursor", "100", "--limit", "100"]), 0)
+            thread.join(1)
+
     def test_relative_status_resolves_configured_project(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw); sock_path = root / "mailbox.sock"; cfg = root / "config.json"

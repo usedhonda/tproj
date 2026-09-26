@@ -117,6 +117,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--session")
     p.add_argument("--as", dest="claimed_alias")
     p.add_argument("--retry", metavar="SUBMISSION_ID")
+    p.add_argument("--cursor", type=int, default=0)
+    p.add_argument("--limit", type=int, default=100)
     p.add_argument("--list", action="store_true")
     p.add_argument("--status", action="store_true")
     p.add_argument("--json", action="store_true")
@@ -149,7 +151,10 @@ def main(argv: list[str] | None = None) -> int:
             req, _ = submission(req, retry=args.retry)
             result = rpc(cfg["socket"], req)
         elif args.target == "inbox":
-            result = rpc(cfg["socket"], {"op": "inbox", "session": args.session, "as": args.claimed_alias})
+            if args.cursor < 0 or args.limit <= 0:
+                raise ClientError("inbox cursor must be non-negative and limit must be positive", "invalid_argument")
+            result = rpc(cfg["socket"], {"op": "inbox", "session": args.session, "as": args.claimed_alias,
+                                          "cursor": args.cursor, "limit": args.limit})
         elif args.target in ("message", "ack"):
             if not args.body: raise ClientError("message requires message ID")
             result = rpc(cfg["socket"], {"op": args.target, "message_id": args.body, "session": args.session, "as": args.claimed_alias})

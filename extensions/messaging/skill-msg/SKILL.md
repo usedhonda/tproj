@@ -73,6 +73,10 @@ through their existing validators. Message body text is never interpreted as
 a target or routing verb. Keep the legacy usage section only for clients that
 have never enrolled.
 
+Inbox reads are paged: use `tproj-msg inbox --cursor 0 --limit 100 --json`,
+then request the returned `next_cursor` until it is absent. A cursor identifies
+the page only; it is not an acknowledgement or presentation receipt.
+
 # tproj-msg AI間通信スキル
 
 tmux ワークスペース内の他 AI ペイン（CC, Cdx, Agent）と通信するための内部ツール。
