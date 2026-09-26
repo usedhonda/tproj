@@ -83,10 +83,11 @@ tmux ワークスペース内の他 AI ペイン（CC, Cdx, Agent）と通信す
 
 **`--list` について**: ターゲット名が不明な場合にのみ手動で使う。送信フローの必須ステップではない。
 
-**別Macの例外**: `--list` は現在の tmux session だけを見る。手元Macの
-`--status` は別Macの sendability を証明しない。
-Mac mini の独立セッションや手元Macのペインはここに出ないため、終了コード3を
-「相手が停止」と解釈しない。別Macへの返信は、既知の exact な宛先を指定して
+**別Macの例外**: `--list` は現在の tmux session の生存ペインに加え、
+`~/.config/tproj/peers.json` に投影された遠隔 alias を「configured remote」として示す。
+表示だけでは遠隔ペインの生存や sendability を証明しない。手元Macの
+`--status <alias.role>` は ledger の宛先を同期し、その host の role/path status を表示するが、
+送信時の draft/selection gate の代用にはならない。別Macへの返信は、既知の exact な宛先を指定して
 `tproj-msg --remote-client "$HOME/.config/tproj/cross-mac/reply.sock" <alias.role> "msg"`
 を使う。逆方向は `--remote <SSH-host> --remote-session <destination-session>`。
 この経路は送信時に送信元を検証し、受信側で宛先セッション・ペインの実在と
@@ -94,11 +95,14 @@ Mac mini の独立セッションや手元Macのペインはここに出ない�
 ソケットがない/宛先不明なら送らず報告する。`--new-task`・権限移譲・control文面は不可。
 受信表示は `[from:Remote Host]` で、本文に送信元ヒントが付く。ヒントは
 受信側で認証されておらず、peer の alias 証明や task 権限ではない。
-送信元Macの `~/.config/tproj/workspace.yaml` に一意の遠隔 alias があれば、
-通常の `tproj-msg chi.cc "本文"` はその alias の host/session へ自動経路選択する。
-サーバー側も catalog に同じ alias があれば別tmux sessionのペインへ plain chat を
-自動経路選択する。両経路とも送信元検証と宛先 sendability gate を保ち、control/task
-は送らない。明示 `--remote` は診断・YAML外送信向けに残る。
+送信元Macの `workspace.yaml` を反映した `peers.json` に一意の遠隔 alias があれば、
+通常の `tproj-msg chi.cc "本文"` はその alias の host/path と稼働 session へ自動経路選択する。
+送信前に ledger を相手 host へ同期し、失敗時は送らない。Mac mini の別 tmux session も
+取り込んだ ledger で alias から宛先 path を解決する。サーバー catalog の alias は
+経路の権威ではない。両経路とも送信元検証と宛先 sendability gate を保つ。
+別Macの chat は `[from:Remote Host]` の非権限経路であり、`--new-task`、ACK/DONE/BLOCK、
+cancel/freeze、role-handoff、control marker は送らない。SSH 認証や本文中の sender hint は
+peer 権限の証明にならない。明示 `--remote` は診断・YAML外送信向けに残る。
 
 **禁止**:
 - `--status` 未確認のまま送信
