@@ -1,5 +1,45 @@
 #!/bin/bash
 set -euo pipefail
+# Once enrolled, ordinary routing has one authoritative transport. Explicit task,
+# role, desktop, and named external-channel controls remain on their validators.
+UNIFIED_ACTIVE=false
+if [[ -f "$HOME/.config/tproj/msg-client.json" ]]; then
+  if python3 - "$HOME/.config/tproj/msg-client.json" <<'PY' >/dev/null 2>&1
+import json,sys
+with open(sys.argv[1]) as f: raise SystemExit(0 if json.load(f).get("active") is True else 1)
+PY
+  then UNIFIED_ACTIVE=true; fi
+fi
+if $UNIFIED_ACTIVE; then
+  _ordinary=true
+  for _arg in "$@"; do
+    case "$_arg" in
+      --new-task|--role-handoff|--desktop|--allow-*) _ordinary=false ;;
+      --remote|--remote-client) echo "tproj-msg: retired remote ordinary transport; use unified host endpoint" >&2; exit 64 ;;
+      gate:direct|gate:session|gate:default) echo "tproj-msg: $_arg is deprecated after unified messaging activation" >&2; exit 64 ;;
+      gate:line|gate:*) _ordinary=false ;;
+      --flush|--drain) echo "tproj-msg: $_arg is retired under unified messaging activation" >&2; exit 75 ;;
+    esac
+  done
+  if $_ordinary; then
+    _readonly=false
+    for _arg in "$@"; do case "$_arg" in --read|--list|--status|--version|-h|--help) _readonly=true ;; esac; done
+    if [[ -f "$HOME/.config/tproj/msg-maintenance" ]] && ! $_readonly; then
+      echo "tproj-msg: unified messaging maintenance is active; send/flush retired" >&2; exit 75
+    fi
+    exec "$HOME/bin/tproj-msg-unified" "$@"
+  fi
+fi
+
+# During migration only explicit mailbox verbs use the new path for inactive clients.
+if [[ -f "$HOME/.config/tproj/msg-client.json" ]]; then
+  for _msg_arg in "$@"; do
+    case "$_msg_arg" in
+      reply|inbox|message|ack|directory|directory-sync|--retry)
+        exec "$HOME/bin/tproj-msg-unified" "$@" ;;
+    esac
+  done
+fi
 ORIGINAL_ARGS=("$@")
 
 # tproj-msg - Inter-pane messaging CLI for tproj
