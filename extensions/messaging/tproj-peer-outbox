@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Isolated durable metadata ledger for proposed cross-host task v2."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import stat
+import sys
+
+MAX_INPUT = 16384
+COMPONENT = re.compile(r'^[A-Za-z0-9_.-]+$')
+IDENTITY = re.compile(r'^[A-Za-z0-9_-]+\.(cc|cdx)$')
+HEX = re.compile(r'^[0-9a-f]{64}$')
+FIELDS = frozenset({
+    'message_id', 'task_id', 'origin_host', 'destination_host',
+    'origin_project', 'destination_project', 'owner_session',
+    'destination_session', 'owner_alias', 'sender', 'target',
+    'role_epoch', 'orchestrator_alias', 'task_kind', 'intent_hash',
+    'user_authorized_exact', 'body_hash', 'ttl_sec', 'issued_at',
+})
+
+
+class Refused(ValueError):
+    pass
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+
+
+def component(value):
+    return isinstance(value, str) and value not in ('.', '..') and bool(COMPONENT.fullmatch(value))
+
+
+def validate(record):
+    if not isinstance(record, dict) or set(record) != FIELDS:
+        raise Refused('invalid metadata fields')
+    for key in ('message_id', 'task_id', 'origin_host', 'destination_host',
+                'origin_project', 'destination_project', 'owner_session',
+                'destination_session'):
+        if not component(record[key]):
+            raise Refused(f'invalid {key}')
+    for key in ('owner_alias', 'sender', 'target', 'orchestrator_alias'):
+        if not isinstance(record[key], str) or not IDENTITY.fullmatch(record[key]):
+            raise Refused(f'invalid {key}')
+    if record['owner_alias'] != record['sender']:
+        raise Refused('sender is not task owner')
+    if record['task_kind'] not in ('delegated', 'role_handoff'):
+        raise Refused('invalid task kind')
+    if not isinstance(record['intent_hash'], str) or (record['intent_hash'] and not HEX.fullmatch(record['intent_hash'])):
+        raise Refused('invalid intent hash')
+    if not isinstance(record['body_hash'], str) or not HEX.fullmatch(record['body_hash']):
+        raise Refused('invalid body hash')
+    if type(record['user_authorized_exact']) is not bool:
+        raise Refused('invalid authorization flag')
+    if record['user_authorized_exact'] and not record['intent_hash']:
+        raise Refused('authorization requires intent hash')
+    for key in ('role_epoch', 'ttl_sec', 'issued_at'):
+        if type(record[key]) is not int or record[key] <= 0:
+            raise Refused(f'invalid {key}')
+    if record['ttl_sec'] > 86400:
+        raise Refused('TTL too long')
+    if len(canonical(record).encode()) > MAX_INPUT:
+        raise Refused('metadata too large')
+    return record
+
+
+def open_db(path):
+    path = Path(path)
+    if not path.is_absolute() or not path.parent.is_dir():
+        raise Refused('database requires existing absolute directory')
+    parent = path.parent.stat()
+    if parent.st_uid != os.getuid() or parent.st_mode & 0o077:
+        raise Refused('database directory must be private and owner-owned')
+    if path.is_symlink():
+        raise Refused('database symlink forbidden')
+    if not path.exists():
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+            os.close(fd)
+        except FileExistsError:
+            pass
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise Refused('database must be private owner-owned regular file')
+    db = sqlite3.connect(path, timeout=5, isolation_level=None)
+    db.execute('PRAGMA journal_mode=WAL')
+    db.execute('PRAGMA synchronous=FULL')
+    db.execute('CREATE TABLE IF NOT EXISTS tasks ('
+               'message_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, owner_session TEXT NOT NULL, '
+               'owner_alias TEXT NOT NULL, target TEXT NOT NULL, metadata TEXT NOT NULL, '
+               'state TEXT NOT NULL, tombstone_hash TEXT NOT NULL DEFAULT "")')
+    db.execute('CREATE UNIQUE INDEX IF NOT EXISTS task_identity ON tasks '
+               '(owner_session, owner_alias, target, task_id)')
+    return db
+
+
+def mutate(db, action, record, tombstone_hash=''):
+    validate(record)
+    if action not in ('prepare', 'quarantine', 'commit', 'release', 'tombstone'):
+        raise Refused('invalid action')
+    if tombstone_hash and not HEX.fullmatch(tombstone_hash):
+        raise Refused('invalid tombstone hash')
+    meta = canonical(record)
+    initial = {'prepare': 'prepared', 'quarantine': 'quarantined'}
+    with db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT metadata,state,tombstone_hash FROM tasks WHERE message_id=?',
+                         (record['message_id'],)).fetchone()
+        if action in initial:
+            if row:
+                if row[0] == meta and row[1] == initial[action]:
+                    return row[1]
+                raise Refused('message replay or conflict')
+            try:
+                db.execute('INSERT INTO tasks (message_id,task_id,owner_session,owner_alias,target,metadata,state) '
+                           'VALUES (?,?,?,?,?,?,?)',
+                           (record['message_id'], record['task_id'], record['owner_session'],
+                            record['owner_alias'], record['target'], meta, initial[action]))
+            except sqlite3.IntegrityError as exc:
+                raise Refused('task identity conflict') from exc
+            return initial[action]
+        if not row or row[0] != meta:
+            raise Refused('task absent or metadata conflict')
+        state, existing_hash = row[1], row[2]
+        if action == 'tombstone':
+            if not tombstone_hash:
+                raise Refused('tombstone hash required')
+            if state == 'tombstoned':
+                if existing_hash == tombstone_hash:
+                    return state
+                raise Refused('tombstone conflict')
+            db.execute('UPDATE tasks SET state=?,tombstone_hash=? WHERE message_id=?',
+                       ('tombstoned', tombstone_hash, record['message_id']))
+            return 'tombstoned'
+        expected, result = (('prepared', 'committed') if action == 'commit'
+                            else ('quarantined', 'released'))
+        if state == result:
+            return state
+        if state != expected:
+            raise Refused('invalid state transition')
+        db.execute('UPDATE tasks SET state=? WHERE message_id=?', (result, record['message_id']))
+        return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--db', required=True)
+    parser.add_argument('action', choices=('prepare', 'quarantine', 'commit', 'release', 'tombstone'))
+    parser.add_argument('--tombstone-hash', default='')
+    args = parser.parse_args()
+    try:
+        raw = sys.stdin.buffer.read(MAX_INPUT + 1)
+        if not raw or len(raw) > MAX_INPUT:
+            raise Refused('invalid input size')
+        record = json.loads(raw)
+        db = open_db(args.db)
+        try:
+            state = mutate(db, args.action, record, args.tombstone_hash)
+        finally:
+            db.close()
+        print(canonical({'message_id': record['message_id'], 'state': state}))
+        return 0
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        print(f'Error: peer outbox {exc}', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
