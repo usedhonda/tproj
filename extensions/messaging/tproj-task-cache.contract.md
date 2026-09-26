@@ -72,6 +72,21 @@ no-op/empty. The canonical workspace aliases (`ble-bridge`, `creator_radar`,
 - Atomic writes use `tmp + mv` under lock.
 - `msg_hash` is opaque to consumers; D4 may pass empty string if hashing is not feasible.
 
+### Cross-host v2 outbox reconciliation (non-delivering)
+
+D4 remains the only writer of the source task cache. After an exact owner/task
+cache insertion, it may reconcile an **already prepared** peer outbox row in
+`${TPROJ_PEER_OUTBOX_DB:-$HOME/.local/share/tproj-peer/outbox.sqlite}`. D4 does
+not create this database or prepare metadata. It derives the full sender
+`alias.role`, orchestration role, and role epoch only from its exact
+`TMUX_PANE`; a missing or mismatched pane skips reconciliation. It reads the
+exact cache entry and exact owner-scoped shadow DB row because their fail-open
+write return codes are not durable proof. Only then may `lookup-prepared` return
+the full stored metadata for unchanged input to `commit`. A missing, mismatched,
+or tombstoned row stays uncommitted. This marks source registration only, never
+remote delivery, receiver release, or lifecycle completion. Ordinary local
+tasks have no prepared peer outbox row and keep their existing path.
+
 ---
 
 ## 2. Public API (MUST)

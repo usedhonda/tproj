@@ -80,4 +80,60 @@ tt_cache_add "$OWNER" "$task_target" "$task_id" "$task_sent_at" "$task_ttl_sec" 
 if declare -F tt_db_upsert_task >/dev/null 2>&1; then
   tt_db_upsert_task "$task_id" "$task_target" "$task_sent_at" "$task_ttl_sec" "" "${OWNER##*/}" "${OWNER%%/*}" "$task_kind" "$task_intent_hash" "$task_user_authorized_exact" "$task_role_epoch" "$task_orchestrator" 2>/dev/null || true
 fi
+
+# Cross-host v2 only: reconcile an already prepared outbox row after D4's sole
+# cache insertion. The shadow DB helper is fail-open, so its return code is not
+# proof. Read both exact rows before committing; ordinary local tasks have no
+# prepared row and remain unchanged.
+peer_outbox="$HOME/bin/tproj-peer-outbox"
+peer_outbox_db="${TPROJ_PEER_OUTBOX_DB:-$HOME/.local/share/tproj-peer/outbox.sqlite}"
+if [[ -x "$peer_outbox" && -f "$peer_outbox_db" && -n "${TMUX_PANE:-}" \
+      && -f "${TPROJ_MSG_DB_PATH:-}" ]] && declare -F tt_db_quote >/dev/null 2>&1 \
+    && command -v sqlite3 >/dev/null 2>&1; then
+  pane_session=$(tmux display-message -t "$TMUX_PANE" -p '#S' 2>/dev/null || true)
+  pane_alias=$(tmux display-message -t "$TMUX_PANE" -p '#{@alias}' 2>/dev/null || true)
+  pane_role=$(tmux display-message -t "$TMUX_PANE" -p '#{@role}' 2>/dev/null || true)
+  pane_epoch=$(tmux display-message -t "$TMUX_PANE" -p '#{@role_epoch}' 2>/dev/null || true)
+  pane_orchestration_role=$(tmux display-message -t "$TMUX_PANE" -p '#{@orchestration_role}' 2>/dev/null || true)
+  case "$pane_role" in
+    cc|claude|claude-p*) pane_role=cc ;;
+    cdx|codex|codex-p*) pane_role=cdx ;;
+    *) pane_role="" ;;
+  esac
+  if [[ "$OWNER" == "$pane_session/$pane_alias" && -n "$pane_role" && "$pane_epoch" =~ ^[0-9]+$ && "$pane_epoch" -gt 0 \
+        && ( "$pane_orchestration_role" == orchestrator || "$pane_orchestration_role" == worker || "$pane_orchestration_role" == solo-fallback ) ]]; then
+    peer_sender="$pane_alias.$pane_role"
+    cache_entry=$(tt_cache_get_task "$OWNER" "$task_target" "$task_id" 2>/dev/null || true)
+    if [[ -n "$cache_entry" ]] && jq -e \
+      --arg target "$task_target" --arg sent "$task_sent_at" --arg ttl "$task_ttl_sec" \
+      --arg kind "$task_kind" --arg intent "$task_intent_hash" --arg auth "$task_user_authorized_exact" \
+      --arg epoch "$task_role_epoch" --arg orchestrator "$task_orchestrator" \
+      '.target == $target and .sent_at == ($sent|tonumber) and .ttl_sec == ($ttl|tonumber)
+       and .task_kind == $kind and .intent_hash == $intent
+       and .user_authorized_exact == ($auth|tonumber)
+       and ((.role_handoff_epoch // "" | tostring) == $epoch)
+       and .orchestrator == $orchestrator' <<< "$cache_entry" >/dev/null; then
+      db_count=$(sqlite3 -readonly -batch -noheader "$TPROJ_MSG_DB_PATH" \
+        "SELECT count(*) FROM tasks WHERE task_id='$(tt_db_quote "$task_id")' AND target='$(tt_db_quote "$task_target")' AND owner_session='$(tt_db_quote "$pane_session")' AND owner_alias='$(tt_db_quote "$pane_alias")' AND sent_at=$task_sent_at AND ttl_sec=$task_ttl_sec AND expect_until=$((task_sent_at + task_ttl_sec)) AND task_kind='$(tt_db_quote "$task_kind")' AND COALESCE(intent_hash,'')='$(tt_db_quote "$task_intent_hash")' AND user_authorized_exact=$task_user_authorized_exact AND COALESCE(role_handoff_epoch,0)=${task_role_epoch:-0} AND COALESCE(orchestrator_alias,'')='$(tt_db_quote "$task_orchestrator")';" 2>/dev/null || true)
+      if [[ "$db_count" == 1 ]]; then
+        prepared=$("$peer_outbox" --db "$peer_outbox_db" lookup-prepared \
+          --owner-session "$pane_session" --owner-alias "$peer_sender" \
+          --target "$task_target" --task-id "$task_id" 2>/dev/null || true)
+        if [[ -n "$prepared" ]] && jq -e \
+          --arg sender "$peer_sender" --arg session "$pane_session" \
+          --arg target "$task_target" --arg id "$task_id" --arg kind "$task_kind" \
+          --arg ttl "$task_ttl_sec" --arg intent "$task_intent_hash" \
+          --arg auth "$task_user_authorized_exact" --arg epoch "$pane_epoch" \
+          --arg sender_role "$pane_orchestration_role" \
+          '.sender == $sender and .owner_alias == $sender and .owner_session == $session
+           and .target == $target and .task_id == $id and .task_kind == $kind
+           and .ttl_sec == ($ttl|tonumber) and .intent_hash == $intent
+           and .user_authorized_exact == ($auth == "1")
+           and .role_epoch == ($epoch|tonumber) and .sender_role == $sender_role' <<< "$prepared" >/dev/null; then
+          printf '%s\n' "$prepared" | "$peer_outbox" --db "$peer_outbox_db" commit >/dev/null 2>&1 || true
+        fi
+      fi
+    fi
+  fi
+fi
 exit 0
