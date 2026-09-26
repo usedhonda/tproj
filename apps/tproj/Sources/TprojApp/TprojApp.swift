@@ -3367,7 +3367,7 @@ final class AppViewModel: ObservableObject {
         statusText = "Remote CC cache window: \(hours == 0 ? "off" : "\(hours)h")"
     }
 
-    /// The host catalog is authoritative; workspace.yaml is only this Mac's display mirror.
+    /// Observe host state; this Mac's workspace.yaml owns aliases and destinations.
     func syncRemoteCatalog(host: String) async {
         let client = NSHomeDirectory() + "/bin/tproj-remote-client"
         guard fileManager.isExecutableFile(atPath: client), !host.isEmpty else { return }
@@ -3381,30 +3381,16 @@ final class AppViewModel: ObservableObject {
             statusText = "Remote catalog format error: \(host)"
             return
         }
-        var remote: [WorkspaceProject] = []
         for line in lines.dropFirst() {
             let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
             guard fields.count == 5, fields[2].hasPrefix("/") else { continue }
-            let prior = workspaceProjects.first { $0.type == "remote" && $0.host == host && $0.path == fields[2] }
-            // The local YAML owns the display alias. The host catalog's alias
-            // is a routing mirror, never a reason to rewrite this Mac's name.
-            var project = prior ?? WorkspaceProject(path: fields[2], type: "remote", host: host,
-                                                    alias: URL(fileURLWithPath: fields[2]).lastPathComponent,
-                                                    enabled: false)
-            project.remotePath = fields[2]
-            remote.append(project)
+            guard let project = workspaceProjects.first(where: {
+                $0.type == "remote" && $0.host == host && ($0.remotePath.isEmpty ? $0.path : $0.remotePath) == fields[2]
+            }) else { continue }
             let running = [fields[3], fields[4]].filter { $0 == "running" }.count
             remoteProjectStates[remoteKey(project)] = running == 2 ? "Running" :
                 (running == 1 ? "Partial" : (fields[3] == "occupied" || fields[4] == "occupied" ? "Occupied" : "Stopped"))
         }
-        let other = workspaceProjects.filter { $0.type != "remote" || $0.host != host }
-        let merged = other + remote
-        if let error = persistWorkspaceProjects(merged, createIfMissing: false) {
-            statusText = error
-            return
-        }
-        loadWorkspaceProjects()
-        normalizeSelection()
     }
 
     func stopRemoteProject(_ project: WorkspaceProject) async {
@@ -3507,6 +3493,14 @@ final class AppViewModel: ObservableObject {
             if fileManager.isExecutableFile(atPath: client) {
                 for old in previousRemotes where !currentRemotes.contains(where: { $0.host == old.host && $0.path == old.path }) {
                     _ = await runCommandAsync(client, ["unregister", old.host, old.path])
+                }
+            }
+            let affectedHosts = Set(previousRemotes.map(\.host)).union(currentRemotes.map(\.host))
+            for host in affectedHosts.sorted() {
+                let sync = await runCommandAsync(client, ["sync", host])
+                guard sync.exitCode == 0 else {
+                    statusText = "Saved workspace.yaml; remote sync failed: \(host): \(trimmedError(sync))"
+                    return true
                 }
             }
             statusText = "Saved project locations"
