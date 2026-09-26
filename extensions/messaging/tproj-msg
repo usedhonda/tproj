@@ -1673,6 +1673,11 @@ if [[ -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "t
     if [[ "$host_status" == running\|* ]]; then
       destination_session="${host_status#running|}"
       destination_session="${destination_session%%|*}"
+      # Remote role sessions are single-project but their pane tags still use
+      # claude-p1/codex-p1. An explicit --session may already name the target
+      # session, so set the column even when no session switch is needed.
+      IS_WORKSPACE=true
+      MY_COLUMN="1"
       if [[ "$SESSION" != "$destination_session" ]]; then
         if [[ "$SEND_MODE" == "true" ]]; then
           [[ "$NEW_TASK_MODE" == "false" && "$ROLE_HANDOFF_MODE" == "false" && "$FORCE_MODE" == "false" && "$FIRE_MODE" == "false" ]] \
@@ -1680,8 +1685,6 @@ if [[ -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "t
           CROSS_SESSION_CHAT=true
         fi
         SESSION="$destination_session"
-        IS_WORKSPACE=true
-        MY_COLUMN="1"
       fi
     fi
   fi

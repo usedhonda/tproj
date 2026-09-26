@@ -21,7 +21,7 @@ export HOME="$tmp/home" PATH="$tmp/bin:$PATH" ROUTE_CALLS="$tmp/calls"
 run_case() (
   REMOTE_HOST= REMOTE_CLIENT_SOCKET= REMOTE_INGRESS=false SEND_MODE=true STATUS_MODE=false
   TARGET=cdx MY_ROLE=cc AS_CALLER_VERIFIED=true VERIFIED_REG_PROJECT=/srv/alpha MY_PANE=
-  SESSION=tproj-remote-cc-old IS_WORKSPACE=true MY_COLUMN=1
+  SESSION=tproj-remote-cc-old IS_WORKSPACE=true MY_COLUMN="${4-1}"
   NEW_TASK_MODE=false ROLE_HANDOFF_MODE=false FORCE_MODE=false FIRE_MODE=false
   ROUTE_STATUS="${1}"
   export ROUTE_STATUS
@@ -31,6 +31,7 @@ run_case() (
 run_case 'running|tproj-remote-cdx-new|42' tproj-remote-cdx-new true
 grep -Fxq 'status --path /srv/alpha --role cdx' "$tmp/calls"
 run_case 'running|tproj-remote-cc-old|42' tproj-remote-cc-old false
+run_case 'running|tproj-remote-cc-old|42' tproj-remote-cc-old false ''
 run_case 'stopped|tproj-remote-cdx-new|-' tproj-remote-cc-old false
 if (
   REMOTE_HOST= REMOTE_CLIENT_SOCKET= REMOTE_INGRESS=false SEND_MODE=true STATUS_MODE=false
