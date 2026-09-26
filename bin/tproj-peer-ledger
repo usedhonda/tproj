@@ -48,7 +48,8 @@ def validate(snapshot):
             fail("invalid remote path")
         if p["type"] == "local" and p["host"] != host:
             fail("local project host mismatch")
-        if p["project_id"] != project_id(p["host"], p["path"]):
+        identity_path = p["remote_path"] if p["type"] == "remote" else p["path"]
+        if p["project_id"] != project_id(p["host"], identity_path):
             fail("project ID mismatch")
         if p["alias"] in aliases or p["project_id"] in identities:
             fail("duplicate alias or project ID")
@@ -103,7 +104,10 @@ def from_workspace(path, host):
         remote_path = entry.get("remote_path", path_value if kind == "remote" else "")
         if not isinstance(alias, str) or not alias or not isinstance(remote_path, str):
             fail("invalid alias or remote path")
-        projects.append({"project_id": project_id(destination, path_value), "alias": alias,
+        if entry.get("enabled") is False:
+            continue
+        identity_path = remote_path if kind == "remote" else path_value
+        projects.append({"project_id": project_id(destination, identity_path), "alias": alias,
                          "host": destination, "path": path_value,
                          "remote_path": remote_path, "type": kind})
     return projects

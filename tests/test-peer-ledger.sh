@@ -13,14 +13,19 @@ projects:
     type: remote
     host: other-host
     alias: two
+    remote_path: /srv/two
+  - path: /local/disabled
+    alias: two
     enabled: false
 YAML
 python3 "$ledger" refresh --workspace "$tmp/workspace.yaml" --ledger "$tmp/peers.json" --host this-host > "$tmp/export.json"
 python3 - "$tmp/export.json" <<'PY'
-import json, sys
+import hashlib, json, sys
 s=json.load(open(sys.argv[1]))
 assert s['revision'] == 1 and len(s['projects']) == 2
-assert s['projects'][1]['remote_path'] == '/remote/two'
+assert s['projects'][1]['remote_path'] == '/srv/two'
+expected=hashlib.sha256(json.dumps(['other-host','/srv/two'],separators=(',',':')).encode()).hexdigest()[:24]
+assert s['projects'][1]['project_id'] == 'p-' + expected
 PY
 python3 "$ledger" resolve two --ledger "$tmp/peers.json" > "$tmp/resolved.json"
 python3 - "$tmp/resolved.json" <<'PY'
