@@ -1776,6 +1776,7 @@ private final class MIDIPaneActivator {
 final class AppViewModel: ObservableObject {
     @Published var workspaceProjects: [WorkspaceProject] = []
     @Published private(set) var centralDirectoryAvailable = true
+    private var centralDirectoryRevision: Int?
     @Published var remoteProjectStates: [String: String] = [:]
     @Published var remoteCacheStates: [String: String] = [:]
     @Published var remoteCCCacheHours: [String: Int] = [:]
@@ -2293,19 +2294,19 @@ final class AppViewModel: ObservableObject {
         var unmatched = false
         workspaceProjects = workspaceProjects.map { project in
             var copy = project
-            if let canonical = byID[project.projectID], let alias = canonical["alias"] as? String { copy.alias = alias }
-            else if project.projectID.isEmpty,
-                    let canonicalHost = project.type == "remote" ? remoteHosts[project.host] : localHostID,
-                    let canonical = projects.first(where: {
-                        ($0["path"] as? String) == (project.type == "remote" && !project.remotePath.isEmpty ? project.remotePath : project.path) &&
-                        ($0["host_id"] as? String) == canonicalHost
-                    }) {
+            let canonicalHost = project.type == "remote" ? remoteHosts[project.host] : localHostID
+            let canonicalPath = project.type == "remote" && !project.remotePath.isEmpty ? project.remotePath : project.path
+            let canonical = byID[project.projectID] ?? projects.first(where: {
+                ($0["path"] as? String) == canonicalPath && ($0["host_id"] as? String) == canonicalHost
+            })
+            if let canonical {
                 if let id = canonical["project_id"] as? String { copy.projectID = id }
                 if let alias = canonical["alias"] as? String { copy.alias = alias }
-            } else if project.projectID.isEmpty { unmatched = true }
+            } else { unmatched = true }
             return copy
         }
-        centralDirectoryAvailable = !unmatched
+        centralDirectoryAvailable = true
+        centralDirectoryRevision = object["revision"] as? Int
         if unmatched { statusText = "Unified directory has no registered project for one or more workspace entries" }
     }
 
@@ -3505,6 +3506,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func saveConfiguredProjects(_ projects: [WorkspaceProject]) async -> Bool {
+        var projects = projects
         let aliases = projects.map { $0.routingAlias.lowercased() }
         guard Set(aliases).count == aliases.count else {
             statusText = "Project aliases must be unique"
@@ -3520,45 +3522,70 @@ final class AppViewModel: ObservableObject {
                 return false
             }
         }
-        // The hub is authoritative when the local client configuration exists.
-        // Host names must resolve through its explicit stable mapping; never guess.
-        let clientConfig = NSHomeDirectory() + "/.config/tproj/msg-client.json"
-        if fileManager.fileExists(atPath: clientConfig) {
-            guard let data = fileManager.contents(atPath: clientConfig),
-                  let cfg = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let localHost = cfg["host_id"] as? String else {
-                statusText = "Unified messaging client config is invalid (host_id required)"
-                return false
-            }
-            let remoteHosts = cfg["remote_hosts"] as? [String: String] ?? [:]
-            var payloadProjects: [[String: Any]] = []
-            for project in projects {
-                let host: String
-                if project.type == "remote" {
-                    guard let mapped = remoteHosts[project.host], !mapped.isEmpty else {
-                        statusText = "Unified directory host mapping missing: (project.host)"
-                        return false
-                    }
-                    host = mapped
-                } else { host = localHost }
-                let id = project.projectID.isEmpty ? UUID().uuidString.lowercased() : project.projectID
-                payloadProjects.append(["project_id": id, "alias": project.effectiveAlias, "host_id": host, "path": project.path])
-            }
-            let directory = await runCommandAsync(NSHomeDirectory() + "/bin/tproj-msg-unified", ["directory", "--json"])
-            guard directory.exitCode == 0 else { statusText = "Unified directory lookup failed: (trimmedError(directory))"; return false }
-            guard let response = try? JSONSerialization.jsonObject(with: Data(directory.stdout.utf8)) as? [String: Any],
-                  let revision = response["revision"] as? Int else { statusText = "Unified directory response invalid"; return false }
-            let sync: [String: Any] = ["expected_revision": revision, "projects": payloadProjects]
-            guard let encoded = try? JSONSerialization.data(withJSONObject: sync),
-                  let text = String(data: encoded, encoding: .utf8),
-                  let result = await runUnifiedCommand(text) else { statusText = "Unified directory sync failed"; return false }
-            guard result.exitCode == 0 else { statusText = "Unified directory sync failed: (trimmedError(result))"; return false }
-        }
         for old in workspaceProjects where liveColumns.contains(where: { $0.projectPath == old.path }) {
             guard projects.contains(where: { $0.path == old.path && $0.type == old.type && $0.host == old.host }) else {
                 statusText = "Close the live column before changing its location"
                 return false
             }
+        }
+        let clientConfig = NSHomeDirectory() + "/.config/tproj/msg-client.json"
+        if fileManager.fileExists(atPath: clientConfig) {
+            guard let data = fileManager.contents(atPath: clientConfig),
+                  let cfg = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let localHost = cfg["host_id"] as? String else {
+                statusText = "Unified messaging client config is invalid"
+                return false
+            }
+            let remoteHosts = cfg["remote_hosts"] as? [String: String] ?? [:]
+            let directory = await runCommandAsync(NSHomeDirectory() + "/bin/tproj-msg-unified", ["directory", "--json"])
+            guard directory.exitCode == 0,
+                  let response = try? JSONSerialization.jsonObject(with: Data(directory.stdout.utf8)) as? [String: Any],
+                  let revision = response["revision"] as? Int,
+                  let canonical = response["projects"] as? [[String: Any]] else {
+                statusText = "Unified directory lookup failed: \(trimmedError(directory))"
+                return false
+            }
+            if let loadedRevision = centralDirectoryRevision, loadedRevision != revision {
+                statusText = "Directory changed on another client; refresh before saving"
+                return false
+            }
+            var payloadProjects: [[String: Any]] = []
+            for index in projects.indices {
+                let project = projects[index]
+                let mappedHost = project.type == "remote" ? remoteHosts[project.host] : localHost
+                guard let host = mappedHost, !host.isEmpty else {
+                    statusText = "Unified directory host mapping missing: \(project.host)"
+                    return false
+                }
+                let path = project.type == "remote" && !project.remotePath.isEmpty ? project.remotePath : project.path
+                let existingByLocation = canonical.first {
+                    ($0["host_id"] as? String) == host && ($0["path"] as? String) == path
+                }
+                let existingByID = project.projectID.isEmpty ? nil : canonical.first {
+                    ($0["project_id"] as? String) == project.projectID
+                }
+                if !project.projectID.isEmpty && existingByID == nil && existingByLocation == nil {
+                    statusText = "Project ID is no longer registered; refresh before saving"
+                    return false
+                }
+                let id = existingByID?["project_id"] as? String
+                    ?? existingByLocation?["project_id"] as? String
+                    ?? UUID().uuidString.lowercased()
+                projects[index].projectID = id
+                payloadProjects.append(["project_id": id, "alias": project.effectiveAlias, "host_id": host, "path": path])
+            }
+            let sync: [String: Any] = ["expected_revision": revision, "projects": payloadProjects]
+            guard let encoded = try? JSONSerialization.data(withJSONObject: sync),
+                  let text = String(data: encoded, encoding: .utf8),
+                  let result = await runUnifiedCommand(text) else {
+                statusText = "Unified directory sync failed"
+                return false
+            }
+            guard result.exitCode == 0 else {
+                statusText = "Unified directory sync failed: \(trimmedError(result))"
+                return false
+            }
+            centralDirectoryRevision = revision + 1
         }
         let previousRemotes = workspaceProjects.filter { $0.type == "remote" }
         let client = NSHomeDirectory() + "/bin/tproj-remote-client"
