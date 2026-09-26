@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""Source-side, non-delivering one-shot authority for a fixed peer receiver."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import socket
+import socketserver
+import subprocess
+import sys
+import threading
+import time
+
+MAX_LINE = 65536
+TTL = 30
+IDENTITY = re.compile(r'^[A-Za-z0-9_-]+\.(cc|cdx)$')
+SESSION = re.compile(r'^[A-Za-z0-9_-]+$')
+
+
+class Refused(ValueError):
+    pass
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
+
+
+def peer_pid(sock):
+    if sys.platform != 'darwin':
+        raise Refused('LOCAL_PEERPID unavailable')
+    raw = sock.getsockopt(getattr(socket, 'SOL_LOCAL', 0), getattr(socket, 'LOCAL_PEERPID', 2), 4)
+    pid = int.from_bytes(raw, sys.byteorder, signed=True)
+    if pid <= 1:
+        raise Refused('invalid peer PID')
+    return pid
+
+
+def process(pid):
+    result = subprocess.run(['ps', '-p', str(pid), '-o', 'ppid=,lstart=,uid='],
+                            capture_output=True, text=True, check=False)
+    parts = result.stdout.strip().split()
+    if result.returncode or len(parts) != 7:
+        raise Refused('process unavailable')
+    try:
+        parent = int(parts[0])
+        started = int(time.mktime(time.strptime(' '.join(parts[1:6]), '%a %b %d %H:%M:%S %Y')))
+        uid = int(parts[6])
+    except (ValueError, OverflowError) as exc:
+        raise Refused('invalid process record') from exc
+    return parent, started, uid
+
+
+def cwd(pid):
+    result = subprocess.run(['lsof', '-a', '-p', str(pid), '-d', 'cwd', '-Fn'],
+                            capture_output=True, text=True, check=False)
+    paths = [line[1:] for line in result.stdout.splitlines() if line.startswith('n')]
+    if result.returncode or len(paths) != 1:
+        raise Refused('process cwd unavailable')
+    return Path(paths[0]).resolve(strict=True)
+
+
+def bind_sender(pid, envelope, registry_root, project, session, *, inspect=process,
+                inspect_cwd=cwd, now=None):
+    now = int(time.time() if now is None else now)
+    if not isinstance(envelope, dict) or set(envelope) != {'session', 'sender', 'target', 'role', 'epoch', 'kind', 'task_id', 'body'}:
+        raise Refused('invalid envelope fields')
+    sender, target = envelope['sender'], envelope['target']
+    if not isinstance(sender, str) or not IDENTITY.fullmatch(sender) or not isinstance(target, str) or not IDENTITY.fullmatch(target):
+        raise Refused('invalid identity')
+    if envelope['session'] != session or not SESSION.fullmatch(session):
+        raise Refused('wrong session')
+    if any(not isinstance(envelope[k], str) for k in ('role', 'kind', 'task_id', 'body')):
+        raise Refused('invalid envelope types')
+    if envelope['kind'] not in ('chat', 'task', 'ack', 'done', 'block') or not envelope['body']:
+        raise Refused('invalid envelope content')
+    if (envelope['kind'] == 'chat') != (envelope['task_id'] == ''):
+        raise Refused('task/kind mismatch')
+    if type(envelope['epoch']) is not int or envelope['epoch'] <= 0:
+        raise Refused('invalid epoch')
+    project = Path(project).resolve(strict=True)
+    records = []
+    for path in (Path(registry_root) / session).glob('**/*.json'):
+        if path.is_symlink():
+            continue
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if record.get('alias') == sender:
+            records.append(record)
+    if len(records) != 1:
+        raise Refused('registry identity absent or ambiguous')
+    record = records[0]
+    anchor, start, observed = (record.get(k) for k in ('pid', 'pid_start', 'observed_at'))
+    if any(type(v) is not int or v <= 0 for v in (anchor, start, observed)):
+        raise Refused('invalid registry process')
+    if observed > now or now - observed > 172800:
+        raise Refused('stale registry')
+    if (record.get('project') != str(project) or record.get('role') != envelope['role'] or
+            record.get('role_epoch') != envelope['epoch']):
+        raise Refused('registry metadata mismatch')
+    caller_cwd = inspect_cwd(pid)
+    if caller_cwd != project and project not in caller_cwd.parents:
+        raise Refused('caller outside project')
+    seen = set()
+    for _ in range(32):
+        if pid <= 1 or pid in seen:
+            break
+        seen.add(pid)
+        parent, live_start, uid = inspect(pid)
+        if uid != os.getuid():
+            raise Refused('process UID mismatch')
+        if pid == anchor:
+            if live_start != start:
+                raise Refused('PID reuse')
+            return
+        pid = parent
+    raise Refused('registry ancestor absent')
+
+
+class Authority:
+    def __init__(self, registry_root, project, session, target, receiver_pid):
+        if not SESSION.fullmatch(session) or not IDENTITY.fullmatch(target) or receiver_pid <= 1:
+            raise Refused('invalid fixed receiver')
+        self.registry_root = registry_root
+        self.project = project
+        self.session = session
+        self.target = target
+        _, self.receiver_start, receiver_uid = process(receiver_pid)
+        if receiver_uid != os.getuid():
+            raise Refused('receiver UID mismatch')
+        self.receiver_pid = receiver_pid
+        self.pending = {}
+        self.lock = threading.Lock()
+
+    def mint(self, caller_pid, envelope):
+        if envelope.get('target') != self.target:
+            raise Refused('wrong target')
+        bind_sender(caller_pid, envelope, self.registry_root, self.project, self.session)
+        digest = hashlib.sha256(canonical(envelope)).hexdigest()
+        nonce = secrets.token_hex(32)
+        with self.lock:
+            self.pending = {n: v for n, v in self.pending.items() if v[1] > time.monotonic()}
+            self.pending[nonce] = (digest, time.monotonic() + TTL)
+        return {'nonce': nonce, 'digest': digest}
+
+    def consume(self, caller_pid, nonce, envelope):
+        if caller_pid != self.receiver_pid:
+            raise Refused('wrong receiver process')
+        _, live_start, live_uid = process(caller_pid)
+        if live_start != self.receiver_start or live_uid != os.getuid():
+            raise Refused('receiver process changed')
+        if not isinstance(nonce, str) or not re.fullmatch(r'[0-9a-f]{64}', nonce):
+            raise Refused('invalid nonce')
+        digest = hashlib.sha256(canonical(envelope)).hexdigest()
+        with self.lock:
+            entry = self.pending.pop(nonce, None)
+        if entry is None or entry[1] <= time.monotonic() or entry[0] != digest:
+            raise Refused('absent, expired, or mismatched nonce')
+        return {'ok': True, 'digest': digest}
+
+
+def read_line(sock):
+    data = bytearray()
+    while len(data) <= MAX_LINE:
+        chunk = sock.recv(1)
+        if chunk == b'\n':
+            return json.loads(data)
+        if not chunk:
+            break
+        data.extend(chunk)
+    raise Refused('invalid or oversized request')
+
+
+class Handler(socketserver.BaseRequestHandler):
+    def handle(self):
+        self.request.settimeout(5)
+        try:
+            pid = peer_pid(self.request)
+            request = read_line(self.request)
+            if not isinstance(request, dict):
+                raise Refused('invalid request')
+            if request.get('op') == 'mint' and set(request) == {'op', 'envelope'}:
+                result = self.server.authority.mint(pid, request['envelope'])
+            elif request.get('op') == 'consume' and set(request) == {'op', 'nonce', 'envelope'}:
+                result = self.server.authority.consume(pid, request['nonce'], request['envelope'])
+            else:
+                raise Refused('invalid operation')
+            self.request.sendall(canonical(result) + b'\n')
+        except (OSError, ValueError, TypeError) as exc:
+            self.request.sendall(canonical({'ok': False, 'error': str(exc)}) + b'\n')
+
+
+def serve(path, authority):
+    path = Path(path)
+    if not path.is_absolute() or path.exists() or path.parent.stat().st_mode & 0o077:
+        raise Refused('socket path must be unused under private directory')
+    with socketserver.ThreadingUnixStreamServer(str(path), Handler) as server:
+        server.authority = authority
+        os.chmod(path, 0o600)
+        try:
+            server.serve_forever()
+        finally:
+            path.unlink(missing_ok=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--socket', required=True)
+    parser.add_argument('--registry-root', required=True)
+    parser.add_argument('--project', required=True)
+    parser.add_argument('--session', required=True)
+    parser.add_argument('--target', required=True)
+    parser.add_argument('--receiver-pid', required=True, type=int)
+    args = parser.parse_args()
+    try:
+        serve(args.socket, Authority(args.registry_root, args.project, args.session,
+                                     args.target, args.receiver_pid))
+        return 0
+    except (OSError, ValueError) as exc:
+        print(f'Error: peer authority {exc}', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
