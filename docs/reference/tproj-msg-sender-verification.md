@@ -24,6 +24,14 @@ local `alias@host` proxy duplicates. The imported ledger, not the server's
 legacy catalog aliases, resolves another project in a persistent host's tmux
 session after sender verification. Cross-session sends are plain live chat
 only, with the normal destination sendability gate and no queue.
+On that persistent host, an alias from the imported client ledger whose
+destination is on the initiating Mac routes ordinary `alias.role` chat through
+the fixed private `~/.config/tproj/cross-mac/reply.sock` reverse relay. The
+socket must exist; the outbound sender verifier and receiver's exact-pane gate
+remain in force. `--list` labels these imported aliases as configured remote,
+not live. `--status` does not claim sendability over this reverse path and
+returns an error instead. The relay remains non-authoritative host-origin chat;
+its sender hint cannot grant task or control authority.
 From a persistent remote host pane, a bare opposite role (`cc` or `cdx`)
 uses the verified sender project's `@project` path to look up that role's
 running session. If the two roles occupy separate sessions, only plain live

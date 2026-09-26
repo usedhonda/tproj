@@ -692,6 +692,20 @@ if [[ ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) && "$STDIN_MODE" !=
       route_session="${route_session%%|*}"
       exec "$0" --remote "$route_host" --remote-session "$route_session" "${ORIGINAL_ARGS[@]}"
     fi
+    # On a persistent remote host the imported snapshot names projects on its
+    # initiating Mac as local. The fixed private reverse socket is their chat
+    # transport; a body-supplied host or socket is never used for routing.
+    if [[ -n "$route_entry" && "$(jq -r '.host' <<< "$peer_snapshot")" != "$(uname -n)" \
+          && "$(jq -r '.host' <<< "$route_entry")" == "$(jq -r '.host' <<< "$peer_snapshot")" \
+          && "$(jq -r '.type' <<< "$route_entry")" == local ]]; then
+      if [[ "$STATUS_MODE" == "true" ]]; then
+        echo "Error: remote target '$TARGET' sendability is not available over the reverse socket" >&2
+        exit 1
+      fi
+      reply_socket="$HOME/.config/tproj/cross-mac/reply.sock"
+      [[ -S "$reply_socket" ]] || { echo "Error: reverse chat socket is unavailable" >&2; exit 1; }
+      exec "$0" --remote-client "$reply_socket" "${ORIGINAL_ARGS[@]}"
+    fi
   fi
 fi
 
@@ -4964,7 +4978,10 @@ if [[ "$LIST_MODE" == "true" ]]; then
       [[ -n "$remote_alias" ]] || continue
       printf "  %-20s  configured remote (%s)\n" "${remote_alias}.cc" "$remote_host"
       printf "  %-20s  configured remote (%s)\n" "${remote_alias}.cdx" "$remote_host"
-    done < <(jq -r '.projects[] | select(.type == "remote") | [.alias, .host] | @tsv' <<< "$ledger_snapshot")
+    done < <(jq -r --arg local_host "$(uname -n)" '
+      .host as $source | .projects[] |
+      select(.type == "remote" or ($source != $local_host and .type == "local" and .host == $source)) |
+      [.alias, .host] | @tsv' <<< "$ledger_snapshot")
   fi
 
   # Show gate targets

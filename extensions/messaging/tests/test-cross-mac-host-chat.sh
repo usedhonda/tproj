@@ -88,6 +88,48 @@ if grep -Fq 'chi@paired.cc' "$tmp/out"; then
 fi
 echo 'ok: list displays ledger aliases without proxy duplicate'
 
+# An imported client snapshot routes its local aliases back through the fixed
+# reverse socket; status must not invent sendability from that catalog entry.
+reverse_home="$(mktemp -d /tmp/tpr.XXXXXX)"
+trap 'rm -rf "$tmp" "$reverse_home"' EXIT
+mkdir -p "$reverse_home/.config/tproj/cross-mac" "$reverse_home/bin"
+cat > "$reverse_home/.config/tproj/workspace.yaml" <<'EOF'
+projects:
+  - path: /client/artist
+    alias: artist
+EOF
+cp "$repo/bin/tproj-peer-ledger" "$reverse_home/bin/tproj-peer-ledger"
+chmod +x "$reverse_home/bin/tproj-peer-ledger"
+HOME="$reverse_home" "$reverse_home/bin/tproj-peer-ledger" refresh --host client-test-host >/dev/null
+if HOME="$reverse_home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --status artist.cc >"$tmp/out" 2>"$tmp/err"; then
+  echo 'FAIL: reverse status claimed sendability' >&2
+  exit 1
+fi
+grep -Fq 'sendability is not available' "$tmp/err"
+HOME="$reverse_home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --list >"$tmp/out" 2>"$tmp/err"
+grep -Fq 'artist.cc' "$tmp/out"
+grep -Fq 'configured remote' "$tmp/out"
+if HOME="$reverse_home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --as artist.cc artist.cc hello >"$tmp/out" 2>"$tmp/err"; then
+  echo 'FAIL: missing reverse socket accepted' >&2
+  exit 1
+fi
+grep -Fq 'reverse chat socket is unavailable' "$tmp/err"
+python3 -c 'import socket,sys,time; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1); time.sleep(5)' \
+  "$reverse_home/.config/tproj/cross-mac/reply.sock" &
+reverse_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -S "$reverse_home/.config/tproj/cross-mac/reply.sock" ]] && break
+  sleep 0.1
+done
+if HOME="$reverse_home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --as artist.cc artist.cc hello >"$tmp/out" 2>"$tmp/err"; then
+  echo 'FAIL: reverse route accepted an unverified sender' >&2
+  exit 1
+fi
+grep -Fq 'verified local sender' "$tmp/err"
+kill "$reverse_pid" 2>/dev/null || true
+wait "$reverse_pid" 2>/dev/null || true
+echo 'ok: imported aliases use reverse route without claiming sendability'
+
 # Exercise the reverse Unix transport with a fake destination program; actual
 # target/liveness behavior remains owned by tproj-msg's focused sendability test.
 cp "$repo/extensions/messaging/tproj-remote-relay" "$tmp/tproj-remote-relay"
@@ -101,7 +143,7 @@ chmod +x "$tmp/tproj-msg"
 export CAPTURE_BODY="$tmp/body" CAPTURE_ARGS="$tmp/args"
 python3 "$tmp/tproj-remote-relay" serve --socket "$tmp/local.sock" >"$tmp/server.out" 2>"$tmp/server.err" &
 server_pid=$!
-trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; rm -rf "$tmp" "$reverse_home"' EXIT
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   [[ -S "$tmp/local.sock" ]] && break
   sleep 0.1
