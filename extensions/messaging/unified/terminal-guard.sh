@@ -1,43 +1,26 @@
 #!/usr/bin/env bash
-# Read-only delivery safety guard.  It delegates classification to the mature
-# tproj-msg --status path; this wrapper never calls send, --force, or --fire.
+# Read-only, pane-bound delivery guard. No target lookup or message dispatch.
 set -u
-
-die() {
-  printf '{"safe":false,"reason":"%s"}\n' "$1"
-  exit 1
-}
-
+json_fail() { if command -v jq >/dev/null 2>&1; then jq -cn --arg reason "$1" '{safe:false,reason:$reason}'; else python3 -c 'import json,sys; print(json.dumps({"safe":False,"reason":sys.argv[1]},separators=(",",":")))' "$1"; fi; return 1; }
+json_safe() { if command -v jq >/dev/null 2>&1; then jq -cn --arg pane "$1" --arg state "$2" --arg detail "$3" '{safe:true,pane:$pane,state:$state,detail:$detail}'; else python3 -c 'import json,sys; print(json.dumps({"safe":True,"pane":sys.argv[1],"state":sys.argv[2],"detail":sys.argv[3]},separators=(",",":")))' "$1" "$2" "$3"; fi; }
 pane="${1:-}"
-[[ "$pane" =~ ^%[0-9]+$ ]] || die "invalid_pane"
-command -v tmux >/dev/null 2>&1 || die "tmux_unavailable"
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-msg="$root/tproj-msg"
-[[ -x "$msg" ]] || die "tproj_msg_unavailable"
-
-alias_name="$(tmux display-message -t "$pane" -p '#{@alias}' 2>/dev/null || true)"
-role="$(tmux display-message -t "$pane" -p '#{@role}' 2>/dev/null || true)"
-[[ "$alias_name" =~ ^[A-Za-z0-9_-]+$ ]] || die "missing_alias"
-case "$role" in
-  cc|claude|agent) short_role=cc ;;
-  cdx|codex) short_role=cdx ;;
-  *) die "missing_platform" ;;
-esac
-target="${alias_name}.${short_role}"
-
-# `--status` is explicitly diagnostic in tproj-msg.  Capture its output rather
-# than sourcing the script (which would execute its CLI dispatcher).
-status="$($msg --status "$target" 2>/dev/null)" || die "status_unavailable"
-first="$(printf '%s\n' "$status" | sed -n '1p')"
-detail="$(printf '%s\n' "$status" | sed -n 's/^[[:space:]]*detail:[[:space:]]*//p' | head -1)"
-state="$(printf '%s\n' "$first" | sed -nE 's/.*[[:space:]](online|offline)\/(idle|suggestion|typing|busy).*/\1\/\2/p')"
+[[ "$pane" =~ ^%[0-9]+$ ]] || json_fail invalid_pane
+command -v tmux >/dev/null 2>&1 || json_fail tmux_unavailable
+read_opt() { tmux show-options -p -t "$pane" -v "$1" 2>/dev/null || true; }
+trim() { sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<< "$1"; }
+state="$(trim "$(read_opt @prompt_state | tr '[:upper:]' '[:lower:]')")"
+ts="$(trim "$(read_opt @prompt_state_ts)")"
+now="$(date +%s)"; fresh=false
+if [[ "$ts" =~ ^[0-9]+$ ]] && (( ts <= now + 5 )) && (( now - ts <= 30 )); then fresh=true; fi
+captured="$(tmux capture-pane -t "$pane" -p -S -30 2>/dev/null || true)"
+plain="$(printf '%s\n' "$captured" | sed $'s/\033\\[[0-9;]*[[:alpha:]]//g')"
+option='^[[:space:]]*([0-9]+[.)]|[>›❯▶▷▸▹●○◉◯◆◇*+-])[[:space:]]*(allow|deny|yes|no|approve|reject|continue|cancel|run|always allow|continue anyway|許可|拒否|承認|続行|キャンセル)'
+context='(permission|approval|approve|allow[[:space:]]+.*command|do you want|continue[?？]|choose|select|askuserquestion|ask user question|proceed[?？]|許可|承認|選択)'
+selectors="$(printf '%s\n' "$plain" | tail -30 | grep -Eic "$option" || true)"; contexts="$(printf '%s\n' "$plain" | tail -30 | grep -Eic "$context" || true)"
+(( selectors > 0 && contexts > 0 )) && json_fail selection_screen
 case "$state" in
-  online/idle|online/suggestion)
-    case "$detail" in
-      blocked_typing:*|blocked_selection:*) die "${detail%%:*}" ;;
-      *) printf '{"safe":true,"pane":"%s","target":"%s","state":"%s","detail":"%s"}\n' "$pane" "$target" "$state" "$detail"; exit 0 ;;
-    esac ;;
-  online/*) die "${detail:-busy}" ;;
-  offline/*|"") die "offline_or_unclassified" ;;
-  *) die "unclassified" ;;
+  idle|suggestion) [[ "$fresh" == true ]] || json_fail stale_prompt_state; json_safe "$pane" "$state" "prompt_state:${state}"; exit 0 ;;
+  typing) json_fail typing_draft ;;
+  unknown|'') json_fail unclassified_prompt_state ;;
+  *) json_fail invalid_prompt_state ;;
 esac
