@@ -2955,11 +2955,17 @@ SELECTION_OPTION_SHAPE_RE='^[[:space:]]*([0-9]+[.)]|[>›❯▶▷▸▹●○�
 
 strip_live_input_line() {
   local cleaned="$1"
-  local prompt_line="" below=""
+  local prompt_line="" below="" composer_line=""
 
   prompt_line=$(printf '%s\n' "$cleaned" | grep -n -E '^[[:space:]]*[›❯]' | tail -1 | cut -d: -f1 || true)
   if [[ -z "$prompt_line" ]] || (( prompt_line <= 1 )); then
     printf '%s\n' "$cleaned"
+    return 0
+  fi
+  composer_line=$(printf '%s\n' "$cleaned" | sed -n "${prompt_line}p")
+  # Codex can leave a completed approval menu within the last 30 captured
+  # lines. Its current empty composer is stronger evidence than that history.
+  if [[ "$composer_line" =~ ^[[:space:]]*[›❯][[:space:]]*(Ask\ Codex\ to\ do\ anything)?[[:space:]]*$ ]]; then
     return 0
   fi
   # A selected dialog option has the remaining options under it; a composer has

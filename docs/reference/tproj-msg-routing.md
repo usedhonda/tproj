@@ -18,3 +18,7 @@ catalog alias does not override them. Cross-host delivery is plain chat with a
 non-authoritative sender hint. A receiver must not treat that hint as verified
 pane identity or task/role-handoff authority. A reply uses the intended exact
 alias from the project ledger, not a guessed alias based on the receiving pane.
+
+The sendability gate blocks a live approval selection. A completed approval
+menu still visible above Codex's current empty composer is history, not a live
+selection; it must not indefinitely block subsequent chat delivery.

@@ -1130,6 +1130,13 @@ set_ws "$CC_TTY" "waiting_input" "unknown"
 set_capture "%1" $'Do you want to proceed?\n  1. Yes\n\xe2\x9d\xaf 2. No'
 assert_detail "SC3_dialog_selected_last_still_blocked" "tproj.cc" "blocked_selection"
 
+# SC3b. A completed approval menu left in capture history cannot block a
+# Codex pane whose current input is the empty composer.
+reset_fixtures
+set_ws "$CDX_TTY" "waiting_input" "unknown"
+set_capture "%2" $'Would you like to run the following command?\n  1. Yes, proceed\n  2. No, cancel\n✔ You approved the command\n› Ask Codex to do anything\n  gpt-6-astra medium'
+refute_detail "SC3b_stale_approval_above_codex_composer" "tproj.cdx" "blocked_selection"
+
 # SC4. --flush must drain a pane the send path calls sendable. `suggestion` is a
 # dim ghost completion, not user input, so requiring a bare `idle` here left the
 # queue parked forever on a pane that --status reported as sendable.
