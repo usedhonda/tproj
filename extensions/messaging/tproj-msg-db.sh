@@ -47,7 +47,8 @@
 # timestamps without persisting arbitrary response bodies.
 # Version 8 adds durable task contract metadata plus cancellation/freeze
 # tombstones and one-shot receiver notice bookkeeping.
-: "${TT_DB_SCHEMA_VERSION:=10}"
+# Version 11 adds nullable tasks.project_path. Existing rows remain unbound.
+: "${TT_DB_SCHEMA_VERSION:=11}"
 
 tt_db_path() { printf '%s\n' "$TPROJ_MSG_DB_PATH"; }
 tt_db_error_log() { printf '%s\n' "$TPROJ_MSG_DB_ERROR_LOG"; }
@@ -174,6 +175,7 @@ SQL
   tt_db_migrate_tasks_composite_identity
   tt_db_migrate_task_lifecycle_columns
   tt_db_migrate_task_contract_columns
+  tt_db_migrate_task_project_column
   tt_db_sweep_orphaned_queued
   # Stamp user_version last, so it only advances after every migration above has
   # run. This is the version tt_db_ensure_init compares against on later calls.
@@ -224,6 +226,18 @@ tombstone_reason_hash|TEXT
 worker_notice_state|TEXT
 worker_notice_at|INTEGER
 COLS
+}
+
+# Schema v11: only newly bound tasks may use cross-session project routing.
+# Historical rows stay NULL and retain their same-session semantics.
+tt_db_migrate_task_project_column() {
+  tt_db_guard || return 0
+  local existing_cols
+  existing_cols=$(tt_db_exec_safe "PRAGMA table_info(tasks);" 2>/dev/null)
+  if ! printf '%s' "$existing_cols" | grep -q '|project_path|'; then
+    tt_db_exec_safe "ALTER TABLE tasks ADD COLUMN project_path TEXT;" >/dev/null
+  fi
+  tt_db_exec_safe "CREATE INDEX IF NOT EXISTS idx_tasks_project_target_state ON tasks(project_path, target, state) WHERE project_path IS NOT NULL;" >/dev/null
 }
 
 # D3 (msg-repair): one-shot idempotent sweep of pre-D3 orphaned 'queued' rows.
@@ -566,6 +580,7 @@ tt_db_set_notified() {
 # Args: task_id target sent_at ttl_sec msg_hash [owner_alias] [owner_session]
 #       [task_kind] [intent_hash] [user_authorized_exact]
 #       [role_handoff_epoch] [orchestrator_alias]
+#       [project_path]
 # owner_alias/owner_session (additive, nullable) are the issuing column of the
 # owner-scoped cache. An empty owner value is stored NULL and never clobbers a
 # known value on conflict (COALESCE), so a later upsert without owner cannot
@@ -585,26 +600,28 @@ tt_db_upsert_task() {
   local user_authorized_exact_raw="${10:-0}"
   local role_handoff_epoch_raw="${11:-}"
   local orchestrator_alias_raw="${12:-}"
+  local project_path_raw="${13:-}"
   [[ -z "$task_id" ]] && return 0
   local expect_until=$((sent_at + ttl_sec))
   local task_kind_sql="NULL" intent_hash_sql="NULL" user_authorized_exact_sql=0
-  local role_handoff_epoch_sql="NULL" orchestrator_alias_sql="NULL"
+  local role_handoff_epoch_sql="NULL" orchestrator_alias_sql="NULL" project_path_sql="NULL"
   [[ -n "$task_kind_raw" ]] && task_kind_sql="'$(tt_db_quote "$task_kind_raw")'"
   [[ "$intent_hash_raw" =~ ^[A-Fa-f0-9]{16,128}$ ]] && intent_hash_sql="'$(tt_db_quote "$intent_hash_raw")'"
   [[ "$user_authorized_exact_raw" == "1" ]] && user_authorized_exact_sql=1
   [[ "$role_handoff_epoch_raw" =~ ^[0-9]+$ ]] && role_handoff_epoch_sql="$role_handoff_epoch_raw"
   [[ -n "$orchestrator_alias_raw" ]] && orchestrator_alias_sql="'$(tt_db_quote "$orchestrator_alias_raw")'"
+  [[ -n "$project_path_raw" ]] && project_path_sql="'$(tt_db_quote "$project_path_raw")'"
   if [[ -n "$owner_alias_raw" && -n "$owner_session_raw" ]]; then
     # Owned row: identity is the composite. task_id from a different owner or a
     # different target inserts a distinct row instead of overwriting this one.
     local oa=$(tt_db_quote "$owner_alias_raw")
     local os=$(tt_db_quote "$owner_session_raw")
-    tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias, owner_session, task_kind, intent_hash, user_authorized_exact, role_handoff_epoch, orchestrator_alias) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', '${oa}', '${os}', ${task_kind_sql}, ${intent_hash_sql}, ${user_authorized_exact_sql}, ${role_handoff_epoch_sql}, ${orchestrator_alias_sql}) ON CONFLICT(owner_session, owner_alias, target, task_id) DO UPDATE SET sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash, task_kind=COALESCE(excluded.task_kind, task_kind), intent_hash=COALESCE(excluded.intent_hash, intent_hash), user_authorized_exact=CASE WHEN excluded.user_authorized_exact = 1 THEN 1 ELSE user_authorized_exact END, role_handoff_epoch=COALESCE(excluded.role_handoff_epoch, role_handoff_epoch), orchestrator_alias=COALESCE(excluded.orchestrator_alias, orchestrator_alias);" >/dev/null
+    tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias, owner_session, task_kind, intent_hash, user_authorized_exact, role_handoff_epoch, orchestrator_alias, project_path) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', '${oa}', '${os}', ${task_kind_sql}, ${intent_hash_sql}, ${user_authorized_exact_sql}, ${role_handoff_epoch_sql}, ${orchestrator_alias_sql}, ${project_path_sql}) ON CONFLICT(owner_session, owner_alias, target, task_id) DO UPDATE SET sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash, task_kind=COALESCE(excluded.task_kind, task_kind), intent_hash=COALESCE(excluded.intent_hash, intent_hash), user_authorized_exact=CASE WHEN excluded.user_authorized_exact = 1 THEN 1 ELSE user_authorized_exact END, role_handoff_epoch=COALESCE(excluded.role_handoff_epoch, role_handoff_epoch), orchestrator_alias=COALESCE(excluded.orchestrator_alias, orchestrator_alias), project_path=COALESCE(excluded.project_path, project_path);" >/dev/null
   else
     # Legacy / owner-less: conflict on the partial UNIQUE(task_id) WHERE both
     # owner columns are NULL, so repeated ownerless upserts of the same task_id
     # update the one legacy row instead of growing the table.
-    tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias, owner_session, task_kind, intent_hash, user_authorized_exact, role_handoff_epoch, orchestrator_alias) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', NULL, NULL, ${task_kind_sql}, ${intent_hash_sql}, ${user_authorized_exact_sql}, ${role_handoff_epoch_sql}, ${orchestrator_alias_sql}) ON CONFLICT(task_id) WHERE owner_session IS NULL AND owner_alias IS NULL DO UPDATE SET target=excluded.target, sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash, task_kind=COALESCE(excluded.task_kind, task_kind), intent_hash=COALESCE(excluded.intent_hash, intent_hash), user_authorized_exact=CASE WHEN excluded.user_authorized_exact = 1 THEN 1 ELSE user_authorized_exact END, role_handoff_epoch=COALESCE(excluded.role_handoff_epoch, role_handoff_epoch), orchestrator_alias=COALESCE(excluded.orchestrator_alias, orchestrator_alias);" >/dev/null
+    tt_db_exec_safe "INSERT INTO tasks (task_id, target, sent_at, expect_until, ttl_sec, state, msg_hash, owner_alias, owner_session, task_kind, intent_hash, user_authorized_exact, role_handoff_epoch, orchestrator_alias, project_path) VALUES ('${task_id}', '${target}', ${sent_at}, ${expect_until}, ${ttl_sec}, 'pending', '${msg_hash}', NULL, NULL, ${task_kind_sql}, ${intent_hash_sql}, ${user_authorized_exact_sql}, ${role_handoff_epoch_sql}, ${orchestrator_alias_sql}, ${project_path_sql}) ON CONFLICT(task_id) WHERE owner_session IS NULL AND owner_alias IS NULL DO UPDATE SET target=excluded.target, sent_at=excluded.sent_at, expect_until=excluded.expect_until, ttl_sec=excluded.ttl_sec, msg_hash=excluded.msg_hash, task_kind=COALESCE(excluded.task_kind, task_kind), intent_hash=COALESCE(excluded.intent_hash, intent_hash), user_authorized_exact=CASE WHEN excluded.user_authorized_exact = 1 THEN 1 ELSE user_authorized_exact END, role_handoff_epoch=COALESCE(excluded.role_handoff_epoch, role_handoff_epoch), orchestrator_alias=COALESCE(excluded.orchestrator_alias, orchestrator_alias), project_path=COALESCE(excluded.project_path, project_path);" >/dev/null
   fi
 }
 
