@@ -19,7 +19,15 @@ context='(permission|approval|approve|allow[[:space:]]+.*command|do you want|con
 selectors="$(printf '%s\n' "$plain" | tail -30 | grep -Eic "$option" || true)"; contexts="$(printf '%s\n' "$plain" | tail -30 | grep -Eic "$context" || true)"
 (( selectors > 0 && contexts > 0 )) && json_fail selection_screen
 case "$state" in
-  idle|suggestion) [[ "$fresh" == true ]] || json_fail stale_prompt_state; json_safe "$pane" "$state" "prompt_state:${state}"; exit 0 ;;
+  idle)
+    [[ "$fresh" == true ]] || json_fail stale_prompt_state
+    # Independent input-line guard: a fresh idle signal cannot authorize
+    # concatenating a parked composer draft (the historical sendability bug).
+    last_prompt="$(printf '%s\n' "$plain" | grep -E '^[[:space:]]*[›❯>]' | tail -1 || true)"
+    draft="$(printf '%s' "$last_prompt" | sed -E 's/^[[:space:]]*[›❯>][[:space:]]*//; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+    [[ -z "$draft" || "$draft" == "Ask Codex to do anything" ]] || json_fail typing_draft
+    json_safe "$pane" "$state" "prompt_state:${state}"; exit 0 ;;
+  suggestion) [[ "$fresh" == true ]] || json_fail stale_prompt_state; json_safe "$pane" "$state" "prompt_state:${state}"; exit 0 ;;
   typing) json_fail typing_draft ;;
   unknown|'') json_fail unclassified_prompt_state ;;
   *) json_fail invalid_prompt_state ;;
