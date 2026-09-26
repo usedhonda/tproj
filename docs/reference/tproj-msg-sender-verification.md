@@ -15,12 +15,13 @@ live `sshd`/`sshd-session` ancestor and resolves exactly one live pane in the
 exact session's `dev` window. The destination applies the ordinary prompt,
 draft, and selection gates, but a blocked target causes an error, not a queue.
 SSH failure is a delivery failure; no offline store is created.
-For ordinary `alias.role` chat, the sending Mac's `workspace.yaml` can select
-one remote project with that alias and route through this same verified path.
-An enabled local project with the same alias is an ambiguity error. The remote
-session is resolved from the host's live status by path and role; no second
-server-authored alias overrides the client YAML. On a persistent host, a
-registered alias in another local tmux session similarly resolves to that
+For ordinary `alias.role` chat and `--status`, the sending Mac refreshes its
+host-local `peers.json` from `workspace.yaml`, resolves the alias there, and
+syncs that snapshot to the destination host before looking up the live session
+by destination path and role. Invalid or ambiguous snapshots and failed syncs
+stop routing. `--list` displays configured remote YAML aliases and hides their
+local `alias@host` proxy duplicates. The imported ledger, not the server's
+legacy catalog aliases, resolves another project in a persistent host's tmux
 session after sender verification. Cross-session sends are plain live chat
 only, with the normal destination sendability gate and no queue.
 From a persistent remote host pane, a bare opposite role (`cc` or `cdx`)

@@ -53,9 +53,12 @@ projects:
 EOF
 cat > "$tmp/home/bin/tproj-remote-client" <<'EOF'
 #!/bin/sh
+if [ "$1" = sync ]; then exit 0; fi
 echo 'running|tproj-remote-cc-test|123'
 EOF
 chmod +x "$tmp/home/bin/tproj-remote-client"
+cp "$repo/bin/tproj-peer-ledger" "$tmp/home/bin/tproj-peer-ledger"
+chmod +x "$tmp/home/bin/tproj-peer-ledger"
 if HOME="$tmp/home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --as exact.cc chi.cc hello >"$tmp/out" 2>"$tmp/err"; then
   echo 'FAIL: YAML route accepted an unverified sender' >&2
   exit 1
@@ -63,6 +66,27 @@ fi
 grep -Fq 'verified local sender' "$tmp/err"
 [[ ! -e "$SSH_CALLED_MARKER" ]]
 echo 'ok: YAML alias routes remotely but preserves sender verification'
+
+HOME="$tmp/home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --status chi.cc >"$tmp/out" 2>"$tmp/err"
+grep -Fq 'chi.cc' "$tmp/out"
+grep -Fq 'remote running|tproj-remote-cc-test' "$tmp/out"
+echo 'ok: status resolves remote YAML alias through ledger'
+
+cat > "$tmp/bin/tmux" <<'EOF'
+#!/bin/sh
+if [ "$1" = list-panes ]; then
+  printf '%%1:claude:chi@paired:1:0\n'
+fi
+EOF
+chmod +x "$tmp/bin/tmux"
+HOME="$tmp/home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --list >"$tmp/out" 2>"$tmp/err"
+grep -Fq 'chi.cc' "$tmp/out"
+grep -Fq 'chi.cdx' "$tmp/out"
+if grep -Fq 'chi@paired.cc' "$tmp/out"; then
+  echo 'FAIL: list displayed duplicate proxy alias' >&2
+  exit 1
+fi
+echo 'ok: list displays ledger aliases without proxy duplicate'
 
 # Exercise the reverse Unix transport with a fake destination program; actual
 # target/liveness behavior remains owned by tproj-msg's focused sendability test.

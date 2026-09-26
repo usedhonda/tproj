@@ -651,24 +651,42 @@ if [[ "$LIST_MODE" != "true" && "$READ_MODE" != "true" && "$FLUSH_MODE" != "true
   fi
 fi
 
-# A plain alias.role send follows this Mac's workspace YAML. The host is a
-# transport namespace, not another project alias. Re-exec through the existing
-# verified --remote path; control/task modes remain excluded by that path.
-if [[ "$SEND_MODE" == "true" && "$STDIN_MODE" != "true" && -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "true" \
+# The imported snapshot on a remote host belongs to the initiating Mac; do not
+# overwrite it from that host's unrelated workspace.yaml.
+load_peer_snapshot() {
+  local ledger="$HOME/bin/tproj-peer-ledger" snapshot="" source_host=""
+  [[ -x "$ledger" ]] || return 1
+  if [[ -f "$HOME/.config/tproj/peers.json" ]]; then
+    snapshot=$("$ledger" export) || return 1
+    source_host=$(jq -r '.host' <<< "$snapshot")
+  fi
+  if [[ -f "$HOME/.config/tproj/workspace.yaml" && ( -z "$source_host" || "$source_host" == "$(uname -n)" ) ]]; then
+    snapshot=$("$ledger" refresh) || return 1
+  fi
+  [[ -n "$snapshot" ]] || return 1
+  printf '%s\n' "$snapshot"
+}
+
+# Plain alias chat and status use the ledger projected from this Mac's YAML.
+# The host is a transport namespace, never a second alias authority.
+if [[ ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) && "$STDIN_MODE" != "true" && -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "true" \
       && "$TARGET" =~ ^[A-Za-z0-9_-]+\.(cc|cdx)$ ]]; then
-  workspace_file="$HOME/.config/tproj/workspace.yaml"
-  if [[ -f "$workspace_file" ]] && command -v yq >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-    remote_rows=$(yq -o json "$workspace_file" 2>/dev/null | jq -r --arg alias "${TARGET%.*}" \
-      '.projects // [] | .[] | select(.type == "remote" and .alias == $alias) | [.host, .path] | @tsv' 2>/dev/null || true)
-    if [[ -n "$remote_rows" ]]; then
-      [[ "$remote_rows" != *$'\n'* ]] || { echo "Error: ambiguous remote alias '${TARGET%.*}' in workspace.yaml" >&2; exit 1; }
-      local_conflict=$(yq -o json "$workspace_file" 2>/dev/null | jq -r --arg alias "${TARGET%.*}" \
-        '[.projects // [] | .[] | select((.type // "local") == "local" and .alias == $alias and .enabled != false)] | length' 2>/dev/null || true)
-      [[ "$local_conflict" == 0 ]] || { echo "Error: alias '${TARGET%.*}' is active on both local and remote projects" >&2; exit 1; }
-      IFS=$'\t' read -r route_host route_path <<< "$remote_rows"
+  ledger="$HOME/bin/tproj-peer-ledger"
+  if [[ -f "$HOME/.config/tproj/workspace.yaml" || -f "$HOME/.config/tproj/peers.json" ]]; then
+    peer_snapshot=$(load_peer_snapshot) || { echo "Error: peer ledger unavailable or invalid" >&2; exit 1; }
+    route_entry=$("$ledger" resolve "${TARGET%.*}" 2>/dev/null) || route_entry=""
+    if [[ -n "$route_entry" && "$(jq -r '.host' <<< "$peer_snapshot")" == "$(uname -n)" \
+          && "$(jq -r '.type' <<< "$route_entry")" == remote ]]; then
+      route_host=$(jq -r '.host' <<< "$route_entry")
+      route_path=$(jq -r '.remote_path' <<< "$route_entry")
       remote_client="$HOME/bin/tproj-remote-client"
       [[ -x "$remote_client" ]] || { echo "Error: remote client is not installed" >&2; exit 1; }
+      "$remote_client" sync "$route_host" || exit 1
       route_status=$("$remote_client" status "$route_host" "$route_path" "${TARGET##*.}") || exit $?
+      if [[ "$STATUS_MODE" == "true" ]]; then
+        printf '%-20s  remote %s (%s)\n' "$TARGET" "$route_status" "$route_host"
+        exit 0
+      fi
       [[ "$route_status" == running\|* ]] || { echo "Error: remote target '$TARGET' is not running" >&2; exit 1; }
       route_session="${route_status#running|}"
       route_session="${route_session%%|*}"
@@ -1617,7 +1635,7 @@ else
 fi
 
 # On a persistent host, other registered projects occupy separate tmux
-# sessions. Resolve the same alias.role through the host catalog after sender
+# sessions. Resolve the same alias.role through the imported ledger after sender
 # verification; changing the destination never changes the verified origin.
 CROSS_SESSION_CHAT=false
 if [[ -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "true" \
@@ -1649,10 +1667,10 @@ fi
 if [[ -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "true" \
       && ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) \
       && "$TARGET" =~ ^[A-Za-z0-9_-]+\.(cc|cdx)$ \
-      && -x "$HOME/bin/tproj-remote-host" ]]; then
-  host_rows=$("$HOME/bin/tproj-remote-host" list 2>/dev/null | awk -F '|' -v alias="${TARGET%.*}" 'NR > 1 && $2 == alias {print $3}' || true)
-  if [[ -n "$host_rows" ]]; then
-    [[ "$host_rows" != *$'\n'* ]] || { echo "Error: ambiguous host alias '${TARGET%.*}'" >&2; exit 1; }
+      && -x "$HOME/bin/tproj-remote-host" && -x "$HOME/bin/tproj-peer-ledger" ]]; then
+  host_entry=$("$HOME/bin/tproj-peer-ledger" resolve "${TARGET%.*}" 2>/dev/null) || host_entry=""
+  if [[ -n "$host_entry" ]]; then
+    host_rows=$(jq -r '.remote_path // .path' <<< "$host_entry")
     host_status=$("$HOME/bin/tproj-remote-host" status --path "$host_rows" --role "${TARGET##*.}" 2>/dev/null || true)
     if [[ "$host_status" == running\|* ]]; then
       destination_session="${host_status#running|}"
@@ -4907,6 +4925,15 @@ bridge_config_check || exit 1
 
 # === --list mode ===
 if [[ "$LIST_MODE" == "true" ]]; then
+  ledger_snapshot=""
+  ledger="$HOME/bin/tproj-peer-ledger"
+  if [[ -f "$HOME/.config/tproj/workspace.yaml" || -f "$HOME/.config/tproj/peers.json" ]]; then
+    ledger_snapshot=$(load_peer_snapshot) || { echo "Error: peer ledger unavailable or invalid" >&2; exit 1; }
+  fi
+  proxy_aliases=""
+  if [[ -n "$ledger_snapshot" ]]; then
+    proxy_aliases=$(jq -r '.projects[] | select(.type == "remote") | .alias + "@" + .host' <<< "$ledger_snapshot")
+  fi
   echo "Available targets ($SESSION):"
   echo ""
 
@@ -4918,6 +4945,7 @@ if [[ "$LIST_MODE" == "true" ]]; then
       short=$(role_to_short "$role")
       case "$role" in yazi|yazi-p*) continue ;; esac
       [[ -z "$pane_alias" || "$pane_alias" == "null" ]] && pane_alias="col${col}"
+      if [[ -n "$proxy_aliases" ]] && grep -Fxq -- "$pane_alias" <<< "$proxy_aliases"; then continue; fi
       printf "  %-20s  %s (col %s)\n" "${pane_alias}.${short}" "$role" "$col"
     done
   else
@@ -4929,6 +4957,14 @@ if [[ "$LIST_MODE" == "true" ]]; then
       case "$role" in yazi|yazi-p*) continue ;; esac
       printf "  %-20s  %s\n" "$short" "$role"
     done
+  fi
+
+  if [[ -n "$ledger_snapshot" ]]; then
+    while IFS=$'\t' read -r remote_alias remote_host; do
+      [[ -n "$remote_alias" ]] || continue
+      printf "  %-20s  configured remote (%s)\n" "${remote_alias}.cc" "$remote_host"
+      printf "  %-20s  configured remote (%s)\n" "${remote_alias}.cdx" "$remote_host"
+    done < <(jq -r '.projects[] | select(.type == "remote") | [.alias, .host] | @tsv' <<< "$ledger_snapshot")
   fi
 
   # Show gate targets
