@@ -1145,6 +1145,7 @@ final class WindowLevelController: ObservableObject {
 
 struct WorkspaceProject: Identifiable {
     let id = UUID()
+    var projectID: String = ""
     var path: String
     var type: String
     var host: String
@@ -1774,6 +1775,7 @@ private final class MIDIPaneActivator {
 @MainActor
 final class AppViewModel: ObservableObject {
     @Published var workspaceProjects: [WorkspaceProject] = []
+    @Published private(set) var centralDirectoryAvailable = true
     @Published var remoteProjectStates: [String: String] = [:]
     @Published var remoteCacheStates: [String: String] = [:]
     @Published var remoteCCCacheHours: [String: Int] = [:]
@@ -2234,6 +2236,7 @@ final class AppViewModel: ObservableObject {
 
     private func refreshWorkspaceStateFromWatcher() async {
         loadWorkspaceProjects()
+        await refreshCentralDirectory()
         await loadLiveColumnsAsync()
         normalizeSelection()
         await loadRoleModes()
@@ -2254,12 +2257,42 @@ final class AppViewModel: ObservableObject {
         defer { isBusy = false }
 
         loadWorkspaceProjects()
+        await refreshCentralDirectory()
         await loadLiveColumnsAsync()
         startKeepWarmPolling()
         normalizeSelection()
         await loadRoleModes()
         await refreshWeeklyPaceSnapshots()
         statusText = "Reloaded: \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium))"
+    }
+
+    /// Refresh canonical aliases once per workspace refresh; YAML remains layout storage only.
+    private func refreshCentralDirectory() async {
+        let config = NSHomeDirectory() + "/.config/tproj/msg-client.json"
+        guard fileManager.fileExists(atPath: config) else { return }
+        let result = await runCommandAsync(NSHomeDirectory() + "/bin/tproj-msg-unified", ["directory", "--json"])
+        guard result.exitCode == 0,
+              let data = result.stdout.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let projects = object["projects"] as? [[String: Any]] else {
+            centralDirectoryAvailable = false
+            statusText = "Unified directory unavailable; routing aliases are not authoritative"
+            return
+        }
+        let byID = Dictionary(uniqueKeysWithValues: projects.compactMap { p -> (String, [String: Any])? in
+            guard let id = p["project_id"] as? String else { return nil }; return (id, p)
+        })
+        workspaceProjects = workspaceProjects.map { project in
+            var copy = project
+            if let canonical = byID[project.projectID], let alias = canonical["alias"] as? String { copy.alias = alias }
+            else if project.projectID.isEmpty,
+                    let canonical = projects.first(where: { ($0["path"] as? String) == project.path && ($0["host_id"] as? String) == project.host }) {
+                if let id = canonical["project_id"] as? String { copy.projectID = id }
+                if let alias = canonical["alias"] as? String { copy.alias = alias }
+            }
+            return copy
+        }
+        centralDirectoryAvailable = true
     }
 
     func syncUIAndRefreshAll() async {
@@ -3473,6 +3506,40 @@ final class AppViewModel: ObservableObject {
                 return false
             }
         }
+        // The hub is authoritative when the local client configuration exists.
+        // Host names must resolve through its explicit stable mapping; never guess.
+        let clientConfig = NSHomeDirectory() + "/.config/tproj/msg-client.json"
+        if fileManager.fileExists(atPath: clientConfig) {
+            guard let data = fileManager.contents(atPath: clientConfig),
+                  let cfg = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let localHost = cfg["host_id"] as? String else {
+                statusText = "Unified messaging client config is invalid (host_id required)"
+                return false
+            }
+            let remoteHosts = cfg["remote_hosts"] as? [String: String] ?? [:]
+            var payloadProjects: [[String: Any]] = []
+            for project in projects {
+                let host: String
+                if project.type == "remote" {
+                    guard let mapped = remoteHosts[project.host], !mapped.isEmpty else {
+                        statusText = "Unified directory host mapping missing: (project.host)"
+                        return false
+                    }
+                    host = mapped
+                } else { host = localHost }
+                let id = project.projectID.isEmpty ? UUID().uuidString.lowercased() : project.projectID
+                payloadProjects.append(["project_id": id, "alias": project.effectiveAlias, "host_id": host, "path": project.path])
+            }
+            let directory = await runCommandAsync(NSHomeDirectory() + "/bin/tproj-msg-unified", ["directory", "--json"])
+            guard directory.exitCode == 0 else { statusText = "Unified directory lookup failed: (trimmedError(directory))"; return false }
+            guard let response = try? JSONSerialization.jsonObject(with: Data(directory.stdout.utf8)) as? [String: Any],
+                  let revision = response["revision"] as? Int else { statusText = "Unified directory response invalid"; return false }
+            let sync: [String: Any] = ["expected_revision": revision, "projects": payloadProjects]
+            guard let encoded = try? JSONSerialization.data(withJSONObject: sync),
+                  let text = String(data: encoded, encoding: .utf8),
+                  let result = await runUnifiedCommand(text) else { statusText = "Unified directory sync failed"; return false }
+            guard result.exitCode == 0 else { statusText = "Unified directory sync failed: (trimmedError(result))"; return false }
+        }
         for old in workspaceProjects where liveColumns.contains(where: { $0.projectPath == old.path }) {
             guard projects.contains(where: { $0.path == old.path && $0.type == old.type && $0.host == old.host }) else {
                 statusText = "Close the live column before changing its location"
@@ -3512,6 +3579,16 @@ final class AppViewModel: ObservableObject {
         }
         statusText = error
         return false
+    }
+
+    private func runUnifiedCommand(_ json: String) async -> CommandResult? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process(); process.executableURL = URL(fileURLWithPath: NSHomeDirectory() + "/bin/tproj-msg-unified"); process.arguments = ["directory-sync", "--stdin"]
+                let input = Pipe(), output = Pipe(), error = Pipe(); process.standardInput = input; process.standardOutput = output; process.standardError = error
+                do { try process.run(); input.fileHandleForWriting.write(Data(json.utf8)); input.fileHandleForWriting.closeFile(); process.waitUntilExit(); continuation.resume(returning: CommandResult(exitCode: process.terminationStatus, stdout: String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "", stderr: String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")) } catch { continuation.resume(returning: nil) }
+            }
+        }
     }
 
     func openWorkspaceYAML() {
@@ -3888,7 +3965,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let query = ".projects[]? | [(.path // \"\"),(.type // \"local\"),(.host // \"\"),(.alias // \"\"),(.enabled|tostring),((.lastActiveAt // 0)|tostring),((.keep_warm_hours // 0)|tostring),((.cdx_keep_warm_hours // 0)|tostring),(.local_path // \"\"),(.remote_path // \"\")] | @tsv"
+        let query = ".projects[]? | [(.path // \"\"),(.type // \"local\"),(.host // \"\"),(.alias // \"\"),(.enabled|tostring),((.lastActiveAt // 0)|tostring),((.keep_warm_hours // 0)|tostring),((.cdx_keep_warm_hours // 0)|tostring),(.local_path // \"\"),(.remote_path // \"\"),(.project_id // \"\")] | @tsv"
         let result = runCommand("/usr/bin/env", ["yq", "-r", query, url.path])
 
         guard result.exitCode == 0 else {
@@ -3922,6 +3999,7 @@ final class AppViewModel: ObservableObject {
 
             parsed.append(
                 WorkspaceProject(
+                    projectID: parts.count > 10 ? parts[10] : "",
                     path: parts[0],
                     type: parts[1].isEmpty ? "local" : parts[1],
                     host: parts[2],
@@ -4809,6 +4887,7 @@ final class AppViewModel: ObservableObject {
 
         for project in projects {
             lines.append("  - path: \(yamlQuote(project.path))")
+            if !project.projectID.isEmpty { lines.append("    project_id: \(yamlQuote(project.projectID))") }
             if !project.localPath.isEmpty {
                 lines.append("    local_path: \(yamlQuote(project.localPath))")
             }
