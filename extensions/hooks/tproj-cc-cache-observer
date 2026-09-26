@@ -172,7 +172,14 @@ def main():
         payload = json.loads(raw)
         if isinstance(payload, dict):
             record(sys.argv[1], payload, identity)
-    except (OSError, ValueError, TypeError, OverflowError):
+            if payload.get("hook_event_name") == "UserPromptSubmit" and "[tproj-message:" in str(payload.get("prompt", "")):
+                receipt = Path.home() / "lib/tproj-msg-unified/receipt.py"
+                if receipt.is_file():
+                    # Existing loaded hook gains the receipt path without an agent restart.
+                    subprocess.run([os.sys.executable, str(receipt)], input=json.dumps(payload),
+                                   text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   timeout=5, check=False)
+    except (OSError, ValueError, TypeError, OverflowError, subprocess.SubprocessError):
         pass  # Observation must never block a Claude turn or statusline.
     return 0
 

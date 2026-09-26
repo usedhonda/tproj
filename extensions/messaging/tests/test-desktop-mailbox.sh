@@ -32,6 +32,9 @@ if [[ ! -x "$REAL_TPROJ_MSG" ]]; then
 fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/tproj-dtm.XXXXXX")
+# Isolate enrollment/maintenance settings from the operator account.
+export HOME="$WORK/home"
+mkdir -p "$HOME"
 FAKE_DIR="$WORK/fixtures"; BIN_DIR="$WORK/bin"
 mkdir -p "$FAKE_DIR" "$BIN_DIR" "$WORK/queue"
 trap 'rm -rf "$WORK"' EXIT

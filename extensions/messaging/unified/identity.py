@@ -92,17 +92,13 @@ def _process_info(pid: int) -> dict[str, Any]:
         return {"ppid": ppid, "pid_start": start, "uid": uid, "command": cmd, "cwd": cwd}
     result = subprocess.run(["ps", "-p", str(pid), "-o", "ppid=,lstart=,uid=,command="],
                             capture_output=True, text=True, check=False)
-    fields = result.stdout.strip().split(None, 8)
+    fields = result.stdout.strip().split(None, 7)
     if result.returncode or len(fields) < 8:
         raise IdentityError("process unavailable")
     try:
         started = int(time.mktime(time.strptime(" ".join(fields[1:6]), "%a %b %d %H:%M:%S %Y")))
         uid = int(fields[6])
-        listing = subprocess.check_output(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], text=True)
-        names = [line[1:] for line in listing.splitlines() if line.startswith("n")]
-        if len(names) != 1:
-            raise ValueError("process cwd unavailable")
-        cwd = str(Path(names[0]).resolve())
+        cwd = ""  # Caller binding needs PID/start/UID/argv, not an lsof subprocess.
         return {"ppid": int(fields[0]), "pid_start": started, "uid": uid,
                 "command": fields[7], "cwd": cwd}
     except (ValueError, OSError, IndexError) as exc:

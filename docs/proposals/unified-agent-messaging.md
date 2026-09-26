@@ -1,9 +1,10 @@
 # Unified agent messaging: v1 contract and implementation plan
 
-Status: proposed design, not an active runtime contract. No installation,
-configuration migration, service restart, or live send is authorized by this
-document alone. Implementation starts only on a subsequent implementation
-instruction. Existing routing contracts remain authoritative until cutover.
+Status: implementation design. The executable contract is
+[`../reference/unified-messaging.md`](../reference/unified-messaging.md).
+Enrollment/cutover is explicit per installation; this document alone does not
+authorize installation, restart or live sends. The acceptance matrix below
+remains the verification scope, not a claim that every scenario has passed.
 
 ## 1. Outcome and architecture decision
 

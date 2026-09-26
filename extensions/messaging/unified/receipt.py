@@ -14,6 +14,14 @@ except ImportError:  # installed standalone module
 MESSAGE_RE = re.compile(r"\[tproj-message:([^\]\s]+)\]")
 
 
+def normalize_prompt(prompt: str) -> str:
+    prefixed = re.fullmatch(r'(\[from:[^\]]+\] \[tproj-message:[^\]]+\])\s*<pasted_content id="([A-Za-z0-9_-]+)">\n(.*)\n</pasted_content id="\2">\s*', prompt, re.DOTALL)
+    if prefixed: return prefixed.group(1) + " " + prefixed.group(3)
+    # Claude wraps a bracketed-paste prompt in one transport-owned block.
+    match = re.fullmatch(r'\s*<pasted_content id="([A-Za-z0-9_-]+)">\n(.*)\n</pasted_content id="\1">\s*', prompt, re.DOTALL)
+    return match.group(2) if match else prompt
+
+
 def submit_prompt_receipt(payload: dict, *, config_path: Path | None = None) -> bool:
     """Send an exact prompt receipt; return False silently for unrelated/unsafe input."""
     try:
@@ -32,7 +40,6 @@ def submit_prompt_receipt(payload: dict, *, config_path: Path | None = None) -> 
             "message_id": match.group(1),
             "prompt": prompt,
             "runtime_id": session_id,
-            "session": session_id,
             "as": payload.get("as"),
         })
         return True

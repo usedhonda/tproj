@@ -1,11 +1,12 @@
-# Unified messaging checkpoint
+# Unified messaging
 
-This is the public guide for the proposed unified host-agent branch. It is a
-migration checkpoint, **not globally active by default**. The branch is active
+This is the public contract for the unified host-agent transport. It is
+**not globally active by default**. The transport is active
 only when the local client configuration exists at
 `$HOME/.config/tproj/msg-client.json` and contains an explicit
 `"active": true` marker. Until that condition is met, the existing `tproj-msg`
-legacy routes remain authoritative.
+legacy routes remain authoritative only on never-enrolled installations.
+An enrolled installation never automatically returns to those routes.
 
 ## Directory and identity
 
@@ -40,6 +41,31 @@ sent only when the application has an actual response.
 ## Rollout boundary
 
 Before enabling the marker, verify the directory import, endpoint registration,
-and one exact-ID presentation/reply proof for each platform. Do not restart
-tmux, agents, or the GUI as part of this documentation checkpoint. Keep the
-legacy section in the messaging skill until the cutover checkpoint is complete.
+and one exact-ID presentation/reply proof for each platform and the main service.
+Pause acceptance during cutover, classify old queues without replaying history,
+and retire obsolete ordinary-message relays. Do not restart tmux, agents, or
+the GUI. Build GUI changes for the next operator-initiated launch and explicitly
+record their pending activation. Broader route-matrix results remain separate
+from these minimum cutover proofs; queued probes are not passing evidence.
+
+## Presentation recovery and active recipients
+
+A bound recipient may consume its inbox during an active turn and explicitly
+acknowledge an observed message with `tproj-msg ack <message-id>`. This records
+presentation by the authenticated recipient; listing an inbox alone does not.
+The CLI never acknowledges on behalf of an unrelated process or project.
+
+Claude terminal delivery keeps the `[from:...]` marker outside bracketed paste
+so ordinary chat cannot be mistaken for a direct user role handoff. Codex receives
+the entire envelope in one paste, because paste coalescing can discard preceding
+literal keystrokes. Exact prompt
+receipts normalize only the known single native paste wrapper. A matching bound
+Claude session transcript may resolve an uncertain write without reinjection.
+Observer running state, selection screens and independent draft measurement
+block injection; terminal write success is never a presentation receipt.
+
+`--status cc` and `--status cdx` use the same authenticated project as send,
+not a local GUI label. Once enrolled, the persistent `msg-client.enrolled`
+marker prevents missing or malformed client configuration from restoring the
+legacy ordinary transport. The messaging installer distributes the unified
+modules but never enrolls hosts or restarts services.

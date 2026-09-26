@@ -196,6 +196,7 @@ def verify_hook_configs(claude_settings: Path, codex_hooks: Path, home: Path) ->
 
 def check(args: argparse.Namespace, home: Path) -> int:
     errors = []
+    errors.extend(unified_runtime(args, home, check_only=True))
     errors.extend(verify_files(args.bin_dir, args.claude_skill, args.codex_skill))
     errors.extend(verify_hook_configs(args.claude_settings, args.codex_hooks, home))
     if errors:
@@ -208,6 +209,7 @@ def check(args: argparse.Namespace, home: Path) -> int:
 
 def install(args: argparse.Namespace, home: Path) -> int:
     changed = False
+    unified_runtime(args, home)
     for source, dest_name in runtime_sources():
         changed |= install_file(source, args.bin_dir / dest_name, executable=True, dry_run=args.dry_run)
     skill_source = REPO_ROOT / SKILL_SOURCE
@@ -226,6 +228,26 @@ def install(args: argparse.Namespace, home: Path) -> int:
     else:
         print(f"messaging/task runtime already current in {args.bin_dir}")
     return 0
+
+
+def unified_runtime(args: argparse.Namespace, home: Path, check_only: bool = False) -> list[str]:
+    # Distribute code only. Enrollment and service lifecycle remain explicit;
+    # the broad installer must never restart live mailbox or agent processes.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("unified_installer", REPO_ROOT / "extensions/messaging/unified/install.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    errors = []
+    for source, target, mode in module.expected(home):
+        if source.name == "<launcher>":
+            target = args.bin_dir / "tproj-msg-unified"
+        if check_only:
+            expected = module.LAUNCHER.encode() if source.name == "<launcher>" else source.read_bytes()
+            if not target.is_file() or target.read_bytes() != expected or target.stat().st_mode & 0o777 != mode:
+                errors.append(f"{target} missing or differs from unified source")
+        else:
+            module.atomic_copy(source, target, mode, args.dry_run)
+    return errors
 
 
 def parse_args() -> argparse.Namespace:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -16,8 +17,10 @@ from typing import Any
 
 try:
     from .protocol import HubError, MAX_BODY, MAX_TTL, serve_socket
+    from .policy import check_policy
 except ImportError:  # allow the installed single-file entrypoint to be invoked directly
     from protocol import HubError, MAX_BODY, MAX_TTL, serve_socket
+    from policy import check_policy
 
 
 SCHEMA = """
@@ -152,6 +155,7 @@ class Hub:
         p = self._row("SELECT * FROM participants WHERE participant_id=?", (req["participant_id"],))
         if not p or p["host_id"] != host: raise HubError("identity_rejected", "participant is not owned by host")
         old = self._row("SELECT * FROM endpoints WHERE endpoint_id=?", (req["endpoint_id"],)); now = self._now()
+        if old and old["retired"]: raise HubError("stale_session", "retired endpoint cannot be revived")
         if old and any(str(old[k]) != str(req[k]) for k in ("host_id","participant_id","session","pane","pid","pid_start","runtime_id","platform")): raise HubError("identity_rejected", "endpoint identity is immutable")
         inc = old["incarnation"] if old and old["pid_start"] == str(req["pid_start"]) and old["runtime_id"] == req["runtime_id"] else str(uuid.uuid4())
         self.db.execute("INSERT INTO endpoints(endpoint_id,participant_id,host_id,session,pane,pid,pid_start,runtime_id,platform,incarnation,last_heartbeat,retired) VALUES(?,?,?,?,?,?,?,?,?,?,?,0) ON CONFLICT(endpoint_id) DO UPDATE SET participant_id=excluded.participant_id,session=excluded.session,pane=excluded.pane,pid=excluded.pid,pid_start=excluded.pid_start,runtime_id=excluded.runtime_id,platform=excluded.platform,incarnation=excluded.incarnation,last_heartbeat=excluded.last_heartbeat,retired=0", (req["endpoint_id"],req["participant_id"],host,req["session"],req["pane"],req["pid"],str(req["pid_start"]),req["runtime_id"],req["platform"],inc,now))
@@ -163,6 +167,8 @@ class Hub:
         if mode == "stopped": raise HubError("maintenance", "hub delivery is paused")
         body = msg.get("body", "")
         if not isinstance(body, str) or len(body.encode()) > MAX_BODY: raise HubError("invalid_message", "body exceeds 64 KiB")
+        if any(ord(c) < 32 and c not in "\n\t" for c in body) or "\x7f" in body:
+            raise HubError("invalid_message", "terminal control characters are forbidden")
         ttl = int(msg.get("ttl_sec", MAX_TTL));
         if ttl < 1 or ttl > MAX_TTL: raise HubError("invalid_message", "ttl exceeds 24 hours")
         mid, target = msg.get("message_id"), msg.get("target")
@@ -174,46 +180,61 @@ class Hub:
             if existing["payload_hash"] != ph: raise HubError("id_conflict", "message ID has different payload")
             return {"message_id": mid, "state": existing["state"], "duplicate": True}
         if msg.get("sender_endpoint") != sender["endpoint_id"]: raise HubError("identity_rejected", "sender endpoint mismatch")
-        if msg.get("in_reply_to") and not target:
-            original = self._row("SELECT * FROM messages WHERE message_id=?", (msg["in_reply_to"],))
-            if not original: raise HubError("not_found", "original message not found")
-            target = original["target_address"]
-        target = self._address(target, sender["endpoint_id"]); participant = self._participant(target)
         if msg.get("in_reply_to"):
             original = self._row("SELECT * FROM messages WHERE message_id=?", (msg["in_reply_to"],))
-            if not original or original["recipient_endpoint"] != sender["endpoint_id"]: raise HubError("identity_rejected", "reply sender is not original recipient")
+            if not original or original["recipient_endpoint"] != sender["endpoint_id"]:
+                raise HubError("identity_rejected", "reply sender is not original recipient")
             recipient = self._row("SELECT * FROM endpoints WHERE endpoint_id=?", (original["sender_endpoint"],))
-            if not recipient or recipient["retired"]: raise HubError("no_recipient", "original sender endpoint is unavailable")
-        else: recipient = self._endpoint_for_send(participant)
-        created = float(msg.get("created_at", self._now())); expires = created + ttl
+            if not recipient or recipient["retired"]:
+                raise HubError("no_recipient", "original sender endpoint is unavailable")
+            target = self._row("SELECT address FROM participants WHERE participant_id=?", (recipient["participant_id"],))[0]
+            if msg.get("thread_id") and msg["thread_id"] != original["thread_id"]:
+                raise HubError("invalid_message", "reply thread must match original")
+            msg = dict(msg, thread_id=original["thread_id"])
+        else:
+            target = self._address(target, sender["endpoint_id"])
+            recipient = self._endpoint_for_send(self._participant(target))
+        check_policy(self.db, sender["endpoint_id"], target, body, self._now(), msg.get("in_reply_to"))
+        created = self._now(); expires = created + ttl
         self.db.execute("INSERT INTO messages(message_id,thread_id,in_reply_to,sender_endpoint,target_address,recipient_endpoint,body,kind,created_at,expires_at,payload_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (mid,msg.get("thread_id") or mid,msg.get("in_reply_to"),sender["endpoint_id"],target,recipient["endpoint_id"],body,msg.get("kind","chat"),created,expires,ph))
         return {"message_id": mid, "state": "queued"}
 
     def inbox(self, req):
-        host = self._auth(req); ep = self._host_endpoint(host, req.get("endpoint_id")); now=self._now(); limit=min(max(int(req.get("limit",100)),1),1000); cursor=req.get("cursor","")
-        rows=self.db.execute("SELECT * FROM messages WHERE recipient_endpoint=? AND message_id>? AND expires_at>? AND state IN ('accepted','queued','adapter_received') ORDER BY created_at,message_id LIMIT ?",(ep["endpoint_id"],cursor,now,limit)).fetchall()
-        out=[dict(r) for r in rows]
-        for d in out:
-            q=self._row("SELECT p.address FROM participants p JOIN endpoints e ON e.participant_id=p.participant_id WHERE e.endpoint_id=?",(d["sender_endpoint"],)); d["sender_address"]=q[0] if q else None
-        return {"messages":out,"next_cursor": rows[-1]["message_id"] if rows else cursor}
+        host = self._auth(req)
+        ep = self._host_endpoint(host, req.get("endpoint_id"))
+        cursor = int(req.get("cursor") or 0)
+        limit = min(max(int(req.get("limit", 100)), 1), 100)
+        rows = self.db.execute("SELECT rowid AS sequence,* FROM messages WHERE recipient_endpoint=? AND rowid>? ORDER BY rowid LIMIT ?", (ep["endpoint_id"], cursor, limit)).fetchall()
+        out = self.message_views(rows)
+        return {"messages":out,"next_cursor":out[-1]["sequence"] if out else cursor}
+
+    def message_views(self, rows):
+        out = []
+        size = 0
+        for row in rows:
+            item = dict(row)
+            q = self._row("SELECT p.address FROM participants p JOIN endpoints e ON e.participant_id=p.participant_id WHERE e.endpoint_id=?", (item["sender_endpoint"],))
+            item["sender_address"] = q[0] if q else None
+            encoded = len(json.dumps(item, ensure_ascii=False).encode())
+            if size + encoded > 200000: break
+            out.append(item); size += encoded
+        return out
 
     def claim(self, req):
         host=self._auth(req)
-        if self._maintenance() != "open": raise HubError("maintenance", "hub delivery is paused")
+        if self._maintenance() == "stopped": raise HubError("maintenance", "hub delivery is paused")
         ep=self._host_endpoint(host,req.get("endpoint_id")); now=self._now()
         self._tx()
         try:
             limit=min(max(int(req.get("limit",100)),1),1000)
             rows=self.db.execute("SELECT * FROM messages WHERE recipient_endpoint=? AND expires_at>? AND state IN ('accepted','queued','adapter_received') ORDER BY created_at,message_id LIMIT ?",(ep["endpoint_id"],now,limit)).fetchall()
             if self._maintenance() == "probe": rows=[r for r in rows if r["message_id"] in set(self.config.get("probe_message_ids", []))]
+            rows=self.message_views(rows)
             for r in rows: self.db.execute("UPDATE messages SET state='adapter_received',adapter_received_at=? WHERE message_id=?",(now,r["message_id"]))
             self._commit()
         except Exception:
             self._rollback(); raise
-        out=[dict(r) for r in rows]
-        for d in out:
-            q=self._row("SELECT p.address FROM participants p JOIN endpoints e ON e.participant_id=p.participant_id WHERE e.endpoint_id=?",(d["sender_endpoint"],)); d["sender_address"]=q[0] if q else None
-        return {"messages":out}
+        return {"messages":rows}
 
     def receipt(self, req):
         host=self._auth(req); msg=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),));
@@ -232,6 +253,11 @@ class Hub:
 
     def dispatch(self, req):
         op=req.get("op")
+        if op == "directory_update":
+            self._auth(req)
+            if "expected_revision" not in req:
+                raise HubError("revision_conflict", "expected revision required")
+            return self.directory_import(dict(req, admin_token=self.admin_token))
         if op=="ping": return {"maintenance":self._maintenance(),"revision":int(self._row("SELECT value FROM metadata WHERE key='directory_revision'")[0])}
         if op=="directory_import": return self.directory_import(req)
         if op=="directory_list": self._auth(req); return self.directory_list()
@@ -261,6 +287,9 @@ class Hub:
 
 def main(argv=None):
     ap=argparse.ArgumentParser(); ap.add_argument("--socket",required=True); ap.add_argument("--db",required=True); ap.add_argument("--config",required=True); args=ap.parse_args(argv)
+    os.umask(0o077)
+    lock = open(args.socket+".lock", "a")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     Path(args.socket).parent.mkdir(mode=0o700,parents=True,exist_ok=True)
     try: os.unlink(args.socket)
     except FileNotFoundError: pass

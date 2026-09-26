@@ -29,6 +29,10 @@ def _family(address: str) -> str:
 
 
 def _recovery_fingerprint(sender: str, target: str, body: str) -> str:
+    ids = re.findall(r"id\s+[0-9]+", body)
+    quotes = re.findall(r"「[^」]{1,160}」", body)
+    if ids or quotes:
+        return hashlib.sha1((sender+"|"+target+"|ids="+",".join(ids)+"|quotes="+"|".join(quotes)).encode()).hexdigest()
     normalized = _normal(body)
     normalized = re.sub(r"\b\d{4}-\d{2}-\d{2}T[^ ]+", "TIMESTAMP", normalized)
     normalized = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", "DATE", normalized)
@@ -40,13 +44,13 @@ def _recovery_fingerprint(sender: str, target: str, body: str) -> str:
 
 
 def _blocked_body(body: str) -> str | None:
-    if re.match(r"^[ \t]*\[from:[^\]]+\]", body):
+    if re.match(r"^\s*\[from:[^\]]+\]", body):
         return "relay_like"
     if re.search(r"\[(?:Control|ACK):[^\]]+\]", body):
         return "control_or_ack"
     if re.search(r"\[Persona[ \t]+(?:Sync|Check)\]", body, re.I):
         return "persona_control"
-    if re.match(r"^[ \t]*\[(?:Task|Role-Handoff):", body):
+    if re.search(r"\[(?:Task|Role-Handoff):", body):
         return "control_marker_in_chat"
     return None
 
@@ -78,7 +82,7 @@ def check_policy(db: sqlite3.Connection, sender_endpoint: str, target_address: s
     if lower == "gate" or lower.startswith("gate:"):
         recovery = re.search(r"未達|読み落とし|復元|再投入|過去の指示|過去依頼|\bskip(?:ping)?\b", body, re.I)
         context = re.search(r"ご主人様|ユーザー|LINE|id[ \t]+\d+|作業依頼|指示|URLだして|日報", body, re.I)
-        if recovery and context:
+        if (recovery and context) or re.search(r"ご主人様からの作業依頼として|扱いにしてください|未達\s*LINE|読み落とし扱い", body):
             fp = _recovery_fingerprint(sender_endpoint, target_address, body)
             rows = db.execute("SELECT body, target_address, created_at FROM messages WHERE sender_endpoint=? AND created_at>=?", (sender_endpoint, float(now) - RECOVERY_TTL))
             for old_body, old_target, _created in rows:

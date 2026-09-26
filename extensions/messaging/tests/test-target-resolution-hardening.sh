@@ -5,6 +5,9 @@ set -uo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REAL_TPROJ_MSG="${1:-$SCRIPT_DIR/../tproj-msg}"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/tproj-target-resolution.XXXXXX")
+# Isolate enrollment/maintenance settings from the operator account.
+export HOME="$WORK/home"
+mkdir -p "$HOME"
 FAKE_DIR="$WORK/fixtures"
 BIN_DIR="$WORK/bin"
 REGISTRY_ROOT="$WORK/registry"

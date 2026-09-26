@@ -4,6 +4,9 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 TPROJ_MSG="$ROOT/extensions/messaging/tproj-msg"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/tproj-role-handoff.XXXXXX")"
+# Isolate enrollment/maintenance settings from the operator account.
+export HOME="$WORK/home"
+mkdir -p "$HOME"
 FIXTURES="$WORK/fixtures"
 BIN="$WORK/bin"
 mkdir -p "$FIXTURES" "$BIN" "$WORK/queue" "$WORK/control" "$WORK/fanout"

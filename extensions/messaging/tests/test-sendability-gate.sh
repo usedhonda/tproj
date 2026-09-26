@@ -40,6 +40,9 @@ fi
 
 # --- sandbox -----------------------------------------------------------------
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/tproj-sendgate.XXXXXX")
+# Isolate enrollment/maintenance settings from the operator account.
+export HOME="$WORK/home"
+mkdir -p "$HOME"
 FAKE_DIR="$WORK/fixtures"
 BIN_DIR="$WORK/bin"
 mkdir -p "$FAKE_DIR" "$BIN_DIR"

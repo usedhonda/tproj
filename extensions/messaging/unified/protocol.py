@@ -25,7 +25,9 @@ def failure(exc: HubError) -> dict:
 
 
 def read_json_lines(stream: BinaryIO):
-    for line in stream:
+    while True:
+        line = stream.readline(MAX_REQUEST + 1)
+        if not line: return
         if not line.strip():
             continue
         if len(line) > MAX_REQUEST:
@@ -45,11 +47,11 @@ def write_json_line(stream: BinaryIO, value: dict) -> None:
 
 
 def serve_socket(sock: socket.socket, handler) -> None:
-    """Serve one-request-per-line clients until the socket is closed."""
+    """One bounded request per connection; idle clients cannot hold the broker."""
     while True:
         conn, _ = sock.accept()
         with conn:
-            conn.settimeout(30)
+            conn.settimeout(2)
             stream = conn.makefile("rwb")
             try:
                 for request in read_json_lines(stream):
@@ -59,5 +61,8 @@ def serve_socket(sock: socket.socket, handler) -> None:
                         write_json_line(stream, failure(exc))
                     except Exception:  # never leak internals over RPC
                         write_json_line(stream, failure(HubError("internal", "hub internal error")))
+                    break
+            except (OSError, HubError, ValueError):
+                pass  # malformed or disconnected clients cannot stop the broker
             finally:
                 stream.close()
