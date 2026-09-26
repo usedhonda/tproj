@@ -87,12 +87,16 @@ tmux ワークスペース内の他 AI ペイン（CC, Cdx, Agent）と通信す
 `~/.config/tproj/peers.json` に投影された遠隔 alias を「configured remote」として示す。
 表示だけでは遠隔ペインの生存や sendability を証明しない。手元Macの
 `--status <alias.role>` は ledger の宛先を同期し、その host の role/path status を表示するが、
-送信時の draft/selection gate の代用にはならない。別Macへの返信は、既知の exact な宛先を指定して
+送信時の draft/selection gate の代用にはならない。Mac mini から手元Macへは、
+取り込んだ ledger の exact な `<alias.role>` を通常どおり指定する。既存の返信 socket が
+あれば自動経路選択する。明示的な診断時だけ
 `tproj-msg --remote-client "$HOME/.config/tproj/cross-mac/reply.sock" <alias.role> "msg"`
-を使う。逆方向は `--remote <SSH-host> --remote-session <destination-session>`。
+を使う。手元Macからの明示的な診断経路は `--remote <SSH-host> --remote-session <destination-session>`。
 この経路は送信時に送信元を検証し、受信側で宛先セッション・ペインの実在と
 送信可能状態を確認して同期的に成功/失敗を返すので、事前 `--status` の例外とする。
-ソケットがない/宛先不明なら送らず報告する。`--new-task`・権限移譲・control文面は不可。
+ソケットがない/宛先不明なら送らず報告する。逆方向の `--status` は送信可能状態を
+証明できずエラーになるので、一覧・socket の存在だけを送信許可と扱わない。
+`--new-task`・権限移譲・control文面は不可。
 受信表示は `[from:Remote Host]` で、本文に送信元ヒントが付く。ヒントは
 受信側で認証されておらず、peer の alias 証明や task 権限ではない。
 送信元Macの `workspace.yaml` を反映した `peers.json` に一意の遠隔 alias があれば、
