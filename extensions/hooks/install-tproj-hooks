@@ -170,7 +170,7 @@ def hook_metadata(response: dict[str, Any], source: Path) -> list[dict[str, str]
             if key and current_hash.startswith("sha256:"):
                 found.append({"key": key, "trusted_hash": current_hash})
                 seen.add(matched)
-    if seen != required:
+    if not required <= seen:
         missing = ", ".join(sorted(required - seen))
         raise RuntimeError(f"Codex hooks/list omitted required tproj hooks: {missing}")
     return found
