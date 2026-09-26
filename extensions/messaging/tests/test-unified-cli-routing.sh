@@ -13,10 +13,14 @@ SH
 chmod +x "$tmp/bin/tproj-msg-unified"
 out=$(HOME="$tmp" "$root/tproj-msg" cdx hello)
 [[ "$out" == "unified:cdx hello" ]]
+out=$(HOME="$tmp" "$root/tproj-msg" --allow-relay why cdx hello)
+[[ "$out" == "unified:--allow-relay why cdx hello" ]]
 touch "$tmp/.config/tproj/msg-maintenance"
 if HOME="$tmp" "$root/tproj-msg" cdx hello >/dev/null 2>&1; then exit 1; fi
-out=$(HOME="$tmp" "$root/tproj-msg" --read cdx)
-[[ "$out" == "unified:--read cdx" ]]
+out=$(HOME="$tmp" "$root/tproj-msg" --read cdx || true)
+[[ "$out" != unified:* ]]
 if HOME="$tmp" "$root/tproj-msg" gate:direct x >/dev/null 2>&1; then exit 1; fi
 if HOME="$tmp" "$root/tproj-msg" --flush >/dev/null 2>&1; then exit 1; fi
+if HOME="$tmp" "$root/tproj-msg" gate:tmux x >/dev/null 2>&1; then exit 1; fi
+if HOME="$tmp" "$root/tproj-msg" --new-task cdx x >/dev/null 2>&1; then exit 1; fi
 echo "unified CLI routing: ok"

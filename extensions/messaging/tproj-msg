@@ -12,21 +12,34 @@ PY
 fi
 if $UNIFIED_ACTIVE; then
   _ordinary=true
+  _readonly=false
+  _mutating=true
   for _arg in "$@"; do
     case "$_arg" in
-      --new-task|--role-handoff|--desktop|--allow-*) _ordinary=false ;;
+      --new-task|--role-handoff|--desktop) _ordinary=false ;;
+      --allow-*) : ;; # validation flags still use the unified mailbox
       --remote|--remote-client) echo "tproj-msg: retired remote ordinary transport; use unified host endpoint" >&2; exit 64 ;;
       gate:direct|gate:session|gate:default) echo "tproj-msg: $_arg is deprecated after unified messaging activation" >&2; exit 64 ;;
-      gate:line|gate:*) _ordinary=false ;;
+      gate:line) _ordinary=false ;;
+      gate:*)
+        _bridge=${_arg#gate:}
+        if ! python3 - "$HOME/.config/tproj/msg-client.json" "$_bridge" <<'PY' >/dev/null 2>&1
+import json,sys
+with open(sys.argv[1]) as f: c=json.load(f)
+raise SystemExit(0 if sys.argv[2] in (c.get("gui",{}).get("bridges",{}) or {}) else 1)
+PY
+        then echo "tproj-msg: unconfigured external bridge $_arg" >&2; exit 64; fi
+        _ordinary=false ;;
+      --read|--version|-h|--help) _readonly=true; _mutating=false ;;
       --flush|--drain) echo "tproj-msg: $_arg is retired under unified messaging activation" >&2; exit 75 ;;
     esac
   done
+  for _arg in "$@"; do case "$_arg" in --list|--status) _mutating=false ;; esac; done
+  if $_readonly; then _ordinary=false; fi
+  if [[ -f "$HOME/.config/tproj/msg-maintenance" ]] && $_mutating; then
+    echo "tproj-msg: unified messaging maintenance is active; send/flush retired" >&2; exit 75
+  fi
   if $_ordinary; then
-    _readonly=false
-    for _arg in "$@"; do case "$_arg" in --read|--list|--status|--version|-h|--help) _readonly=true ;; esac; done
-    if [[ -f "$HOME/.config/tproj/msg-maintenance" ]] && ! $_readonly; then
-      echo "tproj-msg: unified messaging maintenance is active; send/flush retired" >&2; exit 75
-    fi
     exec "$HOME/bin/tproj-msg-unified" "$@"
   fi
 fi
