@@ -31,7 +31,11 @@ The states are distinct:
 Transport health, a socket write, or a model run does not collapse these states.
 When a submission result is uncertain, `--retry` may retry **the same message
 ID and content only**; it must never create a second request automatically.
-Replies remain pinned to the original sender endpoint and message ID.
+Replies remain pinned to the original sender endpoint and message ID. If the
+original sender was the projectless OpenClaw main service and its endpoint has
+retired after a Gateway restart, the same ID-pinned reply may reach that
+participant's sole current endpoint. Ordinary CC/Codex endpoints never use
+this restart fallback; an absent or ambiguous service endpoint fails closed.
 
 Ordinary chat cannot change roles, grant implementation authority, or create a
 task. `--force` cannot bypass identity, generation, approval, draft, or

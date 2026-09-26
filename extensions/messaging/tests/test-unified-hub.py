@@ -24,6 +24,20 @@ class HubTest(unittest.TestCase):
         self.send(); self.h.dispatch({"op":"claim","host_id":"b","host_token":"tb","endpoint_id":"eb"})
         out=self.h.dispatch({"op":"submit","host_id":"b","host_token":"tb","message":{"message_id":"reply","thread_id":"t","in_reply_to":"m1","sender_endpoint":"eb","target":"proj.cc","body":"back"}})
         self.assertEqual(out["state"],"queued")
+    def test_reply_to_restarted_openclaw_service_uses_sole_current_endpoint(self):
+        self.h.dispatch({"op":"directory_import","admin_token":"adm","services":[{"participant_id":"gate","address":"gate","host_id":"a","kind":"openclaw"}]})
+        self.reg("a","ta","gate-old","gate",3)
+        self.h.dispatch({"op":"submit","host_id":"a","host_token":"ta","message":{"message_id":"main-msg","thread_id":"main-thread","sender_endpoint":"gate-old","target":"proj.cdx","body":"hello"}})
+        self.h.dispatch({"op":"endpoint_retire","host_id":"a","host_token":"ta","endpoint_id":"gate-old"})
+        self.reg("a","ta","gate-new","gate",4)
+        out=self.h.dispatch({"op":"submit","host_id":"b","host_token":"tb","message":{"message_id":"main-reply","thread_id":"main-thread","in_reply_to":"main-msg","sender_endpoint":"eb","body":"back"}})
+        self.assertEqual(out["state"],"queued")
+        self.assertEqual(self.h._row("SELECT recipient_endpoint FROM messages WHERE message_id='main-reply'")[0], "gate-new")
+        self.send("agent-msg")
+        self.h.dispatch({"op":"endpoint_retire","host_id":"a","host_token":"ta","endpoint_id":"ea"})
+        self.reg("a","ta","ea-new","p:cc",5)
+        with self.assertRaisesRegex(HubError,"original sender endpoint is unavailable"):
+            self.h.dispatch({"op":"submit","host_id":"b","host_token":"tb","message":{"message_id":"agent-reply","thread_id":"t","in_reply_to":"agent-msg","sender_endpoint":"eb","body":"back"}})
     def test_auth_maintenance_alias_revision_and_ttl(self):
         with self.assertRaises(HubError): self.send(target="other.cc")
         self.h.dispatch({"op":"maintenance","admin_token":"adm","mode":"stopped"})

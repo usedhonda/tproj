@@ -185,6 +185,10 @@ class Hub:
             if not original or original["recipient_endpoint"] != sender["endpoint_id"]:
                 raise HubError("identity_rejected", "reply sender is not original recipient")
             recipient = self._row("SELECT * FROM endpoints WHERE endpoint_id=?", (original["sender_endpoint"],))
+            if recipient and recipient["retired"]:
+                participant = self._row("SELECT * FROM participants WHERE participant_id=?", (recipient["participant_id"],))
+                if participant and participant["project_id"] is None and participant["kind"] == "openclaw":
+                    recipient = self._endpoint_for_send(participant)
             if not recipient or recipient["retired"]:
                 raise HubError("no_recipient", "original sender endpoint is unavailable")
             target = self._row("SELECT address FROM participants WHERE participant_id=?", (recipient["participant_id"],))[0]
