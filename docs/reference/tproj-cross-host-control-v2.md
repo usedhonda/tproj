@@ -37,7 +37,7 @@ Versioned canonical JSON is bounded in size and has an exact field set:
 |---|---|
 | `version`, `message_id`, `nonce`, `issued_at`, `expires_at` | Version 2, random unique message/nonce IDs, short bounded validity; receiver persists consumed `message_id` before injection to reject replay across helper restart. |
 | `source_host`, `destination_host`, `source_project`, `destination_project`, `source_session`, `destination_session` | Must equal both sides' configured peer binding; never route from wire alone. |
-| `sender`, `target`, `sender_role`, `role_epoch`, `orchestrator_alias` | Exact alias.role/registry identity and current role epoch. The receiver also checks target pane liveness and its current role epoch for a handoff. |
+| `sender`, `target`, `sender_role`, `role_epoch`, `target_epoch`, `orchestrator_alias` | Exact alias.role/registry identity and current sender role epoch. `target_epoch` is an observed destination value, never sender authority; the receiver checks target pane liveness, PID start, and current epoch at quarantine and release. |
 | `kind` | One of `task`, `ack`, `ack_progress`, `done`, `block`, `cancel`, `freeze`, `role_handoff`; no arbitrary marker interpretation. |
 | `task_id`, `owner_session`, `owner_alias`, `task_kind`, `intent_hash`, `user_authorized_exact`, `ttl_sec` | Exact owner/target/task tuple and structural delegation metadata. A user authorization bit is valid only with the exact source intent hash and scope record, never because the wire says so. |
 | `body_hash`, `body` | Hash binds the exact body bytes; body is data and cannot override any envelope field. Sender, task, or control markers inside the body are rejected or escaped before local injection. |
@@ -72,7 +72,7 @@ row:
    the pane yet.
 3. After the source's D4 cache insert and durable DB shadow row succeed, the
    source marks the outbox committed and sends a separately authenticated
-   `commit` control for the same tuple. Destination checks its quarantined row,
+   one-shot `commit` proof for the same tuple. Destination checks its quarantined row,
    current target/epoch, and tombstone state before one atomic transition to
    released plus local injection. A duplicate commit is idempotent.
 4. ACK/DONE/BLOCK proof refers to the released inbound row. The source applies

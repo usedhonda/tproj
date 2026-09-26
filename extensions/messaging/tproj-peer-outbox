@@ -18,7 +18,7 @@ FIELDS = frozenset({
     'message_id', 'task_id', 'origin_host', 'destination_host',
     'origin_project', 'destination_project', 'owner_session',
     'destination_session', 'owner_alias', 'sender', 'sender_role', 'target',
-    'role_epoch', 'orchestrator_alias', 'task_kind', 'intent_hash',
+    'role_epoch', 'target_epoch', 'orchestrator_alias', 'task_kind', 'intent_hash',
     'user_authorized_exact', 'body_hash', 'ttl_sec', 'issued_at',
 })
 
@@ -61,7 +61,7 @@ def validate(record):
         raise Refused('invalid authorization flag')
     if record['user_authorized_exact'] and not record['intent_hash']:
         raise Refused('authorization requires intent hash')
-    for key in ('role_epoch', 'ttl_sec', 'issued_at'):
+    for key in ('role_epoch', 'target_epoch', 'ttl_sec', 'issued_at'):
         if type(record[key]) is not int or record[key] <= 0:
             raise Refused(f'invalid {key}')
     if record['ttl_sec'] > 86400:
@@ -172,6 +172,13 @@ def lookup_prepared(db, owner_session, owner_alias, target, task_id):
             owner_session, owner_alias, target, task_id):
         raise Refused('stored task identity mismatch')
     return record
+
+
+def lookup_quarantined(db, record):
+    validate(record)
+    row = db.execute('SELECT metadata,state FROM tasks WHERE message_id=?',
+                     (record['message_id'],)).fetchone()
+    return bool(row and row[0] == canonical(record) and row[1] == 'quarantined')
 
 
 def main():

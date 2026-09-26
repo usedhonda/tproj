@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""Isolated receiver quarantine and commit-proof gate; no pane delivery."""
+
+import argparse
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import stat
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parent
+
+
+def load(name, alias):
+    loader = importlib.machinery.SourceFileLoader(alias, str(ROOT / name))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+a = load('tproj-peer-authority', 'receiver_authority')
+outbox = load('tproj-peer-outbox', 'receiver_outbox')
+NONCE = re.compile(r'^[0-9a-f]{64}$')
+MAX_BYTES = 65536
+
+
+def check_forward_peer(sock, pid, started, uid):
+    if a.peer_pid(sock) != pid:
+        raise a.Refused('wrong local SSH forward process')
+    _, live_start, live_uid = a.process(pid)
+    if live_start != started or live_uid != uid:
+        raise a.Refused('local SSH forward process changed')
+
+
+def exchange(socket_path, request, forward_pid, forward_start, forward_uid):
+    path = Path(socket_path)
+    if not path.is_absolute() or path.is_symlink() or not path.is_socket():
+        raise a.Refused('fixed source forward unavailable')
+    info, parent = path.stat(), path.parent.stat()
+    if (not stat.S_ISSOCK(info.st_mode) or info.st_mode & 0o077 or
+            info.st_uid != os.getuid() or parent.st_uid != os.getuid() or
+            parent.st_mode & 0o077):
+        raise a.Refused('fixed source forward is not private')
+    data = a.canonical(request) + b'\n'
+    if len(data) > MAX_BYTES:
+        raise a.Refused('source request too large')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(5)
+        client.connect(str(path))
+        check_forward_peer(client, forward_pid, forward_start, forward_uid)
+        client.sendall(data)
+        response = a.read_line(client)
+    if not isinstance(response, dict) or set(response) != {'ok', 'digest'} or response['ok'] is not True:
+        raise a.Refused('source authority refused proof')
+    return response
+
+
+class Receiver:
+    def __init__(self, *, source_socket, db_path, registry_root, target_project,
+                 route, forward_pid, forward_start, forward_uid,
+                 consume_call=exchange, now=None):
+        if not Path(source_socket).is_absolute():
+            raise a.Refused('fixed source socket must be absolute')
+        if (any(type(v) is not int or v <= 0 for v in (forward_pid, forward_start)) or
+                type(forward_uid) is not int or forward_uid < 0):
+            raise a.Refused('missing registered forward process')
+        if set(route) != {'source_host', 'destination_host', 'source_project',
+                          'destination_project', 'owner_session',
+                          'destination_session', 'target'}:
+            raise a.Refused('invalid fixed route')
+        if any(not outbox.component(route[k]) for k in route if k != 'target'):
+            raise a.Refused('invalid route component')
+        if not a.IDENTITY.fullmatch(route['target']):
+            raise a.Refused('invalid fixed target')
+        self.source_socket = source_socket
+        self.db_path = db_path
+        self.registry_root = registry_root
+        self.target_project = Path(target_project).resolve(strict=True)
+        self.route = route.copy()
+        self.forward_identity = (forward_pid, forward_start, forward_uid)
+        self.consume_call = consume_call
+        self.now = now or time.time
+
+    def validate_envelope(self, envelope, kind):
+        if not isinstance(envelope, dict) or set(envelope) != {'version', 'metadata', 'kind', 'body'}:
+            raise a.Refused('invalid v2 envelope')
+        if type(envelope['version']) is not int or envelope['version'] != 2 or envelope['kind'] != kind:
+            raise a.Refused('wrong envelope phase')
+        record = outbox.validate(envelope['metadata'])
+        pairs = {'source_host': 'origin_host', 'destination_host': 'destination_host',
+                 'source_project': 'origin_project', 'destination_project': 'destination_project',
+                 'owner_session': 'owner_session', 'destination_session': 'destination_session',
+                 'target': 'target'}
+        if any(record[field] != self.route[name] for name, field in pairs.items()):
+            raise a.Refused('fixed route mismatch')
+        if record['issued_at'] > self.now() + 60 or self.now() > record['issued_at'] + record['ttl_sec']:
+            raise a.Refused('expired task')
+        if not isinstance(envelope['body'], str):
+            raise a.Refused('invalid body')
+        if kind == 'commit':
+            if envelope['body']:
+                raise a.Refused('commit body forbidden')
+        elif (kind == 'role_handoff') != (record['task_kind'] == 'role_handoff') or (
+                hashlib.sha256(envelope['body'].encode()).hexdigest() != record['body_hash']):
+            raise a.Refused('task kind or body hash mismatch')
+        if len(a.canonical(envelope)) > MAX_BYTES:
+            raise a.Refused('envelope too large')
+        return record
+
+    def verify_wire(self, wire, kind):
+        if not isinstance(wire, dict) or set(wire) != {'envelope', 'nonce', 'digest'}:
+            raise a.Refused('invalid wire fields')
+        envelope = wire['envelope']
+        record = self.validate_envelope(envelope, kind)
+        nonce, digest = wire['nonce'], wire['digest']
+        expected = hashlib.sha256(a.canonical(envelope)).hexdigest()
+        if (not isinstance(nonce, str) or not NONCE.fullmatch(nonce) or
+                not isinstance(digest, str) or digest != expected):
+            raise a.Refused('wire nonce or digest mismatch')
+        return record, envelope, expected
+
+    def target_live(self, record):
+        matches = []
+        for path in (Path(self.registry_root) / self.route['destination_session']).glob('**/*.json'):
+            if path.is_symlink():
+                continue
+            try:
+                state = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if state.get('alias') == record['target']:
+                matches.append(state)
+        if len(matches) != 1:
+            raise a.Refused('target registry absent or ambiguous')
+        state = matches[0]
+        if (state.get('project') != str(self.target_project) or
+                state.get('role_epoch') != record['target_epoch']):
+            raise a.Refused('stale target epoch or project')
+        pid, started = state.get('pid'), state.get('pid_start')
+        if type(pid) is not int or type(started) is not int or pid <= 1 or started <= 0:
+            raise a.Refused('invalid target process')
+        _, actual_start, uid = a.process(pid)
+        if actual_start != started or uid != os.getuid():
+            raise a.Refused('target process changed')
+
+    def consume(self, wire, expected):
+        response = self.consume_call(self.source_socket,
+            {'op': 'consume', 'nonce': wire['nonce'], 'envelope': wire['envelope']},
+            *self.forward_identity)
+        if response['digest'] != expected:
+            raise a.Refused('source digest mismatch')
+
+    def quarantine(self, wire):
+        envelope = wire.get('envelope') if isinstance(wire, dict) else None
+        kind = envelope.get('kind') if isinstance(envelope, dict) else None
+        if kind not in ('task', 'role_handoff'):
+            raise a.Refused('invalid initial kind')
+        record, _, expected = self.verify_wire(wire, kind)
+        self.target_live(record)
+        self.consume(wire, expected)
+        db = outbox.open_db(self.db_path)
+        try:
+            state = outbox.mutate(db, 'quarantine', record)
+        finally:
+            db.close()
+        return {'message_id': record['message_id'], 'state': state}
+
+    def release(self, task_envelope, commit_wire):
+        kind = task_envelope.get('kind') if isinstance(task_envelope, dict) else None
+        if kind not in ('task', 'role_handoff'):
+            raise a.Refused('invalid task kind')
+        record = self.validate_envelope(task_envelope, kind)
+        committed, _, expected = self.verify_wire(commit_wire, 'commit')
+        if committed != record:
+            raise a.Refused('commit metadata mismatch')
+        self.target_live(record)
+        db = outbox.open_db(self.db_path)
+        try:
+            prepared = outbox.lookup_quarantined(db, record)
+            if not prepared:
+                raise a.Refused('task not quarantined')
+            self.consume(commit_wire, expected)
+            outbox.mutate(db, 'release', record)
+        finally:
+            db.close()
+        return {'state': 'released', 'envelope': task_envelope}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('quarantine', 'release'))
+    for name in ('source-socket', 'db', 'registry-root', 'target-project',
+                 'source-host', 'destination-host', 'source-project',
+                 'destination-project', 'owner-session', 'destination-session',
+                 'target'):
+        parser.add_argument('--' + name, required=True)
+    for name in ('forward-pid', 'forward-start', 'forward-uid'):
+        parser.add_argument('--' + name, required=True, type=int)
+    args = parser.parse_args()
+    try:
+        route = {'source_host': args.source_host, 'destination_host': args.destination_host,
+                 'source_project': args.source_project,
+                 'destination_project': args.destination_project,
+                 'owner_session': args.owner_session,
+                 'destination_session': args.destination_session, 'target': args.target}
+        receiver = Receiver(source_socket=args.source_socket, db_path=args.db,
+                            registry_root=args.registry_root, target_project=args.target_project,
+                            route=route, forward_pid=args.forward_pid,
+                            forward_start=args.forward_start, forward_uid=args.forward_uid)
+        raw = sys.stdin.buffer.read(MAX_BYTES + 1)
+        if not raw or len(raw) > MAX_BYTES:
+            raise a.Refused('invalid input size')
+        request = json.loads(raw)
+        if args.action == 'quarantine':
+            result = receiver.quarantine(request)
+        else:
+            if not isinstance(request, dict) or set(request) != {'task_envelope', 'commit_wire'}:
+                raise a.Refused('invalid release request')
+            result = receiver.release(request['task_envelope'], request['commit_wire'])
+        sys.stdout.buffer.write(a.canonical(result) + b'\n')
+        return 0
+    except (OSError, ValueError, TypeError) as exc:
+        print(f'Error: peer receiver {exc}', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

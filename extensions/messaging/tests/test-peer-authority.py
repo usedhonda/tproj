@@ -37,7 +37,8 @@ class AuthorityTest(unittest.TestCase):
             'destination_project': 'project-b', 'owner_session': 'workspace',
             'destination_session': 'remote-workspace', 'owner_alias': 'project.cc',
             'sender': 'project.cc', 'sender_role': 'worker', 'target': 'project.cdx',
-            'role_epoch': 4, 'orchestrator_alias': 'project.cdx',
+            'role_epoch': 4, 'target_epoch': 7,
+            'orchestrator_alias': 'project.cdx',
             'task_kind': 'delegated', 'intent_hash': 'a' * 64,
             'user_authorized_exact': True, 'body_hash': hashlib.sha256(b'hello').hexdigest(),
             'ttl_sec': 900, 'issued_at': 1000}
@@ -106,6 +107,19 @@ class AuthorityTest(unittest.TestCase):
         with patch.object(a, 'process', side_effect=lambda pid: (1, 1000 if pid == 100 else 3000, 501)), patch.object(a.os, 'getuid', return_value=501):
             with self.assertRaisesRegex(a.Refused, 'tombstoned'):
                 self.authority.consume(200, minted['nonce'], self.v2)
+
+    def test_commit_proof_requires_committed_outbox(self):
+        commit = {'version': 2, 'metadata': self.metadata, 'kind': 'commit', 'body': ''}
+        with patch.object(a, 'bind_sender', return_value=None):
+            with self.assertRaisesRegex(a.Refused, 'outbox row'):
+                self.authority.mint(101, commit)
+        db = a.outbox.open_db(self.db_path)
+        a.outbox.mutate(db, 'commit', self.metadata)
+        db.close()
+        with patch.object(a, 'bind_sender', return_value=None):
+            minted = self.authority.mint(101, commit)
+        with patch.object(a, 'process', side_effect=lambda pid: (1, 1000 if pid == 100 else 3000, 501)), patch.object(a.os, 'getuid', return_value=501):
+            self.assertTrue(self.authority.consume(200, minted['nonce'], commit)['ok'])
 
 
 if __name__ == '__main__':

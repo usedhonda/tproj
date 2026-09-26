@@ -168,11 +168,15 @@ class Authority:
         if type(envelope['version']) is not int or envelope['version'] != 2:
             raise Refused('invalid envelope version')
         record = outbox.validate(envelope['metadata'])
-        if envelope['kind'] not in ('task', 'role_handoff') or not isinstance(envelope['body'], str):
+        if envelope['kind'] not in ('task', 'role_handoff', 'commit') or not isinstance(envelope['body'], str):
             raise Refused('unsupported control kind')
-        if (envelope['kind'] == 'role_handoff') != (record['task_kind'] == 'role_handoff'):
+        if envelope['kind'] != 'commit' and (envelope['kind'] == 'role_handoff') != (record['task_kind'] == 'role_handoff'):
             raise Refused('task kind mismatch')
-        if not HASH.fullmatch(record['body_hash']) or hashlib.sha256(envelope['body'].encode()).hexdigest() != record['body_hash']:
+        if envelope['kind'] == 'commit' and envelope['body'] != '':
+            raise Refused('commit body forbidden')
+        if envelope['kind'] != 'commit' and (
+                not HASH.fullmatch(record['body_hash']) or
+                hashlib.sha256(envelope['body'].encode()).hexdigest() != record['body_hash']):
             raise Refused('body hash mismatch')
         pairs = {'source_host': 'origin_host', 'destination_host': 'destination_host',
                  'source_project': 'origin_project', 'destination_project': 'destination_project',
@@ -222,7 +226,8 @@ class Authority:
 
     def mint(self, caller_pid, envelope):
         record = self.validate_envelope(envelope)
-        self.verify_outbox(record)
+        self.verify_outbox(record, ('committed',) if envelope['kind'] == 'commit'
+                           else ('prepared',))
         sender_claim = {'session': self.session, 'sender': record['sender'],
                         'target': record['target'], 'role': record['sender_role'],
                         'epoch': record['role_epoch'], 'kind': 'task',
@@ -245,7 +250,8 @@ class Authority:
         if not isinstance(nonce, str) or not re.fullmatch(r'[0-9a-f]{64}', nonce):
             raise Refused('invalid nonce')
         record = self.validate_envelope(envelope)
-        self.verify_outbox(record, ('prepared', 'committed'))
+        self.verify_outbox(record, ('committed',) if envelope['kind'] == 'commit'
+                           else ('prepared', 'committed'))
         self.verify_live_epoch(record)
         digest = hashlib.sha256(canonical(envelope)).hexdigest()
         with self.lock:

@@ -44,9 +44,8 @@ compare the returned digest, persist message-ID replay state, validate its own
 target/epoch/tombstone, and build lifecycle headers from verified fields. It
 must never trust raw wire markers or a caller-selected socket.
 
-Only initial `task` and `role_handoff` minting are in this slice. ACK/DONE/BLOCK,
-owner CANCEL/FREEZE, commit/release, durable receiver quarantine, D4 outbox
-reconciliation, and remote authenticated ingress require additional coordinated
+Initial `task`/`role_handoff` minting and separate `commit` proof are in this slice. ACK/DONE/BLOCK, owner CANCEL/FREEZE, D4 outbox reconciliation,
+and remote authenticated ingress require additional coordinated
 work described in `tproj-cross-host-control-v2.md`. Do not use these helpers to
 claim cross-host control is active.
 
