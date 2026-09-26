@@ -180,6 +180,19 @@ tag_pane() {
   tmux_run set-option -pt "$pane" @alias "$alias_name"
   tmux_run set-option -pt "$pane" @column 1
   tmux_run set-option -pt "$pane" @project "$p"
+  initialize_role_metadata "$pane"
+}
+initialize_role_metadata() {
+  local pane=$1 option default current
+  for option in active_model model_tier orchestration_role role_epoch; do
+    case "$option" in
+      active_model|model_tier) default=unknown ;;
+      orchestration_role) default=solo-fallback ;;
+      role_epoch) default=0 ;;
+    esac
+    current=$(tmux_run show-options -pv -t "$pane" "@$option" 2>/dev/null || true)
+    [[ -n "$current" ]] || tmux_run set-option -pt "$pane" "@$option" "$default"
+  done
 }
 agent_status() {
   local s=$1 c=$2 pid cmd
@@ -278,6 +291,7 @@ ensure_one() {
     if pane=$(pane_for "$shared" "$r" "$p"); then
       pid=$(agent_status "$pane" "$c") || true
       [[ -n "$pid" ]] || die "shared pane exists but is not running $c: $pane"
+      initialize_role_metadata "$pane"
     else
       alias_name=$(catalog alias "$p") || return 1
       start=$(start_command "$r")
@@ -290,6 +304,9 @@ ensure_one() {
   if tmux_run has-session -t "$s" 2>/dev/null; then
     pid=$(agent_status "$s" "$c") || true
     [[ -n "$pid" ]] || die "session exists but is not running $c: $s"
+    if pane=$(pane_for "$s" "$r" "$p"); then
+      initialize_role_metadata "$pane"
+    fi
     tmux_run set-option -t "$s" status off
     tmux_run set-option -t "$s" mouse on
     printf '%s\n' "$s"; return

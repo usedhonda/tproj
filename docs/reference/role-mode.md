@@ -34,6 +34,9 @@ mode, and tier still decides role authority under `collab`.
 - The file is **not** cached into pane options. Every hook reads it on every turn,
   which is what makes a mode apply to panes created after it was declared, with no
   registration step, and what makes a change reach a pane that started before it.
+- Remote-host startup fills missing pane role metadata with the same safe
+  defaults as local startup, without replacing an existing resolved epoch or
+  role. The first agent prompt still performs authoritative router resolution.
 - The retired workspace-wide file (`~/.config/tproj/role-mode.json`) is **never read**.
   A leftover copy cannot re-impose a mode on anything.
 - Living under `.local/` keeps the file out of version control and inside the Codex

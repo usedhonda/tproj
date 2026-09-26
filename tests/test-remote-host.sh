@@ -34,6 +34,12 @@ cdx_session=$(run ensure --path "$TMP/project" --role cdx)
 [[ $(run status --path "$TMP/project" --role cc) == running\|"$cc_session"\|* ]]
 [[ $(run status --path "$TMP/project" --role cdx) == running\|"$cdx_session"\|* ]]
 cc_pane=$(tm list-panes -t "=$cc_session:dev" -F '#{pane_id}')
+cdx_pane=$(tm list-panes -t "=$cdx_session:dev" -F '#{pane_id}')
+[[ $(tm show-options -pv -t "$cdx_pane" @orchestration_role) == solo-fallback ]]
+[[ $(tm show-options -pv -t "$cdx_pane" @role_epoch) == 0 ]]
+tm set-option -pu -t "$cdx_pane" @role_epoch
+[[ $(run ensure --path "$TMP/project" --role cdx) == "$cdx_session" ]]
+[[ $(tm show-options -pv -t "$cdx_pane" @role_epoch) == 0 ]]
 cc_pid=$(tm display-message -t "$cc_pane" -p '#{pane_pid}')
 tm set-option -pt "$cc_pane" @role_epoch 7
 tm set-option -pt "$cc_pane" @orchestration_role worker
