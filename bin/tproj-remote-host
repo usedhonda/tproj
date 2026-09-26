@@ -236,12 +236,13 @@ if (not pane.startswith('%') or not pane_pid.isdigit() or int(pane_pid) <= 0 or
 if not command.strip():
     fail()
 safe = lambda value: re.sub(r'[^A-Za-z0-9_.-]+', '_', value) or 'unknown'
-state = Path(os.environ.get('MODEL_ROLE_CACHE', str(Path.home() / '.cache/tproj-model-role'))) / safe(session) / (safe(alias) + '.json')
+registry_alias = alias + '.' + platform
+state = Path(os.environ.get('MODEL_ROLE_CACHE', str(Path.home() / '.cache/tproj-model-role'))) / safe(session) / (safe(registry_alias) + '.json')
 try:
     record = json.loads(state.read_text())
     pid, started = record['pid'], record['pid_start']
     if (type(pid) is not int or pid <= 0 or type(started) is not int or started <= 0 or
-            record.get('alias') != alias or record.get('project') != project or
+            record.get('alias') != registry_alias or record.get('project') != project or
             record.get('role_epoch') != int(epoch) or record.get('role') != role or
             record.get('session') != session):
         fail()
@@ -264,7 +265,7 @@ try:
         fail()
 except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired, json.JSONDecodeError):
     fail()
-print(json.dumps({'session': session, 'pane': pane, 'alias': alias, 'project': project,
+print(json.dumps({'session': session, 'pane': pane, 'alias': registry_alias, 'project': project,
                   'platform': platform, 'pid': pid, 'pid_start': started,
                   'role': record.get('role'), 'role_epoch': int(epoch)}, separators=(',', ':')))
 PY

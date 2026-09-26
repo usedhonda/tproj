@@ -38,15 +38,16 @@ cc_pid=$(tm display-message -t "$cc_pane" -p '#{pane_pid}')
 tm set-option -pt "$cc_pane" @role_epoch 7
 tm set-option -pt "$cc_pane" @orchestration_role worker
 mkdir -p "$HOME/.cache/tproj-model-role/$cc_session"
-python3 - "$HOME/.cache/tproj-model-role/$cc_session/demo.json" "$TMP/project" "$cc_session" "$cc_pid" <<'PY'
+python3 - "$HOME/.cache/tproj-model-role/$cc_session/demo.cc.json" "$TMP/project" "$cc_session" "$cc_pid" <<'PY'
 import json, subprocess, sys, time
 file, project, session, pid = sys.argv[1:]
 started = int(time.mktime(time.strptime(subprocess.check_output(['/bin/ps', '-p', pid, '-o', 'lstart='], text=True).strip(), '%a %b %d %H:%M:%S %Y')))
 with open(file, 'w') as stream:
-    json.dump(dict(alias='demo', project=project, session=session, pid=int(pid), pid_start=started, role='worker', role_epoch=7), stream)
+    json.dump(dict(alias='demo.cc', project=project, session=session, pid=int(pid), pid_start=started, role='worker', role_epoch=7), stream)
 PY
 identity=$(run identity --path "$TMP/project" --role cc)
 [[ $(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["role_epoch"])' "$identity") == 7 ]]
+[[ $(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["alias"])' "$identity") == demo.cc ]]
 tm set-option -pt "$cc_pane" @role_epoch 8
 if run identity --path "$TMP/project" --role cc >/dev/null 2>&1; then exit 1; fi
 tm set-option -pt "$cc_pane" @role_epoch 7
