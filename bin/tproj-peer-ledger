@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Host-local, credential-free projection of workspace project destinations."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def digest(value):
+    return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def project_id(host, path):
+    return "p-" + digest([host, path])[:24]
+
+
+def validate(snapshot):
+    if not isinstance(snapshot, dict) or snapshot.get("schema_version") != 1:
+        fail("unsupported ledger schema")
+    host = snapshot.get("host")
+    revision = snapshot.get("revision")
+    projects = snapshot.get("projects")
+    if not isinstance(host, str) or not host or not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+        fail("invalid host or revision")
+    if not isinstance(projects, list) or not isinstance(snapshot.get("source_hash"), str):
+        fail("invalid projects or source hash")
+    aliases = set()
+    identities = set()
+    for p in projects:
+        if not isinstance(p, dict) or set(p) != {"project_id", "alias", "host", "path", "remote_path", "type"}:
+            fail("invalid project entry")
+        if p["type"] not in ("local", "remote") or not all(isinstance(p[k], str) and p[k] for k in ("alias", "host", "path")):
+            fail("invalid project destination")
+        if not isinstance(p["remote_path"], str):
+            fail("invalid remote path")
+        if p["type"] == "local" and p["host"] != host:
+            fail("local project host mismatch")
+        if p["project_id"] != project_id(p["host"], p["path"]):
+            fail("project ID mismatch")
+        if p["alias"] in aliases or p["project_id"] in identities:
+            fail("duplicate alias or project ID")
+        aliases.add(p["alias"])
+        identities.add(p["project_id"])
+    if snapshot["source_hash"] != digest(projects):
+        fail("source hash mismatch")
+    return snapshot
+
+
+def read(path):
+    return validate(json.loads(path.read_text()))
+
+
+def write_atomic(path, snapshot):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".peers-", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            stream.write(canonical(snapshot) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def from_workspace(path, host):
+    result = subprocess.run(["yq", "-o", "json", str(path)], capture_output=True, text=True, check=True)
+    data = json.loads(result.stdout)
+    if not isinstance(data, dict) or not isinstance(data.get("projects"), list):
+        fail("workspace projects must be a list")
+    projects = []
+    for entry in data["projects"]:
+        if isinstance(entry, str):
+            entry = {"path": entry}
+        if not isinstance(entry, dict):
+            fail("invalid workspace project")
+        raw_path = entry.get("path")
+        kind = entry.get("type", "local")
+        if not isinstance(raw_path, str) or not raw_path or kind not in ("local", "remote"):
+            fail("invalid workspace path or type")
+        path_value = os.path.expanduser(raw_path)
+        if not os.path.isabs(path_value):
+            fail("workspace project path must be absolute")
+        destination = entry.get("host") if kind == "remote" else host
+        if not isinstance(destination, str) or not destination:
+            fail("remote project requires host")
+        alias = entry.get("alias", os.path.basename(path_value.rstrip("/")))
+        remote_path = entry.get("remote_path", path_value if kind == "remote" else "")
+        if not isinstance(alias, str) or not alias or not isinstance(remote_path, str):
+            fail("invalid alias or remote path")
+        projects.append({"project_id": project_id(destination, path_value), "alias": alias,
+                         "host": destination, "path": path_value,
+                         "remote_path": remote_path, "type": kind})
+    return projects
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("refresh", "resolve", "export", "import"))
+    parser.add_argument("selector", nargs="?")
+    parser.add_argument("--workspace", type=Path, default=Path.home() / ".config/tproj/workspace.yaml")
+    parser.add_argument("--ledger", type=Path, default=Path.home() / ".config/tproj/peers.json")
+    parser.add_argument("--host", default=os.uname().nodename)
+    parser.add_argument("--stdin", action="store_true")
+    args = parser.parse_args()
+    if args.command == "refresh":
+        projects = from_workspace(args.workspace, args.host)
+        source_hash = digest(projects)
+        prior = read(args.ledger) if args.ledger.exists() else None
+        if prior and prior["host"] != args.host:
+            fail("ledger belongs to another host")
+        revision = prior["revision"] if prior and prior["source_hash"] == source_hash else (prior["revision"] + 1 if prior else 1)
+        snapshot = validate({"schema_version": 1, "host": args.host, "revision": revision,
+                             "source_hash": source_hash, "projects": projects})
+        if snapshot != prior:
+            write_atomic(args.ledger, snapshot)
+        print(canonical(snapshot))
+    elif args.command == "import":
+        if not args.stdin:
+            fail("import requires --stdin")
+        incoming = validate(json.load(sys.stdin))
+        prior = read(args.ledger) if args.ledger.exists() else None
+        if prior:
+            if incoming["host"] != prior["host"]:
+                fail("ledger belongs to another host")
+            if incoming["revision"] < prior["revision"]:
+                fail("stale ledger revision")
+            if incoming["revision"] == prior["revision"] and incoming != prior:
+                fail("conflicting ledger revision")
+        if incoming != prior:
+            write_atomic(args.ledger, incoming)
+    else:
+        snapshot = read(args.ledger)
+        if args.command == "export":
+            print(canonical(snapshot))
+        else:
+            if not args.selector:
+                fail("resolve requires an alias, project ID, or path")
+            matches = [p for p in snapshot["projects"] if args.selector in (p["alias"], p["project_id"], p["path"])]
+            if len(matches) != 1:
+                fail("project destination not found or ambiguous")
+            print(canonical(matches[0]))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        print(f"tproj-peer-ledger: {error}", file=sys.stderr)
+        sys.exit(1)
