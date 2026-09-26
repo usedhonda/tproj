@@ -10,6 +10,15 @@ with open(sys.argv[1]) as f: raise SystemExit(0 if json.load(f).get("active") is
 PY
   then UNIFIED_ACTIVE=true; fi
 fi
+# Maintenance is a transport-wide stop, including the legacy path during cutover.
+if [[ -f "$HOME/.config/tproj/msg-maintenance" ]]; then
+  _diagnostic=true
+  for _arg in "$@"; do case "$_arg" in --read|--list|--status|--version|-h|--help) ;; *) _diagnostic=false ;; esac; done
+  if ! $_diagnostic; then
+    echo "tproj-msg: messaging maintenance is active; mutating transport is stopped" >&2
+    exit 75
+  fi
+fi
 if $UNIFIED_ACTIVE; then
   _ordinary=true
   _readonly=false

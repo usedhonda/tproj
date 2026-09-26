@@ -2270,6 +2270,14 @@ final class AppViewModel: ObservableObject {
     private func refreshCentralDirectory() async {
         let config = NSHomeDirectory() + "/.config/tproj/msg-client.json"
         guard fileManager.fileExists(atPath: config) else { return }
+        guard let configData = fileManager.contents(atPath: config),
+              let configObject = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
+              let localHostID = configObject["host_id"] as? String else {
+            centralDirectoryAvailable = false
+            statusText = "Unified messaging client config is invalid (host_id required)"
+            return
+        }
+        let remoteHosts = configObject["remote_hosts"] as? [String: String] ?? [:]
         let result = await runCommandAsync(NSHomeDirectory() + "/bin/tproj-msg-unified", ["directory", "--json"])
         guard result.exitCode == 0,
               let data = result.stdout.data(using: .utf8),
@@ -2282,17 +2290,23 @@ final class AppViewModel: ObservableObject {
         let byID = Dictionary(uniqueKeysWithValues: projects.compactMap { p -> (String, [String: Any])? in
             guard let id = p["project_id"] as? String else { return nil }; return (id, p)
         })
+        var unmatched = false
         workspaceProjects = workspaceProjects.map { project in
             var copy = project
             if let canonical = byID[project.projectID], let alias = canonical["alias"] as? String { copy.alias = alias }
             else if project.projectID.isEmpty,
-                    let canonical = projects.first(where: { ($0["path"] as? String) == project.path && ($0["host_id"] as? String) == project.host }) {
+                    let canonicalHost = project.type == "remote" ? remoteHosts[project.host] : localHostID,
+                    let canonical = projects.first(where: {
+                        ($0["path"] as? String) == (project.type == "remote" && !project.remotePath.isEmpty ? project.remotePath : project.path) &&
+                        ($0["host_id"] as? String) == canonicalHost
+                    }) {
                 if let id = canonical["project_id"] as? String { copy.projectID = id }
                 if let alias = canonical["alias"] as? String { copy.alias = alias }
-            }
+            } else if project.projectID.isEmpty { unmatched = true }
             return copy
         }
-        centralDirectoryAvailable = true
+        centralDirectoryAvailable = !unmatched
+        if unmatched { statusText = "Unified directory has no registered project for one or more workspace entries" }
     }
 
     func syncUIAndRefreshAll() async {
