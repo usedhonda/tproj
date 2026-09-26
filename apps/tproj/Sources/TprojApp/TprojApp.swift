@@ -5786,82 +5786,22 @@ struct ContentView: View {
     }
 
     private func inactiveProjectRow(_ project: WorkspaceProject) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            // Header row (same layout as liveColumnRow)
-            HStack(spacing: 4) {
-                Text("--")
-                    .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
-                    .foregroundStyle(GhosttyTheme.current.textTertiary)
-                pill(project.type == "remote" ? "@\(project.host)" : "lcl",
-                     tint: project.type == "remote" ? GhosttyTheme.current.accentYellow : GhosttyTheme.current.accentGreen)
-                Text(project.effectiveAlias)
-                    .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
-                    .foregroundStyle(GhosttyTheme.current.foreground.opacity(0.5))
-                    .lineLimit(1)
-                roleModeBadge(projectPath: project.path, host: project.type == "remote" ? project.host : nil)
-                if project.type == "remote" {
-                    Text(vm.remoteState(project))
-                        .font(GhosttyTheme.current.font(size: 9, weight: .medium))
-                        .foregroundStyle(GhosttyTheme.current.textTertiary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                if project.type != "remote" {
-                    ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
-                        Task { await vm.addColumnByAlias(project.routingAlias) }
-                    }
-                    .frame(width: 38)
-                }
+        HStack(spacing: 4) {
+            Text("--")
+                .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
+                .foregroundStyle(GhosttyTheme.current.textTertiary)
+            pill(project.type == "remote" ? "@\(project.host)" : "lcl",
+                 tint: project.type == "remote" ? GhosttyTheme.current.accentYellow : GhosttyTheme.current.accentGreen)
+            Text(project.effectiveAlias)
+                .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
+                .foregroundStyle(GhosttyTheme.current.foreground.opacity(0.5))
+                .lineLimit(1)
+            roleModeBadge(projectPath: project.path, host: project.type == "remote" ? project.host : nil)
+            Spacer()
+            ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
+                Task { await vm.addColumnByAlias(project.routingAlias) }
             }
-
-            if project.type == "remote" {
-                HStack {
-                    Text(vm.remoteCacheState(project))
-                        .font(GhosttyTheme.current.font(size: 9, weight: .regular))
-                        .foregroundStyle(GhosttyTheme.current.textTertiary)
-                        .lineLimit(1)
-                    Spacer()
-                    Menu("CC cache \(vm.remoteCacheHours(project))h") {
-                        ForEach([0, 1, 3, 6, 12], id: \.self) { hours in
-                            Button(hours == 0 ? "Off" : "\(hours) hours") {
-                                Task { await vm.setRemoteCCCacheHours(hours, project: project) }
-                            }
-                        }
-                    }
-                    .font(GhosttyTheme.current.font(size: 9, weight: .regular))
-                    .fixedSize()
-                }
-            }
-
-            // A remote project can run on the host without a local display pane.
-            if project.type == "remote" {
-                HStack(spacing: 1) {
-                    Spacer()
-                    ActionButton("Start", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                        Task { await vm.startRemoteProject(project) }
-                    }
-                    .frame(width: 42)
-                    ActionButton("Open", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
-                        Task { await vm.addColumnByAlias(project.routingAlias) }
-                    }
-                    .frame(width: 42)
-                    ActionButton("Stop", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                        Task { await vm.stopRemoteProject(project) }
-                    }
-                    .frame(width: 42)
-                    ActionButton("Remove", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                        Task { await vm.unregisterRemoteProject(project) }
-                    }
-                    .frame(width: 52)
-                    ActionButton("↻", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
-                        Task {
-                            await vm.syncRemoteCatalog(host: project.host)
-                            await vm.refreshRemoteCache(host: project.host)
-                        }
-                    }
-                    .frame(width: 25)
-                }
-            }
+            .frame(width: 38)
         }
         .padding(.vertical, 2)
         .padding(.leading, 10)     // liveColumnRow と揃える
