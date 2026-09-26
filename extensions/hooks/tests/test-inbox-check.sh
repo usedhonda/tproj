@@ -304,7 +304,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   assert_contains "own=[$st_own]" "own=[done]" "owned row updates only via exact composite (wrong/owner-less ignored)"
   assert_contains "leg=[$st_leg]" "leg=[expired]" "legacy NULL-owner row transitionable by owner-less call"
   ver="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
-  assert_contains "ver=[$ver]" "ver=[10]" "tasks schema at user_version 10"
+  assert_contains "ver=[$ver]" "ver=[11]" "tasks schema at user_version 11"
   rm -rf "$L_TMP"
   unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
 else
@@ -461,7 +461,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   ver6="$(sqlite3 "$TPROJ_MSG_DB_PATH" "PRAGMA user_version;" 2>/dev/null || true)"
   assert_contains "collide=[$n_collide]" "collide=[2]" "same task_id, different owner/target -> distinct rows (no overwrite)"
   assert_contains "legrep=[$n_legrep]" "legrep=[1]" "repeated owner-less upsert is idempotent (no row growth)"
-  assert_contains "ver=[$ver6]" "ver=[10]" "fresh DB at user_version 10"
+  assert_contains "ver=[$ver6]" "ver=[11]" "fresh DB at user_version 11"
   rm -f "$TPROJ_MSG_DB_PATH"*
   # R4-1: TRUE v5 migration from a hand-crafted v5 schema (task_id PRIMARY KEY),
   # NOT `TT_DB_SCHEMA_VERSION=5 tt_db_init` (which would run the v6 migration
@@ -477,7 +477,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   mig_rows="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM tasks;" 2>/dev/null || true)"
   mig_idx="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM sqlite_master WHERE name IN ('idx_tasks_owner_identity','idx_tasks_legacy_identity');" 2>/dev/null || true)"
   mig_pk="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT pk FROM pragma_table_info('tasks') WHERE name='task_id';" 2>/dev/null || true)"
-  assert_contains "mv=[$mig_ver]" "mv=[10]" "hand-crafted v5 DB migrates to user_version 10"
+  assert_contains "mv=[$mig_ver]" "mv=[11]" "hand-crafted v5 DB migrates to user_version 11"
   assert_contains "mr=[$mig_rows]" "mr=[2]" "migration preserves existing task rows"
   assert_contains "mi=[$mig_idx]" "mi=[2]" "migration creates both composite/legacy identity indexes"
   assert_contains "pk=[$mig_pk]" "pk=[0]" "migration drops the task_id PRIMARY KEY"
@@ -500,7 +500,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   assert_contains "rr=[$rec_rows]" "rr=[2]" "interrupted-run survivor rows are recovered"
   assert_contains "rd=[$rec_data]" "rd=[s1,s2]" "recovered rows carry the original task ids"
   assert_contains "rs=[$rec_survivor]" "rs=[0]" "survivor temp table is dropped after recovery"
-  assert_contains "rv=[$rec_ver]" "rv=[10]" "recovered DB reaches user_version 10"
+  assert_contains "rv=[$rec_ver]" "rv=[11]" "recovered DB reaches user_version 11"
 
   # Blocker 1 (R4-1 cont.): a late-interrupted pre-atomic run created the owner
   # index but crashed before the legacy index (rebuilt no-PK table, owner index
@@ -522,7 +522,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   lc_leg_rows="$(sqlite3 "$TPROJ_MSG_DB_PATH" "SELECT count(*) FROM tasks WHERE task_id='legX';" 2>/dev/null || true)"
   assert_contains "lo=[$lc_owner]" "lo=[1]" "late-crash: owner identity index present"
   assert_contains "ll=[$lc_legacy]" "ll=[1]" "late-crash: missing legacy identity index is repaired"
-  assert_contains "lv=[$lc_ver]" "lv=[10]" "late-crash: DB reaches user_version 10 after repair"
+  assert_contains "lv=[$lc_ver]" "lv=[11]" "late-crash: DB reaches user_version 11 after repair"
   assert_contains "lr=[$lc_leg_rows]" "lr=[1]" "late-crash: ownerless ON CONFLICT upsert now succeeds (idempotent)"
   rm -rf "$O_TMP"
   unset TPROJ_MSG_DB_PATH TPROJ_MSG_DB_ERROR_LOG
@@ -728,6 +728,23 @@ TPROJ_HOOK_ENABLED=1 TPROJ_USAGE_MAIN=cdx TPROJ_USAGE_NOW="$usage_now" \
   TPROJ_USAGE_STATE_PATH="$usage_state" TPROJ_USAGE_LEDGER_PATH="$usage_ledger" \
   "$TMP/tproj-inbox-check" >/dev/null 2>&1 || malformed_rc=$?
 if [[ "$malformed_rc" -eq 0 ]]; then PASS=$((PASS+1)); echo "  PASS: malformed optional state fails open"; else FAIL=$((FAIL+1)); echo "  FAIL: malformed optional state fails open (rc=$malformed_rc)"; fi
+teardown_tmp
+
+# A project-bound tombstone reaches the exact target in another session once;
+# another project's and another session's legacy tombstones remain invisible.
+setup_tmp_with_db
+make_mock_msg '' ''
+source "$TMP/tproj-msg-db.sh"
+tt_db_ensure_init >/dev/null
+tt_db_exec_safe "INSERT INTO tasks (task_id,target,sent_at,expect_until,ttl_sec,state,owner_alias,owner_session,project_path,frozen_at) VALUES ('remote-notice','testcol.cdx',1000,1800,800,'frozen','owner.cc','remote','/tmp/project-a',1001),('foreign-notice','testcol.cdx',2000,2800,800,'frozen','owner.cc','remote','/tmp/project-b',2001),('legacy-notice','testcol.cdx',3000,3800,800,'frozen','owner.cc','remote',NULL,3001);" >/dev/null
+project_notice="$(TPROJ_HOOK_ENABLED=1 TT_OWNER_ROLE=cdx TPROJ_HOOK_PROJECT=/tmp/project-a "$TMP/tproj-inbox-check" --platform codex)"
+project_repeat="$(TPROJ_HOOK_ENABLED=1 TT_OWNER_ROLE=cdx TPROJ_HOOK_PROJECT=/tmp/project-a "$TMP/tproj-inbox-check" --platform codex)"
+foreign_notice="$(TPROJ_HOOK_ENABLED=1 TT_OWNER_ROLE=cdx TPROJ_HOOK_PROJECT=/tmp/project-c "$TMP/tproj-inbox-check" --platform codex)"
+assert_contains "$project_notice" 'remote-notice' 'cross-session same-project tombstone is noticed'
+assert_not_contains "$project_repeat" 'remote-notice' 'cross-session tombstone is noticed once'
+assert_not_contains "$foreign_notice" 'foreign-notice' 'foreign project tombstone is not noticed'
+assert_not_contains "$foreign_notice" 'legacy-notice' 'foreign-session legacy tombstone is not noticed'
+teardown_db
 teardown_tmp
 
 echo

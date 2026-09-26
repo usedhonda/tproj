@@ -209,7 +209,20 @@ def open_db() -> sqlite3.Connection | None:
         return None
 
 
-def active_tombstone(db: sqlite3.Connection, session: str, alias: str, role: str) -> tuple[str, str, str, str] | None:
+def pane_project() -> str:
+    project = os.environ.get("TPROJ_HOOK_PROJECT", "")
+    if not project and os.environ.get("TMUX_PANE"):
+        try:
+            project = subprocess.check_output(
+                ["tmux", "display-message", "-t", os.environ["TMUX_PANE"], "-p", "#{@project}"],
+                text=True, stderr=subprocess.DEVNULL,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            return ""
+    return project if os.path.isabs(project) else ""
+
+
+def active_tombstone(db: sqlite3.Connection, session: str, alias: str, role: str, project: str) -> tuple[str, str, str, str] | None:
     """The tombstone this pane is still held by, or None once it has moved on.
 
     A tombstone is durable forever so the task can never reopen. The pane-wide
@@ -227,13 +240,13 @@ def active_tombstone(db: sqlite3.Connection, session: str, alias: str, role: str
         SELECT task_id, owner_alias, state, COALESCE(tombstone_reason_hash, ''),
                COALESCE(frozen_at, cancelled_at, sent_at)
           FROM tasks
-         WHERE owner_session=?
+         WHERE ((project_path=? AND ? != '') OR (project_path IS NULL AND owner_session=?))
            AND target=?
            AND state IN ('cancelled','frozen')
          ORDER BY COALESCE(frozen_at, cancelled_at, sent_at) DESC, sent_at DESC
          LIMIT 1
         """,
-        (session, self_alias),
+        (project, project, session, self_alias),
     ).fetchone()
     if row is None:
         return None
@@ -242,14 +255,14 @@ def active_tombstone(db: sqlite3.Connection, session: str, alias: str, role: str
         """
         SELECT 1
           FROM tasks
-         WHERE owner_session=?
+         WHERE ((project_path=? AND ? != '') OR (project_path IS NULL AND owner_session=?))
            AND target=?
            AND task_id != ?
            AND state NOT IN ('cancelled','frozen')
            AND sent_at > ?
          LIMIT 1
         """,
-        (session, self_alias, task_id, tombstoned_at),
+        (project, project, session, self_alias, task_id, tombstoned_at),
     ).fetchone()
     if newer is not None:
         return None
@@ -472,7 +485,7 @@ def main() -> int:
     if db is None:
         return 0
     try:
-        tombstone = active_tombstone(db, session, alias, role)
+        tombstone = active_tombstone(db, session, alias, role, pane_project())
     except sqlite3.Error:
         db.close()
         return 0

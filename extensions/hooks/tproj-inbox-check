@@ -301,11 +301,17 @@ fi
 if [[ -n "$OWNER_ROLE" ]] && declare -F tt_db_exec_safe >/dev/null 2>&1 && declare -F tt_db_quote >/dev/null 2>&1 \
    && tt_cache_valid_owner "$OWNER"; then
   self_alias="${OWNER##*/}.${OWNER_ROLE}"
-  _notice_row="$(tt_db_exec_safe "SELECT task_id || char(9) || owner_alias || char(9) || state || char(9) || COALESCE(tombstone_reason_hash,'') FROM tasks WHERE owner_session='$(tt_db_quote "${OWNER%%/*}")' AND target='$(tt_db_quote "$self_alias")' AND state IN ('cancelled','frozen') AND (worker_notice_state IS NULL OR worker_notice_state != state) ORDER BY COALESCE(frozen_at, cancelled_at, sent_at) DESC LIMIT 1;" 2>/dev/null || true)"
+  _pane_project="${TPROJ_HOOK_PROJECT:-}"
+  if [[ -z "$_pane_project" && -n "${TMUX_PANE:-}" ]]; then
+    _pane_project="$(tmux display-message -t "$TMUX_PANE" -p '#{@project}' 2>/dev/null || true)"
+  fi
+  [[ "$_pane_project" == /* ]] || _pane_project=""
+  _task_scope="((project_path='$(tt_db_quote "$_pane_project")' AND '$(tt_db_quote "$_pane_project")' != '') OR (project_path IS NULL AND owner_session='$(tt_db_quote "${OWNER%%/*}")'))"
+  _notice_row="$(tt_db_exec_safe "SELECT rowid || char(9) || task_id || char(9) || owner_alias || char(9) || state || char(9) || COALESCE(tombstone_reason_hash,'') FROM tasks WHERE $_task_scope AND target='$(tt_db_quote "$self_alias")' AND state IN ('cancelled','frozen') AND (worker_notice_state IS NULL OR worker_notice_state != state) ORDER BY COALESCE(frozen_at, cancelled_at, sent_at) DESC LIMIT 1;" 2>/dev/null || true)"
   if [[ "$_notice_row" == *$'\t'* ]]; then
-    IFS=$'\t' read -r notice_task_id notice_owner_alias notice_state notice_reason_hash <<< "$_notice_row"
+    IFS=$'\t' read -r notice_rowid notice_task_id notice_owner_alias notice_state notice_reason_hash <<< "$_notice_row"
     emit_notice "[task-${notice_state}] owner=${notice_owner_alias} task=${notice_task_id} reason_hash=${notice_reason_hash}; edits and mutating shell are blocked, collect read-only evidence only"
-    tt_db_exec_safe "UPDATE tasks SET worker_notice_state='${notice_state}', worker_notice_at=strftime('%s','now') WHERE owner_session='$(tt_db_quote "${OWNER%%/*}")' AND owner_alias='$(tt_db_quote "$notice_owner_alias")' AND target='$(tt_db_quote "$self_alias")' AND task_id='$(tt_db_quote "$notice_task_id")' AND state='${notice_state}';" >/dev/null 2>&1 || true
+    tt_db_exec_safe "UPDATE tasks SET worker_notice_state='${notice_state}', worker_notice_at=strftime('%s','now') WHERE rowid=${notice_rowid} AND $_task_scope AND target='$(tt_db_quote "$self_alias")' AND state='${notice_state}';" >/dev/null 2>&1 || true
   fi
 fi
 

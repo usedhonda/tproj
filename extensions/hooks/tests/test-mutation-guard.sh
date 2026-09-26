@@ -152,5 +152,17 @@ tt_cache_add unit/worker worker.cdx worker-next-02 3000 3800 hash delegated >/de
 reassigned_out="$(invoke_guard Edit '')"
 check "a newer task for the same pane ends the quarantine" test -z "$reassigned_out"
 
+# Project-scoped rows can reach the same target in another tmux session, while
+# neither another project nor a legacy row from another session can do so.
+find "$TMP" -maxdepth 1 -name 'messages.db*' -delete 2>/dev/null || true
+tt_db_ensure_init >/dev/null 2>&1 || true
+tt_db_exec_safe "INSERT INTO tasks (task_id,target,sent_at,expect_until,ttl_sec,state,owner_alias,owner_session,project_path,frozen_at) VALUES ('remote-freeze','worker.cdx',1000,1800,800,'frozen','owner.cc','remote','/tmp/project-a',1001),('foreign-freeze','worker.cdx',2000,2800,800,'frozen','owner.cc','foreign','/tmp/project-b',2001),('legacy-freeze','worker.cdx',3000,3800,800,'frozen','owner.cc','legacy',NULL,3001);" >/dev/null
+remote_out="$(TPROJ_HOOK_PROJECT=/tmp/project-a invoke_guard Edit '')"
+check "same-project remote session freeze blocks exact target" sh -c "grep -q 'remote-freeze' <<'EOF'
+$remote_out
+EOF"
+foreign_out="$(TPROJ_HOOK_PROJECT=/tmp/project-c invoke_guard Edit '')"
+check "other project and legacy session do not freeze pane" test -z "$foreign_out"
+
 printf '%s\n' "----" "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
