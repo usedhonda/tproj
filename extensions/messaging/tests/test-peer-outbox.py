@@ -63,6 +63,28 @@ class OutboxTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(a.Refused):
                 a.validate(bad)
 
+    def test_exact_prepared_lookup_is_read_only(self):
+        item = row(message_id='msg-lookup', task_id='task-lookup')
+        a.mutate(self.db, 'prepare', item)
+        reader = a.open_db(self.db_path, read_only=True)
+        try:
+            self.assertEqual(a.lookup_prepared(reader, 'session-a', 'project.cc',
+                                               'remote.cdx', 'task-lookup'), item)
+            for values in (('other', 'project.cc', 'remote.cdx', 'task-lookup'),
+                           ('session-a', 'other.cc', 'remote.cdx', 'task-lookup'),
+                           ('session-a', 'project.cc', 'remote.cdx', '../escape')):
+                with self.assertRaises(a.Refused):
+                    a.lookup_prepared(reader, *values)
+        finally:
+            reader.close()
+        a.mutate(self.db, 'commit', item)
+        reader = a.open_db(self.db_path, read_only=True)
+        try:
+            with self.assertRaisesRegex(a.Refused, 'prepared task absent'):
+                a.lookup_prepared(reader, 'session-a', 'project.cc', 'remote.cdx', 'task-lookup')
+        finally:
+            reader.close()
+
 
 if __name__ == '__main__':
     unittest.main()

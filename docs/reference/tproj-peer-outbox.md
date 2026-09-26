@@ -39,3 +39,13 @@ this isolated ledger as a delivery receipt.
 
 Focused isolated check:
 `python3 extensions/messaging/tests/test-peer-outbox.py`.
+
+## D4 exact prepared lookup
+
+`lookup-prepared --db ABS --owner-session S --owner-alias A --target T
+--task-id I` opens an **existing** private database read-only and returns the
+entire exact prepared metadata JSON, including `message_id`. It requires the
+unique owner/session/target/task tuple and rejects an absent, committed,
+released, or tombstoned row. It never prepares, commits, or creates a database.
+D4 must independently confirm its cache insertion and durable DB shadow row
+before passing this unchanged JSON to `commit`; lookup itself is not that proof.
