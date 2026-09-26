@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Thin client for the unified tproj host-agent mailbox."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import socket
+import sys
+import tempfile
+import uuid
+
+WIRE_LIMIT = 262144
+DEFAULT_CONFIG = Path.home() / ".config/tproj/msg-client.json"
+DEFAULT_SPOOL = Path.home() / ".local/state/tproj-msg-unified/submissions.json"
+
+
+class ClientError(Exception):
+    pass
+
+
+def config(path: Path | None = None) -> dict:
+    path = path or DEFAULT_CONFIG
+    if not path.is_file():
+        raise ClientError("unified messaging not configured")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ClientError(f"invalid unified messaging config: {exc}") from exc
+    if not isinstance(value, dict) or not isinstance(value.get("socket"), str) or not value["socket"].strip():
+        raise ClientError("invalid unified messaging config: socket is required")
+    return value
+
+
+def rpc(socket_path: str, request: dict) -> object:
+    try:
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.settimeout(5)
+            sock.connect(socket_path)
+            sock.sendall((json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n").encode())
+            with sock.makefile("rb") as stream:
+                raw = stream.readline(WIRE_LIMIT + 1)
+    except OSError as exc:
+        raise ClientError(f"unified messaging unavailable: {exc}") from exc
+    if len(raw) > WIRE_LIMIT or not raw.endswith(b"\n"):
+        raise ClientError("invalid host response")
+    try:
+        response = json.loads(raw)
+    except ValueError as exc:
+        raise ClientError("invalid host response") from exc
+    if not response.get("ok"):
+        error = response.get("error", {})
+        raise ClientError(f"{error.get('code', 'unavailable')}: {error.get('message', 'host unavailable')}")
+    return response.get("result")
+
+
+def read_spool(path: Path | None = None) -> dict:
+    path = path or DEFAULT_SPOOL
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ClientError(f"submission spool unreadable: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ClientError("submission spool unreadable")
+    return value
+
+
+def write_spool(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, raw_path = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(raw_path, path)
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try: os.fsync(dir_fd)
+        finally: os.close(dir_fd)
+    finally:
+        if os.path.exists(raw_path): os.unlink(raw_path)
+
+
+def submission(request: dict, *, spool: Path | None = None, retry: str | None = None) -> object:
+    spool = spool or DEFAULT_SPOOL
+    saved = read_spool(spool)
+    if retry:
+        prior = saved.get(retry)
+        if not isinstance(prior, dict):
+            raise ClientError(f"unknown submission ID: {retry}")
+        request = prior
+    else:
+        mid = str(request.get("submission_id") or uuid.uuid4())
+        request = dict(request, submission_id=mid)
+        saved[mid] = request
+        write_spool(spool, saved)
+    return request, saved
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="tproj-msg-unified")
+    p.add_argument("target", nargs="?")
+    p.add_argument("body", nargs="?")
+    p.add_argument("--stdin", action="store_true")
+    p.add_argument("--session")
+    p.add_argument("--as", dest="claimed_alias")
+    p.add_argument("--retry", metavar="SUBMISSION_ID")
+    p.add_argument("--list", action="store_true")
+    p.add_argument("--status", action="store_true")
+    p.add_argument("--json", action="store_true")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    try:
+        cfg = config()
+        if args.retry:
+            req, _ = submission({}, retry=args.retry)
+            result = rpc(cfg["socket"], req)
+        elif args.list or args.status:
+            result = rpc(cfg["socket"], {"op": "list" if args.list else "status"})
+        elif args.target == "reply":
+            if not args.body: raise ClientError("reply requires message ID")
+            body = sys.stdin.read() if args.stdin else ""
+            if not args.stdin: raise ClientError("reply requires --stdin")
+            req = {"op": "reply", "message_id": args.body, "body": body, "session": args.session, "as": args.claimed_alias}
+            req, _ = submission(req, retry=args.retry)
+            result = rpc(cfg["socket"], req)
+        elif args.target == "inbox":
+            result = rpc(cfg["socket"], {"op": "inbox", "session": args.session, "as": args.claimed_alias})
+        elif args.target == "message":
+            if not args.body: raise ClientError("message requires message ID")
+            result = rpc(cfg["socket"], {"op": "message", "message_id": args.body, "session": args.session, "as": args.claimed_alias})
+        else:
+            if not args.target: raise ClientError("target is required")
+            body = sys.stdin.read() if args.stdin else (args.body or "")
+            if not body: raise ClientError("message body is required")
+            req = {"op": "send", "target": args.target, "body": body, "session": args.session, "as": args.claimed_alias}
+            req, _ = submission(req, retry=args.retry)
+            result = rpc(cfg["socket"], req)
+        print(json.dumps(result, ensure_ascii=False) if args.json else result)
+        return 0
+    except ClientError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
