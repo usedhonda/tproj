@@ -1100,9 +1100,8 @@ final class WindowLevelController: ObservableObject {
             queue: .main
         ) { [weak self] notification in
             let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            let bundleID = app?.bundleIdentifier
             Task { @MainActor [weak self] in
-                self?.applyWindowLevel(frontmostBundleID: bundleID)
+                self?.applyWindowLevel(frontmostApp: app)
             }
         }
     }
@@ -1118,18 +1117,23 @@ final class WindowLevelController: ObservableObject {
             appWindow = window
             lastAppliedLevel = nil
         }
-        applyWindowLevel(frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+        applyWindowLevel(frontmostApp: NSWorkspace.shared.frontmostApplication)
     }
 
     func setTerminalDockExpanded(_ expanded: Bool) {
         terminalDockExpanded = expanded
-        applyWindowLevel(frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+        applyWindowLevel(frontmostApp: NSWorkspace.shared.frontmostApplication)
     }
 
-    private func applyWindowLevel(frontmostBundleID: String?) {
+    private func applyWindowLevel(frontmostApp: NSRunningApplication?) {
         guard let window = appWindow else { return }
-        // The narrow sidebar may float over Ghostty; the expanded terminal must not cover it.
-        let shouldFloat = !terminalDockExpanded && frontmostBundleID == ghosttyBundleID
+        // Keep the sidebar above Ghostty when either app is active. Dropping its
+        // level as soon as Tproj receives focus makes the two windows alternate
+        // frontmost, flickering the pointer shape and interrupting input.
+        let shouldFloat = !terminalDockExpanded && (
+            frontmostApp?.bundleIdentifier == ghosttyBundleID ||
+            frontmostApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+        )
         let desiredLevel: NSWindow.Level = shouldFloat ? .floating : .normal
         guard desiredLevel != lastAppliedLevel else { return }
         window.level = desiredLevel
