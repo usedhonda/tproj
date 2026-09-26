@@ -168,7 +168,7 @@ printf 'projects:\n  - path: %s/p1\n  - path: %s/p2\n  - path: %s/p3\n' \
 out=$(cd "$cap_home" && run_bounded 20 env -u TMUX HOME="$cap_home" TMUX_TMPDIR="$cap_home" \
   TPROJ_MAX_COLUMNS=2 "$BIN_DIR/tproj" </dev/null 2>&1); rc=$?
 if [[ "$rc" -eq 1 ]] && printf '%s' "$out" | grep -q "refusing to start" \
-   && ! TMUX_TMPDIR="$cap_home" tmux ls >/dev/null 2>&1; then
+   && ! env -u TMUX TMUX_TMPDIR="$cap_home" tmux ls >/dev/null 2>&1; then
   pass "exec:tproj refuses to start above the column limit"
 else
   fail "exec:tproj refuses to start above the column limit" "rc=$rc output: $(printf '%s' "$out" | tail -3 | tr '\n' '|')"
