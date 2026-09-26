@@ -686,7 +686,7 @@ peer_ledger_configured() {
 
 # Plain alias chat and status use the ledger projected from this Mac's YAML.
 # The host is a transport namespace, never a second alias authority.
-if [[ ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) && "$STDIN_MODE" != "true" && -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "true" \
+if [[ ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) && -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "true" \
       && "$TARGET" =~ ^[A-Za-z0-9_-]+\.(cc|cdx)$ ]]; then
   ledger="$HOME/bin/tproj-peer-ledger"
   if peer_ledger_configured; then

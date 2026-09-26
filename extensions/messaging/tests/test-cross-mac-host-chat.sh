@@ -67,6 +67,14 @@ grep -Fq 'verified local sender' "$tmp/err"
 [[ ! -e "$SSH_CALLED_MARKER" ]]
 echo 'ok: YAML alias routes remotely but preserves sender verification'
 
+if printf 'hello via stdin' | HOME="$tmp/home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --as exact.cc --stdin chi.cc >"$tmp/out" 2>"$tmp/err"; then
+  echo 'FAIL: stdin YAML route accepted an unverified sender' >&2
+  exit 1
+fi
+grep -Fq 'verified local sender' "$tmp/err"
+[[ ! -e "$SSH_CALLED_MARKER" ]]
+echo 'ok: stdin YAML alias preserves the remote route and sender verification'
+
 HOME="$tmp/home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --status chi.cc >"$tmp/out" 2>"$tmp/err"
 grep -Fq 'chi.cc' "$tmp/out"
 grep -Fq 'remote running|tproj-remote-cc-test' "$tmp/out"
