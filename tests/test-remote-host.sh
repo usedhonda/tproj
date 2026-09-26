@@ -33,6 +33,9 @@ cdx_session=$(run ensure --path "$TMP/project" --role cdx)
 [[ $(tm show-options -t "$cdx_session" -v mouse) == on ]]
 [[ $(run status --path "$TMP/project" --role cc) == running\|"$cc_session"\|* ]]
 [[ $(run status --path "$TMP/project" --role cdx) == running\|"$cdx_session"\|* ]]
+mkdir -p "$TMP/altbin"
+ln -s "$TMP/bin/codex" "$TMP/altbin/codex"
+PATH="$TMP/altbin:$PATH" run status --path "$TMP/project" --role cdx | grep -q "^running|$cdx_session|"
 cc_pane=$(tm list-panes -t "=$cc_session:dev" -F '#{pane_id}')
 cdx_pane=$(tm list-panes -t "=$cdx_session:dev" -F '#{pane_id}')
 [[ $(tm show-options -pv -t "$cdx_pane" @orchestration_role) == solo-fallback ]]

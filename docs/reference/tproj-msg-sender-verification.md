@@ -42,6 +42,8 @@ chat crosses to the exact destination session; a stopped role is not started
 or queued. If both roles share a session, normal same-project pane resolution
 applies. This shorthand neither grants task/handoff authority nor routes by
 an unrelated project's alias.
+The live-role status check recognizes a CLI launched through a different
+symlink path from the one currently resolved after an npm update.
 On macOS the live `sshd-session` process title may include a suffix such as
 `sshd-session: account@notty`; the ingress accepts that process-name form but
 still requires it to be in the caller's actual parent chain.

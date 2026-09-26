@@ -195,10 +195,12 @@ initialize_role_metadata() {
   done
 }
 agent_status() {
-  local s=$1 c=$2 pid cmd
+  local s=$1 c=$2 pid cmd name
   pid=$(tmux_run display-message -t "$s" -p '#{pane_pid}' 2>/dev/null || true)
   cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
-  [[ -n "$pid" && "$cmd" == *"$c"* ]] && printf '%s' "$pid"
+  name=${c##*/}
+  # npm updates may leave launch and status resolving different CLI symlinks.
+  [[ -n "$pid" && ( "$cmd" == *"$c"* || "$cmd" == *"/$name "* || "$cmd" == *"/$name" ) ]] && printf '%s' "$pid"
 }
 start_command() {
   local r=$1 c q
