@@ -18,6 +18,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_FILES = (
+    ("bin/tproj-peer-ledger", "tproj-peer-ledger"),
     ("extensions/messaging/tproj-msg", "tproj-msg"),
     ("extensions/messaging/tproj-remote-relay", "tproj-remote-relay"),
     ("extensions/messaging/tproj-task", "tproj-task"),

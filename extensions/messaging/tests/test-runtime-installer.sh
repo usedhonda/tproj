@@ -18,6 +18,7 @@ check() {
 }
 
 runtime_targets=(
+  tproj-peer-ledger
   tproj-msg
   tproj-task
   tproj-task-cache.sh
@@ -86,6 +87,7 @@ runtime_ok=0
 for target in "${runtime_targets[@]}"; do
   repo_source="$REPO/extensions/messaging/$target"
   [[ -f "$repo_source" ]] || repo_source="$REPO/extensions/hooks/$target"
+  [[ -f "$repo_source" ]] || repo_source="$REPO/bin/$target"
   if [[ ! -x "$home_root/bin/$target" ]] || ! cmp -s "$repo_source" "$home_root/bin/$target"; then
     runtime_ok=1
     break
