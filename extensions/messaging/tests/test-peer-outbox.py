@@ -33,7 +33,7 @@ class OutboxTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.db_path = Path(self.temp.name) / 'ledger.sqlite'
         self.db = a.open_db(self.db_path)
-        self.addCleanup(self.db.close)
+        self.addCleanup(lambda: self.db.close())
 
     def test_source_durable_idempotent_and_conflicting(self):
         item = row()
@@ -85,6 +85,21 @@ class OutboxTest(unittest.TestCase):
                 a.lookup_prepared(reader, 'session-a', 'project.cc', 'remote.cdx', 'task-lookup')
         finally:
             reader.close()
+
+    def test_delivery_claim_is_durable_and_never_reclaims(self):
+        item = row(message_id='msg-delivery', task_id='task-delivery')
+        a.mutate(self.db, 'quarantine', item)
+        a.mutate(self.db, 'release', item)
+        self.assertEqual(a.claim_delivery(self.db, item, now=1000), 'injecting')
+        self.db.close()
+        self.db = a.open_db(self.db_path)
+        with self.assertRaisesRegex(a.Refused, 'not claimable'):
+            a.claim_delivery(self.db, item, now=1001)
+        self.assertEqual(a.expire_injecting(self.db, now=1031), 1)
+        with self.assertRaisesRegex(a.Refused, 'not claimable'):
+            a.claim_delivery(self.db, item, now=1032)
+        with self.assertRaisesRegex(a.Refused, 'outcome conflict'):
+            a.finish_delivery(self.db, item, 'delivered')
 
 
 if __name__ == '__main__':

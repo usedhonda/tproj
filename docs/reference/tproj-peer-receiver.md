@@ -25,8 +25,14 @@ v2 `commit` envelope for identical metadata and empty body with its own
 one-shot source nonce. Source authority mints/consumes it only for an exactly
 `committed` outbox row (which D4 must reconcile after cache+DB success).
 Receiver requires its exact quarantined row, rechecks live target epoch and
-source proof, then transitions to `released`. Only this successful response
-contains the task envelope/body for a future authenticated ingress to handle.
+source proof, then transitions to `released`. The release response contains only the
+message ID and state, never the body. A separate atomic `claim` moves
+`released -> injecting` and returns the exact envelope/body once to a future
+authenticated ingress. A second claim cannot return the body. `finish` records
+`delivered` only after proven injection, or `unknown` on failure. `expire`
+marks abandoned `injecting` claims `unknown` after 30 seconds. Neither
+`unknown` nor `delivered` can be claimed again; timeout/restart is not an
+automatic retry.
 A duplicate/mismatched/replayed proof, changed route, expired task, stale
 epoch, tombstone, absent quarantine, or changed SSH process is rejection,
 never fallback to plain chat.
@@ -39,9 +45,24 @@ transition is an unknown outcome requiring exact message-ID reconciliation;
 callers must not invent a new task or assume delivery. This helper does not
 persist the body or a delivery receipt, and a future `tproj-msg` ingress must
 add durable idempotent injection and owner/tombstone gates before control is
-enabled.
+enabled. See `tproj-peer-lifecycle-v2.md` for the not-yet-enabled reply and
+tombstone proof schema.
 
 Focused isolated checks:
 `python3 extensions/messaging/tests/test-peer-receiver.py` and
 `python3 extensions/messaging/tests/test-peer-authority.py`. They mock process
 identity and do not prove live SSH/tmux behavior.
+
+## Activation boundary for a future ingress
+
+The current `claim`/`finish` CLI has no kernel-authenticated caller binding.
+An arbitrary same-UID shell process with access to the private route/ledger
+could steal a one-time claim or falsely record delivery. This is a denial or
+state-corruption risk even though it cannot obtain source authority's nonce.
+Before enabling control, `tproj-msg` must invoke the receiver through a
+fixed-config, caller-authenticated ingress service using Darwin
+`LOCAL_PEERPID` plus registered ingress PID/start/script, or an equivalent
+protected in-process path. That ingress alone calls claim, performs an
+idempotent durable pane injection, and finishes the claim; its config cannot
+come from the wire. D4's exact prepared lookup and commit are separate from
+that receiver activation.

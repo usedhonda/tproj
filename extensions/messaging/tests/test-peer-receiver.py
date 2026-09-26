@@ -64,8 +64,14 @@ class ReceiverTest(unittest.TestCase):
             with self.assertRaisesRegex(r.a.Refused, 'wrong envelope phase'):
                 self.receiver.release(self.task, self.wire(self.task))
             result = self.receiver.release(self.task, self.wire(self.commit))
-            self.assertEqual(result['state'], 'released')
-            self.assertEqual(result['envelope']['body'], 'hello')
+            self.assertEqual(result, {'message_id': 'msg-1', 'state': 'released'})
+            claimed = self.receiver.claim(self.task)
+            self.assertEqual(claimed['envelope']['body'], 'hello')
+            with self.assertRaisesRegex(ValueError, 'not claimable'):
+                self.receiver.claim(self.task)
+            self.assertEqual(self.receiver.finish(self.task, 'delivered')['state'], 'delivered')
+            with self.assertRaisesRegex(ValueError, 'not claimable'):
+                self.receiver.claim(self.task)
         self.assertEqual(len(self.calls), 2)
 
     def test_route_epoch_expiry_and_unquarantined_reject(self):
@@ -102,6 +108,19 @@ class ReceiverTest(unittest.TestCase):
             with self.assertRaisesRegex(r.a.Refused, 'not quarantined'):
                 self.receiver.release(self.task, self.wire(self.commit))
         self.assertEqual(len(self.calls), 1)
+
+    def test_timeout_becomes_unknown_without_reclaim(self):
+        with patch.object(r.a, 'process', return_value=(1, 5000, 501)), patch.object(r.os, 'getuid', return_value=501):
+            self.receiver.quarantine(self.wire(self.task))
+            self.receiver.release(self.task, self.wire(self.commit))
+            with patch.object(r.outbox.time, 'time', return_value=1000):
+                self.receiver.claim(self.task)
+            with patch.object(r.outbox.time, 'time', return_value=1031):
+                self.assertEqual(self.receiver.expire()['unknown_count'], 1)
+            with self.assertRaisesRegex(ValueError, 'not claimable'):
+                self.receiver.claim(self.task)
+            with self.assertRaisesRegex(ValueError, 'outcome conflict'):
+                self.receiver.finish(self.task, 'delivered')
 
 
 if __name__ == '__main__':

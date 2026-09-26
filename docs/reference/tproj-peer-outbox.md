@@ -19,7 +19,11 @@ user-authorization bit requires a nonempty intent hash.
 
 `prepare` creates source `prepared`; `quarantine` creates destination
 `quarantined`. `commit` moves only `prepared -> committed`; `release` moves
-only `quarantined -> released`. `tombstone --tombstone-hash <sha256>` moves any
+only `quarantined -> released`. Receiver `claim` atomically moves only
+`released -> injecting` and may expose a task body only once in the higher
+receiver helper; `finish` records `delivered` or `unknown`, and stale
+`injecting` becomes `unknown` after 30 seconds. Neither outcome permits a
+second claim. `tombstone --tombstone-hash <sha256>` moves any
 existing state to terminal `tombstoned`. Exact retries of the current initial
 or terminal transition are idempotent. A reused message ID with changed
 metadata, a task tuple with a different message ID, a mismatched tombstone

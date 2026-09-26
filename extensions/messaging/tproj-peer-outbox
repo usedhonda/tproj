@@ -9,6 +9,7 @@ import re
 import sqlite3
 import stat
 import sys
+import time
 
 MAX_INPUT = 16384
 COMPONENT = re.compile(r'^[A-Za-z0-9_.-]+$')
@@ -101,7 +102,10 @@ def open_db(path, *, read_only=False):
     db.execute('CREATE TABLE IF NOT EXISTS tasks ('
                'message_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, owner_session TEXT NOT NULL, '
                'owner_alias TEXT NOT NULL, target TEXT NOT NULL, metadata TEXT NOT NULL, '
-               'state TEXT NOT NULL, tombstone_hash TEXT NOT NULL DEFAULT "")')
+               'state TEXT NOT NULL, tombstone_hash TEXT NOT NULL DEFAULT "", '
+               'claimed_at INTEGER NOT NULL DEFAULT 0)')
+    if 'claimed_at' not in {row[1] for row in db.execute('PRAGMA table_info(tasks)')}:
+        db.execute('ALTER TABLE tasks ADD COLUMN claimed_at INTEGER NOT NULL DEFAULT 0')
     db.execute('CREATE UNIQUE INDEX IF NOT EXISTS task_identity ON tasks '
                '(owner_session, owner_alias, target, task_id)')
     return db
@@ -179,6 +183,52 @@ def lookup_quarantined(db, record):
     row = db.execute('SELECT metadata,state FROM tasks WHERE message_id=?',
                      (record['message_id'],)).fetchone()
     return bool(row and row[0] == canonical(record) and row[1] == 'quarantined')
+
+
+def claim_delivery(db, record, *, now=None):
+    """One atomic release claim; never return body on a repeated claim."""
+    validate(record)
+    now = int(time.time() if now is None else now)
+    with db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT metadata,state FROM tasks WHERE message_id=?',
+                         (record['message_id'],)).fetchone()
+        if not row or row[0] != canonical(record) or row[1] != 'released':
+            raise Refused('delivery not claimable')
+        db.execute('UPDATE tasks SET state=?,claimed_at=? WHERE message_id=?',
+                   ('injecting', now, record['message_id']))
+    return 'injecting'
+
+
+def finish_delivery(db, record, outcome):
+    validate(record)
+    if outcome not in ('delivered', 'unknown'):
+        raise Refused('invalid delivery outcome')
+    with db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT metadata,state FROM tasks WHERE message_id=?',
+                         (record['message_id'],)).fetchone()
+        if not row or row[0] != canonical(record):
+            raise Refused('delivery identity mismatch')
+        if row[1] == outcome:
+            return outcome
+        if row[1] != 'injecting':
+            raise Refused('delivery outcome conflict')
+        db.execute('UPDATE tasks SET state=? WHERE message_id=?',
+                   (outcome, record['message_id']))
+    return outcome
+
+
+def expire_injecting(db, *, now=None, timeout=30):
+    """Audit abandoned claims as unknown; never retry them automatically."""
+    now = int(time.time() if now is None else now)
+    if type(timeout) is not int or timeout <= 0:
+        raise Refused('invalid claim timeout')
+    with db:
+        db.execute('BEGIN IMMEDIATE')
+        cursor = db.execute('UPDATE tasks SET state=? WHERE state=? AND claimed_at>0 '
+                            'AND claimed_at<=?', ('unknown', 'injecting', now - timeout))
+    return cursor.rowcount
 
 
 def main():

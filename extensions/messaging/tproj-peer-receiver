@@ -190,12 +190,46 @@ class Receiver:
             outbox.mutate(db, 'release', record)
         finally:
             db.close()
-        return {'state': 'released', 'envelope': task_envelope}
+        return {'message_id': record['message_id'], 'state': 'released'}
+
+    def claim(self, task_envelope):
+        kind = task_envelope.get('kind') if isinstance(task_envelope, dict) else None
+        if kind not in ('task', 'role_handoff'):
+            raise a.Refused('invalid task kind')
+        record = self.validate_envelope(task_envelope, kind)
+        self.target_live(record)
+        db = outbox.open_db(self.db_path)
+        try:
+            outbox.expire_injecting(db)
+            outbox.claim_delivery(db, record)
+        finally:
+            db.close()
+        return {'state': 'injecting', 'envelope': task_envelope}
+
+    def finish(self, task_envelope, outcome):
+        kind = task_envelope.get('kind') if isinstance(task_envelope, dict) else None
+        if kind not in ('task', 'role_handoff'):
+            raise a.Refused('invalid task kind')
+        record = self.validate_envelope(task_envelope, kind)
+        db = outbox.open_db(self.db_path)
+        try:
+            state = outbox.finish_delivery(db, record, outcome)
+        finally:
+            db.close()
+        return {'message_id': record['message_id'], 'state': state}
+
+    def expire(self):
+        db = outbox.open_db(self.db_path)
+        try:
+            count = outbox.expire_injecting(db)
+        finally:
+            db.close()
+        return {'unknown_count': count}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('quarantine', 'release'))
+    parser.add_argument('action', choices=('quarantine', 'release', 'claim', 'finish', 'expire'))
     for name in ('source-socket', 'db', 'registry-root', 'target-project',
                  'source-host', 'destination-host', 'source-project',
                  'destination-project', 'owner-session', 'destination-session',
@@ -214,16 +248,25 @@ def main():
                             registry_root=args.registry_root, target_project=args.target_project,
                             route=route, forward_pid=args.forward_pid,
                             forward_start=args.forward_start, forward_uid=args.forward_uid)
-        raw = sys.stdin.buffer.read(MAX_BYTES + 1)
-        if not raw or len(raw) > MAX_BYTES:
-            raise a.Refused('invalid input size')
-        request = json.loads(raw)
+        if args.action == 'expire':
+            result = receiver.expire()
+        else:
+            raw = sys.stdin.buffer.read(MAX_BYTES + 1)
+            if not raw or len(raw) > MAX_BYTES:
+                raise a.Refused('invalid input size')
+            request = json.loads(raw)
         if args.action == 'quarantine':
             result = receiver.quarantine(request)
-        else:
+        elif args.action == 'release':
             if not isinstance(request, dict) or set(request) != {'task_envelope', 'commit_wire'}:
                 raise a.Refused('invalid release request')
             result = receiver.release(request['task_envelope'], request['commit_wire'])
+        elif args.action == 'claim':
+            result = receiver.claim(request)
+        elif args.action == 'finish':
+            if not isinstance(request, dict) or set(request) != {'task_envelope', 'outcome'}:
+                raise a.Refused('invalid finish request')
+            result = receiver.finish(request['task_envelope'], request['outcome'])
         sys.stdout.buffer.write(a.canonical(result) + b'\n')
         return 0
     except (OSError, ValueError, TypeError) as exc:
