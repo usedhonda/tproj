@@ -19,8 +19,9 @@ For ordinary `alias.role` chat and `--status`, the initiating Mac reads its
 `workspace.yaml` master. The persistent host queries that master live through
 the private reverse socket; its former imported `peers.json` is not an alias
 authority. An unavailable master stops remote alias resolution. The same alias
-routing applies to `--stdin alias.role`; stdin changes only how the message body
-is read, not sender verification or remote destination choice. `--list`
+routing applies to `--stdin alias.role`; the auto-route forwards the already-read
+body into the remote child CLI without changing sender verification or remote
+destination choice. `--list`
 displays configured remote YAML aliases and hides their local `alias@host`
 proxy duplicates. The live master, not the server's legacy catalog aliases,
 resolves another project in a persistent host's tmux

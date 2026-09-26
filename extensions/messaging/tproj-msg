@@ -706,6 +706,10 @@ if [[ ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) && -z "$REMOTE_HOST
       [[ "$route_status" == running\|* ]] || { echo "Error: remote target '$TARGET' is not running" >&2; exit 1; }
       route_session="${route_status#running|}"
       route_session="${route_session%%|*}"
+      if [[ "$STDIN_MODE" == "true" ]]; then
+        printf '%s' "$MESSAGE" | "$0" --remote "$route_host" --remote-session "$route_session" "${ORIGINAL_ARGS[@]}"
+        exit $?
+      fi
       exec "$0" --remote "$route_host" --remote-session "$route_session" "${ORIGINAL_ARGS[@]}"
     fi
     # On a persistent remote host the imported snapshot names projects on its

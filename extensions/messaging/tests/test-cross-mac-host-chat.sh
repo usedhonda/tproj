@@ -75,6 +75,22 @@ grep -Fq 'verified local sender' "$tmp/err"
 [[ ! -e "$SSH_CALLED_MARKER" ]]
 echo 'ok: stdin YAML alias preserves the remote route and sender verification'
 
+cat > "$tmp/routed-msg" <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "--remote" ]]; then
+  printf '%s\n' "$*" > "$CAPTURE_ARGS"
+  cat > "$CAPTURE_BODY"
+  exit 0
+fi
+EOF
+tail -n +2 "$msg" >> "$tmp/routed-msg"
+chmod +x "$tmp/routed-msg"
+export CAPTURE_ARGS="$tmp/stdin-route-args" CAPTURE_BODY="$tmp/stdin-route-body"
+printf 'hello via stdin' | HOME="$tmp/home" PATH="$tmp/bin:$PATH" "$tmp/routed-msg" --session tproj-workspace --as exact.cc --stdin chi.cc >"$tmp/out" 2>"$tmp/err"
+[[ "$(cat "$CAPTURE_BODY")" == 'hello via stdin' ]]
+grep -Fq -- '--remote paired --remote-session tproj-remote-cc-test --session tproj-workspace --as exact.cc --stdin chi.cc' "$CAPTURE_ARGS"
+echo 'ok: stdin body survives automatic remote route handoff'
+
 HOME="$tmp/home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --status chi.cc >"$tmp/out" 2>"$tmp/err"
 grep -Fq 'chi.cc' "$tmp/out"
 grep -Fq 'remote running|tproj-remote-cc-test' "$tmp/out"
