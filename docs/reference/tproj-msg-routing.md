@@ -11,9 +11,19 @@ find the other role's remote session. Its single-project pane tags are `*-p1`;
 the role lookup retains column 1 even when `--session` already names that
 destination session. This keeps `--status cc` and the matching send consistent
 for Codex's explicit `--session ... --as artist.cdx cc` invocation.
+Across two sessions on the same persistent host, a verified pane-origin bare
+opposite-role `--new-task` keeps the sender session as task owner and binds the
+task to the sender project path; the destination session is used only for
+delivery. Cdx's explicit `--as` route also requires a matching live registry
+session ID and project. A blocked destination is rejected without queueing.
+The exact `<alias>.role` key is used in task rows and reply message evidence,
+even when the sender typed the bare role.
+Unverified external `--as`, other-project aliases, role handoffs, and
+cross-host control remain outside this task route.
 
 Only an explicit `<alias>.cc` or `<alias>.cdx` selects another project. The
-client's workspace YAML supplies those aliases to the peer ledger; a server
+client's workspace YAML is the live alias master queried over the reverse
+socket; a server
 catalog alias does not override them. Cross-host delivery is plain chat with a
 non-authoritative sender hint. A receiver must not treat that hint as verified
 pane identity or task/role-handoff authority. A reply uses the intended exact
