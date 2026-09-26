@@ -667,12 +667,20 @@ load_peer_snapshot() {
   printf '%s\n' "$snapshot"
 }
 
+peer_ledger_configured() {
+  [[ -f "$HOME/.config/tproj/peers.json" ]] && return 0
+  local workspace="$HOME/.config/tproj/workspace.yaml" projects_key
+  [[ -f "$workspace" ]] || return 1
+  projects_key=$(yq -o json "$workspace" 2>/dev/null | jq -r 'has("projects")' 2>/dev/null) || projects_key=invalid
+  [[ "$projects_key" != false ]]
+}
+
 # Plain alias chat and status use the ledger projected from this Mac's YAML.
 # The host is a transport namespace, never a second alias authority.
 if [[ ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) && "$STDIN_MODE" != "true" && -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "true" \
       && "$TARGET" =~ ^[A-Za-z0-9_-]+\.(cc|cdx)$ ]]; then
   ledger="$HOME/bin/tproj-peer-ledger"
-  if [[ -f "$HOME/.config/tproj/workspace.yaml" || -f "$HOME/.config/tproj/peers.json" ]]; then
+  if peer_ledger_configured; then
     peer_snapshot=$(load_peer_snapshot) || { echo "Error: peer ledger unavailable or invalid" >&2; exit 1; }
     route_entry=$("$ledger" resolve "${TARGET%.*}" 2>/dev/null) || route_entry=""
     if [[ -n "$route_entry" && "$(jq -r '.host' <<< "$peer_snapshot")" == "$(uname -n)" \
@@ -4941,7 +4949,7 @@ bridge_config_check || exit 1
 if [[ "$LIST_MODE" == "true" ]]; then
   ledger_snapshot=""
   ledger="$HOME/bin/tproj-peer-ledger"
-  if [[ -f "$HOME/.config/tproj/workspace.yaml" || -f "$HOME/.config/tproj/peers.json" ]]; then
+  if peer_ledger_configured; then
     ledger_snapshot=$(load_peer_snapshot) || { echo "Error: peer ledger unavailable or invalid" >&2; exit 1; }
   fi
   proxy_aliases=""

@@ -279,7 +279,9 @@ r=$(run_intmux %1 999999); [[ "$r" == "REJECT pane_ancestry_mismatch" ]] \
 
 # --- CWD auto-detect fallback (--session, no --as) --------------------------
 CWD_HOME="$WORK/cwdhome"; PROJDIR="$WORK/proj"
-mkdir -p "$CWD_HOME/.config/tproj" "$PROJDIR"
+mkdir -p "$CWD_HOME/.config/tproj" "$CWD_HOME/bin" "$PROJDIR"
+cp "$SCRIPT_DIR/../../../bin/tproj-peer-ledger" "$CWD_HOME/bin/tproj-peer-ledger"
+chmod +x "$CWD_HOME/bin/tproj-peer-ledger"
 # Normalise PROJDIR so the workspace.yaml path matches what `pwd` reports after
 # `cd` (TMPDIR can carry a trailing slash -> a double slash mktemp path that pwd
 # collapses, which would otherwise defeat the exact-string CWD lookup).

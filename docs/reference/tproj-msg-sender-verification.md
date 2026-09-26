@@ -24,6 +24,9 @@ local `alias@host` proxy duplicates. The imported ledger, not the server's
 legacy catalog aliases, resolves another project in a persistent host's tmux
 session after sender verification. Cross-session sends are plain live chat
 only, with the normal destination sendability gate and no queue.
+A bridge-only `workspace.yaml` with no `projects` key has no peer routes and
+does not require an installed peer-ledger CLI for ordinary local or bridge
+messages. If `projects` is present, invalid ledger data still fails closed.
 On that persistent host, an alias from the imported client ledger whose
 destination is on the initiating Mac routes ordinary `alias.role` chat through
 the fixed private `~/.config/tproj/cross-mac/reply.sock` reverse relay. The

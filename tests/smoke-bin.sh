@@ -51,6 +51,13 @@ for f in "$BIN_DIR"/*; do
   base=$(basename "$f")
   shebang=$(head -1 "$f")
   case "$shebang" in
+    *python*)
+      if err=$(run_bounded 6 python3 -c 'import ast, pathlib, sys; p = pathlib.Path(sys.argv[1]); ast.parse(p.read_text(), filename=str(p))' "$f" 2>&1); then
+        pass "syntax:${base} (python ast)"
+      else
+        fail "syntax:${base} (python ast)" "$(printf '%s' "$err" | tr '\n' '|')"
+      fi
+      ;;
     *zsh*)
       if err=$(run_bounded 6 zsh -n "$f" 2>&1); then
         pass "syntax:${base} (zsh -n)"
