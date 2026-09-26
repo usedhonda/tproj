@@ -23,6 +23,13 @@ server-authored alias overrides the client YAML. On a persistent host, a
 registered alias in another local tmux session similarly resolves to that
 session after sender verification. Cross-session sends are plain live chat
 only, with the normal destination sendability gate and no queue.
+From a persistent remote host pane, a bare opposite role (`cc` or `cdx`)
+uses the verified sender project's `@project` path to look up that role's
+running session. If the two roles occupy separate sessions, only plain live
+chat crosses to the exact destination session; a stopped role is not started
+or queued. If both roles share a session, normal same-project pane resolution
+applies. This shorthand neither grants task/handoff authority nor routes by
+an unrelated project's alias.
 On macOS the live `sshd-session` process title may include a suffix such as
 `sshd-session: account@notty`; the ingress accepts that process-name form but
 still requires it to be in the caller's actual parent chain.

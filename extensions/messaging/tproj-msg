@@ -1622,6 +1622,32 @@ fi
 CROSS_SESSION_CHAT=false
 if [[ -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "true" \
       && ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) \
+      && ( "$TARGET" == "cc" || "$TARGET" == "cdx" ) && "$TARGET" != "${MY_ROLE:-}" \
+      && -x "$HOME/bin/tproj-remote-host" && "${AS_CALLER_VERIFIED:-false}" == "true" ]]; then
+  sender_project="${VERIFIED_REG_PROJECT:-}"
+  if [[ -z "$sender_project" && -n "${MY_PANE:-}" ]]; then
+    sender_project=$(tmux display-message -t "$MY_PANE" -p '#{@project}' 2>/dev/null || true)
+  fi
+  if [[ "$sender_project" == /* ]]; then
+    host_status=$("$HOME/bin/tproj-remote-host" status --path "$sender_project" --role "$TARGET" 2>/dev/null || true)
+    if [[ "$host_status" == running\|* ]]; then
+      destination_session="${host_status#running|}"
+      destination_session="${destination_session%%|*}"
+      if [[ "$SESSION" != "$destination_session" ]]; then
+        if [[ "$SEND_MODE" == "true" ]]; then
+          [[ "$NEW_TASK_MODE" == "false" && "$ROLE_HANDOFF_MODE" == "false" && "$FORCE_MODE" == "false" && "$FIRE_MODE" == "false" ]] \
+            || { echo "Error: cross-session role routing accepts only plain chat" >&2; exit 1; }
+          CROSS_SESSION_CHAT=true
+        fi
+        SESSION="$destination_session"
+        IS_WORKSPACE=true
+        MY_COLUMN="1"
+      fi
+    fi
+  fi
+fi
+if [[ -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "true" \
+      && ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) \
       && "$TARGET" =~ ^[A-Za-z0-9_-]+\.(cc|cdx)$ \
       && -x "$HOME/bin/tproj-remote-host" ]]; then
   host_rows=$("$HOME/bin/tproj-remote-host" list 2>/dev/null | awk -F '|' -v alias="${TARGET%.*}" 'NR > 1 && $2 == alias {print $3}' || true)
