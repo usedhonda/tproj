@@ -8,6 +8,7 @@ authority by themselves.
 from __future__ import annotations
 
 import json
+import ctypes
 import os
 from pathlib import Path
 import re
@@ -44,6 +45,16 @@ def peer_credentials(sock: socket.socket) -> tuple[int, int]:
             if pid <= 1:
                 raise IdentityError("invalid peer PID")
             if not hasattr(sock, "getpeereid"):
+                try:
+                    uid = ctypes.c_uint()
+                    gid = ctypes.c_uint()
+                    fn = ctypes.CDLL(None).getpeereid
+                    fn.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+                    fn.restype = ctypes.c_int
+                    if fn(sock.fileno(), ctypes.byref(uid), ctypes.byref(gid)) == 0:
+                        return pid, int(uid.value)
+                except (AttributeError, OSError):
+                    pass
                 # Python on newer macOS builds omits getpeereid but exposes
                 # LOCAL_PEERCRED (xucred: version, uid, groups...).
                 option = getattr(socket, "LOCAL_PEERCRED", None)
