@@ -85,6 +85,17 @@ def from_workspace(path, host):
     if not isinstance(data, dict) or not isinstance(data.get("projects"), list):
         fail("workspace projects must be a list")
     projects = []
+    # GUI enablement controls workspace launch, not whether an already-running
+    # pane can be addressed from another host.
+    live_projects = set()
+    try:
+        panes = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{@project}"],
+            capture_output=True, text=True, check=True,
+        )
+        live_projects = set(panes.stdout.splitlines())
+    except (OSError, subprocess.CalledProcessError):
+        pass
     for entry in data["projects"]:
         if isinstance(entry, str):
             entry = {"path": entry}
@@ -104,7 +115,7 @@ def from_workspace(path, host):
         remote_path = entry.get("remote_path", path_value if kind == "remote" else "")
         if not isinstance(alias, str) or not alias or not isinstance(remote_path, str):
             fail("invalid alias or remote path")
-        if entry.get("enabled") is False:
+        if entry.get("enabled") is False and path_value not in live_projects:
             continue
         identity_path = remote_path if kind == "remote" else path_value
         projects.append({"project_id": project_id(destination, identity_path), "alias": alias,

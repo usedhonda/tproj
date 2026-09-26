@@ -15,25 +15,25 @@ live `sshd`/`sshd-session` ancestor and resolves exactly one live pane in the
 exact session's `dev` window. The destination applies the ordinary prompt,
 draft, and selection gates, but a blocked target causes an error, not a queue.
 SSH failure is a delivery failure; no offline store is created.
-For ordinary `alias.role` chat and `--status`, the sending Mac refreshes its
-host-local `peers.json` from `workspace.yaml`, resolves the alias there, and
-syncs that snapshot to the destination host before looking up the live session
-by destination path and role. Invalid or ambiguous snapshots and failed syncs
-stop routing. `--list` displays configured remote YAML aliases and hides their
-local `alias@host` proxy duplicates. The imported ledger, not the server's
-legacy catalog aliases, resolves another project in a persistent host's tmux
+For ordinary `alias.role` chat and `--status`, the initiating Mac reads its
+`workspace.yaml` master. The persistent host queries that master live through
+the private reverse socket; its former imported `peers.json` is not an alias
+authority. An unavailable master stops remote alias resolution. `--list`
+displays configured remote YAML aliases and hides their local `alias@host`
+proxy duplicates. The live master, not the server's legacy catalog aliases,
+resolves another project in a persistent host's tmux
 session after sender verification. Cross-session sends are plain live chat
 only, with the normal destination sendability gate and no queue.
 A bridge-only `workspace.yaml` with no `projects` key has no peer routes and
 does not require an installed peer-ledger CLI for ordinary local or bridge
 messages. If `projects` is present, invalid ledger data still fails closed.
-On that persistent host, an alias from the imported client ledger whose
+On that persistent host, an alias from the live client master whose
 destination is on the initiating Mac routes ordinary `alias.role` chat through
 the fixed private `~/.config/tproj/cross-mac/reply.sock` reverse relay. The
 socket must exist; the outbound sender verifier and receiver's exact-pane gate
-remain in force. `--list` labels these imported aliases as configured remote,
-not live. `--status` does not claim sendability over this reverse path and
-returns an error instead. The relay remains non-authoritative host-origin chat;
+remain in force. `--list` labels these aliases as configured remote,
+not live. `--status` probes the destination pane over the reverse socket.
+The relay remains non-authoritative host-origin chat;
 its sender hint cannot grant task or control authority.
 From a persistent remote host pane, a bare opposite role (`cc` or `cdx`)
 uses the verified sender project's `@project` path to look up that role's

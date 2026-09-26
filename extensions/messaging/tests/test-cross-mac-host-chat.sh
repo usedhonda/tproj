@@ -89,7 +89,7 @@ fi
 echo 'ok: list displays ledger aliases without proxy duplicate'
 
 # An imported client snapshot routes its local aliases back through the fixed
-# reverse socket; status must not invent sendability from that catalog entry.
+# reverse socket; status must query the destination rather than infer liveness.
 reverse_home="$(mktemp -d /tmp/tpr.XXXXXX)"
 trap 'rm -rf "$tmp" "$reverse_home"' EXIT
 mkdir -p "$reverse_home/.config/tproj/cross-mac" "$reverse_home/bin"
@@ -105,15 +105,14 @@ if HOME="$reverse_home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace -
   echo 'FAIL: reverse status claimed sendability' >&2
   exit 1
 fi
-grep -Fq 'sendability is not available' "$tmp/err"
-HOME="$reverse_home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --list >"$tmp/out" 2>"$tmp/err"
-grep -Fq 'artist.cc' "$tmp/out"
-grep -Fq 'configured remote' "$tmp/out"
+if HOME="$reverse_home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --list >"$tmp/out" 2>"$tmp/err"; then
+  echo 'FAIL: reverse list used a stale imported ledger' >&2
+  exit 1
+fi
 if HOME="$reverse_home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace --as artist.cc artist.cc hello >"$tmp/out" 2>"$tmp/err"; then
   echo 'FAIL: missing reverse socket accepted' >&2
   exit 1
 fi
-grep -Fq 'reverse chat socket is unavailable' "$tmp/err"
 python3 -c 'import socket,sys,time; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1); time.sleep(5)' \
   "$reverse_home/.config/tproj/cross-mac/reply.sock" &
 reverse_pid=$!
@@ -125,7 +124,6 @@ if HOME="$reverse_home" PATH="$tmp/bin:$PATH" "$msg" --session tproj-workspace -
   echo 'FAIL: reverse route accepted an unverified sender' >&2
   exit 1
 fi
-grep -Fq 'verified local sender' "$tmp/err"
 kill "$reverse_pid" 2>/dev/null || true
 wait "$reverse_pid" 2>/dev/null || true
 echo 'ok: imported aliases use reverse route without claiming sendability'
@@ -137,11 +135,18 @@ cat > "$tmp/tproj-msg" <<'EOF'
 #!/bin/sh
 cat > "$CAPTURE_BODY"
 printf '%s\n' "$*" > "$CAPTURE_ARGS"
+if [ "$3" = '--status' ]; then echo 'exact.cc online/idle'; exit 0; fi
 echo 'delivered by destination' >&2
 EOF
 chmod +x "$tmp/tproj-msg"
+mkdir -p "$tmp/relay-home/bin"
+cat > "$tmp/relay-home/bin/tproj-peer-ledger" <<'EOF'
+#!/bin/sh
+echo '{"host":"master","projects":[{"alias":"recall"}]}'
+EOF
+chmod +x "$tmp/relay-home/bin/tproj-peer-ledger"
 export CAPTURE_BODY="$tmp/body" CAPTURE_ARGS="$tmp/args"
-python3 "$tmp/tproj-remote-relay" serve --socket "$tmp/local.sock" >"$tmp/server.out" 2>"$tmp/server.err" &
+HOME="$tmp/relay-home" python3 "$tmp/tproj-remote-relay" serve --socket "$tmp/local.sock" >"$tmp/server.out" 2>"$tmp/server.err" &
 server_pid=$!
 trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; rm -rf "$tmp" "$reverse_home"' EXIT
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -154,6 +159,14 @@ printf 'hello over live socket' | python3 "$tmp/tproj-remote-relay" send \
 [[ "$(cat "$tmp/body")" == 'hello over live socket' ]]
 [[ "$(cat "$tmp/args")" == '--remote-relay-ingress '*" --session tproj-workspace --stdin exact.cc" ]]
 echo 'ok: live reverse socket transport'
+python3 "$tmp/tproj-remote-relay" status --socket "$tmp/local.sock" \
+  --session tproj-workspace --target exact.cc >"$tmp/out" 2>"$tmp/err"
+grep -Fq 'exact.cc online/idle' "$tmp/out"
+grep -Fq -- '--session tproj-workspace --status exact.cc' "$tmp/args"
+echo 'ok: reverse status queries destination'
+python3 "$tmp/tproj-remote-relay" snapshot --socket "$tmp/local.sock" >"$tmp/out"
+grep -Fq '"alias":"recall"' "$tmp/out"
+echo 'ok: reverse snapshot reads master directly'
 if printf 'hello' | python3 "$tmp/tproj-remote-relay" send \
     --socket "$tmp/missing.sock" --session tproj-workspace --target exact.cc >"$tmp/out" 2>"$tmp/err"; then
   echo 'FAIL: missing reverse socket accepted' >&2

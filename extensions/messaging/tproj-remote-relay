@@ -40,20 +40,32 @@ class Handler(socketserver.BaseRequestHandler):
         self.request.settimeout(10)
         try:
             request = read_line(self.request)
-            if set(request) != {"session", "target", "message"}:
+            if request == {"action": "snapshot"}:
+                result = subprocess.run(
+                    [str(Path.home() / "bin/tproj-peer-ledger"), "refresh"],
+                    text=True, capture_output=True, timeout=20, check=False,
+                )
+                write_line(self.request, {"ok": result.returncode == 0,
+                                          "detail": result.stdout if result.returncode == 0 else result.stderr[-2048:]})
+                return
+            is_status = set(request) == {"session", "target", "action"} and request.get("action") == "status"
+            if not is_status and set(request) != {"session", "target", "message"}:
                 raise ValueError("invalid request fields")
             if not all(isinstance(request[k], str) for k in request):
                 raise ValueError("invalid request types")
+            command = [str(Path(__file__).resolve().with_name("tproj-msg"))]
+            if is_status:
+                command += ["--session", request["session"], "--status", request["target"]]
+            else:
+                command += ["--remote-relay-ingress", self.server.server_address,
+                            "--session", request["session"], "--stdin", request["target"]]
             result = subprocess.run(
-                [str(Path(__file__).resolve().with_name("tproj-msg")),
-                 "--remote-relay-ingress", self.server.server_address,
-                 "--session", request["session"],
-                 "--stdin", request["target"]],
-                input=request["message"], text=True, capture_output=True,
+                command,
+                input=None if is_status else request["message"], text=True, capture_output=True,
                 timeout=20, check=False,
             )
             write_line(self.request, {"ok": result.returncode == 0,
-                                      "detail": result.stderr[-2048:]})
+                                      "detail": result.stdout[-2048:] if is_status and result.returncode == 0 else result.stderr[-2048:]})
         except (ValueError, UnicodeError, OSError, subprocess.TimeoutExpired) as exc:
             write_line(self.request, {"ok": False, "detail": str(exc)})
 
@@ -98,6 +110,28 @@ def send(socket_path, session, target):
     return 0 if result.get("ok") is True else 1
 
 
+def status(socket_path, session, target):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(10)
+        client.connect(socket_path)
+        write_line(client, {"session": session, "target": target, "action": "status"})
+        result = read_line(client)
+    print(result.get("detail", ""), end="" if result.get("ok") is True else "\n",
+          file=sys.stdout if result.get("ok") is True else sys.stderr)
+    return 0 if result.get("ok") is True else 1
+
+
+def snapshot(socket_path):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(10)
+        client.connect(socket_path)
+        write_line(client, {"action": "snapshot"})
+        result = read_line(client)
+    print(result.get("detail", ""), end="" if result.get("ok") is True else "\n",
+          file=sys.stdout if result.get("ok") is True else sys.stderr)
+    return 0 if result.get("ok") is True else 1
+
+
 def main():
     # Keep the daemon's process command line bound to the canonical script
     # path even when launched from a relative repo command. The ingress gate
@@ -113,11 +147,21 @@ def main():
     client.add_argument("--socket", required=True)
     client.add_argument("--session", required=True)
     client.add_argument("--target", required=True)
+    checker = sub.add_parser("status")
+    checker.add_argument("--socket", required=True)
+    checker.add_argument("--session", required=True)
+    checker.add_argument("--target", required=True)
+    loader = sub.add_parser("snapshot")
+    loader.add_argument("--socket", required=True)
     args = parser.parse_args()
     try:
         if args.action == "serve":
             serve(args.socket)
             return 0
+        if args.action == "status":
+            return status(args.socket, args.session, args.target)
+        if args.action == "snapshot":
+            return snapshot(args.socket)
         return send(args.socket, args.session, args.target)
     except (OSError, ValueError) as exc:
         print(f"Error: remote relay {exc}", file=sys.stderr)

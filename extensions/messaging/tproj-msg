@@ -656,10 +656,18 @@ fi
 load_peer_snapshot() {
   local ledger="$HOME/bin/tproj-peer-ledger" snapshot="" source_host=""
   [[ -x "$ledger" ]] || return 1
+  local socket="$HOME/.config/tproj/cross-mac/reply.sock"
+  local relay="$(dirname "$SELF_PATH")/tproj-remote-relay"
+  if [[ -S "$socket" ]]; then
+    python3 "$relay" snapshot --socket "$socket"
+    return $?
+  fi
+  [[ -d "$HOME/.config/tproj/cross-mac" ]] && return 1
   if [[ -f "$HOME/.config/tproj/peers.json" ]]; then
     snapshot=$("$ledger" export) || return 1
     source_host=$(jq -r '.host' <<< "$snapshot")
   fi
+  [[ -z "$source_host" || "$source_host" == "$(uname -n)" ]] || return 1
   if [[ -f "$HOME/.config/tproj/workspace.yaml" && ( -z "$source_host" || "$source_host" == "$(uname -n)" ) ]]; then
     snapshot=$("$ledger" refresh) || return 1
   fi
@@ -668,6 +676,7 @@ load_peer_snapshot() {
 }
 
 peer_ledger_configured() {
+  [[ -d "$HOME/.config/tproj/cross-mac" ]] && return 0
   [[ -f "$HOME/.config/tproj/peers.json" ]] && return 0
   local workspace="$HOME/.config/tproj/workspace.yaml" projects_key
   [[ -f "$workspace" ]] || return 1
@@ -682,14 +691,13 @@ if [[ ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) && "$STDIN_MODE" !=
   ledger="$HOME/bin/tproj-peer-ledger"
   if peer_ledger_configured; then
     peer_snapshot=$(load_peer_snapshot) || { echo "Error: peer ledger unavailable or invalid" >&2; exit 1; }
-    route_entry=$("$ledger" resolve "${TARGET%.*}" 2>/dev/null) || route_entry=""
+    route_entry=$(jq -c --arg alias "${TARGET%.*}" '.projects[] | select(.alias == $alias)' <<< "$peer_snapshot")
     if [[ -n "$route_entry" && "$(jq -r '.host' <<< "$peer_snapshot")" == "$(uname -n)" \
           && "$(jq -r '.type' <<< "$route_entry")" == remote ]]; then
       route_host=$(jq -r '.host' <<< "$route_entry")
       route_path=$(jq -r '.remote_path' <<< "$route_entry")
       remote_client="$HOME/bin/tproj-remote-client"
       [[ -x "$remote_client" ]] || { echo "Error: remote client is not installed" >&2; exit 1; }
-      "$remote_client" sync "$route_host" || exit 1
       route_status=$("$remote_client" status "$route_host" "$route_path" "${TARGET##*.}") || exit $?
       if [[ "$STATUS_MODE" == "true" ]]; then
         printf '%-20s  remote %s (%s)\n' "$TARGET" "$route_status" "$route_host"
@@ -707,8 +715,11 @@ if [[ ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) && "$STDIN_MODE" !=
           && "$(jq -r '.host' <<< "$route_entry")" == "$(jq -r '.host' <<< "$peer_snapshot")" \
           && "$(jq -r '.type' <<< "$route_entry")" == local ]]; then
       if [[ "$STATUS_MODE" == "true" ]]; then
-        echo "Error: remote target '$TARGET' sendability is not available over the reverse socket" >&2
-        exit 1
+        reply_socket="$HOME/.config/tproj/cross-mac/reply.sock"
+        [[ -S "$reply_socket" ]] || { echo "Error: reverse chat socket is unavailable" >&2; exit 1; }
+        local_relay="$(dirname "$SELF_PATH")/tproj-remote-relay"
+        exec python3 "$local_relay" status --socket "$reply_socket" \
+          --session tproj-workspace --target "$TARGET"
       fi
       reply_socket="$HOME/.config/tproj/cross-mac/reply.sock"
       [[ -S "$reply_socket" ]] || { echo "Error: reverse chat socket is unavailable" >&2; exit 1; }
@@ -1693,7 +1704,8 @@ if [[ -z "$REMOTE_HOST" && -z "$REMOTE_CLIENT_SOCKET" && "$REMOTE_INGRESS" != "t
       && ( "$SEND_MODE" == "true" || "$STATUS_MODE" == "true" ) \
       && "$TARGET" =~ ^[A-Za-z0-9_-]+\.(cc|cdx)$ \
       && -x "$HOME/bin/tproj-remote-host" && -x "$HOME/bin/tproj-peer-ledger" ]]; then
-  host_entry=$("$HOME/bin/tproj-peer-ledger" resolve "${TARGET%.*}" 2>/dev/null) || host_entry=""
+  host_snapshot=$(load_peer_snapshot) || { echo "Error: peer ledger master unavailable" >&2; exit 1; }
+  host_entry=$(jq -c --arg alias "${TARGET%.*}" '.projects[] | select(.alias == $alias)' <<< "$host_snapshot")
   if [[ -n "$host_entry" ]]; then
     host_rows=$(jq -r '.remote_path // .path' <<< "$host_entry")
     host_status=$("$HOME/bin/tproj-remote-host" status --path "$host_rows" --role "${TARGET##*.}" 2>/dev/null || true)

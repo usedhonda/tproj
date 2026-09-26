@@ -63,4 +63,21 @@ if python3 "$ledger" refresh --workspace "$tmp/workspace.yaml" --ledger "$tmp/pe
   echo 'FAIL: duplicate alias accepted' >&2; exit 1
 fi
 cmp "$tmp/peers.json" "$tmp/new.json"
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/tmux" <<'TMUX'
+#!/bin/sh
+printf '/local/disabled\n'
+TMUX
+chmod +x "$tmp/bin/tmux"
+cat > "$tmp/live.yaml" <<'YAML'
+projects:
+  - path: /local/disabled
+    alias: disabled
+    enabled: false
+YAML
+PATH="$tmp/bin:$PATH" python3 "$ledger" refresh --workspace "$tmp/live.yaml" --ledger "$tmp/live.json" --host this-host > "$tmp/live.out"
+python3 - "$tmp/live.out" <<'PY'
+import json, sys
+assert [p['alias'] for p in json.load(open(sys.argv[1]))['projects']] == ['disabled']
+PY
 echo 'PASS: peer ledger projection, resolve, revision, import, duplicate rejection'

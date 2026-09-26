@@ -33,11 +33,11 @@ if [[ ! "$host" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || ( "$action" != sync && "$acti
 fi
 
 sync_peer_ledger() {
-  local ledger="$HOME/bin/tproj-peer-ledger" snapshot
+  local ledger="$HOME/bin/tproj-peer-ledger"
   [[ -x "$ledger" ]] || { echo "tproj-peer-ledger is not installed" >&2; return 1; }
-  snapshot="$("$ledger" refresh)" || return 1
-  printf '%s\n' "$snapshot" | ssh -o BatchMode=yes -o ConnectTimeout=5 -T -- "$host" \
-    '$HOME/bin/tproj-peer-ledger import --stdin'
+  # The initiating Mac owns the alias master. Remote panes query it live
+  # through the reverse socket; no destination-side snapshot is installed.
+  "$ledger" refresh >/dev/null
 }
 
 if [[ "$action" == sync ]]; then
