@@ -3,13 +3,47 @@ set -euo pipefail
 # Once enrolled, ordinary routing has one authoritative transport. Explicit task,
 # role, desktop, and named external-channel controls remain on their validators.
 UNIFIED_ACTIVE=false
-if [[ -f "$HOME/.config/tproj/msg-client.json" ]]; then
-  if python3 - "$HOME/.config/tproj/msg-client.json" <<'PY' >/dev/null 2>&1
+UNIFIED_LATCH="$HOME/.config/tproj/msg-client.enrolled"
+UNIFIED_CONFIG="$HOME/.config/tproj/msg-client.json"
+
+# Return the first positional target without treating message body text as a
+# routing verb.  Options with values are skipped explicitly; a body equal to
+# "reply", "gate:line", or "--new-task" must remain ordinary message text.
+unified_target_arg() {
+  local arg skip=0
+  for arg in "$@"; do
+    if (( skip )); then skip=0; continue; fi
+    case "$arg" in
+      --session|--as|--retry|--remote|--remote-client|--remote-session|--allow-relay|--allow-fanout|--allow-chi-retry|--ttl|--role-epoch|--orchestrator)
+        skip=1; continue ;;
+      --session=*|--as=*|--retry=*|--remote=*|--remote-client=*|--remote-session=*|--allow-relay=*|--allow-fanout=*|--allow-chi-retry=*|--ttl=*|--role-epoch=*|--orchestrator=*)
+        continue ;;
+      --*) continue ;;
+      *) printf '%s\n' "$arg"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+_unified_state=missing
+if [[ -f "$UNIFIED_CONFIG" ]]; then
+  if python3 - "$UNIFIED_CONFIG" <<'PY' >/dev/null 2>&1
 import json,sys
-with open(sys.argv[1]) as f: raise SystemExit(0 if json.load(f).get("active") is True else 1)
+with open(sys.argv[1], encoding="utf-8") as f: value=json.load(f)
+raise SystemExit(0 if isinstance(value, dict) and value.get("active") is True else 1)
 PY
-  then UNIFIED_ACTIVE=true; fi
+  then
+    _unified_state=active
+    mkdir -p "$(dirname "$UNIFIED_LATCH")" 2>/dev/null || true
+    : >"$UNIFIED_LATCH" 2>/dev/null || true
+  else
+    _unified_state=invalid
+  fi
 fi
+# Once a client has enrolled, a missing, malformed, or deactivated config is a
+# fail-closed unified client. Only a never-enrolled standalone user uses legacy.
+if [[ -f "$UNIFIED_LATCH" ]]; then UNIFIED_ACTIVE=true; fi
+if [[ "$_unified_state" == active ]]; then UNIFIED_ACTIVE=true; fi
 # Maintenance is a transport-wide stop, including the legacy path during cutover.
 if [[ -f "$HOME/.config/tproj/msg-maintenance" ]]; then
   _diagnostic=true
@@ -19,30 +53,40 @@ if [[ -f "$HOME/.config/tproj/msg-maintenance" ]]; then
     exit 75
   fi
 fi
+_UNIFIED_TARGET=$(unified_target_arg "$@" || true)
 if $UNIFIED_ACTIVE; then
   _ordinary=true
   _readonly=false
   _mutating=true
+  _scan_skip=0
   for _arg in "$@"; do
+    if (( _scan_skip )); then _scan_skip=0; continue; fi
     case "$_arg" in
+      --session|--as|--retry|--remote-session|--allow-relay|--allow-fanout|--allow-chi-retry|--ttl|--role-epoch|--orchestrator) _scan_skip=1; continue ;;
+      --session=*|--as=*|--retry=*|--remote-session=*|--allow-relay=*|--allow-fanout=*|--allow-chi-retry=*|--ttl=*|--role-epoch=*|--orchestrator=*) continue ;;
       --new-task|--role-handoff|--desktop) _ordinary=false ;;
       --allow-*) : ;; # validation flags still use the unified mailbox
       --remote|--remote-client) echo "tproj-msg: retired remote ordinary transport; use unified host endpoint" >&2; exit 64 ;;
-      gate:direct|gate:session|gate:default) echo "tproj-msg: $_arg is deprecated after unified messaging activation" >&2; exit 64 ;;
+      --remote=*|--remote-client=*) echo "tproj-msg: retired remote ordinary transport; use unified host endpoint" >&2; exit 64 ;;
+      --read|--version|-h|--help) _readonly=true; _mutating=false ;;
+      --flush|--drain) echo "tproj-msg: $_arg is retired under unified messaging activation" >&2; exit 75 ;;
+      --*) : ;;
+      *) break ;;
+    esac
+  done
+  case "$_UNIFIED_TARGET" in
+      gate:direct|gate:session|gate:default) echo "tproj-msg: $_UNIFIED_TARGET is deprecated after unified messaging activation" >&2; exit 64 ;;
       gate:line) _ordinary=false ;;
       gate:*)
-        _bridge=${_arg#gate:}
-        if ! python3 - "$HOME/.config/tproj/msg-client.json" "$_bridge" <<'PY' >/dev/null 2>&1
+        _bridge=${_UNIFIED_TARGET#gate:}
+        if ! python3 - "$UNIFIED_CONFIG" "$_bridge" <<'PY' >/dev/null 2>&1
 import json,sys
 with open(sys.argv[1]) as f: c=json.load(f)
 raise SystemExit(0 if sys.argv[2] in (c.get("gui",{}).get("bridges",{}) or {}) else 1)
 PY
-        then echo "tproj-msg: unconfigured external bridge $_arg" >&2; exit 64; fi
+        then echo "tproj-msg: unconfigured external bridge $_UNIFIED_TARGET" >&2; exit 64; fi
         _ordinary=false ;;
-      --read|--version|-h|--help) _readonly=true; _mutating=false ;;
-      --flush|--drain) echo "tproj-msg: $_arg is retired under unified messaging activation" >&2; exit 75 ;;
-    esac
-  done
+  esac
   for _arg in "$@"; do case "$_arg" in --list|--status) _mutating=false ;; esac; done
   if $_readonly; then _ordinary=false; fi
   if [[ -f "$HOME/.config/tproj/msg-maintenance" ]] && $_mutating; then
@@ -54,12 +98,12 @@ PY
 fi
 
 # During migration only explicit mailbox verbs use the new path for inactive clients.
-if [[ -f "$HOME/.config/tproj/msg-client.json" ]]; then
+if [[ -f "$UNIFIED_CONFIG" ]]; then
+  case "$_UNIFIED_TARGET" in
+    reply|inbox|message|ack|directory|directory-sync) exec "$HOME/bin/tproj-msg-unified" "$@" ;;
+  esac
   for _msg_arg in "$@"; do
-    case "$_msg_arg" in
-      reply|inbox|message|ack|directory|directory-sync|--retry)
-        exec "$HOME/bin/tproj-msg-unified" "$@" ;;
-    esac
+    case "$_msg_arg" in --retry|--retry=*) exec "$HOME/bin/tproj-msg-unified" "$@" ;; esac
   done
 fi
 ORIGINAL_ARGS=("$@")

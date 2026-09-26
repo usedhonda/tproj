@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,9 @@ DEFAULT_SPOOL = Path.home() / ".local/state/tproj-msg-unified/submissions.json"
 
 
 class ClientError(Exception):
-    pass
+    def __init__(self, message, code="unavailable"):
+        super().__init__(message)
+        self.code = code
 
 
 def config(path: Path | None = None) -> dict:
@@ -36,7 +39,7 @@ def config(path: Path | None = None) -> dict:
 def rpc(socket_path: str, request: dict) -> object:
     try:
         with socket.socket(socket.AF_UNIX) as sock:
-            sock.settimeout(5)
+            sock.settimeout(15)
             sock.connect(socket_path)
             sock.sendall((json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n").encode())
             with sock.makefile("rb") as stream:
@@ -51,7 +54,7 @@ def rpc(socket_path: str, request: dict) -> object:
         raise ClientError("invalid host response") from exc
     if not response.get("ok"):
         error = response.get("error", {})
-        raise ClientError(f"{error.get('code', 'unavailable')}: {error.get('message', 'host unavailable')}")
+        raise ClientError(error.get("message", "host unavailable"), error.get("code", "unavailable"))
     return response.get("result")
 
 
@@ -86,17 +89,23 @@ def write_spool(path: Path, value: dict) -> None:
 
 def submission(request: dict, *, spool: Path | None = None, retry: str | None = None) -> object:
     spool = spool or DEFAULT_SPOOL
-    saved = read_spool(spool)
-    if retry:
-        prior = saved.get(retry)
-        if not isinstance(prior, dict):
-            raise ClientError(f"unknown submission ID: {retry}")
-        request = prior
-    else:
-        mid = str(request.get("submission_id") or uuid.uuid4())
-        request = dict(request, submission_id=mid)
-        saved[mid] = request
-        write_spool(spool, saved)
+    spool.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock = open(str(spool)+".lock", "a")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        saved = read_spool(spool)
+        if retry:
+            prior = saved.get(retry)
+            if not isinstance(prior, dict):
+                raise ClientError(f"unknown submission ID: {retry}")
+            request = prior
+        else:
+            mid = str(request.get("submission_id") or uuid.uuid4())
+            request = dict(request, submission_id=mid)
+            saved[mid] = request
+            write_spool(spool, saved)
+    finally:
+        lock.close()
     return request, saved
 
 
@@ -122,7 +131,16 @@ def main(argv: list[str] | None = None) -> int:
             req, _ = submission({}, retry=args.retry)
             result = rpc(cfg["socket"], req)
         elif args.list or args.status:
-            result = rpc(cfg["socket"], {"op": "list" if args.list else "status"})
+            request = {"op": "list" if args.list else "status"}
+            if args.status:
+                request.update(target=args.target, session=args.session, **{"as": args.claimed_alias})
+            result = rpc(cfg["socket"], request)
+        elif args.target == "directory":
+            result = rpc(cfg["socket"], {"op": "directory"})
+        elif args.target == "directory-sync":
+            if not args.stdin: raise ClientError("directory-sync requires --stdin")
+            data = json.load(sys.stdin)
+            result = rpc(cfg["socket"], dict(data, op="directory-sync"))
         elif args.target == "reply":
             if not args.body: raise ClientError("reply requires message ID")
             body = sys.stdin.read() if args.stdin else ""
@@ -132,9 +150,9 @@ def main(argv: list[str] | None = None) -> int:
             result = rpc(cfg["socket"], req)
         elif args.target == "inbox":
             result = rpc(cfg["socket"], {"op": "inbox", "session": args.session, "as": args.claimed_alias})
-        elif args.target == "message":
+        elif args.target in ("message", "ack"):
             if not args.body: raise ClientError("message requires message ID")
-            result = rpc(cfg["socket"], {"op": "message", "message_id": args.body, "session": args.session, "as": args.claimed_alias})
+            result = rpc(cfg["socket"], {"op": args.target, "message_id": args.body, "session": args.session, "as": args.claimed_alias})
         else:
             if not args.target: raise ClientError("target is required")
             body = sys.stdin.read() if args.stdin else (args.body or "")
@@ -142,10 +160,21 @@ def main(argv: list[str] | None = None) -> int:
             req = {"op": "send", "target": args.target, "body": body, "session": args.session, "as": args.claimed_alias}
             req, _ = submission(req, retry=args.retry)
             result = rpc(cfg["socket"], req)
-        print(json.dumps(result, ensure_ascii=False) if args.json else result)
+        if args.json or args.target in ("inbox", "message", "directory"):
+            print(json.dumps(result, ensure_ascii=False))
+        elif isinstance(result, dict) and "participants" in result:
+            for participant in result["participants"]:
+                print(participant["address"] + " " + ("online" if participant["online"] else "offline"))
+        else:
+            print(json.dumps(result, ensure_ascii=False))
         return 0
     except ClientError as exc:
-        print(str(exc), file=sys.stderr)
+        if args.json:
+            print(json.dumps({"ok": False, "error": {"code": exc.code, "message": str(exc)}}), file=sys.stderr)
+        else:
+            print(exc.code + ": " + str(exc), file=sys.stderr)
+        if "req" in locals() and req.get("submission_id"):
+            print("Submission ID: " + req["submission_id"] + "; query it or retry this ID only", file=sys.stderr)
         return 2
 
 

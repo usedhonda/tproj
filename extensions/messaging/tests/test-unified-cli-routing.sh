@@ -15,6 +15,10 @@ out=$(HOME="$tmp" "$root/tproj-msg" cdx hello)
 [[ "$out" == "unified:cdx hello" ]]
 out=$(HOME="$tmp" "$root/tproj-msg" --allow-relay why cdx hello)
 [[ "$out" == "unified:--allow-relay why cdx hello" ]]
+out=$(HOME="$tmp" "$root/tproj-msg" cdx gate:line)
+[[ "$out" == "unified:cdx gate:line" ]]
+out=$(HOME="$tmp" "$root/tproj-msg" cdx reply)
+[[ "$out" == "unified:cdx reply" ]]
 touch "$tmp/.config/tproj/msg-maintenance"
 if HOME="$tmp" "$root/tproj-msg" cdx hello >/dev/null 2>&1; then exit 1; fi
 out=$(HOME="$tmp" "$root/tproj-msg" --read cdx || true)
@@ -23,4 +27,10 @@ if HOME="$tmp" "$root/tproj-msg" gate:direct x >/dev/null 2>&1; then exit 1; fi
 if HOME="$tmp" "$root/tproj-msg" --flush >/dev/null 2>&1; then exit 1; fi
 if HOME="$tmp" "$root/tproj-msg" gate:tmux x >/dev/null 2>&1; then exit 1; fi
 if HOME="$tmp" "$root/tproj-msg" --new-task cdx x >/dev/null 2>&1; then exit 1; fi
+rm -f "$tmp/.config/tproj/msg-maintenance" "$tmp/.config/tproj/msg-client.json"
+out=$(HOME="$tmp" "$root/tproj-msg" cdx after-enrollment)
+[[ "$out" == "unified:cdx after-enrollment" ]]
+printf '{malformed\n' >"$tmp/.config/tproj/msg-client.json"
+out=$(HOME="$tmp" "$root/tproj-msg" cdx malformed-config)
+[[ "$out" == "unified:cdx malformed-config" ]]
 echo "unified CLI routing: ok"

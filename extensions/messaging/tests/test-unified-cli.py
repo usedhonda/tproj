@@ -8,6 +8,23 @@ from extensions.messaging.unified import cli
 
 
 class CliTest(unittest.TestCase):
+    def test_relative_status_resolves_configured_project(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw); sock_path = root / "mailbox.sock"; cfg = root / "config.json"
+            server = socket.socket(socket.AF_UNIX); server.bind(str(sock_path)); server.listen(1)
+            def serve():
+                conn, _ = server.accept()
+                with conn, conn.makefile("rwb") as stream:
+                    request = json.loads(stream.readline())
+                    self.assertEqual(request, {"op": "status", "target": "cdx", "session": None, "as": None})
+                    stream.write(json.dumps({"ok": True, "result": {"address": "proj.cdx", "online": True}}).encode() + b"\n"); stream.flush()
+                server.close()
+            thread = threading.Thread(target=serve, daemon=True); thread.start()
+            cfg.write_text(json.dumps({"socket": str(sock_path)}))
+            with patch.object(cli, "DEFAULT_CONFIG", cfg):
+                self.assertEqual(cli.main(["--status", "cdx", "--json"]), 0)
+            thread.join(1)
+
     def test_stdin_persists_submission_before_fake_uds_request_and_retry_reuses_id(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw); sock_path = root / "mailbox.sock"; spool = root / "spool.json"; seen = []

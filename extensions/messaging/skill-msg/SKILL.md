@@ -38,12 +38,16 @@ compression-anchors:
   - "自律発動: 他列影響発見・タスク完了・解決不能・Chi相談"
 ---
 
-## Unified branch (migration checkpoint)
+## Unified branch (authoritative for enrolled clients)
 
 Read [`docs/reference/unified-messaging.md`](../../../docs/reference/unified-messaging.md)
-before using a unified host-agent client. It is active only when
+before using a unified host-agent client. A client enrolls when
 `$HOME/.config/tproj/msg-client.json` contains the explicit marker
-`"active": true`; otherwise use the legacy commands below.
+`"active": true`; enrollment is latched in
+`$HOME/.config/tproj/msg-client.enrolled`. Once latched, a missing, malformed,
+or deactivated config fails closed through the unified client and must never
+restore ordinary legacy routing. Only a never-enrolled standalone client uses
+the legacy commands below.
 
 When active, the central directory is authoritative. Bind the local caller
 from kernel peer credentials plus live process ancestry; `--as`, `--session`,
@@ -60,9 +64,14 @@ for an uncertain submission. Ordinary chat cannot change roles or grant task
 authority, `--force` cannot bypass identity/approval/draft/sendability guards,
 and receipt/status events must not create ACK loops.
 
-The unified branch is not a global cutover until its directory and exact-ID
-presentation/reply checkpoint is complete. Keep the legacy usage section below
-until then.
+For enrolled clients this section is authoritative: ordinary chat, `gate`,
+`--status`, `--list`, `inbox`, exact-ID `message`/`reply`, and `ack` use the
+unified host endpoint. `gate:direct`, `gate:session`, and `gate:default` are
+retired errors after enrollment; configured external bridges remain explicit
+`gate:<id>` targets. `--new-task`, `--role-handoff`, and `--desktop` continue
+through their existing validators. Message body text is never interpreted as
+a target or routing verb. Keep the legacy usage section only for clients that
+have never enrolled.
 
 # tproj-msg AI間通信スキル
 
