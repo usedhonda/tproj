@@ -16,6 +16,7 @@ description: |
 
   ※ 「Cdxに」「CCに」（列指定なし）→ 同列の cdx / cc に送信（tproj-msg のデフォルト）
   ※ 別列指定は「sl.cdx に」「tproj.cc に」のように alias 付きで明示
+  ※ Mac mini の artist.cc に「CDXに送って」と言われたら `tproj-msg cdx`（artist.cdx 宛）。手元Macの tproj.cdx へ送らない。
   ※ msg が発動するのは peer への送受信が明示された時のみ（「XXに送って/聞いて/相談/依頼」等）
   ※ 「プラン|計画」AND「レビュー」AND peer 明示（CC/Cdx/相手にレビューさせる・クロスレビュー）の場合のみ plan-review
   ※ 単独の「レビューして」（コード/diff レビュー等、送信先 peer の指定なし）は current agent がローカルで実施。msg の担当外
@@ -153,6 +154,8 @@ peer 権限の証明にならない。明示 `--remote` は診断・YAML外送�
 
 必須ルール:
 1. 「CCに聞いて」「Cdxに聞いて」は同一プロジェクトの相手（`cc` / `cdx`）を既定にする
+   送信元が別 tmux session や別 Mac 上でも同じ。現在の作業ディレクトリ、接続元Mac、直前に会話したペインから別 alias を選ばない。
+   `--status cdx` の `resolved: <alias>.cdx` が送信元プロジェクトと一致するか確認し、失敗時は `tproj.cdx` 等に代替しない。
 2. 同一文面を別列の `*.cc` / `*.cdx` へ連続送信しない
 3. 意図的な複数配信が必要な場合のみ `--allow-fanout <reason>` を明示して単発で許可する
 

@@ -5070,6 +5070,10 @@ if [[ "$STATUS_MODE" == "true" ]]; then
     local_detail_reason=$(send_block_detail_for_status "$TARGET_PANE")
     local_qcount=$(queue_count "$TARGET")
     printf "%-20s  %s/%s  (queued: %s)\n" "$TARGET" "$local_live" "$local_status" "$local_qcount"
+    if [[ "$TARGET" == cc || "$TARGET" == cdx ]]; then
+      resolved_alias=$(tmux display-message -t "$TARGET_PANE" -p '#{@alias}' 2>/dev/null || true)
+      [[ -n "$resolved_alias" ]] && printf '%-20s  resolved: %s.%s (session: %s)\n' '' "$resolved_alias" "$TARGET" "$SESSION"
+    fi
     printf "%-20s  detail: %s\n" "" "$local_detail_reason"
     print_monitor_diagnostic
   else
