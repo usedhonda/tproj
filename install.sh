@@ -41,7 +41,7 @@ validate_persona_bootstrap_source() {
   fi
   if [[ ! -f "$PERSONA_BOOTSTRAP_LINK" ]]; then
     PERSONA_BOOTSTRAP_ERROR="project-bootstrap (canonical general source is missing)"
-    return 1
+    return 2
   fi
 }
 
@@ -57,7 +57,7 @@ validate_model_role_router_source() {
   fi
   if [[ ! -f "$MODEL_ROLE_ROUTER_LINK" ]]; then
     MODEL_ROLE_ROUTER_ERROR="model-role-router (canonical general source is missing)"
-    return 1
+    return 2
   fi
 }
 
@@ -131,6 +131,7 @@ done
 # install processing runs. Never copies or touches launchctl.
 if $CHECK_ONLY; then
   drift=()
+  optional_unavailable=()
   for bin_name in "${CORE_BINS[@]}"; do
     repo_file="$SCRIPT_DIR/bin/$bin_name"
     installed="$HOME/bin/$bin_name"
@@ -152,12 +153,19 @@ if $CHECK_ONLY; then
     drift+=("lib/tproj-model-role.sh (differs)")
   fi
   if ! $CORE_ONLY; then
-    if ! validate_persona_bootstrap_source; then
-      drift+=("$PERSONA_BOOTSTRAP_ERROR")
-    elif [[ ! -f "$HOME/bin/project-bootstrap" ]]; then
-      drift+=("project-bootstrap (missing installed copy in ~/bin)")
-    elif ! cmp -s "$PERSONA_BOOTSTRAP_LINK" "$HOME/bin/project-bootstrap"; then
-      drift+=("project-bootstrap (installed copy differs from canonical source)")
+    if validate_persona_bootstrap_source; then
+      if [[ ! -f "$HOME/bin/project-bootstrap" ]]; then
+        drift+=("project-bootstrap (missing installed copy in ~/bin)")
+      elif ! cmp -s "$PERSONA_BOOTSTRAP_LINK" "$HOME/bin/project-bootstrap"; then
+        drift+=("project-bootstrap (installed copy differs from canonical source)")
+      fi
+    else
+      source_status=$?
+      if [[ "$source_status" -eq 2 ]]; then
+        optional_unavailable+=("$PERSONA_BOOTSTRAP_ERROR")
+      else
+        drift+=("$PERSONA_BOOTSTRAP_ERROR")
+      fi
     fi
     for bin_name in "${PERSONA_BINS[@]}"; do
       repo_file="$SCRIPT_DIR/extensions/persona/$bin_name"
@@ -168,12 +176,19 @@ if $CHECK_ONLY; then
         drift+=("$bin_name (differs)")
       fi
     done
-    if ! validate_model_role_router_source; then
-      drift+=("$MODEL_ROLE_ROUTER_ERROR")
-    elif [[ ! -f "$HOME/bin/model-role-router" ]]; then
-      drift+=("model-role-router (missing installed copy in ~/bin)")
-    elif ! cmp -s "$MODEL_ROLE_ROUTER_LINK" "$HOME/bin/model-role-router"; then
-      drift+=("model-role-router (installed copy differs from canonical source)")
+    if validate_model_role_router_source; then
+      if [[ ! -f "$HOME/bin/model-role-router" ]]; then
+        drift+=("model-role-router (missing installed copy in ~/bin)")
+      elif ! cmp -s "$MODEL_ROLE_ROUTER_LINK" "$HOME/bin/model-role-router"; then
+        drift+=("model-role-router (installed copy differs from canonical source)")
+      fi
+    else
+      source_status=$?
+      if [[ "$source_status" -eq 2 ]]; then
+        optional_unavailable+=("$MODEL_ROLE_ROUTER_ERROR")
+      else
+        drift+=("$MODEL_ROLE_ROUTER_ERROR")
+      fi
     fi
     if [[ -x "$MESSAGING_RUNTIME_INSTALLER" ]]; then
       runtime_check="$("$MESSAGING_RUNTIME_INSTALLER" --check 2>&1)" || runtime_rc=$?
@@ -199,6 +214,9 @@ if $CHECK_ONLY; then
   else
     echo "no drift: core scripts and canonical extension chains match ~/bin"
   fi
+  for item in "${optional_unavailable[@]}"; do
+    echo "optional unavailable: $item"
+  done
   exit 0
 fi
 
@@ -528,47 +546,53 @@ if ! $CORE_ONLY; then
   # --- persona ---
   if [[ -d "$SCRIPT_DIR/extensions/persona" ]]; then
     echo "  persona (project-bootstrap, ${PERSONA_BINS[*]})"
-    if ! validate_persona_bootstrap_source; then
+    if validate_persona_bootstrap_source; then
+      if ! $DRY_RUN; then
+        rm -f ~/bin/project-bootstrap  # remove stale symlink
+        cp -L "$PERSONA_BOOTSTRAP_LINK" ~/bin/project-bootstrap
+        chmod +x ~/bin/project-bootstrap
+        for bin_name in "${PERSONA_BINS[@]}"; do
+          rm -f "$HOME/bin/$bin_name"  # remove stale symlink
+          cp "$SCRIPT_DIR/extensions/persona/$bin_name" ~/bin/
+          chmod +x "$HOME/bin/$bin_name"
+        done
+      else
+        echo "    [DRY-RUN] project-bootstrap, ${PERSONA_BINS[*]} -> ~/bin/"
+      fi
+      # Check optional deps
+      if ! command -v jq &>/dev/null; then
+        echo "    ⚠️  jq not found (required by project-bootstrap and tproj): brew install jq"
+      fi
+      if ! command -v sqlite3 &>/dev/null; then
+        echo "    ℹ️  sqlite3 not found (optional, for tproj-msg SQLite monitor): brew install sqlite3"
+      fi
+      if ! python3 -c "import genai" 2>/dev/null; then
+        echo "    ℹ️  google-genai not found (optional, for AI image generation): pip3 install google-genai"
+      fi
+    elif [[ "$?" -eq 2 ]]; then
+      echo "    [skipped] optional persona unavailable: $PERSONA_BOOTSTRAP_ERROR"
+    else
       echo "    [error] $PERSONA_BOOTSTRAP_ERROR" >&2
       exit 1
-    fi
-    if ! $DRY_RUN; then
-      rm -f ~/bin/project-bootstrap  # remove stale symlink
-      cp -L "$PERSONA_BOOTSTRAP_LINK" ~/bin/project-bootstrap
-      chmod +x ~/bin/project-bootstrap
-      for bin_name in "${PERSONA_BINS[@]}"; do
-        rm -f "$HOME/bin/$bin_name"  # remove stale symlink
-        cp "$SCRIPT_DIR/extensions/persona/$bin_name" ~/bin/
-        chmod +x "$HOME/bin/$bin_name"
-      done
-    else
-      echo "    [DRY-RUN] project-bootstrap, ${PERSONA_BINS[*]} -> ~/bin/"
-    fi
-    # Check optional deps
-    if ! command -v jq &>/dev/null; then
-      echo "    ⚠️  jq not found (required by project-bootstrap and tproj): brew install jq"
-    fi
-    if ! command -v sqlite3 &>/dev/null; then
-      echo "    ℹ️  sqlite3 not found (optional, for tproj-msg SQLite monitor): brew install sqlite3"
-    fi
-    if ! python3 -c "import genai" 2>/dev/null; then
-      echo "    ℹ️  google-genai not found (optional, for AI image generation): pip3 install google-genai"
     fi
   fi
 
   # --- active-model role router ---
   if [[ -d "$SCRIPT_DIR/extensions/model-role-router" ]]; then
     echo "  model-role-router (canonical active-model hierarchy router)"
-    if ! validate_model_role_router_source; then
+    if validate_model_role_router_source; then
+      if ! $DRY_RUN; then
+        rm -f ~/bin/model-role-router
+        cp -L "$MODEL_ROLE_ROUTER_LINK" ~/bin/model-role-router
+        chmod +x ~/bin/model-role-router
+      else
+        echo "    [DRY-RUN] model-role-router -> ~/bin/"
+      fi
+    elif [[ "$?" -eq 2 ]]; then
+      echo "    [skipped] optional model-role-router unavailable: $MODEL_ROLE_ROUTER_ERROR"
+    else
       echo "    [error] $MODEL_ROLE_ROUTER_ERROR" >&2
       exit 1
-    fi
-    if ! $DRY_RUN; then
-      rm -f ~/bin/model-role-router
-      cp -L "$MODEL_ROLE_ROUTER_LINK" ~/bin/model-role-router
-      chmod +x ~/bin/model-role-router
-    else
-      echo "    [DRY-RUN] model-role-router -> ~/bin/"
     fi
   fi
 

@@ -13,7 +13,7 @@ Spin up a structured terminal layout with Claude Code and Codex side by side, wi
 ```bash
 git clone https://github.com/usedhonda/tproj.git
 cd tproj
-./install.sh        # install CLI + extensions
+./install.sh        # standalone CLI + messaging extensions
 tproj init          # interactive setup wizard
 tproj               # launch workspace
 ```
@@ -58,12 +58,12 @@ features degrade gracefully ("fail open") when their component is missing:
 
 ## Install
 
-### From source (recommended)
+### From source (recommended, standalone)
 
 ```bash
 git clone https://github.com/usedhonda/tproj.git
 cd tproj
-./install.sh           # core + default extensions
+./install.sh           # core + messaging/task extensions
 ./install.sh --dry-run  # preview only
 ./install.sh --core-only  # minimal
 ./install.sh --all      # everything including memory daemon
@@ -72,8 +72,20 @@ cd tproj
 Run `./install.sh -h` for all options.
 
 This installs CLI tools in `~/bin/`, config files (`~/.tmux.conf`, `~/.config/yazi/`),
-and extensions (messaging, persona, crew). The native GUI app is **not** built
-by `install.sh` — see [GUI App](#gui-app) to build it from source.
+and the standalone messaging/task runtime. It does not require a sibling checkout
+of the private `general` repository. Persona and active-model router integrations
+are installed automatically when their tracked `general` symlink resolves; on a
+public checkout without that optional source they are clearly skipped, while the
+protected symlinks remain untouched. The native GUI app is **not** built by
+`install.sh` — see [GUI App](#gui-app) to build it from source.
+
+### Maintainer multi-project mode (opt-in)
+
+Maintainers with the private sibling checkout can use the same installer to add
+the persona, model-role-router, and crew integrations. Keep the sibling checkout
+at `../general`; no symlink is materialized or retargeted by this repository.
+Run `./install.sh --check` after installation to distinguish optional sources that
+are unavailable from actual installed-artifact drift.
 
 ### Homebrew (maintainer distribution)
 
