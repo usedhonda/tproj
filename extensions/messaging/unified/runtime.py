@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import plistlib
 from typing import Any
 
 
@@ -74,10 +75,11 @@ def _local_id(config_dir: Path, topology_path: Path) -> str:
     return str(uuid.uuid4())
 
 
-def _remote_enrollment_detected(config_dir: Path) -> bool:
+def _remote_enrollment_detected(config_dir: Path, expected_socket: Path | None = None) -> bool:
     client = _read_json(config_dir / "msg-client.json")
     if client.get("active") is True or (config_dir / "msg-client.enrolled").exists():
-        return True
+        if expected_socket is None or client.get("hub_socket") != str(expected_socket):
+            return True
     hub = _read_json(config_dir / "msg-hub.json")
     hosts = hub.get("hosts")
     federation = hub.get("federation")
@@ -89,7 +91,7 @@ def _projects(home: Path, host_id: str) -> list[dict[str, str]]:
     if not workspace.exists():
         return []
     try:
-        proc = subprocess.run(["yq", "-o=json", str(workspace)], capture_output=True, text=True, check=True)
+        proc = subprocess.run(["yq", str(workspace)], capture_output=True, text=True, check=True)
         payload = json.loads(proc.stdout)
     except (OSError, subprocess.CalledProcessError, ValueError, json.JSONDecodeError):
         return []
@@ -106,63 +108,93 @@ def _projects(home: Path, host_id: str) -> list[dict[str, str]]:
     return result
 
 
-def _plist(label: str, script: Path, config: Path) -> str:
-    return """<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
-<plist version=\"1.0\"><dict>
-<key>Label</key><string>{label}</string>
-<key>ProgramArguments</key><array><string>{python}</string><string>{script}</string><string>--config</string><string>{config}</string></array>
-<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
-</dict></plist>
-""".format(label=label, python=sys.executable, script=script, config=config)
+def _plist(label: str, script: Path, config: Path, extra: list[str] | None = None) -> str:
+    args = [sys.executable, str(script), "--config", str(config)] + (extra or [])
+    return plistlib.dumps({"Label": label, "ProgramArguments": args, "RunAtLoad": True, "KeepAlive": True}, fmt=plistlib.FMT_XML).decode()
 
 
-def setup(home: Path | None = None, refresh: bool = False, dry_run: bool = False, migrate: bool = False) -> dict[str, Any]:
+def _activate(home: Path, manifests: list[Path], changed: bool, no_start: bool, dry_run: bool) -> list[str]:
+    if no_start or dry_run:
+        return ["skipped"]
+    uid = str(os.getuid()); results = []
+    for manifest, label in zip(manifests, ("local.tproj.msg-unified-hub", "local.tproj.msg-unified-host")):
+        try:
+            listed = subprocess.run(["/bin/launchctl", "print", f"gui/{uid}/{label}"], capture_output=True)
+        except OSError:
+            results.append(f"unavailable:{label}"); continue
+        if listed.returncode == 0:
+            if changed:
+                subprocess.run(["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{label}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                results.append(f"reloaded:{label}")
+            else:
+                results.append(f"running:{label}")
+            continue
+        try:
+            boot = subprocess.run(["/bin/launchctl", "bootstrap", f"gui/{uid}", str(manifest)], capture_output=True, text=True)
+        except OSError:
+            results.append(f"unavailable:{label}"); continue
+        if boot.returncode:
+            results.append(f"unavailable:{label}")
+        else:
+            results.append(f"started:{label}")
+    return results
+
+
+def setup(home: Path | None = None, refresh: bool = False, dry_run: bool = False, migrate: bool = False, no_start: bool = False) -> dict[str, Any]:
     home = home or Path.home(); config_dir = home / ".config/tproj"; state = home / ".local/share/tproj-msg-unified"
     topology_path = config_dir / "topology.json"
-    if _remote_enrollment_detected(config_dir) and not migrate:
+    expected_socket = home / ".local/share/tproj-msg-unified/hub.sock"
+    if _remote_enrollment_detected(config_dir, expected_socket) and not migrate:
         raise RuntimeError("existing remote-central enrollment detected; rerun with --migrate to preserve and adapt it")
     host_id = _local_id(config_dir, topology_path)
     old_host = _read_json(config_dir / "msg-host.json")
     token = str(old_host.get("host_token") or secrets.token_urlsafe(32))
     old_hub = _read_json(config_dir / "msg-hub.json")
     admin = str(old_hub.get("admin_token") or secrets.token_urlsafe(32))
-    socket = state / "hub.sock"; journal = state / "host.db"; hub_db = state / "hub.db"
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    socket = state / "hub.sock"; host_socket = state / "host.sock"; journal = state / "host.db"; hub_db = state / "hub.db"
     hub = dict(old_hub); hub.update({"host_id": host_id, "hosts": dict(old_hub.get("hosts") or {}, **{host_id: token}), "admin_token": admin, "topology_path": str(topology_path), "socket": str(socket), "db": str(hub_db)})
-    host = dict(old_host); host.update({"host_id": host_id, "host_token": token, "hub_socket": str(socket), "journal": str(journal), "registry": str(home / ".cache/tproj-model-role")})
-    client = _read_json(config_dir / "msg-client.json"); client.update({"host_id": host_id, "host_token": token, "hub_socket": str(socket), "active": bool(client.get("active", False))})
-    changed = [_atomic_json(config_dir / "msg-hub.json", hub, dry_run), _atomic_json(config_dir / "msg-host.json", host, dry_run), _atomic_json(config_dir / "msg-client.json", client, dry_run)]
+    host = dict(old_host); host.update({"host_id": host_id, "host_token": token, "hub_socket": str(socket), "socket": str(host_socket), "journal": str(journal), "registry": str(home / ".cache/tproj-model-role"), "federated": bool(host.get("federated", False))})
+    client = _read_json(config_dir / "msg-client.json"); client.update({"host_id": host_id, "host_token": token, "hub_socket": str(socket), "active": True})
+    topology = _read_json(topology_path); topology.setdefault("version", 1); topology["mode"] = topology.get("mode", "standalone"); topology.setdefault("local", {"id": host_id, "display_name": os.uname().nodename.split(".", 1)[0], "ssh_alias": None}); topology["local"].setdefault("id", host_id)
+    changed_flags = [_atomic_json(topology_path, topology, dry_run)]
+    changed_flags += [_atomic_json(config_dir / "msg-hub.json", hub, dry_run), _atomic_json(config_dir / "msg-host.json", host, dry_run), _atomic_json(config_dir / "msg-client.json", client, dry_run)]
     projects = _projects(home, host_id)
     if projects:
         hub["projects"] = projects
     lib = home / "lib/tproj-msg-unified"; hub_script = lib / "hub.py"; host_script = lib / "host.py"
     agents = home / "Library/LaunchAgents"
-    changed += [_atomic_text(agents / "local.tproj.msg-unified-hub.plist", _plist("local.tproj.msg-unified-hub", hub_script, config_dir / "msg-hub.json"), 0o644, dry_run), _atomic_text(agents / "local.tproj.msg-unified-host.plist", _plist("local.tproj.msg-unified-host", host_script, config_dir / "msg-host.json"), 0o644, dry_run)]
+    manifests = [agents / "local.tproj.msg-unified-hub.plist", agents / "local.tproj.msg-unified-host.plist"]
+    changed_flags += [_atomic_text(manifests[0], _plist("local.tproj.msg-unified-hub", hub_script, config_dir / "msg-hub.json", ["--socket", str(socket), "--db", str(hub_db)]), 0o644, dry_run), _atomic_text(manifests[1], _plist("local.tproj.msg-unified-host", host_script, config_dir / "msg-host.json"), 0o644, dry_run)]
     if projects and not dry_run:
         try:
             from hub import Hub
             mailbox = Hub(str(hub_db), hub)
             revision = mailbox.directory_list()["revision"]
-            mailbox.directory_import({"admin_token": admin, "projects": projects, "services": [], "expected_revision": revision})
+            existing = mailbox.directory_list()["projects"]
+            by_id = {item["project_id"]: item for item in existing}
+            for item in projects: by_id.setdefault(item["project_id"], item)
+            mailbox.directory_import({"admin_token": admin, "projects": list(by_id.values()), "services": [], "expected_revision": revision})
             mailbox.close()
-        except (ImportError, OSError, ValueError):
-            # The runtime remains usable; the host will reconcile its directory
-            # on first refresh once the installed hub is available.
-            pass
-    return {"host_id": host_id, "changed": sum(changed), "projects": len(projects), "socket": str(socket), "dry_run": dry_run}
+        except (ImportError, OSError, ValueError) as exc:
+            raise RuntimeError(f"directory seed failed: {type(exc).__name__}") from exc
+    if not dry_run:
+        _atomic_text(config_dir / "msg-client.enrolled", "active\n", 0o600, False)
+    activation = _activate(home, manifests, any(changed_flags), no_start, dry_run)
+    return {"host_id": host_id, "changed": sum(changed_flags), "projects": len(projects), "socket": str(socket), "dry_run": dry_run, "activation": activation}
 
 
 def status(home: Path | None = None) -> dict[str, Any]:
     home = home or Path.home(); config_dir = home / ".config/tproj"
     hub = _read_json(config_dir / "msg-hub.json"); host = _read_json(config_dir / "msg-host.json")
-    return {"configured": bool(hub and host), "host_id": host.get("host_id"), "socket": host.get("hub_socket"), "remote_enrollment": _remote_enrollment_detected(config_dir), "hub_config": str(config_dir / "msg-hub.json"), "host_config": str(config_dir / "msg-host.json")}
+    return {"configured": bool(hub and host), "host_id": host.get("host_id"), "socket": host.get("hub_socket"), "remote_enrollment": _remote_enrollment_detected(config_dir, home / ".local/share/tproj-msg-unified/hub.sock"), "hub_config": str(config_dir / "msg-hub.json"), "host_config": str(config_dir / "msg-host.json")}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(); sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("setup"); p.add_argument("--refresh", action="store_true"); p.add_argument("--migrate", action="store_true"); p.add_argument("--dry-run", action="store_true")
+    p = sub.add_parser("setup"); p.add_argument("--refresh", action="store_true"); p.add_argument("--migrate", action="store_true"); p.add_argument("--dry-run", action="store_true"); p.add_argument("--no-start", action="store_true")
     s = sub.add_parser("status"); s.add_argument("--json", action="store_true")
-    d = sub.add_parser("dry-run"); d.add_argument("--refresh", action="store_true")
+    d = sub.add_parser("dry-run"); d.add_argument("--refresh", action="store_true"); d.add_argument("--no-start", action="store_true")
     sub.add_parser("enroll").add_argument("alias")
     args = parser.parse_args(argv)
     if args.command == "status": print(json.dumps(status(), sort_keys=True)); return 0
@@ -172,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError:
             import enrollment  # type: ignore
         return enrollment.main([args.alias])
-    try: result = setup(refresh=getattr(args, "refresh", False), dry_run=args.command == "dry-run" or getattr(args, "dry_run", False), migrate=getattr(args, "migrate", False))
+    try: result = setup(refresh=getattr(args, "refresh", False), dry_run=args.command == "dry-run" or getattr(args, "dry_run", False), migrate=getattr(args, "migrate", False), no_start=getattr(args, "no_start", False))
     except RuntimeError as exc: print(str(exc), file=sys.stderr); return 2
     print(json.dumps(result, sort_keys=True)); return 0
 

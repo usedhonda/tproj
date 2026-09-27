@@ -21,14 +21,14 @@ class RuntimeSetupTests(unittest.TestCase):
     def test_setup_is_local_and_idempotent(self):
         with tempfile.TemporaryDirectory() as raw:
             home = Path(raw)
-            first = runtime.setup(home)
+            first = runtime.setup(home, no_start=True)
             host = json.loads((home / ".config/tproj/msg-host.json").read_text())
             hub = json.loads((home / ".config/tproj/msg-hub.json").read_text())
             self.assertEqual(host["host_id"], hub["host_id"])
             self.assertEqual(host["host_token"], hub["hosts"][host["host_id"]])
             self.assertGreater(first["changed"], 0)
             before = (home / ".config/tproj/msg-host.json").read_bytes()
-            second = runtime.setup(home, refresh=True)
+            second = runtime.setup(home, refresh=True, no_start=True)
             self.assertEqual(second["changed"], 0)
             self.assertEqual(before, (home / ".config/tproj/msg-host.json").read_bytes())
 
@@ -37,7 +37,7 @@ class RuntimeSetupTests(unittest.TestCase):
             home = Path(raw); config = home / ".config/tproj"; config.mkdir(parents=True)
             (config / "msg-client.json").write_text('{"active": true}\n')
             with self.assertRaises(RuntimeError): runtime.setup(home)
-            self.assertIsInstance(runtime.setup(home, migrate=True), dict)
+            self.assertIsInstance(runtime.setup(home, migrate=True, no_start=True), dict)
 
 
 if __name__ == "__main__": unittest.main()
