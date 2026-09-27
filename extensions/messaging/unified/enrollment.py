@@ -153,6 +153,9 @@ def _control(home: Path, request: Mapping[str, Any]) -> dict[str, Any]:
     pending = config_dir / f"enrollment.{txn}.pending.json"
     if action == "prepare":
         payload = dict(request.get("topology") or {})
+        host_config = _read_json(config_dir / "msg-host.json")
+        if host_config.get("host_id"):
+            payload["local"] = {"id": str(host_config["host_id"])}
         _atomic_json(pending, {"txn": txn, "topology": payload, "hosts": request.get("hosts", {})})
         return {"prepared": True, "txn": txn}
     if action == "commit":
