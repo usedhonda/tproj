@@ -117,6 +117,18 @@ for an otherwise-unregistered participant.  If more than one such endpoint is
 live, binding and target resolution fail closed as ambiguous; discovery never
 silently selects the first pane.
 
+Caller ancestry that reaches a `codex app-server` process fails closed before
+matching that process or any higher launcher endpoint. An app-server can serve
+multiple conversations, so its launcher pane is not proof of the calling
+conversation's identity. This rejects the daemon itself and its descendants,
+even when a descendant endpoint matches or `--as` and session selectors name
+the launcher. Selectors cannot grant authority across this boundary. Ordinary
+standalone Codex CLI ancestry remains supported. This is containment only:
+app-server-backed messaging requires separate authenticated conversation
+binding before it can be restored.
+The boundary identifies the executable/subcommand pair (including a Node
+`codex.js` launcher), not those words inside a shell argument or message body.
+
 When a standalone tmux observation is followed by a registry observation for a
 child agent, the host preserves the already-active endpoint ID only after both
 recorded PID start values verify and the two processes are proven to share a

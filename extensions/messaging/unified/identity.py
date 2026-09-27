@@ -12,6 +12,7 @@ import ctypes
 import os
 from pathlib import Path
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -323,9 +324,24 @@ def bind_caller(pid: int, uid: int, endpoints: Iterable[Mapping[str, Any]], *, s
             break
         if info.get("uid") != uid:
             raise IdentityError("caller UID mismatch")
+        command = str(info.get("command", "")).lower()
+        # An app-server may execute tools for unrelated conversations. Its
+        # launcher ancestry proves process ownership, not conversation identity.
+        # Reject before matching this process or walking to its launcher, even
+        # when selectors or a descendant endpoint appear to disambiguate it.
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            # ps output is not guaranteed to preserve shell quoting. A malformed
+            # later argument must not conceal a plain executable/subcommand pair.
+            argv = command.split()
+        if argv and Path(argv[0]).name in {"node", "node.exe"}:
+            argv = argv[1:]
+        if (len(argv) >= 2 and Path(argv[0]).name in {"codex", "codex.exe", "codex.js"}
+                and argv[1] == "app-server"):
+            raise IdentityError("shared Codex app-server ancestry cannot authenticate caller")
         for endpoint in candidates:
             if endpoint.get("pid") == current and endpoint.get("pid_start") == info.get("pid_start"):
-                command = str(info.get("command", "")).lower()
                 platform = endpoint.get("platform")
                 needles = ("claude", "anthropic") if platform == "cc" else ("codex", "openai")
                 if not any(token in command for token in needles):

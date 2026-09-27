@@ -71,6 +71,45 @@ class UnifiedIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(identity.IdentityError, "ambiguous"):
             identity.bind_caller(9, 501, [endpoint, other], inspect_process=child)
 
+    def test_shared_app_server_cannot_bind_itself_children_or_launcher(self):
+        launcher = {"endpoint_id": "launcher", "address": "demo.cdx", "platform": "cdx",
+                    "pid": 101, "pid_start": 77, "session": "sess"}
+        daemon = dict(launcher, endpoint_id="daemon", pid=102, pid_start=88)
+        child = dict(launcher, endpoint_id="child", pid=103, pid_start=99)
+        processes = {
+            101: {"ppid": 1, "pid_start": 77, "uid": 501, "command": "codex resume --last"},
+            102: {"ppid": 101, "pid_start": 88, "uid": 501, "command": ""},
+            103: {"ppid": 102, "pid_start": 99, "uid": 501, "command": "codex tool-child"},
+        }
+        for command in ("codex app-server --listen unix:// --managed-daemon",
+                        "/opt/bin/codex app-server",
+                        "/opt/bin/node /opt/lib/codex.js app-server"):
+            processes[102]["command"] = command
+            for caller in (102, 103):
+                for endpoint in (launcher, daemon, child):
+                    for alias in (None, "demo.cdx"):
+                        with self.subTest(command=command, caller=caller,
+                                          endpoint=endpoint["endpoint_id"], alias=alias):
+                            with self.assertRaisesRegex(identity.IdentityError, "app-server ancestry"):
+                                identity.bind_caller(caller, 501, [endpoint], session="sess",
+                                                     claimed_alias=alias,
+                                                     inspect_process=processes.__getitem__)
+
+    def test_standalone_codex_cli_child_still_binds(self):
+        endpoint = {"endpoint_id": "cli", "address": "demo.cdx", "platform": "cdx",
+                    "pid": 101, "pid_start": 77, "session": "sess"}
+        processes = {
+            101: {"ppid": 1, "pid_start": 77, "uid": 501, "command": "codex resume --last"},
+            102: {"ppid": 101, "pid_start": 88, "uid": 501, "command": "tproj-msg"},
+        }
+        for command in ("tproj-msg", 'tproj-msg peer "codex app-server"',
+                        "zsh -c 'tproj-msg peer \"codex app-server\"'"):
+            processes[102]["command"] = command
+            with self.subTest(command=command):
+                self.assertEqual(identity.bind_caller(102, 501, [endpoint], session="sess",
+                                                      claimed_alias="demo.cdx",
+                                                      inspect_process=processes.__getitem__), endpoint)
+
     def test_tmux_fallback_requires_live_agent_descendant_and_deduplicates_registry(self):
         panes = lambda: [
             {"session": "sess", "pane": "%1", "pane_pid": "10", "project": str(self.project),
