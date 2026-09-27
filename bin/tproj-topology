@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ "${1:-}" == topology || "${1:-}" == host ]]; then
+  if [[ "$1" == topology ]]; then shift; fi
+fi
+exec python3 "$ROOT/bin/lib/tproj_topology.py" "$@"

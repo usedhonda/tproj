@@ -178,6 +178,14 @@ REPAIR_MODE=false
 MAX_COLUMNS=""  # 空 = 制限なし
 NO_GUI=false
 
+# Read-only topology/host lifecycle commands are intentionally dispatched before
+# the workspace launcher parser. They preserve running tmux sessions.
+if [[ "${1:-}" == topology || "${1:-}" == host ]]; then
+  topology_bin="${TPROJ_RUNTIME_ROOT:-$SCRIPT_DIR/..}/bin/tproj-topology"
+  [[ -x "$topology_bin" ]] || topology_bin="$SCRIPT_DIR/tproj-topology"
+  exec "$topology_bin" "$@"
+fi
+
 declare -a GLOBAL_CLAUDE_ARGS
 declare -a GLOBAL_CODEX_ARGS
 
@@ -336,6 +344,22 @@ WSEOF
     echo "  ~/bin is NOT in PATH"
     echo "  Add to your shell profile:"
     echo '    export PATH="$HOME/bin:$PATH"'
+  fi
+  echo ""
+
+  # 3.5 topology defaults to one local host. Existing topology/federation state
+  # is never replaced; the optional messaging runtime may refresh its local hub.
+  echo "=== Host topology ==="
+  topology_bin="${TPROJ_RUNTIME_ROOT:-$SCRIPT_DIR/..}/bin/tproj-topology"
+  [[ -x "$topology_bin" ]] || topology_bin="$SCRIPT_DIR/tproj-topology"
+  if [[ -x "$topology_bin" ]]; then
+    "$topology_bin" status --json >/dev/null
+    echo "  standalone default (existing multi-host state preserved)"
+  fi
+  runtime_setup="$(runtime_bin_path tproj-msg-runtime 2>/dev/null || true)"
+  if [[ -n "$runtime_setup" && -x "$runtime_setup" ]]; then
+    echo "  refreshing local messaging runtime"
+    "$runtime_setup" setup >/dev/null 2>&1 || echo "  messaging runtime setup skipped (optional)"
   fi
   echo ""
 
