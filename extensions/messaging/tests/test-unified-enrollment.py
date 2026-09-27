@@ -30,5 +30,13 @@ class EnrollmentTest(unittest.TestCase):
             self.assertTrue(enrollment._control(home, {"action": "commit", "txn": "txn1"})["retry"])
             self.assertEqual(json.loads((cfg / "msg-hub.json").read_text())["hosts"], {"a": "new"})
 
+    def test_topology_keeps_different_directed_routes(self):
+        hosts = [{"host_id": "a", "ssh_alias": "macmini", "aliases": ["one"], "online": True},
+                 {"host_id": "b", "ssh_alias": "mac-dev", "aliases": ["two"], "online": True}]
+        result = enrollment.topology(hosts, "a", {"one": "a", "two": "b"},
+                                     {"a": {"b": "mac-dev"}, "b": {"a": "mini-from-b"}})
+        self.assertEqual(result["hosts"][0]["routes"]["b"], "mac-dev")
+        self.assertEqual(result["hosts"][1]["routes"]["a"], "mini-from-b")
+
 
 if __name__ == "__main__": unittest.main()

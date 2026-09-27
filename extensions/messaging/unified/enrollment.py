@@ -109,7 +109,8 @@ def local_description(home: Path | None = None) -> dict[str, Any]:
     directory = _rpc(socket_path, {"op": "directory_list", "host_id": host_id, "host_token": token})
     projects = [{k: p.get(k) for k in ("project_id", "alias", "host_id", "path")} for p in directory.get("projects", [])]
     return {"host_id": host_id, "host_token": token, "projects": projects,
-            "aliases": sorted(str(p["alias"]) for p in projects if p.get("alias"))}
+            "aliases": sorted(str(p["alias"]) for p in projects if p.get("alias")),
+            "ssh_aliases": _ssh_aliases()}
 
 
 def admit(descriptions: Iterable[Mapping[str, Any]], management_host_id: str) -> list[dict[str, Any]]:
@@ -150,6 +151,24 @@ def _control(home: Path, request: Mapping[str, Any]) -> dict[str, Any]:
     action = request.get("action")
     if action == "describe":
         return local_description(home)
+    if action == "identify":
+        ident = _read_json(home / ".config/tproj/msg-host.json").get("host_id")
+        if not ident: raise EnrollmentError("local messaging runtime is not initialized")
+        return {"host_id": str(ident)}
+    if action == "routes":
+        desired = request.get("desired", [])
+        routes = {}
+        for item in desired:
+            ident = str(item.get("host_id", "")); candidates = item.get("candidates", [])
+            for candidate in candidates:
+                try:
+                    found = _remote(str(candidate), {"action": "identify"})
+                except EnrollmentError:
+                    continue
+                if found.get("host_id") == ident:
+                    routes[ident] = str(candidate); break
+        if len(routes) != len(desired): raise EnrollmentError("directed SSH mesh is incomplete")
+        return {"host_id": _read_json(home / ".config/tproj/msg-host.json").get("host_id"), "routes": routes}
     config_dir = home / ".config/tproj"; txn = str(request.get("txn", ""))
     if not txn or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for ch in txn):
         raise EnrollmentError("invalid enrollment transaction")
@@ -206,9 +225,27 @@ def enroll(alias: str, *, home: Path | None = None, return_host: bool = False,
     for item in descriptions:
         for project in item.get("projects", []): aliases[str(project["alias"])] = str(item["host_id"])
     manager = str(prior.get("management_host_id") or local["host_id"])
-    routes = {str(item["host_id"]): {str(other["host_id"]): str(other.get("ssh_alias", ""))
-                                      for other in descriptions if other["host_id"] != item["host_id"]}
-              for item in descriptions}
+    routes = {}
+    for source in descriptions:
+        desired = [{"host_id": str(other["host_id"]),
+                    "candidates": list(dict.fromkeys([str(other.get("ssh_alias", ""))] +
+                                                       [str(x) for x in source.get("ssh_aliases", [])]))}
+                   for other in descriptions if other["host_id"] != source["host_id"]]
+        if source["host_id"] == local["host_id"]:
+            routes[source["host_id"]] = {}
+            for item in desired:
+                for candidate in item["candidates"]:
+                    try:
+                        found = remote(candidate, {"action": "identify"})
+                    except EnrollmentError:
+                        continue
+                    if found.get("host_id") == item["host_id"]:
+                        routes[source["host_id"]][item["host_id"]] = candidate; break
+            if len(routes[source["host_id"]]) != len(desired):
+                raise EnrollmentError("directed SSH mesh is incomplete")
+        else:
+            result = remote(str(source["ssh_alias"]), {"action": "routes", "desired": desired})
+            routes[source["host_id"]] = dict(result.get("routes", {}))
     top = topology(descriptions, manager, aliases, routes)
     tokens = {str(item["host_id"]): str(item["host_token"]) for item in descriptions}
     txn = uuid.uuid4().hex
@@ -219,15 +256,15 @@ def enroll(alias: str, *, home: Path | None = None, return_host: bool = False,
             if item["host_id"] == local["host_id"]: _control(home or Path.home(), req)
             else: remote(str(item["ssh_alias"]), req)
             prepared.append(str(item["host_id"]))
+        _atomic_json((home or Path.home()) / ".config/tproj" / f"enrollment.{txn}.decision.json",
+                     {"txn": txn, "topology": top, "hosts": tokens})
         for item in descriptions:
             req = {"action": "commit", "txn": txn}
             if item["host_id"] == local["host_id"]: _control(home or Path.home(), req)
             else: remote(str(item["ssh_alias"]), req)
     except EnrollmentError:
-        for item in descriptions:
-            if str(item["host_id"]) in prepared and str(item["host_id"]) != local["host_id"]:
-                try: remote(str(item["ssh_alias"]), {"action": "recover", "txn": txn})
-                except EnrollmentError: pass
+        # A coordinator decision is durable: do not abort prepared peers after
+        # a commit failure; the next invocation replays the same transaction.
         raise
     return {"enrolled": True, "host_count": len(descriptions), "management_host_id": local["host_id"],
             **({"return_host": alias} if return_host else {})}
