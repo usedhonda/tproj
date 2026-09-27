@@ -12,7 +12,18 @@ while :; do sleep 1; done
 EOF
 cp "$TMP/bin/claude" "$TMP/bin/codex"
 chmod +x "$TMP/bin/claude" "$TMP/bin/codex"
-export PATH="$TMP/bin:/opt/homebrew/bin:/usr/bin:/bin" TPROJ_TMUX_SOCKET="$SOCKET" HOME="$TMP/home"
+cat > "$TMP/bin/npm" <<EOF
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$TMP/updates"
+# A failed update must still launch the installed CLI.
+exit 1
+EOF
+cat > "$TMP/bin/sign-codex" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$TMP/bin/npm" "$TMP/bin/sign-codex"
+export PATH="$TMP/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" TPROJ_TMUX_SOCKET="$SOCKET" HOME="$TMP/home"
 run() { "$ROOT/bin/tproj-remote-host" "$@"; }
 tm() { tmux -L "$SOCKET" "$@"; }
 wait_panes() {
@@ -33,6 +44,17 @@ cdx_session=$(run ensure --path "$TMP/project" --role cdx)
 [[ $(tm show-options -t "$cdx_session" -v mouse) == on ]]
 [[ $(run status --path "$TMP/project" --role cc) == running\|"$cc_session"\|* ]]
 [[ $(run status --path "$TMP/project" --role cdx) == running\|"$cdx_session"\|* ]]
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -f "$TMP/updates" ]] && break
+  sleep 0.1
+done
+[[ -f "$TMP/updates" && $(cat "$TMP/updates") == 'update -g @openai/codex' ]] || {
+  tm capture-pane -p -t "$cdx_session"
+  tm display-message -p -t "$cdx_session" '#{pane_start_command}'
+  exit 1
+}
+[[ $(run ensure --path "$TMP/project" --role cdx) == "$cdx_session" ]]
+[[ $(wc -l < "$TMP/updates" | tr -d ' ') == 1 ]] || exit 1
 mkdir -p "$TMP/altbin"
 ln -s "$TMP/bin/codex" "$TMP/altbin/codex"
 PATH="$TMP/altbin:$PATH" run status --path "$TMP/project" --role cdx | grep -q "^running|$cdx_session|"

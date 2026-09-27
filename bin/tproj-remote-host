@@ -203,10 +203,21 @@ agent_status() {
   [[ -n "$pid" && ( "$cmd" == *"$c"* || "$cmd" == *"/$name "* || "$cmd" == *"/$name" ) ]] && printf '%s' "$pid"
 }
 start_command() {
-  local r=$1 c q
+  local r=$1 c q npm_path sign_path
   c=$(resolve_cli "$(cli_for_role "$r")")
   [[ -n "$c" ]] || die "required CLI not found on PATH: $(cli_for_role "$r")"
   q=$(printf '%q' "$c")
+  if [[ "$r" == cdx ]]; then
+    # Match local startup: update before resume, never while attaching to an
+    # existing session. An unavailable registry must not prevent work.
+    npm_path=$(resolve_cli npm)
+    if [[ -n "$npm_path" ]]; then
+      printf '%q update -g @openai/codex || printf "Codex update failed; using installed version\\n" >&2; ' "$npm_path"
+      sign_path=$(resolve_cli sign-codex)
+      [[ -z "$sign_path" ]] || printf '%q; ' "$sign_path"
+      printf 'hash -r; '
+    fi
+  fi
   [[ "$r" == cc ]] && printf '%s --continue || exec %s' "$q" "$q" || printf '%s resume --last || exec %s' "$q" "$q"
 }
 shared_pane_status() {

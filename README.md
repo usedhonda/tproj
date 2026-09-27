@@ -171,6 +171,11 @@ under its own account. From this repository, run
 small helper and a user-login restore job. No Ghostty or tproj GUI is needed
 on the remote Mac. A plain SSH connection can reattach with
 `~/bin/tproj-remote-host attach --path /absolute/project/path --role cc`
+
+New remote Codex sessions run `npm update -g @openai/codex` before resuming,
+matching local startup. Keep the resolved Codex launcher pointed at that npm
+installation. Update failures fall back to the installed version; attaching to
+an existing session never updates or restarts it.
 (or `cdx`). After a host restart, saved conversations are resumed when the
 user logs in or on the next attach; in-flight work and unsent input cannot be
 restored. The login job does not make the host reachable before login.
