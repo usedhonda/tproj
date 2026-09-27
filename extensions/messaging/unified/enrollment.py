@@ -133,13 +133,16 @@ def admit(descriptions: Iterable[Mapping[str, Any]], management_host_id: str) ->
     return hosts
 
 
-def topology(descriptions: Iterable[Mapping[str, Any]], management_host_id: str, aliases: Mapping[str, str]) -> dict[str, Any]:
+def topology(descriptions: Iterable[Mapping[str, Any]], management_host_id: str, aliases: Mapping[str, str],
+             routes: Mapping[str, Mapping[str, str]] | None = None) -> dict[str, Any]:
     hosts = admit(descriptions, management_host_id)
+    routes = routes or {}
     return {"version": 1, "mode": "multi", "management_host_id": management_host_id,
             "local": {"id": management_host_id},
             "hosts": [{"id": str(h["host_id"]), "ssh_alias": str(h.get("ssh_alias", h["host_id"])),
                        "display_name": str(h.get("display_name", h["host_id"])),
-                       "kind": str(h.get("kind", "mac"))} for h in hosts],
+                       "kind": str(h.get("kind", "mac")),
+                       "routes": dict(routes.get(str(h["host_id"]), {}))} for h in hosts],
             "projects": dict(aliases)}
 
 
@@ -203,7 +206,10 @@ def enroll(alias: str, *, home: Path | None = None, return_host: bool = False,
     for item in descriptions:
         for project in item.get("projects", []): aliases[str(project["alias"])] = str(item["host_id"])
     manager = str(prior.get("management_host_id") or local["host_id"])
-    top = topology(descriptions, manager, aliases)
+    routes = {str(item["host_id"]): {str(other["host_id"]): str(other.get("ssh_alias", ""))
+                                      for other in descriptions if other["host_id"] != item["host_id"]}
+              for item in descriptions}
+    top = topology(descriptions, manager, aliases, routes)
     tokens = {str(item["host_id"]): str(item["host_token"]) for item in descriptions}
     txn = uuid.uuid4().hex
     prepared: list[str] = []
