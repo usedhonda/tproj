@@ -5,6 +5,7 @@ struct ProjectLocationSheet: View {
     @Binding var projects: [WorkspaceProject]
     @Binding var statusText: String
     let livePaths: Set<String>
+    let liveProjectKeys: Set<String>
     let save: () async -> Bool
     @Environment(\.dismiss) private var dismiss
 
@@ -17,7 +18,6 @@ struct ProjectLocationSheet: View {
                 else { project.localPath = project.path }
                 project.type = destination
                 project.path = destination == "remote" ? project.remotePath : project.localPath
-                if destination == "remote" && project.host.isEmpty { project.host = "macmini" }
                 projects[index] = project
             }
         )
@@ -44,7 +44,8 @@ struct ProjectLocationSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(projects.indices, id: \.self) { index in
-                        let live = livePaths.contains(projects[index].path)
+                        let project = projects[index]
+                        let live = livePaths.contains(project.path) || liveProjectKeys.contains("\(project.host)|\(project.path)")
                         GroupBox {
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack {
@@ -52,7 +53,7 @@ struct ProjectLocationSheet: View {
                                         .frame(width: 130)
                                     Picker("Runs on", selection: location(index)) {
                                         Text("This Mac").tag("local")
-                                        Text("macmini / SSH").tag("remote")
+                                        Text("SSH host").tag("remote")
                                     }
                                     .pickerStyle(.segmented)
                                 }

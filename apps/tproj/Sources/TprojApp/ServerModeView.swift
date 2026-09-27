@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import CryptoKit
 import TprojLogic
 
@@ -76,7 +77,7 @@ struct ServerModeView: View {
     @State private var memoryUpdatedAt: Date?
 
     var body: some View {
-        ScrollView {
+        PersistentScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -346,5 +347,41 @@ struct ServerModeView: View {
                 if case .failure(let error) = result { errorMessage = error.localizedDescription }
             }
         }
+    }
+}
+
+/// App-scoped legacy scrollbar for the server window. Unlike overlay scrollbars,
+/// this remains visible and keeps the NSScrollView content offset across SwiftUI
+/// updates (including the periodic memory refresh).
+private struct PersistentScrollView<Content: View>: NSViewRepresentable {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = false
+        scroll.scrollerStyle = .legacy
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        let host = NSHostingView(rootView: content)
+        host.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = host
+        NSLayoutConstraint.activate([
+            host.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            host.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            host.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            host.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
+        ])
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let host = scroll.documentView as? NSHostingView<Content> else { return }
+        host.rootView = content
     }
 }

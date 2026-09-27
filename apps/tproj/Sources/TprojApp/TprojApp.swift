@@ -1783,6 +1783,8 @@ final class AppViewModel: ObservableObject {
     @Published var liveColumns: [LiveColumn] = []
     @Published var selectedAlias: String = ""
     @Published var statusText: String = "Ready"
+    /// Topology gates remote polling/actions; standalone is the safe default.
+    @Published private(set) var effectiveTopologyMode: String = "standalone"
     @Published var isBusy: Bool = false {
         didSet {
             if isBusy && !oldValue { busySince = Date() }
@@ -2158,12 +2160,15 @@ final class AppViewModel: ObservableObject {
             }
 
             await refreshAll()
-            for host in Set(workspaceProjects.filter { $0.type == "remote" }.map(\.host)) {
-                await syncRemoteCatalog(host: host)
-                await refreshRemoteCache(host: host)
-            }
-            for project in workspaceProjects where project.type == "remote" {
-                Task { await refreshRemoteState(project) }
+            await refreshTopologyMode()
+            if effectiveTopologyMode != "standalone" {
+                for host in Set(workspaceProjects.filter { $0.type == "remote" }.map(\.host)) {
+                    await syncRemoteCatalog(host: host)
+                    await refreshRemoteCache(host: host)
+                }
+                for project in workspaceProjects where project.type == "remote" {
+                    Task { await refreshRemoteState(project) }
+                }
             }
             await refreshMemoryStatus()
             startMemoryPolling()
@@ -3368,6 +3373,19 @@ final class AppViewModel: ObservableObject {
         return alias.hasSuffix(suffix) ? String(alias.dropLast(suffix.count)) : alias
     }
 
+    private func refreshTopologyMode() async {
+        let result = await runCommandAsync(NSHomeDirectory() + "/bin/tproj", ["topology", "status", "--json"])
+        guard result.exitCode == 0,
+              let object = try? JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any] else {
+            effectiveTopologyMode = "standalone"
+            return
+        }
+        effectiveTopologyMode = object["effective_mode"] as? String
+            ?? object["configured_mode"] as? String
+            ?? object["mode"] as? String
+            ?? "standalone"
+    }
+
     func remoteState(_ project: WorkspaceProject) -> String {
         remoteProjectStates[remoteKey(project)] ?? "Unknown"
     }
@@ -3381,6 +3399,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func refreshRemoteCache(host: String) async {
+        guard effectiveTopologyMode != "standalone" else { return }
         let client = NSHomeDirectory() + "/bin/tproj-remote-client"
         let result = await runCommandAsync(client, ["cache-status", host])
         guard result.exitCode == 0,
@@ -3411,7 +3430,8 @@ final class AppViewModel: ObservableObject {
     }
 
     func setRemoteCCCacheHours(_ hours: Int, project: WorkspaceProject) async {
-        guard [0, 1, 3, 6, 12].contains(hours), project.type == "remote" else { return }
+        guard effectiveTopologyMode != "standalone",
+              [0, 1, 3, 6, 12].contains(hours), project.type == "remote" else { return }
         let client = NSHomeDirectory() + "/bin/tproj-remote-client"
         let result = await runCommandAsync(client, ["cache-set", project.host, project.path, "cc", String(hours)])
         guard result.exitCode == 0 else { statusText = trimmedError(result); return }
@@ -3421,6 +3441,7 @@ final class AppViewModel: ObservableObject {
 
     /// Observe host state; this Mac's workspace.yaml owns aliases and destinations.
     func syncRemoteCatalog(host: String) async {
+        guard effectiveTopologyMode != "standalone" else { return }
         let client = NSHomeDirectory() + "/bin/tproj-remote-client"
         guard fileManager.isExecutableFile(atPath: client), !host.isEmpty else { return }
         let result = await runCommandAsync(client, ["list", host])
@@ -3446,7 +3467,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func stopRemoteProject(_ project: WorkspaceProject) async {
-        guard project.type == "remote" else { return }
+        guard effectiveTopologyMode != "standalone", project.type == "remote" else { return }
         let client = NSHomeDirectory() + "/bin/tproj-remote-client"
         let cc = await runCommandAsync(client, ["stop", project.host, project.path, "cc"])
         let cdx = await runCommandAsync(client, ["stop", project.host, project.path, "cdx"])
@@ -3456,7 +3477,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func unregisterRemoteProject(_ project: WorkspaceProject) async {
-        guard project.type == "remote",
+        guard effectiveTopologyMode != "standalone", project.type == "remote",
               !liveColumns.contains(where: { $0.projectPath == project.path && $0.hostLabel != "local" }) else {
             statusText = "Close the remote display column first"
             return
@@ -3469,6 +3490,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func refreshRemoteState(_ project: WorkspaceProject) async {
+        guard effectiveTopologyMode != "standalone" else { return }
         guard project.type == "remote" else { return }
         let client = NSHomeDirectory() + "/bin/tproj-remote-client"
         guard fileManager.isExecutableFile(atPath: client) else {
@@ -5188,6 +5210,7 @@ struct ContentView: View {
     @State private var didRecoverWindowFrame = false
     @State private var remainingSectionsHeight: CGFloat = 0
     @State private var showProjectLocations = false
+    @State private var showTopology = false
     @State private var locationDraft: [WorkspaceProject] = []
 
     private func setDragLock(_ locked: Bool) {
@@ -5243,8 +5266,15 @@ struct ContentView: View {
                 projects: $locationDraft,
                 statusText: $vm.statusText,
                 livePaths: Set(vm.liveColumns.map(\.projectPath)),
+                liveProjectKeys: Set(vm.liveColumns.compactMap { column in
+                    guard column.hostLabel != "local" else { return nil }
+                    return "\(column.hostLabel)|\(column.projectPath)"
+                }),
                 save: { await vm.saveConfiguredProjects(locationDraft) }
             )
+        }
+        .sheet(isPresented: $showTopology) {
+            TopologyView()
         }
     }
 
@@ -5531,6 +5561,11 @@ struct ContentView: View {
                 }
                 .fixedSize()
                 .help("Choose which projects run on this Mac or a remote host")
+                ActionButton("Topology", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
+                    showTopology = true
+                }
+                .fixedSize()
+                .help("Choose standalone or multi-host mode and manage hosts")
                 ActionButton("YAML", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
                     vm.openWorkspaceYAML()
                 }
