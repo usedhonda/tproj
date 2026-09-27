@@ -2162,9 +2162,14 @@ final class AppViewModel: ObservableObject {
             await refreshAll()
             await refreshTopologyMode()
             if effectiveTopologyMode != "standalone" {
-                for host in Set(workspaceProjects.filter { $0.type == "remote" }.map(\.host)) {
-                    await syncRemoteCatalog(host: host)
-                    await refreshRemoteCache(host: host)
+                let hosts = Set(workspaceProjects.filter { $0.type == "remote" }.map(\.host))
+                await withTaskGroup(of: Void.self) { group in
+                    for host in hosts {
+                        group.addTask {                             await self.syncRemoteCatalog(host: host)
+                            await self.syncRemoteCatalog(host: host)
+                            await self.refreshRemoteCache(host: host)
+                        }
+                    }
                 }
                 for project in workspaceProjects where project.type == "remote" {
                     Task { await refreshRemoteState(project) }
@@ -2283,7 +2288,14 @@ final class AppViewModel: ObservableObject {
             statusText = "Unified messaging client config is invalid (host_id required)"
             return
         }
-        let remoteHosts = configObject["remote_hosts"] as? [String: String] ?? [:]
+        var remoteHosts = configObject["remote_hosts"] as? [String: String] ?? [:]
+        if let topologyData = fileManager.contents(atPath: NSHomeDirectory() + "/.config/tproj/topology.json"),
+           let topology = try? JSONSerialization.jsonObject(with: topologyData) as? [String: Any],
+           let topologyHosts = topology["hosts"] as? [[String: Any]] {
+            for host in topologyHosts {
+                if let alias = host["ssh_alias"] as? String, let id = host["id"] as? String { remoteHosts[alias] = id }
+            }
+        }
         let result = await runCommandAsync(NSHomeDirectory() + "/bin/tproj-msg-unified", ["directory", "--json"])
         guard result.exitCode == 0,
               let data = result.stdout.data(using: .utf8),
@@ -2307,7 +2319,7 @@ final class AppViewModel: ObservableObject {
             if let canonical {
                 if let id = canonical["project_id"] as? String { copy.projectID = id }
                 if let alias = canonical["alias"] as? String { copy.alias = alias }
-            } else { unmatched = true }
+            } else if project.type != "remote" || effectiveTopologyMode != "standalone" { unmatched = true }
             return copy
         }
         centralDirectoryAvailable = true
@@ -3533,7 +3545,7 @@ final class AppViewModel: ObservableObject {
 
     func saveConfiguredProjects(_ projects: [WorkspaceProject]) async -> Bool {
         var projects = projects
-        let aliases = projects.map { $0.routingAlias.lowercased() }
+        let aliases = projects.map { $0.effectiveAlias.lowercased() }
         guard Set(aliases).count == aliases.count else {
             statusText = "Project aliases must be unique"
             return false
@@ -3555,14 +3567,21 @@ final class AppViewModel: ObservableObject {
             }
         }
         let clientConfig = NSHomeDirectory() + "/.config/tproj/msg-client.json"
-        if fileManager.fileExists(atPath: clientConfig) {
+        if effectiveTopologyMode != "standalone", fileManager.fileExists(atPath: clientConfig) {
             guard let data = fileManager.contents(atPath: clientConfig),
                   let cfg = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let localHost = cfg["host_id"] as? String else {
                 statusText = "Unified messaging client config is invalid"
                 return false
             }
-            let remoteHosts = cfg["remote_hosts"] as? [String: String] ?? [:]
+            var remoteHosts = cfg["remote_hosts"] as? [String: String] ?? [:]
+            if let topologyData = fileManager.contents(atPath: NSHomeDirectory() + "/.config/tproj/topology.json"),
+               let topology = try? JSONSerialization.jsonObject(with: topologyData) as? [String: Any],
+               let topologyHosts = topology["hosts"] as? [[String: Any]] {
+                for host in topologyHosts {
+                    if let alias = host["ssh_alias"] as? String, let id = host["id"] as? String { remoteHosts[alias] = id }
+                }
+            }
             let directory = await runCommandAsync(NSHomeDirectory() + "/bin/tproj-msg-unified", ["directory", "--json"])
             guard directory.exitCode == 0,
                   let response = try? JSONSerialization.jsonObject(with: Data(directory.stdout.utf8)) as? [String: Any],
