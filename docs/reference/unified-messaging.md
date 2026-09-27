@@ -116,3 +116,10 @@ Standalone tmux discovery retains each live candidate found in a distinct pane
 for an otherwise-unregistered participant.  If more than one such endpoint is
 live, binding and target resolution fail closed as ambiguous; discovery never
 silently selects the first pane.
+
+When a standalone tmux observation is followed by a registry observation for a
+child agent, the host preserves the already-active endpoint ID only after both
+recorded PID start values verify and the two processes are proven to share a
+live ancestor/descendant chain with the same participant, host, session, pane,
+and platform.  Alias, runtime labels, and pane tags alone never authorize this
+continuity; a restart or ambiguous lineage remains a new or rejected identity.

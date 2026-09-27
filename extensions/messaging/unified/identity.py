@@ -339,3 +339,59 @@ def bind_caller(pid: int, uid: int, endpoints: Iterable[Mapping[str, Any]], *, s
     if len(unique) != 1:
         raise IdentityError("endpoint binding is ambiguous" if len(unique) > 1 else "agent ancestor absent")
     return next(iter(unique.values()))
+
+
+def same_live_process_family(existing: Mapping[str, Any], candidate: Mapping[str, Any], *,
+                             inspect_process: Callable[[int], Mapping[str, Any]] = _process_info) -> bool:
+    """Return whether two endpoint observations bind to one live process tree.
+
+    This is intentionally stricter than matching an alias or runtime label.  Both
+    recorded PID incarnations must still verify, and the candidate must be an
+    ancestor/descendant of the existing process (or vice versa) while all
+    participant location attributes remain unchanged.
+    """
+    keys = ("participant_id", "host_id", "session", "pane", "platform")
+    if any(str(existing.get(key, "")) != str(candidate.get(key, "")) for key in keys):
+        return False
+    try:
+        old_pid, new_pid = int(existing["pid"]), int(candidate["pid"])
+        old_start, new_start = int(existing["pid_start"]), int(candidate["pid_start"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if old_pid <= 1 or new_pid <= 1:
+        return False
+    try:
+        old_info = dict(inspect_process(old_pid))
+        new_info = dict(inspect_process(new_pid))
+    except (IdentityError, OSError, ValueError, KeyError):
+        return False
+    if (old_info.get("pid_start") != old_start or new_info.get("pid_start") != new_start
+            or old_info.get("uid") != os.getuid() or new_info.get("uid") != os.getuid()):
+        return False
+    if old_pid == new_pid:
+        return old_start == new_start
+    if old_info.get("uid") != new_info.get("uid"):
+        return False
+
+    def is_ancestor(ancestor_pid: int, descendant_pid: int) -> bool:
+        seen: set[int] = set()
+        current = descendant_pid
+        for _ in range(64):
+            if current <= 1 or current in seen:
+                return False
+            if current == ancestor_pid:
+                return True
+            seen.add(current)
+            try:
+                info = dict(inspect_process(current))
+            except (IdentityError, OSError, ValueError, KeyError):
+                return False
+            if info.get("uid") != os.getuid():
+                return False
+            parent = info.get("ppid")
+            if not isinstance(parent, int) or parent == current:
+                return False
+            current = parent
+        return False
+
+    return is_ancestor(old_pid, new_pid) or is_ancestor(new_pid, old_pid)

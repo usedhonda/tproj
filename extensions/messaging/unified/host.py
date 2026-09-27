@@ -15,7 +15,8 @@ import subprocess
 import time
 import uuid
 
-from identity import IdentityError, bind_caller, discover_endpoints, discover_tmux_endpoints, peer_credentials
+from identity import (IdentityError, bind_caller, discover_endpoints, discover_tmux_endpoints,
+                      peer_credentials, same_live_process_family)
 from protocol import HubError, success, failure
 from receipt import normalize_prompt
 
@@ -66,21 +67,58 @@ class Host:
                    host_id=self.config['host_id'], host_token=self.config['host_token']))
 
     def refresh(self):
+        """Refresh discovery under a per-journal lock to serialize retirement."""
+        lock_path = str(self.config['journal']) + '.identity.lock'
+        with open(lock_path, 'a+', encoding='utf-8') as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                return self._refresh_unlocked()
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def _refresh_unlocked(self):
         directory = self.hub('directory_list')
+        # Snapshot active identities before discovery.  A standalone tmux
+        # endpoint may be replaced by a registry record for a child process;
+        # preserve the original immutable endpoint ID when live lineage proves
+        # this is the same process family.
+        previous = self.hub('endpoints_list')['endpoints']
         discovered = discover_endpoints(self.config.get('registry', str(Path.home()/'.cache/tproj-model-role')),
                                         self.config['host_id'], directory['projects'])
         # Public standalone installs may have no model-role registry. Keep
         # registered identities authoritative and fill only unmatched panes.
         discovered.extend(discover_tmux_endpoints(self.config['host_id'], directory['projects'], discovered))
+        active_previous = [ep for ep in previous if not ep['retired']]
+        reconciled = []
+        ambiguous_participants = set()
+        for ep in discovered:
+            matches = [old for old in active_previous if same_live_process_family(old, ep)]
+            if len(matches) > 1:
+                ambiguous_participants.add(ep['participant_id'])
+                continue
+            if matches:
+                old = matches[0]
+                # Keep the old endpoint's immutable binding while retaining
+                # descriptive fields from the fresh registry observation.
+                merged = dict(ep)
+                merged.update({key: old[key] for key in
+                               ('endpoint_id', 'host_id', 'participant_id', 'session', 'pane',
+                                'pid', 'pid_start', 'runtime_id', 'platform')})
+                merged['pid_start'] = int(old['pid_start'])
+                merged['observed_runtime_id'] = ep.get('runtime_id')
+                reconciled.append(merged)
+            else:
+                reconciled.append(ep)
+        discovered = reconciled
         for ep in discovered:
             self.hub('endpoint_register', **ep)
         # A disappeared process is not inferred from an alias. Retire only after
         # a matching participant has a proven different live incarnation.
-        previous = self.hub('endpoints_list')['endpoints']
         live_ids = {ep['endpoint_id'] for ep in discovered}
         live_participants = {ep['participant_id'] for ep in discovered}
         for ep in previous:
-            if ep['endpoint_id'] not in live_ids and ep['participant_id'] in live_participants and not ep['retired']:
+            if (ep['endpoint_id'] not in live_ids and ep['participant_id'] in live_participants
+                    and ep['participant_id'] not in ambiguous_participants and not ep['retired']):
                 self.hub('endpoint_retire', endpoint_id=ep['endpoint_id'])
         self.endpoints = discovered
         self.refreshed = time.monotonic()
@@ -191,7 +229,8 @@ class Host:
             digest = hashlib.sha256(normalize_prompt(str(req.get('prompt', ''))).encode()).hexdigest()
             if not row or row['endpoint_id'] != ep['endpoint_id'] or row['prompt_hash'] != digest:
                 raise HubError('identity_rejected', 'prompt does not match pinned delivery')
-            if req.get('runtime_id') != ep['runtime_id']:
+            observed_runtime = ep.get('observed_runtime_id') or ep['runtime_id']
+            if req.get('runtime_id') != observed_runtime:
                 raise HubError('identity_rejected', 'prompt runtime mismatch')
             self.db.execute("UPDATE deliveries SET state='presented',updated=? WHERE message_id=?", (time.time(), row['message_id']))
             self.db.commit()
@@ -216,7 +255,8 @@ class Host:
                 self.db.commit()
                 row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
                 if row['state'] in ('dispatching', 'uncertain') and ep['platform'] == 'cc':
-                    for transcript in (Path.home()/'.claude/projects').glob('*/'+ep['runtime_id']+'.jsonl'):
+                    observed_runtime = ep.get('observed_runtime_id') or ep['runtime_id']
+                    for transcript in (Path.home()/'.claude/projects').glob('*/'+observed_runtime+'.jsonl'):
                         try:
                             with transcript.open('rb') as handle:
                                 handle.seek(max(0, transcript.stat().st_size - 262144))
@@ -249,7 +289,8 @@ class Host:
                 except (IdentityError, OSError):
                     continue
                 cache_kind = 'cc-cache' if ep['platform'] == 'cc' else 'codex-cache'
-                cache_path = Path.home()/'.local/state/tproj'/cache_kind/(hashlib.sha256(ep['runtime_id'].encode()).hexdigest()+'.json')
+                observed_runtime = ep.get('observed_runtime_id') or ep['runtime_id']
+                cache_path = Path.home()/'.local/state/tproj'/cache_kind/(hashlib.sha256(observed_runtime.encode()).hexdigest()+'.json')
                 try:
                     observed = json.loads(cache_path.read_text())
                     if observed.get('pane_id') == ep['pane'] and (observed.get('turn_state') == 'running' or observed.get('event') == 'prompt'):

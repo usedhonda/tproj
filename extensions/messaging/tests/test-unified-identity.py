@@ -113,6 +113,25 @@ class UnifiedIdentityTest(unittest.TestCase):
         self.assertEqual(len(found), 2)
         self.assertEqual({item["pane"] for item in found}, {"%1", "%2"})
 
+    def test_fallback_to_registry_preserves_identity_only_for_verified_live_family(self):
+        fallback = {"endpoint_id": "fallback", "participant_id": "demo:cdx", "host_id": "host-a",
+                    "session": "sess", "pane": "%1", "pid": 101, "pid_start": 77,
+                    "runtime_id": "tmux:sess:%1:77", "platform": "cdx"}
+        registry = dict(fallback, endpoint_id="registry", pid=102, pid_start=88,
+                        runtime_id="conversation-uuid")
+        processes = {
+            101: {"ppid": 1, "pid_start": 77, "uid": 501, "command": "node codex"},
+            102: {"ppid": 101, "pid_start": 88, "uid": 501, "command": "codex"},
+        }
+        inspect = processes.__getitem__
+        self.assertTrue(identity.same_live_process_family(fallback, registry, inspect_process=inspect))
+        # A reused PID/start or changed process tree must never inherit identity.
+        restarted = dict(registry, pid_start=99)
+        self.assertFalse(identity.same_live_process_family(fallback, restarted, inspect_process=inspect))
+        unrelated = dict(registry, pid=103, pid_start=90)
+        processes[103] = {"ppid": 1, "pid_start": 90, "uid": 501, "command": "codex"}
+        self.assertFalse(identity.same_live_process_family(fallback, unrelated, inspect_process=inspect))
+
 
 if __name__ == "__main__":
     unittest.main()
