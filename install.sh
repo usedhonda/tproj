@@ -159,6 +159,15 @@ if $CHECK_ONLY; then
       elif ! cmp -s "$PERSONA_BOOTSTRAP_LINK" "$HOME/bin/project-bootstrap"; then
         drift+=("project-bootstrap (installed copy differs from canonical source)")
       fi
+      for bin_name in "${PERSONA_BINS[@]}"; do
+        repo_file="$SCRIPT_DIR/extensions/persona/$bin_name"
+        installed="$HOME/bin/$bin_name"
+        if [[ ! -f "$installed" ]]; then
+          drift+=("$bin_name (missing in ~/bin)")
+        elif ! diff -q "$repo_file" "$installed" >/dev/null 2>&1; then
+          drift+=("$bin_name (differs)")
+        fi
+      done
     else
       source_status=$?
       if [[ "$source_status" -eq 2 ]]; then
@@ -167,15 +176,6 @@ if $CHECK_ONLY; then
         drift+=("$PERSONA_BOOTSTRAP_ERROR")
       fi
     fi
-    for bin_name in "${PERSONA_BINS[@]}"; do
-      repo_file="$SCRIPT_DIR/extensions/persona/$bin_name"
-      installed="$HOME/bin/$bin_name"
-      if [[ ! -f "$installed" ]]; then
-        drift+=("$bin_name (missing in ~/bin)")
-      elif ! diff -q "$repo_file" "$installed" >/dev/null 2>&1; then
-        drift+=("$bin_name (differs)")
-      fi
-    done
     if validate_model_role_router_source; then
       if [[ ! -f "$HOME/bin/model-role-router" ]]; then
         drift+=("model-role-router (missing installed copy in ~/bin)")
