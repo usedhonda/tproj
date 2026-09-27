@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -69,6 +70,30 @@ class UnifiedIdentityTest(unittest.TestCase):
         other = dict(endpoint, endpoint_id="other", address="demo.cc", pid=101, pid_start=77)
         with self.assertRaisesRegex(identity.IdentityError, "ambiguous"):
             identity.bind_caller(9, 501, [endpoint, other], inspect_process=child)
+
+    def test_tmux_fallback_requires_live_agent_descendant_and_deduplicates_registry(self):
+        panes = lambda: [
+            {"session": "sess", "pane": "%1", "pane_pid": "10", "project": str(self.project),
+             "alias": "demo", "role": "claude-p1"},
+            {"session": "sess", "pane": "%2", "pane_pid": "20", "project": str(self.project),
+             "alias": "demo", "role": "codex-p1"},
+            {"session": "sess", "pane": "%3", "pane_pid": "30", "project": str(self.project),
+             "alias": "demo", "role": "claude-p2"},
+        ]
+        descendants = lambda pid: {10: [11], 20: [21], 30: [31]}[pid]
+        processes = {
+            11: {"ppid": 10, "pid_start": 111, "uid": os.getuid(), "command": "claude --session sess"},
+            21: {"ppid": 20, "pid_start": 222, "uid": os.getuid(), "command": "ssh host codex"},
+            31: {"ppid": 30, "pid_start": 333, "uid": os.getuid(), "command": "tmux helper"},
+        }
+        found = identity.discover_tmux_endpoints("host-a", self.projects, panes=panes,
+                                                  descendants=descendants,
+                                                  inspect_process=processes.__getitem__)
+        self.assertEqual([item["participant_id"] for item in found], ["demo:cc"])
+        again = identity.discover_tmux_endpoints("host-a", self.projects, found, panes=panes,
+                                                  descendants=descendants,
+                                                  inspect_process=processes.__getitem__)
+        self.assertEqual(again, [])
 
 
 if __name__ == "__main__":

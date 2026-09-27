@@ -193,6 +193,111 @@ def discover_endpoints(registry_root: str | os.PathLike[str], host_id: str,
     return sorted(found, key=lambda item: item["endpoint_id"])
 
 
+def _tmux_rows() -> list[dict[str, str]]:
+    """Read tproj pane tags without treating tags as process identity."""
+    fmt = "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_path}\t#{@project}\t#{@alias}\t#{@role}"
+    result = subprocess.run(["tmux", "list-panes", "-a", "-F", fmt],
+                            capture_output=True, text=True, check=False)
+    if result.returncode:
+        return []
+    rows = []
+    for line in result.stdout.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 7:
+            continue
+        session, pane, pane_pid, current_path, project, alias, role = fields
+        if pane_pid.isdigit():
+            rows.append({"session": session, "pane": pane, "pane_pid": pane_pid,
+                         "current_path": current_path, "project": project,
+                         "alias": alias, "role": role})
+    return rows
+
+
+def _process_descendants(root_pid: int) -> list[int]:
+    """Return process descendants of a tmux shell, excluding the shell itself."""
+    result = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True, check=False)
+    children: dict[int, list[int]] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and all(item.isdigit() for item in fields):
+            children.setdefault(int(fields[1]), []).append(int(fields[0]))
+    found: list[int] = []
+    queue = list(children.get(root_pid, []))
+    while queue:
+        pid = queue.pop(0)
+        found.append(pid)
+        queue.extend(children.get(pid, []))
+    return found
+
+
+def discover_tmux_endpoints(host_id: str, projects: Iterable[Mapping[str, Any]],
+                            existing: Iterable[Mapping[str, Any]] = (), *,
+                            panes: Callable[[], Iterable[Mapping[str, Any]]] = _tmux_rows,
+                            descendants: Callable[[int], Iterable[int]] = _process_descendants,
+                            inspect_process: Callable[[int], Mapping[str, Any]] = _process_info) -> list[dict[str, Any]]:
+    """Discover unmatched local agents from authenticated tproj tmux panes.
+
+    Pane metadata selects candidates only. A live same-UID Claude/Codex process
+    descendant, with its PID incarnation, is required before an endpoint is
+    emitted. Existing registry participants win and are never duplicated.
+    """
+    project_by_path = {}
+    project_by_alias = {}
+    for project in projects:
+        if not isinstance(project, Mapping) or str(project.get("host_id", "")) != host_id:
+            continue
+        if project.get("path"):
+            project_by_path[_canonical(project["path"])] = project
+        if project.get("alias"):
+            project_by_alias[str(project["alias"])] = project
+    occupied = {str(item.get("participant_id")) for item in existing if item.get("participant_id")}
+    found = []
+    seen_participants = set(occupied)
+    for pane in panes():
+        role = str(pane.get("role", "")).lower()
+        platform = "cc" if role.startswith("claude-") else "cdx" if role.startswith("codex-") else None
+        if not platform:
+            continue
+        raw_project = str(pane.get("project") or pane.get("current_path") or "")
+        if raw_project.startswith("ssh://"):
+            continue
+        project = project_by_path.get(_canonical(raw_project)) or project_by_alias.get(str(pane.get("alias", "")))
+        if not project:
+            continue
+        participant_id = f"{project.get('project_id')}:{platform}"
+        if participant_id in seen_participants:
+            continue
+        try:
+            root_pid = int(pane.get("pane_pid", 0))
+        except (TypeError, ValueError):
+            continue
+        for pid in descendants(root_pid):
+            try:
+                info = dict(inspect_process(int(pid)))
+            except (IdentityError, OSError, ValueError, KeyError):
+                continue
+            command = str(info.get("command", "")).lower()
+            if info.get("uid") != os.getuid() or any(token in command for token in ("ssh ", "ssh-", "proxycommand")):
+                continue
+            needles = ("claude", "anthropic") if platform == "cc" else ("codex", "openai")
+            start = info.get("pid_start")
+            if not isinstance(start, int) or start <= 0 or not any(token in command for token in needles):
+                continue
+            session = str(pane.get("session", ""))
+            pane_id = str(pane.get("pane", ""))
+            runtime = f"tmux:{session}:{pane_id}:{start}"
+            found.append({
+                "endpoint_id": _endpoint_id(host_id, runtime, session, start),
+                "participant_id": participant_id, "project_id": str(project.get("project_id")),
+                "host_id": host_id, "address": f"{project.get('alias')}.{platform}",
+                "session": session, "pane": pane_id, "pid": int(pid), "pid_start": start,
+                "runtime_id": runtime, "platform": platform,
+            })
+            seen_participants.add(participant_id)
+            break
+    return sorted(found, key=lambda item: item["endpoint_id"])
+
+
 def bind_caller(pid: int, uid: int, endpoints: Iterable[Mapping[str, Any]], *, session: str | None = None,
                 claimed_alias: str | None = None, inspect_process: Callable[[int], Mapping[str, Any]] = _process_info) -> dict[str, Any]:
     """Bind a socket peer to exactly one endpoint through live PID ancestry."""
