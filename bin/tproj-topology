@@ -4,4 +4,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [[ "${1:-}" == topology || "${1:-}" == host ]]; then
   if [[ "$1" == topology ]]; then shift; fi
 fi
-exec python3 "$ROOT/bin/lib/tproj_topology.py" "$@"
+if [[ -f "$ROOT/bin/lib/tproj_topology.py" ]]; then
+  lib="$ROOT/bin/lib/tproj_topology.py"
+elif [[ -f "$HOME/lib/tproj-topology/tproj_topology.py" ]]; then
+  lib="$HOME/lib/tproj-topology/tproj_topology.py"
+else
+  echo "topology helper library is unavailable" >&2; exit 1
+fi
+exec python3 "$lib" "$@"

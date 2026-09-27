@@ -2,17 +2,22 @@
 # Install the small remote tmux helper and its user-login restore job over SSH.
 set -euo pipefail
 
-if [[ $# -ne 1 || ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-  echo "usage: tproj-remote-setup SSH_HOST" >&2
+action=install
+if [[ $# -eq 2 && "$1" == add ]]; then action=add; host=$2
+elif [[ $# -eq 1 ]]; then host=$1
+else echo "usage: tproj-remote-setup [add] SSH_HOST" >&2
   exit 2
 fi
-
-host=$1
+if [[ ! "$host" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then echo "invalid SSH host" >&2; exit 2; fi
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 helper=$repo_root/bin/tproj-remote-host
 plist=$repo_root/config/com.tproj.remote-host.plist
+topology=$repo_root/bin/tproj-topology
+topology_lib=$repo_root/bin/lib/tproj_topology.py
 
-ssh -T -- "$host" 'set -e; umask 077; mkdir -p "$HOME/bin" "$HOME/Library/LaunchAgents"; tmp=$(mktemp "$HOME/bin/.tproj-remote-host.XXXXXX"); cat > "$tmp"; chmod 755 "$tmp"; mv "$tmp" "$HOME/bin/tproj-remote-host"' < "$helper"
+ssh -T -- "$host" 'set -e; umask 077; mkdir -p "$HOME/bin" "$HOME/lib/tproj-topology" "$HOME/Library/LaunchAgents"; tmp=$(mktemp "$HOME/bin/.tproj-remote-host.XXXXXX"); cat > "$tmp"; chmod 755 "$tmp"; mv "$tmp" "$HOME/bin/tproj-remote-host"' < "$helper"
+ssh -T -- "$host" 'set -e; umask 077; tmp=$(mktemp "$HOME/bin/.tproj-topology.XXXXXX"); cat > "$tmp"; chmod 755 "$tmp"; mv "$tmp" "$HOME/bin/tproj-topology"' < "$topology"
+ssh -T -- "$host" 'set -e; umask 077; tmp=$(mktemp "$HOME/lib/tproj-topology/.tproj_topology.XXXXXX"); cat > "$tmp"; chmod 644 "$tmp"; mv "$tmp" "$HOME/lib/tproj-topology/tproj_topology.py"' < "$topology_lib"
 ssh -T -- "$host" 'set -e; umask 077; tmp=$(mktemp "$HOME/Library/LaunchAgents/.com.tproj.remote-host.XXXXXX"); cat > "$tmp"; chmod 644 "$tmp"; mv "$tmp" "$HOME/Library/LaunchAgents/com.tproj.remote-host.plist"' < "$plist"
 if bootstrap_error=$(ssh -T -- "$host" 'set -e; uid=$(id -u); launchctl bootout "gui/$uid/com.tproj.remote-host" >/dev/null 2>&1 || true; launchctl bootstrap "gui/$uid" "$HOME/Library/LaunchAgents/com.tproj.remote-host.plist"; test -x "$HOME/bin/tproj-remote-host"' 2>&1); then
   echo "Remote helper installed on $host; LaunchAgent bootstrapped for the current user session. It is not expected to run before login."

@@ -160,6 +160,14 @@ def command(argv: list[str]) -> int:
             idx = argv.index("--name"); name = argv[idx + 1] if idx + 1 < len(argv) else None
         if not name: raise SystemExit("host add requires --name NAME")
         result = probe(alias)
+        if not result["ok"] and os.environ.get("TPROJ_TOPOLOGY_SKIP_PROVISION") != "1":
+            setup = os.environ.get("TPROJ_REMOTE_SETUP", "tproj-remote-setup")
+            try:
+                provision = subprocess.run([setup, "add", alias], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            except OSError:
+                provision = None
+            if provision is not None and provision.returncode == 0:
+                result = probe(alias)
         if not result["ok"]: print(json.dumps(result, sort_keys=True)); return 1
         runtime = os.environ.get("TPROJ_MSG_RUNTIME", "tproj-msg-runtime")
         if os.environ.get("TPROJ_TOPOLOGY_SKIP_ENROLL") == "1":
