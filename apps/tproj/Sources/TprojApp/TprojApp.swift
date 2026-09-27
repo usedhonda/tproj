@@ -1807,6 +1807,7 @@ final class AppViewModel: ObservableObject {
     // `model-role-router mode --json`, which owns `<project>/.local/role-mode.json`.
     @Published var roleModeStatuses: [String: RoleModeStatus] = [:]
     private var lastRemoteRolePollAt: Date = .distantPast
+    private var remoteCacheRefreshTokens: [String: UUID] = [:]
     @Published var weeklyPaceSnapshots: [String: WeeklyPaceSnapshot] = [:]
     @Published var ccSessionSnapshot: WeeklyPaceSnapshot?
     @Published var keepWarmSessionsByColumn: [Int: KeepWarmSession] = [:]
@@ -2402,6 +2403,7 @@ final class AppViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
                 if Task.isCancelled { return }
                 await self?.refreshMemoryStatus()
+                await self?.refreshRemoteCaches()
             }
         }
     }
@@ -3410,14 +3412,30 @@ final class AppViewModel: ObservableObject {
         remoteCacheStates[remoteKey(project)] ?? "Cache: unknown"
     }
 
-    func remoteCacheHours(_ project: WorkspaceProject) -> Int {
-        remoteCCCacheHours[remoteKey(project)] ?? 0
+    func remoteCacheHours(_ project: WorkspaceProject) -> Int? {
+        remoteCCCacheHours[remoteKey(project)]
     }
 
-    func refreshRemoteCache(host: String) async {
-        guard effectiveTopologyMode != "standalone" else { return }
+    func refreshRemoteCache(host: String, force: Bool = false) async {
+        guard effectiveTopologyMode != "standalone", !host.isEmpty else { return }
+        guard force || remoteCacheRefreshTokens[host] == nil else { return }
+        let token = UUID()
+        remoteCacheRefreshTokens[host] = token
+        defer {
+            if remoteCacheRefreshTokens[host] == token { remoteCacheRefreshTokens.removeValue(forKey: host) }
+        }
+        // A failed or incomplete read must never leave a stale value looking
+        // like the current server setting. The next successful row repopulates
+        // this host's exact host|path key.
+        let hostProjects = workspaceProjects.filter { $0.type == "remote" && $0.host == host }
+        for project in hostProjects {
+            let key = remoteKey(project)
+            remoteCCCacheHours.removeValue(forKey: key)
+            remoteCacheStates.removeValue(forKey: key)
+        }
         let client = NSHomeDirectory() + "/bin/tproj-remote-client"
         let result = await runCommandAsync(client, ["cache-status", host])
+        guard remoteCacheRefreshTokens[host] == token, effectiveTopologyMode != "standalone" else { return }
         guard result.exitCode == 0,
               let rows = try? JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [[String: Any]] else {
             statusText = "Remote cache unavailable: \(host)"
@@ -3430,8 +3448,10 @@ final class AppViewModel: ObservableObject {
                       $0.type == "remote" && $0.host == host && Self.remoteCatalogID($0.path) == id
                   }) else { continue }
             let key = remoteKey(project)
+            guard remoteCacheRefreshTokens[host] == token else { return }
             if role == "cc" {
-                remoteCCCacheHours[key] = row["hours"] as? Int ?? 0
+                guard let hours = row["hours"] as? Int, [0, 1, 3, 6, 12].contains(hours) else { continue }
+                remoteCCCacheHours[key] = hours
                 remoteCacheStates[key] = "CC cache: \(row["state"] as? String ?? "unobserved")"
             } else if role == "cdx" {
                 remoteCacheStates[key, default: "CC cache: unobserved"] +=
@@ -3447,12 +3467,26 @@ final class AppViewModel: ObservableObject {
 
     func setRemoteCCCacheHours(_ hours: Int, project: WorkspaceProject) async {
         guard effectiveTopologyMode != "standalone",
-              [0, 1, 3, 6, 12].contains(hours), project.type == "remote" else { return }
+              [0, 1, 3, 6, 12].contains(hours), project.type == "remote", !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
         let client = NSHomeDirectory() + "/bin/tproj-remote-client"
         let result = await runCommandAsync(client, ["cache-set", project.host, project.path, "cc", String(hours)])
         guard result.exitCode == 0 else { statusText = trimmedError(result); return }
-        await refreshRemoteCache(host: project.host)
-        statusText = "Remote CC cache window: \(hours == 0 ? "off" : "\(hours)h")"
+        await refreshRemoteCache(host: project.host, force: true)
+        if let confirmed = remoteCCCacheHours[remoteKey(project)] {
+            statusText = "Remote CC cache window: \(confirmed == 0 ? "off" : "\(confirmed)h")"
+        } else {
+            statusText = "Remote cache setting saved; current server value unavailable"
+        }
+    }
+
+    private func refreshRemoteCaches() async {
+        guard effectiveTopologyMode != "standalone", !isBusy else { return }
+        let hosts = Set(workspaceProjects.filter { $0.type == "remote" && !$0.host.isEmpty }.map(\.host))
+        for host in hosts {
+            await refreshRemoteCache(host: host)
+        }
     }
 
     /// Observe host state; this Mac's workspace.yaml owns aliases and destinations.
@@ -5983,6 +6017,9 @@ struct ContentView: View {
                 .lineLimit(1)
             roleModeBadge(projectPath: project.path, host: project.type == "remote" ? project.host : nil)
             Spacer()
+            if project.type == "remote" {
+                remoteCCCacheMenu(project)
+            }
             ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
                 Task { await vm.addColumnByAlias(project.routingAlias) }
             }
@@ -6464,6 +6501,51 @@ struct ContentView: View {
         }
     }
 
+    private func remoteProject(for column: LiveColumn) -> WorkspaceProject? {
+        guard column.hostLabel.hasPrefix("remote@") else { return nil }
+        let host = String(column.hostLabel.dropFirst("remote@".count))
+        return vm.workspaceProjects.first { $0.type == "remote" && $0.host == host && $0.path == column.projectPath }
+    }
+
+    private func remoteCCCacheSummary(_ project: WorkspaceProject) -> (text: String, tint: Color, help: String) {
+        let state = vm.remoteCacheState(project)
+        guard let hours = vm.remoteCCCacheHours["\(project.host)|\(project.path)"] else {
+            return ("?", GhosttyTheme.current.textTertiary, "Remote CC cache status unavailable; no server value was read.")
+        }
+        let label = hours == 0 ? "Off" : "\(hours)h"
+        let tint = hours == 0 ? GhosttyTheme.current.textTertiary : GhosttyTheme.current.accentGreen
+        return (label, tint, "\(state)\nRead from \(project.host); changes apply to the exact remote project path.")
+    }
+
+    @ViewBuilder
+    private func remoteCCCacheMenu(_ project: WorkspaceProject) -> some View {
+        let summary = remoteCCCacheSummary(project)
+        Menu {
+            Picker("CC Keep warm", selection: Binding(
+                get: { vm.remoteCCCacheHours["\(project.host)|\(project.path)"] ?? -1 },
+                set: { value in
+                    guard [0, 1, 3, 6, 12].contains(value) else { return }
+                    Task { await vm.setRemoteCCCacheHours(value, project: project) }
+                }
+            )) {
+                if vm.remoteCCCacheHours["\(project.host)|\(project.path)"] == nil {
+                    Text("Unavailable").tag(-1)
+                } else {
+                    ForEach([0, 1, 3, 6, 12], id: \.self) { Text($0 == 0 ? "Off" : "\($0)h").tag($0) }
+                }
+            }
+            .disabled(vm.remoteCCCacheHours["\(project.host)|\(project.path)"] == nil || vm.isBusy)
+        } label: {
+            Text("CC \(summary.text)")
+                .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                .foregroundStyle(summary.tint)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(summary.help)
+        .onAppear { Task { await vm.refreshRemoteCache(host: project.host) } }
+    }
+
     private func cdxCacheSummary(_ column: LiveColumn) -> (text: String, tint: Color, help: String)? {
         guard column.hostLabel == "local", !column.codexPaneIDs.isEmpty else { return nil }
         do {
@@ -6521,11 +6603,13 @@ struct ContentView: View {
         let isLocal = column.hostLabel == "local" && !column.projectPath.isEmpty
         let host = column.hostLabel.hasPrefix("remote@")
             ? String(column.hostLabel.dropFirst("remote@".count)) : nil
+        let remoteProject = remoteProject(for: column)
         let canWrite = !column.projectPath.isEmpty && (isLocal || host != nil)
         let mode = canWrite ? vm.roleMode(forProjectPath: column.projectPath, host: host) : .collab
         let main = canWrite ? vm.roleModeMain(forProjectPath: column.projectPath, host: host) : ""
         let cc = ccCacheSummary(column)
         let cdx = cdxCacheSummary(column)
+        let remoteCC = remoteProject.map(remoteCCCacheSummary)
         if canWrite {
             Button {
                 cachePopoverColumn = column.column
@@ -6536,6 +6620,9 @@ struct ContentView: View {
                     pill(roleModeBadgeLabel(mode: mode, main: main), tint: roleModeTint(mode))
                     if let cc {
                         Text("CC " + cc.text).foregroundStyle(cc.tint)
+                    }
+                    if let remoteCC {
+                        Text("CC " + remoteCC.text).foregroundStyle(remoteCC.tint)
                     }
                     if let cdx {
                         Text("Cdx " + cdx.text).foregroundStyle(cdx.tint)
@@ -6585,16 +6672,59 @@ struct ContentView: View {
                             setHours: { await vm.setKeepWarmHours($0, forProjectPath: column.projectPath, codex: true) },
                             poke: { await vm.pokeCodex(column: column) })
                     }
+                    if let remoteProject, let remoteCC {
+                        remoteCCCacheControls(project: remoteProject, summary: remoteCC)
+                    }
                 }
                 .padding(12)
+                .onAppear {
+                    if let remoteProject {
+                        Task { await vm.refreshRemoteCache(host: remoteProject.host) }
+                    }
+                }
             }
-            .help([cc.map { "CC " + $0.text + "\n" + $0.help }, cdx.map { "Cdx " + $0.text + "\n" + $0.help }]
+            .help([cc.map { "CC " + $0.text + "\n" + $0.help }, remoteCC.map { "CC " + $0.text + "\n" + $0.help }, cdx.map { "Cdx " + $0.text + "\n" + $0.help }]
                 .compactMap { $0 }.joined(separator: "\n\n"))
         } else {
             pill(roleModeBadgeLabel(mode: .collab, main: ""), tint: roleModeTint(.collab))
                 .opacity(0.5)
                 .help("role mode: collab (remote)")
         }
+    }
+
+    private func remoteCCCacheControls(project: WorkspaceProject,
+                                       summary: (text: String, tint: Color, help: String)) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("CC").font(GhosttyTheme.current.font(size: 12, weight: .bold))
+                Text(summary.text)
+                    .font(GhosttyTheme.current.font(size: 12, weight: .medium, monospaced: true))
+                    .foregroundStyle(summary.tint)
+                Spacer()
+                Text("remote")
+                    .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
+                    .foregroundStyle(GhosttyTheme.current.textTertiary)
+            }
+            Picker("CC Keep warm", selection: Binding(
+                get: { vm.remoteCCCacheHours["\(project.host)|\(project.path)"] ?? -1 },
+                set: { value in
+                    guard [0, 1, 3, 6, 12].contains(value) else { return }
+                    Task { await vm.setRemoteCCCacheHours(value, project: project) }
+                }
+            )) {
+                if vm.remoteCCCacheHours["\(project.host)|\(project.path)"] == nil {
+                    Text("Unavailable").tag(-1)
+                } else {
+                    ForEach([0, 1, 3, 6, 12], id: \.self) { Text($0 == 0 ? "Off" : "\($0)h").tag($0) }
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 220)
+            .disabled(vm.remoteCCCacheHours["\(project.host)|\(project.path)"] == nil || vm.isBusy)
+            .help(summary.help)
+        }
+        .help(summary.help)
     }
 
     private func cacheAgentControls(title: String, summary: (text: String, tint: Color, help: String),

@@ -52,3 +52,19 @@ while the user GUI domain is available; inspect `status` and
 Do not install or enable the agent merely by registering a project. A missing
 observer, missing tag, stopped session, or refused sender leaves the cache
 unmodified.
+
+## GUI controls and refresh
+
+The development GUI exposes remote CC keep-warm controls in a remote column's
+settings popover and in remote project settings. Both the development GUI and
+server GUI read and write the same host-local configuration through
+`tproj-remote-cache`; development access uses `tproj-remote-client` over SSH.
+Remote settings never write local workspace keep-warm values or start a second
+warming scheduler. Cdx remains diagnostic-only.
+
+Both views periodically read the server (approximately every eight seconds,
+plus command/transport time) and re-read after a setting change. They are not
+instantaneously synchronized: the other GUI reflects a change on its next
+successful refresh. Failed or missing reads are unavailable, not an implied
+Off value, and disable the affected setting controls. Local project cache
+controls retain their existing behavior.

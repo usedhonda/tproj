@@ -124,7 +124,7 @@ struct ServerModeView: View {
         .background(GhosttyTheme.current.background.ignoresSafeArea())
         .onAppear { refresh() }
         .onReceive(Timer.publish(every: 8, on: .main, in: .common).autoconnect()) { _ in
-            refreshMemory()
+            if !busy { refresh() }
         }
     }
 
@@ -200,17 +200,18 @@ struct ServerModeView: View {
                     .foregroundStyle(GhosttyTheme.current.textSecondary)
             }
             HStack {
-                Text("CC cache: \(cacheState[project.path] ?? "unobserved")")
+                Text("CC cache: \(cacheState[project.path] ?? "unavailable")")
                     .font(GhosttyTheme.current.font(size: 11, weight: .medium))
                     .foregroundStyle(GhosttyTheme.current.textSecondary)
                 Spacer()
-                Menu("Keep warm \(cacheHours[project.path] ?? 0)h") {
+                Menu(cacheHours[project.path].map { $0 == 0 ? "Keep warm Off" : "Keep warm \($0)h" } ?? "Keep warm unavailable") {
                     ForEach([0, 1, 3, 6, 12], id: \.self) { hours in
                         Button(hours == 0 ? "Off" : "\(hours) hours") {
                             setCacheHours(path: project.path, hours: hours)
                         }
                     }
                 }
+                .disabled(busy || cacheHours[project.path] == nil)
             }
             HStack(spacing: 12) {
                 roleControls("CC", role: "cc", status: project.cc, path: project.path)
@@ -262,6 +263,7 @@ struct ServerModeView: View {
     }
 
     private func refresh() {
+        guard !busy else { return }
         busy = true
         errorMessage = nil
         refreshMemory()
@@ -272,6 +274,8 @@ struct ServerModeView: View {
             }
             DispatchQueue.main.async {
                 busy = false
+                cacheHours = [:]
+                cacheState = [:]
                 switch result {
                 case .success(let output):
                     projects = output.split(separator: "\n").dropFirst().compactMap { line in
@@ -281,12 +285,12 @@ struct ServerModeView: View {
                     }
                     if case .success(let cacheOutput) = cacheResult,
                        let rows = try? JSONSerialization.jsonObject(with: Data(cacheOutput.utf8)) as? [[String: Any]] {
-                        cacheHours = [:]
-                        cacheState = [:]
                         for row in rows where row["role"] as? String == "cc" {
                             guard let id = row["id"] as? String,
                                   let path = projects.first(where: { ServerModeView.catalogID($0.path) == id })?.path else { continue }
-                            cacheHours[path] = row["hours"] as? Int ?? 0
+                            if let hours = row["hours"] as? Int, [0, 1, 3, 6, 12].contains(hours) {
+                                cacheHours[path] = hours
+                            }
                             cacheState[path] = row["state"] as? String ?? "unobserved"
                         }
                     }
@@ -323,6 +327,7 @@ struct ServerModeView: View {
     }
 
     private func setCacheHours(path: String, hours: Int) {
+        guard !busy, cacheHours[path] != nil else { return }
         busy = true
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result {
