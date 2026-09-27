@@ -27,6 +27,7 @@ class EnrollmentTest(unittest.TestCase):
             self.assertFalse((cfg / "enrollment.txn1.pending.json").exists())
             enrollment._control(home, request)
             self.assertTrue(enrollment._control(home, {"action": "commit", "txn": "txn1"})["committed"])
+            self.assertTrue(enrollment._control(home, {"action": "commit", "txn": "txn1"})["retry"])
             self.assertEqual(json.loads((cfg / "msg-hub.json").read_text())["hosts"], {"a": "new"})
 
 

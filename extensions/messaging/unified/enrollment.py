@@ -159,15 +159,20 @@ def _control(home: Path, request: Mapping[str, Any]) -> dict[str, Any]:
         _atomic_json(pending, {"txn": txn, "topology": payload, "hosts": request.get("hosts", {})})
         return {"prepared": True, "txn": txn}
     if action == "commit":
+        committed = config_dir / f"enrollment.{txn}.committed.json"
+        if committed.exists(): return {"committed": True, "txn": txn, "retry": True}
         saved = _read_json(pending)
         if saved.get("txn") != txn: raise EnrollmentError("enrollment prepare record is missing")
         _atomic_json(config_dir / "topology.json", saved["topology"])
         hub = _read_json(config_dir / "msg-hub.json"); host = _read_json(config_dir / "msg-host.json")
         hub["hosts"] = dict(saved.get("hosts") or {}); hub["topology_path"] = str(config_dir / "topology.json")
         _atomic_json(config_dir / "msg-hub.json", hub)
+        _atomic_json(committed, {"txn": txn})
         pending.unlink(missing_ok=True)
         return {"committed": True, "txn": txn}
     if action in ("abort", "recover"):
+        if (config_dir / f"enrollment.{txn}.committed.json").exists():
+            return {"committed": True, "txn": txn, "retry": True}
         pending.unlink(missing_ok=True); return {"aborted": True, "txn": txn}
     raise EnrollmentError("unsupported enrollment control action")
 
@@ -175,13 +180,20 @@ def _control(home: Path, request: Mapping[str, Any]) -> dict[str, Any]:
 def enroll(alias: str, *, home: Path | None = None, return_host: bool = False,
            remote: Callable[[str, dict[str, Any]], dict[str, Any]] = _remote) -> dict[str, Any]:
     local = local_description(home)
-    peers = [alias] + [item for item in _ssh_aliases() if item != alias]
+    cfg_dir = (home or Path.home()) / ".config/tproj"
+    prior = _read_json(cfg_dir / "topology.json")
+    prior_hosts = prior.get("hosts", []) if isinstance(prior.get("hosts"), list) else []
+    peers = [alias] + [str(item.get("ssh_alias")) for item in prior_hosts
+                       if item.get("ssh_alias") and item.get("ssh_alias") != alias]
+    expected_ids = {str(item.get("id")) for item in prior_hosts if item.get("id")}
     descriptions = [dict(local, online=True, ssh_alias="local", display_name=local["host_id"], kind="local")]
     for candidate in peers[:MAX_HOSTS - 1]:
         try:
             item = remote(candidate, {"action": "describe"})
         except EnrollmentError:
             if candidate == alias: raise
+            continue
+        if expected_ids and str(item.get("host_id")) not in expected_ids and candidate != alias:
             continue
         item.update(online=True, ssh_alias=candidate)
         descriptions.append(item)
@@ -190,7 +202,8 @@ def enroll(alias: str, *, home: Path | None = None, return_host: bool = False,
     aliases: dict[str, str] = {}
     for item in descriptions:
         for project in item.get("projects", []): aliases[str(project["alias"])] = str(item["host_id"])
-    top = topology(descriptions, local["host_id"], aliases)
+    manager = str(prior.get("management_host_id") or local["host_id"])
+    top = topology(descriptions, manager, aliases)
     tokens = {str(item["host_id"]): str(item["host_token"]) for item in descriptions}
     txn = uuid.uuid4().hex
     prepared: list[str] = []
