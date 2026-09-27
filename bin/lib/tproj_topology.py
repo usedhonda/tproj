@@ -37,6 +37,7 @@ def load() -> dict[str, Any]:
         raise SystemExit(f"topology config is invalid: {CONFIG}: {exc}")
     raw.setdefault("version", 1)
     raw.setdefault("mode", "standalone")
+    raw.setdefault("mode_explicit", False)
     raw.setdefault("hosts", [])
     local = raw.setdefault("local", {})
     if not local.get("id"):
@@ -87,11 +88,13 @@ def live_reasons(cfg: dict[str, Any]) -> list[str]:
 
 def status() -> dict[str, Any]:
     cfg = load()
+    if not CONFIG.exists():
+        save(cfg)
     reasons = live_reasons(cfg)
-    effective = "multi" if cfg.get("mode") == "multi" or reasons else "standalone"
+    effective = cfg.get("mode", "standalone") if cfg.get("mode_explicit") else ("multi" if reasons else "standalone")
     return {"version": 1, "configured_mode": cfg.get("mode", "standalone"), "effective_mode": effective,
             "live_setup_detected": bool(reasons), "detection_reasons": reasons,
-            "local": cfg["local"], "host_id": cfg["local"]["id"], "management_host_id": cfg["local"]["id"],
+            "local": cfg["local"], "host_id": cfg["local"]["id"], "management_host_id": cfg.get("management_host_id", cfg["local"]["id"]),
             "hosts": cfg.get("hosts", [])}
 
 
@@ -131,7 +134,13 @@ def command(argv: list[str]) -> int:
         print(json.dumps(data, indent=None if "--json" in argv else 2, sort_keys=True))
         return 0
     if argv[0] == "set" and len(argv) >= 2 and argv[1] in ("standalone", "multi"):
-        cfg = load(); cfg["mode"] = argv[1]; save(cfg)
+        cfg = load(); cfg["mode"] = argv[1]; cfg["mode_explicit"] = True
+        runtime = os.environ.get("TPROJ_MSG_RUNTIME", "tproj-msg-runtime")
+        save(cfg)
+        try:
+            subprocess.run([runtime, "setup", "--refresh"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
         print(json.dumps(status(), sort_keys=True) if "--json" in argv else f"mode: {argv[1]}")
         return 0
     if argv[0] != "host" or len(argv) < 2:
@@ -149,6 +158,16 @@ def command(argv: list[str]) -> int:
         if not name: raise SystemExit("host add requires --name NAME")
         result = probe(alias)
         if not result["ok"]: print(json.dumps(result, sort_keys=True)); return 1
+        runtime = os.environ.get("TPROJ_MSG_RUNTIME", "tproj-msg-runtime")
+        if os.environ.get("TPROJ_TOPOLOGY_SKIP_ENROLL") == "1":
+            enrolled = None
+        else:
+            try:
+                enrolled = subprocess.run([runtime, "enroll", alias], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError:
+                print(json.dumps({"ok": False, "error": "runtime_unavailable"}, sort_keys=True)); return 1
+        if enrolled is not None and enrolled.returncode != 0:
+            print(json.dumps({"ok": False, "error": "enrollment_failed"}, sort_keys=True)); return 1
         cfg = load(); hosts = [h for h in cfg.get("hosts", []) if h.get("ssh_alias") != alias]
         hosts.append({"id": result["id"], "display_name": name, "ssh_alias": alias, "kind": "remote", "capabilities": result["capabilities"]})
         cfg["hosts"] = hosts; cfg["mode"] = "multi"; save(cfg); print(json.dumps(hosts[-1], sort_keys=True)); return 0

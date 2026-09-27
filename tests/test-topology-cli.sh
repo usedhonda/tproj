@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/tproj-topology.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
-export HOME="$TMP/home" TPROJ_TOPOLOGY_CONFIG="$TMP/home/.config/tproj/topology.json"
+export HOME="$TMP/home" TPROJ_TOPOLOGY_CONFIG="$TMP/home/.config/tproj/topology.json" TPROJ_TOPOLOGY_SKIP_ENROLL=1
 mkdir -p "$HOME/bin" "$HOME/.config/tproj"
 out=$("$ROOT/bin/tproj" topology status --json)
 python3 -c 'import json,sys; x=json.loads(sys.argv[1]); assert x["effective_mode"]=="standalone"; assert x["local"]["id"]==x["host_id"]' "$out"
