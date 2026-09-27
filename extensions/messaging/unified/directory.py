@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import fcntl
 from typing import Any, Callable
 
 try:
@@ -47,7 +48,12 @@ def prepare(hub: Any, req: dict[str, Any]) -> dict[str, Any]:
     if existing:
         if existing["payload"] != encoded:
             raise HubError("id_conflict", "change ID has different payload")
-        return {"change_id": change_id, "state": existing["state"]}
+        if existing["state"] == "aborted":
+            hub.db.execute("DELETE FROM directory_changes WHERE change_id=?", (change_id,))
+        else:
+            return {"change_id": change_id, "state": existing["state"]}
+    if hub._row("SELECT change_id FROM directory_changes WHERE state='prepared' AND change_id<>?", (change_id,)):
+        raise HubError("directory_busy", "another directory change is prepared")
     projects = payload.get("projects", [])
     local_id = hub.local_id if hasattr(hub, "local_id") else hub.config.get("host_id")
     if any(not isinstance(p, dict) or not all(p.get(k) for k in ("project_id", "alias", "host_id", "path")) or p.get("host_id") != local_id for p in projects):
@@ -117,6 +123,8 @@ def abort(hub: Any, req: dict[str, Any]) -> dict[str, Any]:
 def manager_update(hub: Any, req: dict[str, Any], peer_call: Callable[[str, str, dict[str, Any]], dict[str, Any]], peer_ids: list[str]) -> dict[str, Any]:
     """Two-phase manager orchestration; no commit is attempted after prepare failure."""
     ensure_schema(hub.db)
+    lock_file = open(str(hub.db_path) + ".directory.lock", "a")
+    fcntl.flock(lock_file, fcntl.LOCK_EX)
     change_id = str(req.get("change_id") or "")
     payload = req.get("payload") or {"expected_revision": req.get("expected_revision"), "projects": req.get("projects", [])}
     if not change_id: raise HubError("invalid_directory", "change_id required")
@@ -131,6 +139,11 @@ def manager_update(hub: Any, req: dict[str, Any], peer_call: Callable[[str, str,
         for owner in sorted(owners): peer_call(owner, "directory_commit", {"change_id": change_id})
         local_projects = [p for p in payload.get("projects", []) if p.get("host_id") == local_id]
         if local_projects: commit(hub, {"change_id": change_id})
+        hub.db.execute("UPDATE directory_transactions SET state='committed',updated_at=? WHERE change_id=?", (hub._now(), change_id))
+        lock_file.close()
+        return {"change_id": change_id, "state": "committed", "revision": int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0])}
+    if existing and existing["state"] == "committed":
+        lock_file.close()
         return {"change_id": change_id, "state": "committed", "revision": int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0])}
     pending = hub._row("SELECT change_id FROM directory_transactions WHERE state='decided' AND change_id<>?", (change_id,))
     if pending: raise HubError("directory_busy", "another directory change is awaiting recovery")
@@ -156,6 +169,9 @@ def manager_update(hub: Any, req: dict[str, Any], peer_call: Callable[[str, str,
         alias = str(project.get("alias")); current = aliases.get(alias)
         if alias in history and current != str(project.get("project_id")): raise HubError("directory_conflict", "historical alias cannot be reused")
         if current and current != str(project.get("project_id")): raise HubError("directory_conflict", "alias already assigned")
+    requested = [str(p.get("alias")) for p in payload.get("projects", [])]
+    if len(requested) != len(set(requested)):
+        raise HubError("directory_conflict", "requested aliases are duplicated")
     # A durable decision is written before any commit; prepare failures leave no decision.
     owners_payload = {owner: [p for p in payload.get("projects", []) if str(p.get("host_id")) == owner] for owner in owners}
     local_projects = [p for p in payload.get("projects", []) if str(p.get("host_id")) == local_id]
@@ -176,4 +192,6 @@ def manager_update(hub: Any, req: dict[str, Any], peer_call: Callable[[str, str,
     for owner in sorted(owners): peer_call(owner, "directory_commit", {"change_id": change_id})
     if local_projects: commit(hub, {"change_id": change_id})
     hub.db.execute("UPDATE directory_transactions SET state='committed',updated_at=? WHERE change_id=?", (hub._now(), change_id))
-    return {"change_id": change_id, "state": "committed", "revision": int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0]), "origin_revision": origin_revision}
+    result = {"change_id": change_id, "state": "committed", "revision": int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0]), "origin_revision": origin_revision}
+    lock_file.close()
+    return result
