@@ -83,7 +83,9 @@ def _remote_enrollment_detected(config_dir: Path, expected_socket: Path | None =
     hub = _read_json(config_dir / "msg-hub.json")
     hosts = hub.get("hosts")
     federation = hub.get("federation")
-    return (isinstance(hosts, dict) and len(hosts) > 1) or bool(federation and federation.get("peers"))
+    # A local federated hub is valid standalone state once it has an owner
+    # host_id. Only the legacy ownerless/central shape requires migration.
+    return (not hub.get("host_id")) and ((isinstance(hosts, dict) and len(hosts) > 1) or bool(federation and federation.get("peers")))
 
 
 def _projects(home: Path, host_id: str) -> list[dict[str, str]]:
