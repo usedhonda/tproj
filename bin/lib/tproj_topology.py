@@ -40,7 +40,13 @@ def load() -> dict[str, Any]:
     raw.setdefault("hosts", [])
     local = raw.setdefault("local", {})
     if not local.get("id"):
-        local["id"] = str(uuid.uuid4())
+        legacy_id = None
+        if legacy_host.exists():
+            try:
+                legacy_id = json.loads(legacy_host.read_text()).get("host_id")
+            except (OSError, ValueError, json.JSONDecodeError):
+                legacy_id = None
+        local["id"] = legacy_id or str(uuid.uuid4())
     local.setdefault("display_name", _local_name())
     local.setdefault("ssh_alias", None)
     return raw
