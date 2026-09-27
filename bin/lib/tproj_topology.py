@@ -88,9 +88,12 @@ def live_reasons(cfg: dict[str, Any]) -> list[str]:
 
 def status() -> dict[str, Any]:
     cfg = load()
-    if not CONFIG.exists():
-        save(cfg)
     reasons = live_reasons(cfg)
+    if not CONFIG.exists():
+        # A newly bootstrapped host is explicitly standalone. Legacy remote
+        # state, when present before first read, remains inferred multi-host.
+        cfg["mode_explicit"] = not bool(reasons)
+        save(cfg)
     effective = cfg.get("mode", "standalone") if cfg.get("mode_explicit") else ("multi" if reasons else "standalone")
     return {"version": 1, "configured_mode": cfg.get("mode", "standalone"), "effective_mode": effective,
             "live_setup_detected": bool(reasons), "detection_reasons": reasons,
