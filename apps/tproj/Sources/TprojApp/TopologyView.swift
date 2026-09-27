@@ -39,6 +39,7 @@ private enum TopologyCommand {
 }
 
 struct TopologyView: View {
+    let onModeChanged: (String) -> Void
     @State private var mode = "standalone"
     @State private var effectiveMode = "standalone"
     @State private var hosts: [TopologyHost] = []
@@ -51,25 +52,31 @@ struct TopologyView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Topology").font(.title3.bold())
-                    Text("Standalone keeps this Mac sovereign; multi preserves configured remotes.")
+                    Text("Computers").font(.title3.bold())
+                    Text("Choose whether this workspace uses this Mac only or multiple Macs.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("Refresh") { refresh() }.disabled(busy)
             }
             Picker("Mode", selection: Binding(get: { mode }, set: { setMode($0) })) {
-                Text("Standalone").tag("standalone")
-                Text("Multi-host").tag("multi")
+                Text("This Mac only").tag("standalone")
+                Text("Multiple Macs").tag("multi")
             }
             .pickerStyle(.segmented)
-            Text("Effective mode: \(effectiveMode)")
-                .font(.caption.monospaced()).foregroundStyle(.secondary)
+            Text(effectiveMode == "standalone" ? "Remote computers stay configured but are not contacted." : "Remote computers are available for this workspace.")
+                .font(.caption).foregroundStyle(.secondary)
 
-            GroupBox("Hosts") {
+            GroupBox("Remote computers") {
                 VStack(alignment: .leading, spacing: 8) {
+                    if mode == "standalone" {
+                        Text(hosts.isEmpty ? "No remote computers saved." : "\(hosts.count) remote computer(s) saved. Switch to Multiple Macs to manage them.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 8) {
                     if hosts.isEmpty {
-                        Text("No remote hosts configured.").font(.caption).foregroundStyle(.secondary)
+                        Text("No remote computers configured.").font(.caption).foregroundStyle(.secondary)
                     }
                     ForEach(hosts) { item in
                         HStack {
@@ -78,7 +85,7 @@ struct TopologyView: View {
                                 Text(item.sshAlias).font(.caption.monospaced()).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Text(item.kind).font(.caption).foregroundStyle(.secondary)
+                            Text(item.kind == "remote" ? "Remote" : "Local").font(.caption).foregroundStyle(.secondary)
                             Button("Check") { check(item.sshAlias) }.disabled(busy)
                             Button("Remove", role: .destructive) { remove(item.sshAlias) }.disabled(busy)
                         }
@@ -88,6 +95,10 @@ struct TopologyView: View {
                         TextField("SSH alias", text: $host)
                         TextField("Display name", text: $hostName)
                         Button("Add") { add() }.disabled(busy || host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                            }
+                        }
+                        .frame(maxHeight: 190)
                     }
                 }
                 .padding(4)
@@ -144,7 +155,11 @@ struct TopologyView: View {
 
     private func setMode(_ value: String) {
         mode = value
-        execute(["topology", "set", value]) { _ in refresh() }
+        execute(["topology", "set", value]) { _ in
+            effectiveMode = value
+            onModeChanged(value)
+            refresh()
+        }
     }
 
     private func add() {

@@ -3386,6 +3386,10 @@ final class AppViewModel: ObservableObject {
             ?? "standalone"
     }
 
+    func topologyModeDidChange(_ mode: String) {
+        effectiveTopologyMode = mode == "multi" ? "multi" : "standalone"
+    }
+
     func remoteState(_ project: WorkspaceProject) -> String {
         remoteProjectStates[remoteKey(project)] ?? "Unknown"
     }
@@ -3508,7 +3512,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func startRemoteProject(_ project: WorkspaceProject) async {
-        guard project.type == "remote" else { return }
+        guard effectiveTopologyMode != "standalone", project.type == "remote" else { return }
         let client = NSHomeDirectory() + "/bin/tproj-remote-client"
         guard fileManager.isExecutableFile(atPath: client) else {
             statusText = "Remote client not installed"
@@ -5274,7 +5278,9 @@ struct ContentView: View {
             )
         }
         .sheet(isPresented: $showTopology) {
-            TopologyView()
+            TopologyView { mode in
+                vm.topologyModeDidChange(mode)
+            }
         }
     }
 
