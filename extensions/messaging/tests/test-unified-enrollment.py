@@ -31,12 +31,27 @@ class EnrollmentTest(unittest.TestCase):
             self.assertEqual(json.loads((cfg / "msg-hub.json").read_text())["hosts"], {"a": "new"})
 
     def test_topology_keeps_different_directed_routes(self):
-        hosts = [{"host_id": "a", "ssh_alias": "macmini", "aliases": ["one"], "online": True},
-                 {"host_id": "b", "ssh_alias": "mac-dev", "aliases": ["two"], "online": True}]
+        hosts = [{"host_id": "a", "ssh_alias": "server-a", "aliases": ["one"], "online": True},
+                 {"host_id": "b", "ssh_alias": "workstation-a", "aliases": ["two"], "online": True}]
         result = enrollment.topology(hosts, "a", {"one": "a", "two": "b"},
-                                     {"a": {"b": "mac-dev"}, "b": {"a": "mini-from-b"}})
-        self.assertEqual(result["hosts"][0]["routes"]["b"], "mac-dev")
-        self.assertEqual(result["hosts"][1]["routes"]["a"], "mini-from-b")
+                                     {"a": {"b": "workstation-a"}, "b": {"a": "workstation-from-b"}})
+        self.assertEqual(result["hosts"][0]["routes"]["b"], "workstation-a")
+        self.assertEqual(result["hosts"][1]["routes"]["a"], "workstation-from-b")
 
+
+    def test_three_host_control_uses_each_hosts_own_routes(self):
+        hosts = [{"host_id": h, "aliases": ["project-" + h], "host_token": "test-" + h} for h in ("a", "b", "c")]
+        routes = {h: {other: other + "-from-" + h for other in ("a", "b", "c") if other != h} for h in ("a", "b", "c")}
+        top = enrollment.topology(hosts, "a", {}, routes)
+        with tempfile.TemporaryDirectory() as raw:
+            for h in ("a", "b", "c"):
+                home = Path(raw) / h
+                cfg = home / ".config/tproj"; cfg.mkdir(parents=True)
+                (cfg / "msg-host.json").write_text(json.dumps({"host_id": h}))
+                enrollment._control(home, {"action": "prepare", "txn": "three", "topology": top, "hosts": {x: "test-" + x for x in ("a", "b", "c")}})
+                enrollment._control(home, {"action": "commit", "txn": "three"})
+                saved = json.loads((cfg / "topology.json").read_text())
+                self.assertEqual(saved["local"]["id"], h)
+                self.assertEqual({x["id"]: x["ssh_alias"] for x in saved["hosts"]}, routes[h])
 
 if __name__ == "__main__": unittest.main()

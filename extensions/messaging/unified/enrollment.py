@@ -11,6 +11,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import fcntl
 from pathlib import Path
 import secrets
 import socket
@@ -78,7 +80,7 @@ def _ssh_aliases(path: Path | None = None) -> list[str]:
 
 
 def _remote(alias: str, request: dict[str, Any], runner: Callable[..., subprocess.CompletedProcess[str]] | None = None) -> dict[str, Any]:
-    if not alias or any(ch in alias for ch in "\r\n;|&"):
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', alias):
         raise EnrollmentError("invalid SSH alias")
     run = runner or subprocess.run
     command = ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={SSH_TIMEOUT}", "-T", "--", alias,
@@ -105,7 +107,7 @@ def local_description(home: Path | None = None) -> dict[str, Any]:
     hub = _read_json(config_dir / "msg-hub.json")
     host_id, token, socket_path = host.get("host_id"), host.get("host_token"), host.get("hub_socket") or hub.get("socket")
     if not isinstance(host_id, str) or not host_id or not isinstance(token, str) or not token or not isinstance(socket_path, str):
-        raise EnrollmentError("local messaging runtime is not initialized; run tproj-msg-unified setup")
+        raise EnrollmentError("local messaging runtime is not initialized; run tproj-msg-runtime setup")
     directory = _rpc(socket_path, {"op": "directory_list", "host_id": host_id, "host_token": token})
     projects = [{k: p.get(k) for k in ("project_id", "alias", "host_id", "path")} for p in directory.get("projects", [])]
     return {"host_id": host_id, "host_token": token, "projects": projects,
@@ -177,7 +179,17 @@ def _control(home: Path, request: Mapping[str, Any]) -> dict[str, Any]:
         payload = dict(request.get("topology") or {})
         host_config = _read_json(config_dir / "msg-host.json")
         if host_config.get("host_id"):
-            payload["local"] = {"id": str(host_config["host_id"])}
+            ident = str(host_config['host_id'])
+            previous = _read_json(config_dir / 'topology.json')
+            payload['local'] = dict(previous.get('local') or {}, id=ident)
+            route_map = next((item.get('routes', {}) for item in payload.get('hosts', []) if item['id'] == ident), {})
+            payload['hosts'] = [dict(item, ssh_alias=route_map.get(item['id']), kind='remote')
+                                for item in payload.get('hosts', []) if item['id'] != ident]
+            if any(not item.get('ssh_alias') for item in payload['hosts']):
+                raise EnrollmentError('directed SSH mesh is incomplete')
+            payload['mode_explicit'] = True
+            payload.pop('projects', None)
+            payload.pop('routes', None)
         _atomic_json(pending, {"txn": txn, "topology": payload, "hosts": request.get("hosts", {})})
         return {"prepared": True, "txn": txn}
     if action == "commit":
@@ -185,10 +197,13 @@ def _control(home: Path, request: Mapping[str, Any]) -> dict[str, Any]:
         if committed.exists(): return {"committed": True, "txn": txn, "retry": True}
         saved = _read_json(pending)
         if saved.get("txn") != txn: raise EnrollmentError("enrollment prepare record is missing")
-        _atomic_json(config_dir / "topology.json", saved["topology"])
         hub = _read_json(config_dir / "msg-hub.json"); host = _read_json(config_dir / "msg-host.json")
         hub["hosts"] = dict(saved.get("hosts") or {}); hub["topology_path"] = str(config_dir / "topology.json")
         _atomic_json(config_dir / "msg-hub.json", hub)
+        _atomic_json(config_dir / "topology.json", saved["topology"])
+        client=_read_json(config_dir / 'msg-client.json')
+        client['remote_hosts']={item['ssh_alias']:item['id'] for item in saved['topology'].get('hosts',[])}
+        _atomic_json(config_dir / 'msg-client.json',client)
         _atomic_json(committed, {"txn": txn})
         pending.unlink(missing_ok=True)
         return {"committed": True, "txn": txn}
@@ -205,6 +220,18 @@ def enroll(alias: str, *, home: Path | None = None, return_host: bool = False,
     cfg_dir = (home or Path.home()) / ".config/tproj"
     prior = _read_json(cfg_dir / "topology.json")
     prior_hosts = prior.get("hosts", []) if isinstance(prior.get("hosts"), list) else []
+    # Finish a durable commit decision before accepting a new membership edit.
+    for decision_path in cfg_dir.glob('enrollment.*.decision.json'):
+        decision = _read_json(decision_path)
+        if decision.get('state') == 'committed': continue
+        if not decision.get('members'):
+            raise EnrollmentError('an older enrollment decision needs explicit recovery')
+        for member in decision['members']:
+            request = {'action':'commit', 'txn':decision['txn']}
+            if member['host_id'] == local['host_id']: _control(home or Path.home(), request)
+            else: remote(member['ssh_alias'], request)
+        decision['state'] = 'committed'
+        _atomic_json(decision_path, decision)
     peers = [alias] + [str(item.get("ssh_alias")) for item in prior_hosts
                        if item.get("ssh_alias") and item.get("ssh_alias") != alias]
     expected_ids = {str(item.get("id")) for item in prior_hosts if item.get("id")}
@@ -213,14 +240,17 @@ def enroll(alias: str, *, home: Path | None = None, return_host: bool = False,
         try:
             item = remote(candidate, {"action": "describe"})
         except EnrollmentError:
-            if candidate == alias: raise
-            continue
+            raise EnrollmentError('all existing members must be online before enrollment') from None
         if expected_ids and str(item.get("host_id")) not in expected_ids and candidate != alias:
+            continue
+        if any(item.get('host_id') == known.get('host_id') for known in descriptions):
             continue
         item.update(online=True, ssh_alias=candidate)
         descriptions.append(item)
     if len(descriptions) < 2:
         raise EnrollmentError("no initialized peer host was admitted")
+    if not expected_ids.issubset({str(item['host_id']) for item in descriptions}):
+        raise EnrollmentError('existing membership identity changed; refusing to drop members')
     aliases: dict[str, str] = {}
     for item in descriptions:
         for project in item.get("projects", []): aliases[str(project["alias"])] = str(item["host_id"])
@@ -257,16 +287,28 @@ def enroll(alias: str, *, home: Path | None = None, return_host: bool = False,
             else: remote(str(item["ssh_alias"]), req)
             prepared.append(str(item["host_id"]))
         _atomic_json((home or Path.home()) / ".config/tproj" / f"enrollment.{txn}.decision.json",
-                     {"txn": txn, "topology": top, "hosts": tokens})
+                     {"txn": txn, "topology": top, "hosts": tokens, 'members':
+                      [{'host_id':item['host_id'],'ssh_alias':item['ssh_alias']} for item in descriptions],
+                      'state':'decided'})
         for item in descriptions:
             req = {"action": "commit", "txn": txn}
             if item["host_id"] == local["host_id"]: _control(home or Path.home(), req)
             else: remote(str(item["ssh_alias"]), req)
     except EnrollmentError:
+        if not (cfg_dir / f'enrollment.{txn}.decision.json').exists():
+            for item in descriptions:
+                if item['host_id'] not in prepared: continue
+                try:
+                    request={'action':'abort','txn':txn}
+                    if item['host_id'] == local['host_id']: _control(home or Path.home(),request)
+                    else: remote(item['ssh_alias'],request)
+                except EnrollmentError: pass
         # A coordinator decision is durable: do not abort prepared peers after
         # a commit failure; the next invocation replays the same transaction.
         raise
-    return {"enrolled": True, "host_count": len(descriptions), "management_host_id": local["host_id"],
+    decision_path=cfg_dir / f'enrollment.{txn}.decision.json'
+    decision=_read_json(decision_path); decision['state']='committed'; _atomic_json(decision_path,decision)
+    return {"enrolled": True, "host_count": len(descriptions), "management_host_id": manager,
             **({"return_host": alias} if return_host else {})}
 
 

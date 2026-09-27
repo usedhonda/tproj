@@ -120,11 +120,16 @@ def abort(hub: Any, req: dict[str, Any]) -> dict[str, Any]:
     return {"change_id": req.get("change_id"), "state": "aborted"}
 
 
-def manager_update(hub: Any, req: dict[str, Any], peer_call: Callable[[str, str, dict[str, Any]], dict[str, Any]], peer_ids: list[str]) -> dict[str, Any]:
+def manager_update(hub, req, peer_call, peer_ids):
+    with open(str(hub.db_path)+'.directory.lock', 'a') as lock:
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: raise HubError('directory_busy', 'another directory change is running')
+        return _manager_update(hub, req, peer_call, peer_ids)
+
+
+def _manager_update(hub: Any, req: dict[str, Any], peer_call: Callable[[str, str, dict[str, Any]], dict[str, Any]], peer_ids: list[str]) -> dict[str, Any]:
     """Two-phase manager orchestration; no commit is attempted after prepare failure."""
     ensure_schema(hub.db)
-    lock_file = open(str(hub.db_path) + ".directory.lock", "a")
-    fcntl.flock(lock_file, fcntl.LOCK_EX)
     change_id = str(req.get("change_id") or "")
     payload = req.get("payload") or {"expected_revision": req.get("expected_revision"), "projects": req.get("projects", [])}
     if not change_id: raise HubError("invalid_directory", "change_id required")
@@ -134,16 +139,16 @@ def manager_update(hub: Any, req: dict[str, Any], peer_call: Callable[[str, str,
     if any(pid not in peer_ids for pid in owners): raise HubError("host_unavailable", "directory owner is not enrolled")
     ensure_schema(hub.db)
     existing = hub._row("SELECT state,payload FROM directory_transactions WHERE change_id=?", (change_id,))
+    if existing and json.loads(existing['payload']) != payload:
+        raise HubError('id_conflict', 'change ID has different payload')
     if existing and existing["state"] == "decided":
         # Recovery path: redo only idempotent commits.
         for owner in sorted(owners): peer_call(owner, "directory_commit", {"change_id": change_id})
         local_projects = [p for p in payload.get("projects", []) if p.get("host_id") == local_id]
         if local_projects: commit(hub, {"change_id": change_id})
         hub.db.execute("UPDATE directory_transactions SET state='committed',updated_at=? WHERE change_id=?", (hub._now(), change_id))
-        lock_file.close()
         return {"change_id": change_id, "state": "committed", "revision": int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0])}
     if existing and existing["state"] == "committed":
-        lock_file.close()
         return {"change_id": change_id, "state": "committed", "revision": int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0])}
     pending = hub._row("SELECT change_id FROM directory_transactions WHERE state='decided' AND change_id<>?", (change_id,))
     if pending: raise HubError("directory_busy", "another directory change is awaiting recovery")
@@ -153,9 +158,14 @@ def manager_update(hub: Any, req: dict[str, Any], peer_call: Callable[[str, str,
     for owner in sorted(peer_ids):
         snapshots[owner] = peer_call(owner, "directory", {})
     local_snapshot = hub.directory_list()
-    origin_revision = int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0])
+    origin_id = payload.get('origin_host_id', local_id)
     local_snapshot["alias_history"] = [r[0] for r in hub.db.execute("SELECT alias FROM alias_history")]
     snapshots[local_id] = local_snapshot
+    if origin_id not in snapshots:
+        raise HubError('unauthorized', 'unknown directory update origin')
+    origin_revision = snapshots[origin_id]['revision']
+    if payload.get('expected_revision') is not None and payload['expected_revision'] != origin_revision:
+        raise HubError('revision_conflict', 'origin directory revision changed')
     aliases: dict[str, str] = {}
     history: set[str] = set()
     for owner, snap in snapshots.items():
@@ -178,9 +188,9 @@ def manager_update(hub: Any, req: dict[str, Any], peer_call: Callable[[str, str,
     prepared: list[str] = []
     try:
         for owner in sorted(owners):
-            peer_call(owner, "directory_prepare", {"change_id": change_id, "payload": {**payload, "projects": owners_payload[owner]}})
+            peer_call(owner, "directory_prepare", {"change_id": change_id, "payload": {**payload, "projects": owners_payload[owner], "expected_revision": snapshots[owner]["revision"]}})
             prepared.append(owner)
-        if local_projects: prepare(hub, {"change_id": change_id, "payload": {**payload, "projects": local_projects}})
+        if local_projects: prepare(hub, {"change_id": change_id, "payload": {**payload, "projects": local_projects, "expected_revision": snapshots[local_id]["revision"]}})
     except Exception:
         for owner in prepared:
             try: peer_call(owner, "directory_abort", {"change_id": change_id})
@@ -193,5 +203,4 @@ def manager_update(hub: Any, req: dict[str, Any], peer_call: Callable[[str, str,
     if local_projects: commit(hub, {"change_id": change_id})
     hub.db.execute("UPDATE directory_transactions SET state='committed',updated_at=? WHERE change_id=?", (hub._now(), change_id))
     result = {"change_id": change_id, "state": "committed", "revision": int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0]), "origin_revision": origin_revision}
-    lock_file.close()
     return result

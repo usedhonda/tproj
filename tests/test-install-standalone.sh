@@ -10,8 +10,16 @@ mkdir -p "$TMP/tproj" "$TMP/home"
 
 # Copy the checkout without local runtime state. The tracked persona/router
 # symlinks then resolve nowhere, matching a public clone without ../general.
-tar --exclude='./.local' --exclude='./extensions/messaging/unified/__pycache__' \
-  -cf - -C "$REPO_ROOT" . | tar -xf - -C "$TMP/tproj"
+python3 - "$REPO_ROOT" "$TMP/tproj" <<'PYCLONE'
+import os, pathlib, shutil, subprocess, sys
+root, dest = map(pathlib.Path, sys.argv[1:])
+for raw in subprocess.check_output(['git','ls-files','-z'],cwd=root).split(b'\0'):
+    if not raw: continue
+    relative=os.fsdecode(raw); source=root/relative; target=dest/relative
+    target.parent.mkdir(parents=True,exist_ok=True)
+    if source.is_symlink(): target.symlink_to(os.readlink(source))
+    elif source.is_file(): shutil.copy2(source,target)
+PYCLONE
 
 set +e
 output=$(HOME="$TMP/home" bash "$TMP/tproj/install.sh" --dry-run --yes 2>&1)

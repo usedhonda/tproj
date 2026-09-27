@@ -299,7 +299,9 @@ WSEOF
   # 3. Claude Code hooks
   echo "=== Claude Code hooks ==="
   SETTINGS_FILE="$HOME/.claude/settings.json"
-  if [[ -f "$SETTINGS_FILE" ]]; then
+  if [[ ! -x "$HOME/bin/project-bootstrap" ]]; then
+    echo "  Optional persona bootstrap not installed; no hook needed."
+  elif [[ -f "$SETTINGS_FILE" ]]; then
     if grep -q "project-bootstrap" "$SETTINGS_FILE" 2>/dev/null; then
       echo "  SessionStart hook: already configured"
     else
@@ -359,7 +361,7 @@ WSEOF
   runtime_setup="$(runtime_bin_path tproj-msg-runtime 2>/dev/null || true)"
   if [[ -n "$runtime_setup" && -x "$runtime_setup" ]]; then
     echo "  refreshing local messaging runtime"
-    "$runtime_setup" setup >/dev/null 2>&1 || echo "  messaging runtime setup skipped (optional)"
+    "$runtime_setup" setup || echo "  Messaging setup needs attention; the core workspace remains available."
   fi
   echo ""
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-ALLOWLIST = ("cli.py", "receipt.py", "host.py", "hub.py", "identity.py", "protocol.py", "policy.py", "terminal-parser.sh", "terminal-guard.sh")
+ALLOWLIST = ("cli.py", "receipt.py", "host.py", "hub.py", "identity.py", "protocol.py", "policy.py", "federation.py", "runtime.py", "directory.py", "enrollment.py", "terminal-parser.sh", "terminal-guard.sh")
 LAUNCHER = "#!/bin/sh\nexec python3 \"$HOME/lib/tproj-msg-unified/cli.py\" \"$@\"\n"
 
 

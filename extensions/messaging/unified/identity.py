@@ -252,7 +252,6 @@ def discover_tmux_endpoints(host_id: str, projects: Iterable[Mapping[str, Any]],
             project_by_alias[str(project["alias"])] = project
     occupied = {str(item.get("participant_id")) for item in existing if item.get("participant_id")}
     found = []
-    seen_participants = set(occupied)
     for pane in panes():
         role = str(pane.get("role", "")).lower()
         platform = "cc" if role.startswith("claude-") else "cdx" if role.startswith("codex-") else None
@@ -265,7 +264,11 @@ def discover_tmux_endpoints(host_id: str, projects: Iterable[Mapping[str, Any]],
         if not project:
             continue
         participant_id = f"{project.get('project_id')}:{platform}"
-        if participant_id in seen_participants:
+        # Registry-backed participants are authoritative.  For an unmatched
+        # standalone participant, however, retain every live candidate from a
+        # distinct pane: downstream binding/target resolution must reject an
+        # ambiguous identity instead of silently choosing the first pane.
+        if participant_id in occupied:
             continue
         try:
             root_pid = int(pane.get("pane_pid", 0))
@@ -293,7 +296,6 @@ def discover_tmux_endpoints(host_id: str, projects: Iterable[Mapping[str, Any]],
                 "session": session, "pane": pane_id, "pid": int(pid), "pid_start": start,
                 "runtime_id": runtime, "platform": platform,
             })
-            seen_participants.add(participant_id)
             break
     return sorted(found, key=lambda item: item["endpoint_id"])
 

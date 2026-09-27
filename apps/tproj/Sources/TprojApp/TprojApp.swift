@@ -3567,7 +3567,7 @@ final class AppViewModel: ObservableObject {
             }
         }
         let clientConfig = NSHomeDirectory() + "/.config/tproj/msg-client.json"
-        if effectiveTopologyMode != "standalone", fileManager.fileExists(atPath: clientConfig) {
+        if fileManager.fileExists(atPath: clientConfig) {
             guard let data = fileManager.contents(atPath: clientConfig),
                   let cfg = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let localHost = cfg["host_id"] as? String else {
@@ -3597,6 +3597,7 @@ final class AppViewModel: ObservableObject {
             var payloadProjects: [[String: Any]] = []
             for index in projects.indices {
                 let project = projects[index]
+                if effectiveTopologyMode == "standalone" && project.type == "remote" { continue }
                 let mappedHost = project.type == "remote" ? remoteHosts[project.host] : localHost
                 guard let host = mappedHost, !host.isEmpty else {
                     statusText = "Unified directory host mapping missing: \(project.host)"

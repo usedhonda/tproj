@@ -104,7 +104,7 @@ def status() -> dict[str, Any]:
 def probe(alias: str) -> dict[str, Any]:
     if not ALIAS_RE.fullmatch(alias):
         raise SystemExit("invalid SSH alias")
-    command = os.environ.get("TPROJ_TOPOLOGY_IDENTITY_COMMAND", "tproj topology identity --json")
+    command = os.environ.get("TPROJ_TOPOLOGY_IDENTITY_COMMAND", 'PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" "$HOME/bin/tproj-topology" identity --json')
     try:
         proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-T", "--", alias, command], text=True, capture_output=True, timeout=8)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -141,7 +141,9 @@ def command(argv: list[str]) -> int:
         runtime = os.environ.get("TPROJ_MSG_RUNTIME", "tproj-msg-runtime")
         save(cfg)
         try:
-            subprocess.run([runtime, "setup", "--refresh"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            refreshed = subprocess.run([runtime, "setup", "--refresh"], check=False, capture_output=True, text=True)
+            if refreshed.returncode:
+                print('Mode saved; messaging setup needs attention: '+refreshed.stderr.strip(), file=sys.stderr)
         except OSError:
             pass
         print(json.dumps(status(), sort_keys=True) if "--json" in argv else f"mode: {argv[1]}")
@@ -174,11 +176,11 @@ def command(argv: list[str]) -> int:
             enrolled = None
         else:
             try:
-                enrolled = subprocess.run([runtime, "enroll", alias], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                enrolled = subprocess.run([runtime, "enroll", alias], check=False, capture_output=True, text=True)
             except OSError:
                 print(json.dumps({"ok": False, "error": "runtime_unavailable"}, sort_keys=True)); return 1
         if enrolled is not None and enrolled.returncode != 0:
-            print(json.dumps({"ok": False, "error": "enrollment_failed"}, sort_keys=True)); return 1
+            print(json.dumps({"ok": False, "error": "enrollment_failed", "detail": enrolled.stderr.strip()}, sort_keys=True)); return 1
         cfg = load(); hosts = [h for h in cfg.get("hosts", []) if h.get("ssh_alias") != alias]
         hosts.append({"id": result["id"], "display_name": name, "ssh_alias": alias, "kind": "remote", "capabilities": result["capabilities"]})
         cfg["hosts"] = hosts; cfg["mode"] = "multi"; save(cfg); print(json.dumps(hosts[-1], sort_keys=True)); return 0

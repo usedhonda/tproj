@@ -10,7 +10,9 @@ An enrolled installation never automatically returns to those routes.
 
 ## Directory and identity
 
-The central directory owns project aliases and endpoint registrations. A local
+Each execution host owns its project aliases, endpoints, and durable mailbox.
+The operator sees a unified live view of these authoritative owner directories;
+foreign endpoint evidence retained with a message is never a routing directory. A local
 host agent authenticates its caller from kernel peer credentials and live
 process ancestry, including the recorded process-start value. `--as`,
 `--session`, pane labels, and model/role metadata are selectors or attributes;
@@ -73,3 +75,44 @@ not a local GUI label. Once enrolled, the persistent `msg-client.enrolled`
 marker prevents missing or malformed client configuration from restoring the
 legacy ordinary transport. The messaging installer distributes the unified
 modules but never enrolls hosts or restarts services.
+
+
+## Standalone-first topology
+
+`tproj init` provisions one local host and local mailbox; it does not require
+SSH, a GUI, OpenClaw, or the optional external role/persona implementation.
+`tproj topology set standalone|multi` selects the connection mode. Saved remote
+configuration survives standalone mode; neither mode switching nor host removal
+terminates sessions. `tproj host list|add|remove|check` manages connections. `host remove` disconnects that host from this Mac only; it does not delete remote projects, revoke credentials on other Macs, or terminate sessions. Re-adding performs enrollment checks again.
+The `check` operation never installs helpers; explicit `add` can provision them.
+
+Every host dispatches local messages locally, including when all remote hosts
+are unreachable. Multi-host enrollment validates unique project aliases and
+stable host IDs, authenticates the directed SSH routes between admitted hosts,
+and stages membership before committing it. Existing SSH host-key checking is
+preserved. No unrelated host discovered in SSH configuration is enrolled.
+
+Remote resolution asks the owning live directory; stored aliases are not a
+fallback. A missing destination fails before acceptance. Once accepted, a
+message and its exact-ID outbound record are committed atomically. Retry keeps
+that same ID, content and recipient incarnation; presentation belongs to the
+recipient mailbox. Unknown transport outcome is not presentation. A local
+send is not blocked by a remote catalog refresh or retry worker.
+
+Directory edits are serialized by the configured management host, with live
+snapshots of every member, owner-specific revision checks, prepare records and
+a durable commit decision. That host is a configuration coordinator only,
+not a required broker for normal local or peer-to-peer messages. Unavailable
+members block group-wide name changes, not local work or local delivery.
+`cc` and `cdx` still resolve only within the authenticated sender project;
+replies retain the original message and endpoint IDs.
+
+The protocol version is checked at peer ingress. Unknown peers or incompatible
+versions fail closed for that connection, without selecting legacy transport.
+The optional OpenClaw participant obeys the same ownership rule; its absence
+has no effect on ordinary project messaging.
+
+Standalone tmux discovery retains each live candidate found in a distinct pane
+for an otherwise-unregistered participant.  If more than one such endpoint is
+live, binding and target resolution fail closed as ambiguous; discovery never
+silently selects the first pane.

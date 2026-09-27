@@ -46,23 +46,34 @@ def write_json_line(stream: BinaryIO, value: dict) -> None:
     stream.flush()
 
 
-def serve_socket(sock: socket.socket, handler) -> None:
+def serve_socket(sock: socket.socket, handler, idle=None, concurrent=False) -> None:
     """One bounded request per connection; idle clients cannot hold the broker."""
-    while True:
-        conn, _ = sock.accept()
+    import threading
+    slots = threading.BoundedSemaphore(16)
+    def handle(conn):
         with conn:
-            conn.settimeout(2)
+            conn.settimeout(15)
             stream = conn.makefile("rwb")
             try:
                 for request in read_json_lines(stream):
-                    try:
-                        write_json_line(stream, success(handler(request)))
-                    except HubError as exc:
-                        write_json_line(stream, failure(exc))
-                    except Exception:  # never leak internals over RPC
-                        write_json_line(stream, failure(HubError("internal", "hub internal error")))
+                    try: write_json_line(stream, success(handler(request)))
+                    except HubError as exc: write_json_line(stream, failure(exc))
+                    except Exception: write_json_line(stream, failure(HubError("internal", "hub internal error")))
                     break
-            except (OSError, HubError, ValueError):
-                pass  # malformed or disconnected clients cannot stop the broker
+            except (OSError, HubError, ValueError): pass
             finally:
                 stream.close()
+                if concurrent: slots.release()
+    if idle: sock.settimeout(1)
+    while True:
+        try: conn, _ = sock.accept()
+        except socket.timeout:
+            try: idle()
+            except (OSError, HubError): pass
+            continue
+        if concurrent:
+            if not slots.acquire(blocking=False):
+                conn.close()
+                continue
+            threading.Thread(target=handle,args=(conn,),daemon=True).start()
+        else: handle(conn)

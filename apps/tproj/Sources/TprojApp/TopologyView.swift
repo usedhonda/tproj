@@ -87,7 +87,7 @@ struct TopologyView: View {
                             Spacer()
                             Text(item.kind == "remote" ? "Remote" : "Local").font(.caption).foregroundStyle(.secondary)
                             Button("Check") { check(item.sshAlias) }.disabled(busy)
-                            Button("Remove", role: .destructive) { remove(item.sshAlias) }.disabled(busy)
+                            Button("Disconnect", role: .destructive) { remove(item.sshAlias) }.disabled(busy)
                         }
                     }
                     Divider()

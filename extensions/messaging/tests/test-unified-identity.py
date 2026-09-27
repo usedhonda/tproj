@@ -95,6 +95,24 @@ class UnifiedIdentityTest(unittest.TestCase):
                                                   inspect_process=processes.__getitem__)
         self.assertEqual(again, [])
 
+    def test_tmux_fallback_preserves_distinct_live_panes_for_ambiguity_rejection(self):
+        panes = lambda: [
+            {"session": "sess", "pane": "%1", "pane_pid": "10", "project": str(self.project),
+             "alias": "demo", "role": "claude-p1"},
+            {"session": "sess", "pane": "%2", "pane_pid": "20", "project": str(self.project),
+             "alias": "demo", "role": "claude-p2"},
+        ]
+        descendants = lambda pid: {10: [11], 20: [21]}[pid]
+        processes = {
+            11: {"ppid": 10, "pid_start": 111, "uid": os.getuid(), "command": "claude --session sess"},
+            21: {"ppid": 20, "pid_start": 222, "uid": os.getuid(), "command": "claude --session sess"},
+        }
+        found = identity.discover_tmux_endpoints("host-a", self.projects, panes=panes,
+                                                  descendants=descendants,
+                                                  inspect_process=processes.__getitem__)
+        self.assertEqual(len(found), 2)
+        self.assertEqual({item["pane"] for item in found}, {"%1", "%2"})
+
 
 if __name__ == "__main__":
     unittest.main()

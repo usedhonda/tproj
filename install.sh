@@ -16,7 +16,7 @@ ALL_EXTENSIONS=false
 CHECK_ONLY=false
 
 # Core scripts copied to ~/bin (single source of truth for install + --check).
-CORE_BINS=(tproj tproj-remote-client tproj-peer-ledger tproj-role tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-focus-hook tproj-pane-clear-rank tproj-pane-autozoom tproj-tmux-state-notify tproj-mru-tracker tproj-respawn-guard tproj-postmortem tproj-mem-trace rebalance-workspace-columns sign-codex wait-for-pane-text)
+CORE_BINS=(tproj tproj-topology tproj-remote-setup tproj-remote-host tproj-remote-cache tproj-remote-client tproj-peer-ledger tproj-role tproj-drop-column tproj-kill-pane tproj-toggle-yazi tproj-pane-focus-hook tproj-pane-clear-rank tproj-pane-autozoom tproj-tmux-state-notify tproj-mru-tracker tproj-respawn-guard tproj-postmortem tproj-mem-trace rebalance-workspace-columns sign-codex wait-for-pane-text)
 # Persona scripts copied verbatim to ~/bin (single source of truth for install +
 # --check, same as CORE_BINS). project-bootstrap is not here: it is a symlink into
 # the general checkout and has its own chain validation.
@@ -142,6 +142,9 @@ if $CHECK_ONLY; then
     fi
   done
   # shared library sourced by the core scripts
+  if [[ ! -f "$HOME/bin/lib/tproj_topology.py" ]] || ! cmp -s "$SCRIPT_DIR/bin/lib/tproj_topology.py" "$HOME/bin/lib/tproj_topology.py"; then
+    drift+=("lib/tproj_topology.py (missing or differs)")
+  fi
   if [[ ! -f "$HOME/bin/lib/tproj-common.sh" ]]; then
     drift+=("lib/tproj-common.sh (missing in ~/bin)")
   elif ! diff -q "$SCRIPT_DIR/bin/lib/tproj-common.sh" "$HOME/bin/lib/tproj-common.sh" >/dev/null 2>&1; then
@@ -214,7 +217,7 @@ if $CHECK_ONLY; then
   else
     echo "no drift: core scripts and canonical extension chains match ~/bin"
   fi
-  for item in "${optional_unavailable[@]}"; do
+  for item in ${optional_unavailable[@]+"${optional_unavailable[@]}"}; do
     echo "optional unavailable: $item"
   done
   exit 0
@@ -424,6 +427,9 @@ else
     cp "$SCRIPT_DIR/bin/$bin_name" ~/bin/"$bin_name"
     chmod +x ~/bin/"$bin_name"
   done
+  mkdir -p "$HOME/.config/tproj"
+  cp "$SCRIPT_DIR/config/com.tproj.remote-host.plist" "$HOME/.config/tproj/remote-host.plist"
+  cp "$SCRIPT_DIR/bin/lib/tproj_topology.py" "$HOME/bin/lib/tproj_topology.py" 2>/dev/null || { mkdir -p "$HOME/bin/lib"; cp "$SCRIPT_DIR/bin/lib/tproj_topology.py" "$HOME/bin/lib/tproj_topology.py"; }
   # Shared library sourced by the core scripts (bin/lib -> ~/bin/lib)
   mkdir -p ~/bin/lib
   cp "$SCRIPT_DIR/bin/lib/tproj-common.sh" ~/bin/lib/tproj-common.sh

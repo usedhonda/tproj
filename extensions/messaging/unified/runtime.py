@@ -1,8 +1,8 @@
-"""Provision the local standalone unified messaging runtime.
+"""Provision and activate the local standalone unified messaging runtime.
 
-This module only writes local configuration and LaunchAgent manifests. It never
-stops or restarts a service (or any tproj/agent session); launchctl is left to
-the caller after reviewing the generated files.
+This module writes local configuration and LaunchAgent manifests and may
+activate the two local messaging labels through launchctl. It never stops or
+restarts a tproj/agent session.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -88,31 +89,65 @@ def _remote_enrollment_detected(config_dir: Path, expected_socket: Path | None =
     return (not hub.get("host_id")) and ((isinstance(hosts, dict) and len(hosts) > 1) or bool(federation and federation.get("peers")))
 
 
+def _legacy_migration_ready(state: Path, host_id: str) -> bool:
+    """Return true only for a pre-split DB explicitly owned by this host.
+
+    Open the database read-only: a missing or malformed marker must not cause
+    SQLite to create a file before the migration guard has passed.
+    """
+    database = state / "hub.db"
+    if not database.is_file():
+        return False
+    try:
+        uri = f"file:{database}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as conn:
+            row = conn.execute(
+                "SELECT value FROM metadata WHERE key='owner_host_id'"
+            ).fetchone()
+        return row is not None and str(row[0]) == host_id
+    except (OSError, sqlite3.Error):
+        return False
+
+
 def _projects(home: Path, host_id: str) -> list[dict[str, str]]:
     workspace = home / ".config/tproj/workspace.yaml"
     if not workspace.exists():
         return []
-    try:
-        proc = subprocess.run(["yq", str(workspace)], capture_output=True, text=True, check=True)
-        payload = json.loads(proc.stdout)
-    except (OSError, subprocess.CalledProcessError, ValueError, json.JSONDecodeError):
-        return []
+    payload = None
+    for command in (["yq", "-o=json", ".", str(workspace)], ["yq", ".", str(workspace)]):
+        try:
+            proc = subprocess.run(command, capture_output=True, text=True, check=True)
+            payload = json.loads(proc.stdout)
+            break
+        except (OSError, subprocess.CalledProcessError, ValueError): pass
+    if payload is None:
+        raise RuntimeError('Cannot read workspace.yaml; install yq and check the YAML syntax')
+    existing_by_path = {}
+    database = home / '.local/share/tproj-msg-unified/hub.db'
+    if database.exists():
+        import sqlite3
+        with sqlite3.connect(str(database)) as conn:
+            try: existing_by_path = {r[0]:r[1] for r in conn.execute('SELECT path,project_id FROM projects WHERE host_id=?',(host_id,))}
+            except sqlite3.OperationalError: pass
     result = []
     for item in payload.get("projects", []) if isinstance(payload, dict) else []:
         if isinstance(item, str): item = {"path": item}
         if not isinstance(item, dict) or item.get("type", "local") != "local":
             continue
-        path = os.path.abspath(os.path.expanduser(str(item.get("path", ""))))
+        if not item.get('path'): continue
+        path = os.path.abspath(os.path.expanduser(str(item["path"])))
         if not path.startswith("/"): continue
         alias = str(item.get("alias") or Path(path).name)
-        project_id = str(item.get("project_id") or ("p-" + hashlib.sha256(f"{host_id}\0{path}".encode()).hexdigest()[:24]))
+        project_id = str(item.get("project_id") or existing_by_path.get(path) or ("p-" + hashlib.sha256(f"{host_id}\0{path}".encode()).hexdigest()[:24]))
         result.append({"project_id": project_id, "alias": alias, "host_id": host_id, "path": path})
     return result
 
 
 def _plist(label: str, script: Path, config: Path, extra: list[str] | None = None) -> str:
     args = [sys.executable, str(script), "--config", str(config)] + (extra or [])
-    return plistlib.dumps({"Label": label, "ProgramArguments": args, "RunAtLoad": True, "KeepAlive": True}, fmt=plistlib.FMT_XML).decode()
+    return plistlib.dumps({"Label": label, "ProgramArguments": args, "RunAtLoad": True, "KeepAlive": True,
+                          "EnvironmentVariables": {"PATH": str(Path.home()/"bin")+":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
+                          "StandardErrorPath": str(config.parent/(label+".err"))}, fmt=plistlib.FMT_XML).decode()
 
 
 def _activate(home: Path, manifests: list[Path], changed: bool, no_start: bool, dry_run: bool) -> list[str]:
@@ -146,20 +181,28 @@ def setup(home: Path | None = None, refresh: bool = False, dry_run: bool = False
     home = home or Path.home(); config_dir = home / ".config/tproj"; state = home / ".local/share/tproj-msg-unified"
     topology_path = config_dir / "topology.json"
     expected_socket = home / ".local/share/tproj-msg-unified/hub.sock"
-    if _remote_enrollment_detected(config_dir, expected_socket) and not migrate:
-        raise RuntimeError("existing remote-central enrollment detected; rerun with --migrate to preserve and adapt it")
+    legacy_enrollment = _remote_enrollment_detected(config_dir, expected_socket)
+    if legacy_enrollment and not migrate:
+        raise RuntimeError("existing remote-central enrollment requires a prepared owner-local migration; rerun with --migrate after preparing the owner-local DB")
     host_id = _local_id(config_dir, topology_path)
+    if legacy_enrollment and migrate and not _legacy_migration_ready(state, host_id):
+        raise RuntimeError("legacy central enrollment requires a pre-split owner-local DB marker (metadata.owner_host_id must match configured host identity)")
     old_host = _read_json(config_dir / "msg-host.json")
     token = str(old_host.get("host_token") or secrets.token_urlsafe(32))
     old_hub = _read_json(config_dir / "msg-hub.json")
     admin = str(old_hub.get("admin_token") or secrets.token_urlsafe(32))
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not dry_run: state.mkdir(parents=True, exist_ok=True, mode=0o700)
     socket = state / "hub.sock"; host_socket = state / "host.sock"; journal = state / "host.db"; hub_db = state / "hub.db"
     hub = dict(old_hub); hub.update({"host_id": host_id, "hosts": dict(old_hub.get("hosts") or {}, **{host_id: token}), "admin_token": admin, "topology_path": str(topology_path), "socket": str(socket), "db": str(hub_db)})
-    host = dict(old_host); host.update({"host_id": host_id, "host_token": token, "hub_socket": str(socket), "socket": str(host_socket), "journal": str(journal), "registry": str(home / ".cache/tproj-model-role"), "federated": bool(host.get("federated", False))})
-    client = _read_json(config_dir / "msg-client.json"); client.update({"host_id": host_id, "host_token": token, "hub_socket": str(socket), "active": True})
-    topology = _read_json(topology_path); topology.setdefault("version", 1); topology["mode"] = topology.get("mode", "standalone"); topology.setdefault("local", {"id": host_id, "display_name": os.uname().nodename.split(".", 1)[0], "ssh_alias": None}); topology["local"].setdefault("id", host_id)
+    host = dict(old_host); host.update({"host_id": host_id, "host_token": token, "hub_socket": str(socket), "socket": str(host_socket), "journal": str(journal), "registry": str(home / ".cache/tproj-model-role"), "federated": True})
+    host.setdefault("delivery_enabled", True)
+    client = _read_json(config_dir / "msg-client.json"); client.update({"host_id": host_id, "socket": str(host_socket), "hub_socket": str(socket), "active": True})
+    topology = _read_json(topology_path); topology.setdefault("version", 1); topology["mode"] = topology.get("mode", "standalone"); topology.setdefault("mode_explicit", True); topology.setdefault("local", {"id": host_id, "display_name": os.uname().nodename.split(".", 1)[0], "ssh_alias": None}); topology["local"].setdefault("id", host_id)
     changed_flags = [_atomic_json(topology_path, topology, dry_run)]
+    launcher = '#!/bin/sh\nexec python3 "$HOME/lib/tproj-msg-unified/cli.py" "$@"\n'
+    changed_flags.append(_atomic_text(home/'bin/tproj-msg-unified', launcher, 0o755, dry_run))
+    if not (home/'bin/tproj-msg').exists():
+        changed_flags.append(_atomic_text(home/'bin/tproj-msg', launcher, 0o755, dry_run))
     changed_flags += [_atomic_json(config_dir / "msg-hub.json", hub, dry_run), _atomic_json(config_dir / "msg-host.json", host, dry_run), _atomic_json(config_dir / "msg-client.json", client, dry_run)]
     projects = _projects(home, host_id)
     if projects:
@@ -168,21 +211,27 @@ def setup(home: Path | None = None, refresh: bool = False, dry_run: bool = False
     agents = home / "Library/LaunchAgents"
     manifests = [agents / "local.tproj.msg-unified-hub.plist", agents / "local.tproj.msg-unified-host.plist"]
     changed_flags += [_atomic_text(manifests[0], _plist("local.tproj.msg-unified-hub", hub_script, config_dir / "msg-hub.json", ["--socket", str(socket), "--db", str(hub_db)]), 0o644, dry_run), _atomic_text(manifests[1], _plist("local.tproj.msg-unified-host", host_script, config_dir / "msg-host.json"), 0o644, dry_run)]
-    if projects and not dry_run:
+    if projects and not dry_run and not migrate:
         try:
             from hub import Hub
             mailbox = Hub(str(hub_db), hub)
             revision = mailbox.directory_list()["revision"]
             existing = mailbox.directory_list()["projects"]
             by_id = {item["project_id"]: item for item in existing}
-            for item in projects: by_id.setdefault(item["project_id"], item)
-            mailbox.directory_import({"admin_token": admin, "projects": list(by_id.values()), "services": [], "expected_revision": revision})
+            additions = [] if existing else projects
+            if additions:
+                topology = _read_json(topology_path)
+                if topology.get('mode') == 'multi':
+                    raise RuntimeError('Register new projects through the shared directory while in multi-host mode')
+                mailbox.directory_import({"admin_token": admin, "projects": additions, "services": [], "expected_revision": revision})
             mailbox.close()
         except (ImportError, OSError, ValueError) as exc:
             raise RuntimeError(f"directory seed failed: {type(exc).__name__}") from exc
     if not dry_run:
         _atomic_text(config_dir / "msg-client.enrolled", "active\n", 0o600, False)
     activation = _activate(home, manifests, any(changed_flags), no_start, dry_run)
+    if any(item.startswith('unavailable:') for item in activation):
+        raise RuntimeError('Local messaging service could not start; inspect the user LaunchAgent logs')
     return {"host_id": host_id, "changed": sum(changed_flags), "projects": len(projects), "socket": str(socket), "dry_run": dry_run, "activation": activation}
 
 

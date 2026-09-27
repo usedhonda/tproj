@@ -48,7 +48,7 @@ features degrade gracefully ("fail open") when their component is missing:
 | Feature | Requires | If missing |
 |---------|----------|------------|
 | tmux layout + panes | tmux, yq, jq | core — required |
-| Inter-AI messaging (`tproj-msg`) | core only | — |
+| Inter-AI messaging (`tproj-msg`) | core + Python 3, local setup through `tproj init` | core workspace still starts |
 | Real-time inbox monitor | `sqlite3` | monitor disabled, sending still works |
 | WebSocket idle detection | `websocat` + `timeout`/`gtimeout` | falls back to tmux prompt heuristic |
 | Native GUI app | built `tproj.app` | CLI workspace continues without it |
@@ -168,6 +168,35 @@ projects:
 ```
 
 See `config/workspace.yaml.example` for the full field reference.
+
+### One Mac first; more Macs when needed
+
+The default **This Mac only** configuration needs no remote server. `tproj init`
+sets up local messaging. The GUI's **Computers** settings can opt into
+**Multiple Macs**, add SSH hosts, and check their connections. Remote hosts do
+not need the GUI or Ghostty. The same settings are available from the CLI:
+
+```bash
+tproj topology status --json
+tproj topology set multi
+tproj host add build-host --name "Build Mac"
+tproj host check build-host
+tproj host list --json
+tproj topology set standalone
+```
+
+Adding a host installs the small helpers when needed. It uses your existing
+SSH configuration, preserves host-key checks, and checks return connections;
+it never copies private keys. An unavailable connection is reported separately
+from local projects. Registered hosts must have mutually reachable SSH aliases
+for cross-host messaging. All existing members must be online to change group
+names or membership; normal local messages do not depend on that availability.
+
+Switching back to one Mac preserves remote settings and running sessions. It
+stops using remote connections from this Mac, not the work running there.
+Closing a displayed remote column disconnects it; stopping its agent is a
+separate action. The server management view uses the same theme and a persistent
+vertical scrollbar.
 
 ### Persistent remote projects
 

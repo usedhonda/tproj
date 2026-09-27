@@ -14,5 +14,5 @@ exit 0
 EOF
 chmod +x "$TMP/bin/ssh"
 PATH="$TMP/bin:$PATH" "$ROOT/bin/tproj-remote-setup" add captain >"$TMP/out"
-grep -q 'Remote helper installed' "$TMP/out"
+grep -q 'Remote helpers installed' "$TMP/out"
 echo 'PASS remote topology setup provisioning path'

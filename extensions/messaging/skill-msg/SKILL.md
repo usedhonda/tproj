@@ -38,7 +38,7 @@ legacy implementation; this skill is not a second legacy rulebook.
 - Named external channels remain separate, explicit service targets. Ordinary
   agent messages never fall through to owner channels.
 
-The central directory binds the caller from kernel peer credentials and live
+Each host adapter binds the caller from kernel peer credentials and live
 process ancestry. `--as`, `--session`, pane labels, and role/model metadata are
 selectors, not credentials. Force-like options cannot bypass identity,
 generation, approval, draft, or sendability guards.

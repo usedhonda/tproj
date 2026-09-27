@@ -1,6 +1,7 @@
 # Unified agent messaging: v1 contract and implementation plan
 
-Status: implementation design. The executable contract is
+Status: historical centralized design, superseded for topology and directory
+ownership by `../reference/unified-messaging.md`. The executable contract is
 [`../reference/unified-messaging.md`](../reference/unified-messaging.md).
 Enrollment/cutover is explicit per installation; this document alone does not
 authorize installation, restart or live sends. The acceptance matrix below

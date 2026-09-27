@@ -15,7 +15,7 @@ import subprocess
 import time
 import uuid
 
-from identity import IdentityError, bind_caller, discover_endpoints, peer_credentials
+from identity import IdentityError, bind_caller, discover_endpoints, discover_tmux_endpoints, peer_credentials
 from protocol import HubError, success, failure
 from receipt import normalize_prompt
 
@@ -30,7 +30,7 @@ def paste_parts(platform, header, body):
 
 def rpc(path, request):
     with socket.socket(socket.AF_UNIX) as sock:
-        sock.settimeout(5)
+        sock.settimeout(12)
         sock.connect(str(path))
         sock.sendall((json.dumps(request, ensure_ascii=False) + '\n').encode())
         with sock.makefile('rb') as stream:
@@ -45,7 +45,7 @@ def rpc(path, request):
 
 
 class Host:
-    def __init__(self, config):
+    def __init__(self, config, recover=True):
         self.config = config
         self.endpoints = []
         self.refreshed = 0
@@ -57,8 +57,9 @@ class Host:
         CREATE TABLE IF NOT EXISTS submissions(message_id TEXT PRIMARY KEY, endpoint_id TEXT NOT NULL,
         envelope TEXT NOT NULL);''')
         # A process exit in the injection window must never trigger another injection.
-        self.db.execute("UPDATE deliveries SET state='uncertain' WHERE state='dispatching'")
-        self.db.commit()
+        if recover:
+            self.db.execute("UPDATE deliveries SET state='uncertain' WHERE state='dispatching'")
+            self.db.commit()
 
     def hub(self, op, **args):
         return rpc(self.config['hub_socket'], dict(args, op=op,
@@ -68,6 +69,9 @@ class Host:
         directory = self.hub('directory_list')
         discovered = discover_endpoints(self.config.get('registry', str(Path.home()/'.cache/tproj-model-role')),
                                         self.config['host_id'], directory['projects'])
+        # Public standalone installs may have no model-role registry. Keep
+        # registered identities authoritative and fill only unmatched panes.
+        discovered.extend(discover_tmux_endpoints(self.config['host_id'], directory['projects'], discovered))
         for ep in discovered:
             self.hub('endpoint_register', **ep)
         # A disappeared process is not inferred from an alias. Retire only after
@@ -147,7 +151,7 @@ class Host:
             if target in ('cc', 'cdx'):
                 sender = self.caller(pid, uid, req)
                 participant_id = sender['project_id'] + ':' + target
-            directory = self.hub('directory_list')
+            directory = self.hub('directory_all' if self.config.get('federated') else 'directory_list')
             matches = [p for p in directory['participants']
                        if (p['participant_id'] == participant_id if participant_id else p['address'] == target)]
             if len(matches) != 1:
@@ -155,7 +159,7 @@ class Host:
             return matches[0]
         if op in ('list', 'status', 'directory'):
             # Read-only catalog for operator/GUI; no caller can mutate identity.
-            return self.hub('directory_list')
+            return self.hub('directory_all' if self.config.get('federated') else 'directory_list')
         if op == 'directory-sync':
             return self.hub('directory_update', projects=req['projects'], expected_revision=req['expected_revision'])
         is_service = isinstance(op, str) and op.startswith('service_')
@@ -289,35 +293,50 @@ def main():
     lock = open(str(path)+'.lock', 'a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     path.unlink(missing_ok=True)
-    host = Host(config)
-    with socket.socket(socket.AF_UNIX) as server:
-        server.bind(str(path)); os.chmod(path, 0o600); server.listen(16); server.settimeout(1)
-        while True:
-            try:
-                conn, _ = server.accept()
-            except socket.timeout:
-                try: host.delivery_tick()
-                except (OSError, HubError, ValueError, subprocess.SubprocessError): pass
-                continue
+    # Separate SQLite connections keep an unreachable remote catalog request
+    # from blocking local sends or local terminal delivery.
+    import threading
+    recovery = Host(config)
+    recovery.db.close()
+    slots = threading.BoundedSemaphore(16)
+    def handle(conn):
+        host = None
+        try:
+            host = Host(json.loads(Path(args.config).read_text()), recover=False)
             with conn:
-                conn.settimeout(5)
-                try:
-                    pid, uid = peer_credentials(conn)
-                    with conn.makefile('rwb') as stream:
-                        raw = stream.readline(WIRE_LIMIT+1)
-                        if len(raw) > WIRE_LIMIT or not raw.endswith(b'\n'):
-                            raise HubError('invalid_request', 'request too large')
-                        request = json.loads(raw)
-                        try: result = success(host.dispatch(request, pid, uid))
-                        except (HubError, IdentityError) as exc:
-                            result = failure(exc if isinstance(exc, HubError) else HubError('identity_rejected', str(exc)))
-                        except Exception as exc:
-                            print("host dispatch failure: " + type(exc).__name__, file=sys.stderr, flush=True)
-                            result = failure(HubError('unavailable', 'host operation failed'))
-                        stream.write((json.dumps(result, ensure_ascii=False)+'\n').encode()); stream.flush()
-                except (OSError, ValueError, HubError, IdentityError) as exc:
-                    print("host connection failure: " + type(exc).__name__, file=sys.stderr, flush=True)
-            try: host.delivery_tick()
-            except (OSError, HubError, ValueError, subprocess.SubprocessError): pass
+                conn.settimeout(15)
+                pid, uid = peer_credentials(conn)
+                with conn.makefile('rwb') as stream:
+                    raw = stream.readline(WIRE_LIMIT+1)
+                    if len(raw) > WIRE_LIMIT or not raw.endswith(b'\n'):
+                        raise HubError('invalid_request', 'request too large')
+                    request = json.loads(raw)
+                    try: result = success(host.dispatch(request, pid, uid))
+                    except (HubError, IdentityError) as exc:
+                        result = failure(exc if isinstance(exc, HubError) else HubError('identity_rejected', str(exc)))
+                    except Exception as exc:
+                        print("host dispatch failure: " + type(exc).__name__, file=sys.stderr, flush=True)
+                        result = failure(HubError('unavailable', 'host operation failed'))
+                    stream.write((json.dumps(result, ensure_ascii=False)+'\n').encode()); stream.flush()
+        except (OSError, ValueError, HubError, IdentityError) as exc:
+            print("host connection failure: " + type(exc).__name__, file=sys.stderr, flush=True)
+        finally:
+            if host: host.db.close()
+            conn.close()
+            slots.release()
+    def delivery_loop():
+        adapter = Host(config, recover=False)
+        while True:
+            try: adapter.delivery_tick()
+            except (OSError, HubError, ValueError, subprocess.SubprocessError, sqlite3.Error): pass
+            time.sleep(1)
+    threading.Thread(target=delivery_loop,daemon=True).start()
+    with socket.socket(socket.AF_UNIX) as server:
+        server.bind(str(path)); os.chmod(path, 0o600); server.listen(16)
+        while True:
+            conn, _ = server.accept()
+            if not slots.acquire(blocking=False):
+                conn.close(); continue
+            threading.Thread(target=handle,args=(conn,),daemon=True).start()
 
 if __name__ == '__main__': main()

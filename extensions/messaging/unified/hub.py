@@ -136,7 +136,7 @@ class Hub:
                 if other and other[0] != x["project_id"]: raise HubError("directory_conflict", "alias already assigned")
                 if not old and self._row("SELECT 1 FROM alias_history WHERE alias=?", (x["alias"],)): raise HubError("directory_conflict", "historical alias cannot be reused")
                 if old and old["alias"] != x["alias"]: self.db.execute("INSERT OR IGNORE INTO alias_history(alias) VALUES(?)", (old["alias"],))
-                self.db.execute("INSERT INTO projects(project_id,alias,host_id,path) VALUES(?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET host_id=excluded.host_id,path=excluded.path", (x["project_id"],x["alias"],x["host_id"],x["path"]))
+                self.db.execute("INSERT INTO projects(project_id,alias,host_id,path) VALUES(?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET alias=excluded.alias,host_id=excluded.host_id,path=excluded.path", (x["project_id"],x["alias"],x["host_id"],x["path"]))
                 for kind in ("cc", "cdx"):
                     aid = f"{x['project_id']}:{kind}"
                     self.db.execute("INSERT OR IGNORE INTO participants(participant_id,project_id,address,host_id,kind) VALUES(?,?,?,?,?)", (aid,x["project_id"],f"{x['alias']}.{kind}",x["host_id"],kind))
@@ -297,8 +297,34 @@ def main(argv=None):
     Path(args.socket).parent.mkdir(mode=0o700,parents=True,exist_ok=True)
     try: os.unlink(args.socket)
     except FileNotFoundError: pass
-    s=socket.socket(socket.AF_UNIX); s.bind(args.socket); s.listen(16); os.chmod(args.socket,0o600); hub=Hub(args.db,args.config)
-    try: serve_socket(s,hub.dispatch)
-    finally: hub.close(); s.close()
+    config = Hub._load_config(args.config)
+    factory = Hub
+    if config.get('host_id'):
+        from federation import FederatedHub
+        factory = FederatedHub
+    s=socket.socket(socket.AF_UNIX); s.bind(args.socket); s.listen(16); os.chmod(args.socket,0o600)
+    if factory is Hub:
+        hub=Hub(args.db,config)
+        try: serve_socket(s,hub.dispatch)
+        finally: hub.close(); s.close()
+    else:
+        import threading
+        def dispatch(req):
+            instance=factory(args.db,args.config)
+            try: return instance.dispatch(req)
+            finally: instance.close()
+        def retry_loop():
+            while True:
+                instance=None
+                try:
+                    instance=factory(args.db,args.config)
+                    instance.tick()
+                except (OSError, HubError, sqlite3.Error): pass
+                finally:
+                    if instance: instance.close()
+                time.sleep(2)
+        threading.Thread(target=retry_loop,daemon=True).start()
+        try: serve_socket(s,dispatch,concurrent=True)
+        finally: s.close()
 
 if __name__ == "__main__": main()
