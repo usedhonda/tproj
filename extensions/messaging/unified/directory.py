@@ -106,6 +106,14 @@ def status(hub: Any, req: dict[str, Any]) -> dict[str, Any]:
     return dict(row) if row else {"change_id": req.get("change_id"), "state": "unknown"}
 
 
+def abort(hub: Any, req: dict[str, Any]) -> dict[str, Any]:
+    ensure_schema(hub.db)
+    row = hub._row("SELECT state FROM directory_changes WHERE change_id=?", (req.get("change_id"),))
+    if row and row["state"] == "prepared":
+        hub.db.execute("UPDATE directory_changes SET state='aborted',error=? WHERE change_id=?", ("manager_prepare_failed", req.get("change_id")))
+    return {"change_id": req.get("change_id"), "state": "aborted"}
+
+
 def manager_update(hub: Any, req: dict[str, Any], peer_call: Callable[[str, str, dict[str, Any]], dict[str, Any]], peer_ids: list[str]) -> dict[str, Any]:
     """Two-phase manager orchestration; no commit is attempted after prepare failure."""
     ensure_schema(hub.db)
@@ -124,15 +132,48 @@ def manager_update(hub: Any, req: dict[str, Any], peer_call: Callable[[str, str,
         local_projects = [p for p in payload.get("projects", []) if p.get("host_id") == local_id]
         if local_projects: commit(hub, {"change_id": change_id})
         return {"change_id": change_id, "state": "committed", "revision": int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0])}
+    pending = hub._row("SELECT change_id FROM directory_transactions WHERE state='decided' AND change_id<>?", (change_id,))
+    if pending: raise HubError("directory_busy", "another directory change is awaiting recovery")
+    # Snapshot every peer before prepare: this is the global uniqueness and
+    # liveness gate; a missing peer means no writes are attempted.
+    snapshots: dict[str, dict[str, Any]] = {}
+    for owner in sorted(peer_ids):
+        snapshots[owner] = peer_call(owner, "directory", {})
+    local_snapshot = hub.directory_list()
+    origin_revision = int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0])
+    local_snapshot["alias_history"] = [r[0] for r in hub.db.execute("SELECT alias FROM alias_history")]
+    snapshots[local_id] = local_snapshot
+    aliases: dict[str, str] = {}
+    history: set[str] = set()
+    for owner, snap in snapshots.items():
+        for x in snap.get("alias_history", []):
+            history.add(str(x.get("alias") if isinstance(x, dict) else x))
+        for project in snap.get("projects", []):
+            alias = str(project.get("alias")); prior = aliases.get(alias)
+            if prior and prior != str(project.get("project_id")): raise HubError("directory_conflict", "alias already assigned")
+            aliases[alias] = str(project.get("project_id"))
+    for project in payload.get("projects", []):
+        alias = str(project.get("alias")); current = aliases.get(alias)
+        if alias in history and current != str(project.get("project_id")): raise HubError("directory_conflict", "historical alias cannot be reused")
+        if current and current != str(project.get("project_id")): raise HubError("directory_conflict", "alias already assigned")
     # A durable decision is written before any commit; prepare failures leave no decision.
     owners_payload = {owner: [p for p in payload.get("projects", []) if str(p.get("host_id")) == owner] for owner in owners}
     local_projects = [p for p in payload.get("projects", []) if str(p.get("host_id")) == local_id]
-    for owner in sorted(owners):
-        peer_call(owner, "directory_prepare", {"change_id": change_id, "payload": {**payload, "projects": owners_payload[owner]}})
-    if local_projects: prepare(hub, {"change_id": change_id, "payload": {**payload, "projects": local_projects}})
+    prepared: list[str] = []
+    try:
+        for owner in sorted(owners):
+            peer_call(owner, "directory_prepare", {"change_id": change_id, "payload": {**payload, "projects": owners_payload[owner]}})
+            prepared.append(owner)
+        if local_projects: prepare(hub, {"change_id": change_id, "payload": {**payload, "projects": local_projects}})
+    except Exception:
+        for owner in prepared:
+            try: peer_call(owner, "directory_abort", {"change_id": change_id})
+            except Exception: pass
+        if local_projects: abort(hub, {"change_id": change_id})
+        raise
     now = hub._now(); encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     hub.db.execute("INSERT OR REPLACE INTO directory_transactions(change_id,payload,state,created_at,updated_at) VALUES(?,?,?,?,?)", (change_id, encoded, "decided", now, now))
     for owner in sorted(owners): peer_call(owner, "directory_commit", {"change_id": change_id})
     if local_projects: commit(hub, {"change_id": change_id})
     hub.db.execute("UPDATE directory_transactions SET state='committed',updated_at=? WHERE change_id=?", (hub._now(), change_id))
-    return {"change_id": change_id, "state": "committed", "revision": int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0])}
+    return {"change_id": change_id, "state": "committed", "revision": int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0]), "origin_revision": origin_revision}
