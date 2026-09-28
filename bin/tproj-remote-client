@@ -3,14 +3,14 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: tproj-remote-client sync|list|cache-status HOST | status|identity|ensure|attach|stop HOST REMOTE_PATH cc|cdx | register|unregister HOST REMOTE_PATH [--alias NAME] | cache-set HOST REMOTE_PATH cc|cdx HOURS | mode-status HOST REMOTE_PATH | mode-set HOST REMOTE_PATH collab|assist|solo cc|cdx|derived" >&2
+  echo "usage: tproj-remote-client sync|list|cache-status HOST | status|identity|ensure|attach|reattach|stop HOST REMOTE_PATH cc|cdx | register|unregister HOST REMOTE_PATH [--alias NAME] | cache-set HOST REMOTE_PATH cc|cdx HOURS | mode-status HOST REMOTE_PATH | mode-set HOST REMOTE_PATH collab|assist|solo cc|cdx|derived" >&2
   exit 2
 fi
 
 action="$1" host="$2" remote_path="${3:-}" role="${4:-}" alias="" hours="${5:-}"
 case "$action" in
   sync|list|cache-status) [[ $# -eq 2 ]] || exit 2 ;;
-  status|identity|ensure|attach|stop) [[ $# -eq 4 ]] || exit 2; case "$role" in cc|cdx) ;; *) echo "invalid role: $role" >&2; exit 2 ;; esac ;;
+  status|identity|ensure|attach|reattach|stop) [[ $# -eq 4 ]] || exit 2; case "$role" in cc|cdx) ;; *) echo "invalid role: $role" >&2; exit 2 ;; esac ;;
   register)
     if [[ $# -eq 5 && "$4" == --alias ]]; then alias="$5"
     elif [[ $# -eq 3 || ($# -eq 4 && ( "$role" == cc || "$role" == cdx )) ]]; then :
@@ -64,7 +64,7 @@ if [[ "$action" != list && "$action" != cache-status && "$action" != mode-status
   printf -v path_arg '%q' "$remote_path"
   remote_command+=" --path $path_arg"
 fi
-if [[ "$action" == status || "$action" == identity || "$action" == ensure || "$action" == attach || "$action" == stop || "$action" == cache-set ]]; then
+if [[ "$action" == status || "$action" == identity || "$action" == ensure || "$action" == attach || "$action" == reattach || "$action" == stop || "$action" == cache-set ]]; then
   remote_command+=" --role $role"
 fi
 if [[ "$action" == cache-set ]]; then remote_command+=" --hours $hours"; fi
@@ -72,12 +72,14 @@ if [[ -n "$alias" ]]; then
   printf -v alias_arg '%q' "$alias"
   remote_command+=" --alias $alias_arg"
 fi
-if [[ "$action" == attach ]]; then
+if [[ "$action" == attach || "$action" == reattach ]]; then
   # Keep a local supervisor: SSH restores termios, but a lost connection cannot
   # ask the remote application to turn off terminal-emulator input modes.
   # Python is already required by the peer-ledger refresh above.
   exec python3 -c '
 import os
+import select
+import time
 import signal
 import subprocess
 import sys
@@ -97,6 +99,59 @@ def forward_signal(signum, _frame):
         except ProcessLookupError:
             pass
 
+def reap_transport():
+    # Only this locally spawned SSH process; never the server session.
+    if child is None or child.poll() is not None:
+        return
+    child.terminate()
+    try:
+        child.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait()
+
+def network_signature():
+    if not os.path.exists("/usr/sbin/scutil"):
+        return None
+    try:
+        result = subprocess.run(["/usr/sbin/scutil", "--nwi"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                timeout=0.5)
+        return result.stdout if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+def discard_wait_input():
+    if select.select([tty], [], [], 0)[0]:
+        os.read(tty, 65536)
+
+def reset_terminal_modes():
+    reset = ("\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l"
+             "\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l"
+             "\x1b[?1004l\x1b[?2004l\x1b[<u\x1b[>4;0m\x1b[?1l\x1b>")
+    try:
+        os.write(tty, reset.encode("ascii"))
+        termios.tcdrain(tty)
+    except (OSError, termios.error):
+        pass
+
+def retry_wait():
+    reset_terminal_modes()
+    # SSH may have left raw input behind. Keep local Ctrl-C working while
+    # discarding all disconnected typing, including terminal mouse reports.
+    attrs = termios.tcgetattr(tty)
+    attrs[3] = (attrs[3] | termios.ISIG) & ~(termios.ECHO | termios.ECHONL | termios.ICANON)
+    attrs[6][termios.VMIN] = 0
+    attrs[6][termios.VTIME] = 0
+    termios.tcsetattr(tty, termios.TCSAFLUSH, attrs)
+    if not announced:
+        print("\r\ntproj: connection lost; reconnecting (Ctrl-C cancels)", file=sys.stderr)
+    end = time.monotonic() + 1
+    while pending_signal is None and time.monotonic() < end:
+        discard_wait_input()
+        time.sleep(0.05)
+    termios.tcflush(tty, termios.TCIFLUSH)
+
 try:
     try:
         tty = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
@@ -105,26 +160,72 @@ try:
         pass
     for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, forward_signal)
-    child = subprocess.Popen(["ssh", "-tt", "--", *sys.argv[1:]])
+    command = sys.argv[2]
+    status = 0
+    retrying = "tproj-remote-host reattach" in command
+    announced = False
+    signature = network_signature() if saved is not None else None
+    while pending_signal is None:
+        quiet = announced
+        batch = ["-o", "BatchMode=yes"] if retrying else []
+        child = subprocess.Popen(["ssh", *batch, "-o", "ServerAliveInterval=2",
+                                  "-o", "ServerAliveCountMax=2", "-o", "ConnectTimeout=3",
+                                  "-tt", "--", sys.argv[1], command],
+                                 stderr=subprocess.DEVNULL if quiet else None)
+        previous_wall = time.time()
+        next_network = time.monotonic() + 1
+        refreshed = False
+        raw_seen = False
+        while child.poll() is None and pending_signal is None:
+            time.sleep(0.1)
+            # Until SSH enters raw mode it is still connecting: keep offline
+            # keystrokes out of the new session, with local Ctrl-C enabled.
+            if retrying and saved is not None and not raw_seen:
+                if termios.tcgetattr(tty)[3] & termios.ISIG:
+                    discard_wait_input()
+                else:
+                    raw_seen = True
+                    announced = False
+            now = time.time()
+            if saved is not None and now - previous_wall > 4:
+                refreshed = True
+            previous_wall = now
+            if saved is not None and time.monotonic() >= next_network:
+                current = network_signature()
+                if current is not None:
+                    refreshed = refreshed or (signature is not None and current != signature)
+                    signature = current
+                next_network = time.monotonic() + 1
+            if refreshed:
+                reap_transport()
+                break
+        if pending_signal is not None:
+            reap_transport()
+            status = 128 + pending_signal
+            break
+        status = child.wait()
+        status = status if status >= 0 else 128 - status
+        if saved is None or (status != 255 and not refreshed):
+            if quiet and status:
+                print("tproj: remote attachment exited with status " + str(status), file=sys.stderr)
+            break
+        retrying = True
+        retry_wait()
+        announced = True
+        # Subsequent transports must not ensure/start a server-side agent.
+        command = sys.argv[2].replace("tproj-remote-host attach", "tproj-remote-host reattach", 1)
     if pending_signal is not None:
-        forward_signal(pending_signal, None)
-    status = child.wait()
-    status = status if status >= 0 else 128 - status
+        status = 128 + pending_signal
+
 except OSError as error:
     print("tproj-remote-client: " + str(error), file=sys.stderr)
     status = 127 if isinstance(error, FileNotFoundError) else 126
 finally:
+    reap_transport()
     if tty is not None:
         # Mouse encodings/tracking, focus, paste, kitty keyboard, xterm modified
         # keys, application cursor/keypad. Never send resets to redirected stdout.
-        reset = ("\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l"
-                 "\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l"
-                 "\x1b[?1004l\x1b[?2004l\x1b[<u\x1b[>4;0m\x1b[?1l\x1b>")
-        try:
-            os.write(tty, reset.encode("ascii"))
-            termios.tcdrain(tty)
-        except (OSError, termios.error):
-            pass
+        reset_terminal_modes()
         try:
             if saved is not None:
                 termios.tcsetattr(tty, termios.TCSAFLUSH, saved)

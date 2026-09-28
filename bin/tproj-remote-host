@@ -15,10 +15,10 @@ for path_entry in "${path_prefix[@]}"; do
 done
 export PATH
 
-usage() { printf '%s\n' 'Usage: tproj-remote-host list|ensure-all|register|unregister|status|identity|ensure|attach|stop|migrate|separate [--path ABSOLUTE_PATH] [--role cc|cdx] [--alias NAME]' >&2; exit 2; }
+usage() { printf '%s\n' 'Usage: tproj-remote-host list|ensure-all|register|unregister|status|identity|ensure|attach|reattach|stop|migrate|separate [--path ABSOLUTE_PATH] [--role cc|cdx] [--alias NAME]' >&2; exit 2; }
 die() { printf 'tproj-remote-host: %s\n' "$*" >&2; exit 1; }
 
-action=${1:-}; case "$action" in list|status|identity|ensure|attach|stop|migrate|separate|register|unregister|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
+action=${1:-}; case "$action" in list|status|identity|ensure|attach|reattach|stop|migrate|separate|register|unregister|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
 project_path=; role=; alias_name=
 while (($#)); do
   case "$1" in
@@ -449,6 +449,16 @@ case "$action" in
       done
     done <<< "$entries"
     exit "$failures"
+    ;;
+  reattach)
+    # Recovery must never call ensure_one, register, update, or start a CLI.
+    [[ -n "$project_path" && -n "$role" && -z "$alias_name" ]] || usage
+    validate_path "$project_path"; validate_field "$project_path"; validate_role "$role"
+    s=$(session_for "$role" "$project_path")
+    tmux_run has-session -t "=$s" 2>/dev/null || die 'remote session ended; automatic restart is disabled'
+    pane=$(pane_for "$s" "$role" "$project_path") || die 'existing remote role pane not found'
+    [[ $(tmux_run display-message -t "$pane" -p '#{pane_dead}') == 0 ]] || die 'remote pane ended; automatic restart is disabled'
+    tmux_run attach-session -t "=$s"
     ;;
   status|identity|ensure|attach|stop)
     [[ -n "$project_path" && -n "$role" && -z "$alias_name" ]] || usage; validate_path "$project_path"; validate_field "$project_path"; validate_role "$role"
