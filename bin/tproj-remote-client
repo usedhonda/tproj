@@ -73,7 +73,68 @@ if [[ -n "$alias" ]]; then
   remote_command+=" --alias $alias_arg"
 fi
 if [[ "$action" == attach ]]; then
-  exec ssh -tt -- "$host" "$remote_command"
+  # Keep a local supervisor: SSH restores termios, but a lost connection cannot
+  # ask the remote application to turn off terminal-emulator input modes.
+  # Python is already required by the peer-ledger refresh above.
+  exec python3 -c '
+import os
+import signal
+import subprocess
+import sys
+import termios
+
+tty = None
+saved = None
+child = None
+pending_signal = None
+
+def forward_signal(signum, _frame):
+    global pending_signal
+    pending_signal = signum
+    if child is not None and child.poll() is None:
+        try:
+            child.send_signal(signum)
+        except ProcessLookupError:
+            pass
+
+try:
+    try:
+        tty = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+        saved = termios.tcgetattr(tty)
+    except (OSError, termios.error):
+        pass
+    for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, forward_signal)
+    child = subprocess.Popen(["ssh", "-tt", "--", *sys.argv[1:]])
+    if pending_signal is not None:
+        forward_signal(pending_signal, None)
+    status = child.wait()
+    status = status if status >= 0 else 128 - status
+except OSError as error:
+    print("tproj-remote-client: " + str(error), file=sys.stderr)
+    status = 127 if isinstance(error, FileNotFoundError) else 126
+finally:
+    if tty is not None:
+        # Mouse encodings/tracking, focus, paste, kitty keyboard, xterm modified
+        # keys, application cursor/keypad. Never send resets to redirected stdout.
+        reset = ("\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l"
+                 "\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l"
+                 "\x1b[?1004l\x1b[?2004l\x1b[<u\x1b[>4;0m\x1b[?1l\x1b>")
+        try:
+            os.write(tty, reset.encode("ascii"))
+            termios.tcdrain(tty)
+        except (OSError, termios.error):
+            pass
+        try:
+            if saved is not None:
+                termios.tcsetattr(tty, termios.TCSAFLUSH, saved)
+            else:
+                termios.tcflush(tty, termios.TCIFLUSH)
+        except (OSError, termios.error):
+            pass
+        os.close(tty)
+sys.exit(status)
+' "$host" "$remote_command"
 else
   exec ssh -o BatchMode=yes -o ConnectTimeout=5 -T -- "$host" "$remote_command"
 fi
