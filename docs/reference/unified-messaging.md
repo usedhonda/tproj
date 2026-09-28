@@ -60,6 +60,9 @@ A bound recipient may consume its inbox during an active turn and explicitly
 acknowledge an observed message with `tproj-msg ack <message-id>`. This records
 presentation by the authenticated recipient; listing an inbox alone does not.
 The CLI never acknowledges on behalf of an unrelated process or project.
+`tproj-msg --help`/`-h` reflects unified mode once enrolled, and `--read` stays
+local-only: it reads a pane on this Mac and reports a configured remote alias
+as unreadable rather than "not found".
 
 Claude terminal delivery keeps the `[from:...]` marker outside bracketed paste
 so ordinary chat cannot be mistaken for a direct user role handoff. Codex receives

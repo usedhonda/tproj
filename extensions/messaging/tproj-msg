@@ -161,7 +161,42 @@ ORIGINAL_ARGS=("$@")
 #   --flush   Deliver queued messages to idle targets.
 #   control   Duplicate [Control:*]/[ACK:*] is blocked for 10m per target.
 
+show_usage_unified() {
+  cat << 'EOF'
+tproj-msg - Inter-pane messaging (unified transport active)
+
+Usage:
+  tproj-msg --status [target]          Show idle/busy state + queue info
+  tproj-msg --list                     List available targets
+  tproj-msg <target> <message>         Send message
+  tproj-msg --stdin <target>           Send message from stdin
+  tproj-msg reply <message-id> --stdin Reply to a message (body from stdin)
+  tproj-msg inbox --cursor <n> --limit <n> [--json]
+                                       List inbox messages
+  tproj-msg message <id>               Show one message
+  tproj-msg ack <id>                   Acknowledge presentation of a message
+  tproj-msg --retry <submission-id>    Retry a submission (same ID and content)
+
+Legacy paths still available:
+  tproj-msg --new-task [--user-authorized] <target> <message>
+  tproj-msg --role-handoff --new-task [--role-epoch <n>] [--orchestrator <id>] ...
+  tproj-msg --desktop ...
+  tproj-msg gate:line <message>
+  tproj-msg gate:<id> <message>        (configured external bridge)
+  tproj-msg --read <target> [lines]    Local panes only
+
+Retired under unified messaging:
+  --fire --force --allow-relay --allow-fanout --allow-chi-retry
+  --remote --remote-client --remote-session --flush --drain
+  gate:direct gate:session gate:default
+EOF
+}
+
 show_usage() {
+  if [[ "$UNIFIED_ACTIVE" == "true" ]]; then
+    show_usage_unified
+    return
+  fi
   cat << 'EOF'
 tproj-msg - Inter-pane messaging (busy-aware)
 
@@ -779,6 +814,26 @@ load_peer_snapshot() {
   fi
   [[ -n "$snapshot" ]] || return 1
   printf '%s\n' "$snapshot"
+}
+
+# True when TARGET's alias is a configured remote project (same test --list
+# uses to print "configured remote (<host>)"). Used only to give --read a
+# clear error instead of a bare "not found" when the pane genuinely lives on
+# another Mac.
+is_configured_remote_alias() {
+  local target="$1" alias snapshot
+  case "$target" in
+    agent-*) return 1 ;;
+    *.*) alias="${target%%.*}" ;;
+    *) alias="$target" ;;
+  esac
+  peer_ledger_configured || return 1
+  snapshot=$(load_peer_snapshot) || return 1
+  jq -e --arg alias "$alias" --arg local_host "$(uname -n)" '
+    .host as $source | .projects[] |
+    select(.alias == $alias) |
+    select(.type == "remote" or ($source != $local_host and .type == "local" and .host == $source))
+  ' <<< "$snapshot" >/dev/null 2>&1
 }
 
 peer_ledger_configured() {
@@ -5466,6 +5521,10 @@ TARGET_PANE=$(resolve_target "$TARGET") || true
 if [[ -z "$TARGET_PANE" ]]; then
   # resolve_target ran in a subshell, so its reason is gone; re-check the one
   # cause that deserves a specific message.
+  if [[ "$READ_MODE" == "true" ]] && is_configured_remote_alias "$TARGET"; then
+    echo "Error: --read cannot read panes running on another Mac ($TARGET); it only reads local panes" >&2
+    exit 1
+  fi
   if ! tmux has-session -t "=$SESSION" 2>/dev/null; then
     echo "Error: session '$SESSION' is not a live tmux session (target '$TARGET' not delivered)" >&2
     echo "Hint: the live session name is what 'tmux display-message -p #S' prints inside a pane." >&2

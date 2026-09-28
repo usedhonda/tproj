@@ -30,6 +30,8 @@ jobs:
         run: bash extensions/messaging/tests/test-caller-verify-hardening.sh
       - name: Messaging runtime installer
         run: bash extensions/messaging/tests/test-runtime-installer.sh
+      - name: Help and read honesty under unified messaging
+        run: bash extensions/messaging/tests/test-help-read-unified.sh
       # test-registry-contract.sh is excluded here: it executes the canonical
       # model-role-router from the sibling `general` checkout, which is not
       # present in a tproj-only CI checkout (same sibling-general dependency
