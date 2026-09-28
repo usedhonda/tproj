@@ -99,9 +99,13 @@ canonical implementation in the sibling `general` checkout. Do not materialize
 or retarget that symlink in tproj changes. `install.sh --check` verifies the
 canonical source, tracked symlink, and installed copy remain byte-identical.
 
-Skills both agents share live in `extensions/skills/<name>/SKILL.md`, symlinked into
-`~/.claude/skills/` and `~/.codex/skills/`. Keeping the source here means a shared
-rule is reviewable in a diff rather than living only in an ignored directory.
+Skills both agents share live in `extensions/skills/<name>/SKILL.md` (plus the msg
+skill in `extensions/messaging/skill-msg/`). The messaging runtime installer copies
+them into `~/.claude/skills/` and `~/.codex/skills/` and appends the Claude allow
+rules sessions need for `tproj-msg` and `tproj-role`; `tproj-remote-setup add HOST`
+does the same on another Mac, and `tproj host check HOST` reports drift there.
+Keeping the source here means a shared rule is reviewable in a diff rather than
+living only in an ignored directory.
 
 Durable project rules belong in this file. Do not introduce important shared
 rules only in `CLAUDE.local.md`, `.codex/config.toml`, or agent memory: those

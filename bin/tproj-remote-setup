@@ -1,13 +1,57 @@
 #!/usr/bin/env bash
 # Explicit remote provisioning; never stop tmux, agent sessions, or a loaded restore job.
+# `check` only reports drift of the shared skills and Claude allow rules; it installs nothing.
 set -euo pipefail
-if [[ "${1:-}" == add ]]; then shift; fi
+mode=add
+if [[ "${1:-}" == add || "${1:-}" == check ]]; then mode="$1"; shift; fi
 if [[ $# -ne 1 || ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-  echo "usage: tproj-remote-setup [add] SSH_HOST" >&2; exit 2
+  echo "usage: tproj-remote-setup [add|check] SSH_HOST" >&2; exit 2
 fi
-exec python3 - "$1" "$(cd "$(dirname "$0")/.." && pwd)" <<'PYSETUP'
-import io, pathlib, subprocess, sys, tarfile
-alias,root=sys.argv[1],pathlib.Path(sys.argv[2])
+exec python3 - "$1" "$(cd "$(dirname "$0")/.." && pwd)" "$mode" <<'PYSETUP'
+import hashlib, io, json, pathlib, shlex, subprocess, sys, tarfile
+alias,root,mode=sys.argv[1],pathlib.Path(sys.argv[2]),sys.argv[3]
+ssh=['ssh','-o','BatchMode=yes','-o','ConnectTimeout=5','-T','--',alias]
+# Shared skills live in one place on the remote Mac and are linked into both agents'
+# skill directories, so Claude and Codex there read the same text as they do here.
+skills={'msg':root/'extensions/messaging/skill-msg/SKILL.md'}
+for source in sorted((root/'extensions/skills').glob('*/SKILL.md')):
+    skills[source.parent.name]=source
+# Without these a Claude session in auto mode sends every message through the safety
+# classifier, and a classifier outage then stops it from messaging at all.
+allow_rules=['Bash(tproj-msg:*)','Bash(tproj-role:*)']
+
+if mode=='check':
+    probe=r'''
+import hashlib, json, os, pathlib, sys
+home=pathlib.Path.home()
+out={'skills':{},'allow':[],'tproj_msg':os.access(home/'bin/tproj-msg',os.X_OK)}
+for name in sys.argv[1].split(','):
+    for agent in ('.claude','.codex'):
+        path=home/agent/'skills'/name/'SKILL.md'
+        out['skills'][agent+'/'+name]=hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+try:
+    out['allow']=json.loads((home/'.claude/settings.json').read_text()).get('permissions',{}).get('allow',[])
+except Exception:
+    pass
+print(json.dumps(out))
+'''
+    result=subprocess.run(ssh+['python3 - '+shlex.quote(','.join(skills))],input=probe,check=True,timeout=15,stdout=subprocess.PIPE,text=True)
+    remote=json.loads(result.stdout)
+    drift=[]
+    for name,source in skills.items():
+        want=hashlib.sha256(source.read_bytes()).hexdigest()
+        for agent in ('.claude','.codex'):
+            got=remote['skills'].get(agent+'/'+name)
+            if got!=want:
+                drift.append(f'skill {agent}/skills/{name}: '+('missing' if got is None else 'differs'))
+    drift+=[f'claude allow rule missing: {rule}' for rule in allow_rules if rule not in remote['allow']]
+    if not remote['tproj_msg']:
+        drift.append('~/bin/tproj-msg missing')
+    for line in drift:
+        print(line)
+    print(f'{alias}: '+('no drift' if not drift else f'{len(drift)} drift item(s); run tproj-remote-setup add {alias}'))
+    raise SystemExit(1 if drift else 0)
+
 files={}
 for name in ('tproj','tproj-topology','tproj-remote-host','tproj-remote-cache','tproj-msg-runtime'):
     files['bin/'+name]=root/'bin'/name
@@ -20,12 +64,13 @@ for name in ('cli.py','host.py','hub.py','identity.py','protocol.py','policy.py'
 plist=root/'config/com.tproj.remote-host.plist'
 if not plist.exists(): plist=root/'.config/tproj/remote-host.plist'
 files['Library/LaunchAgents/com.tproj.remote-host.plist']=plist
+for name,source in skills.items():
+    files['.local/share/tproj-skills/'+name+'/SKILL.md']=source
 for path in files.values():
     if not path.is_file(): raise SystemExit('Missing remote installation artifact: '+str(path))
 buf=io.BytesIO()
 with tarfile.open(fileobj=buf,mode='w') as archive:
     for dest,source in files.items(): archive.add(source,arcname=dest,recursive=False)
-ssh=['ssh','-o','BatchMode=yes','-o','ConnectTimeout=5','-T','--',alias]
 check='PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; command -v python3 >/dev/null && command -v tmux >/dev/null'
 subprocess.run(ssh+[check],check=True,timeout=12)
 subprocess.run(ssh+['umask 077; tar -xf - -C "$HOME"'],input=buf.getvalue(),check=True,timeout=30)
@@ -39,5 +84,31 @@ fi
 "$HOME/bin/tproj-msg-runtime" setup
 '''
 subprocess.run(ssh+[command],check=True,timeout=30)
+# Link each skill into both agents, never replacing a real directory someone put
+# there, and append (never remove) the Claude allow rules.
+finish=r'''
+import json, os, pathlib, sys, tempfile
+home=pathlib.Path.home()
+for name in sys.argv[1].split(','):
+    for agent in ('.claude','.codex'):
+        link=home/agent/'skills'/name
+        link.parent.mkdir(parents=True,exist_ok=True)
+        if link.is_symlink() or not link.exists():
+            if link.is_symlink(): link.unlink()
+            link.symlink_to(home/'.local/share/tproj-skills'/name)
+path=home/'.claude/settings.json'
+try: data=json.loads(path.read_text())
+except FileNotFoundError: data={}
+allow=data.setdefault('permissions',{}).setdefault('allow',[])
+missing=[rule for rule in sys.argv[2].split(',') if rule not in allow]
+if missing:
+    allow.extend(missing)
+    path.parent.mkdir(parents=True,exist_ok=True)
+    fd,tmp=tempfile.mkstemp(dir=str(path.parent),prefix='.settings.')
+    with os.fdopen(fd,'w') as handle:
+        json.dump(data,handle,indent=2,ensure_ascii=False); handle.write('\n')
+    os.replace(tmp,path)
+'''
+subprocess.run(ssh+['python3 - '+shlex.quote(','.join(skills))+' '+shlex.quote(','.join(allow_rules))],input=finish,check=True,timeout=15,text=True)
 print('Remote helpers installed; existing agent sessions were not restarted.')
 PYSETUP

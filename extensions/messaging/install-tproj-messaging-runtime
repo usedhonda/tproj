@@ -38,6 +38,11 @@ RUNTIME_FILES = (
     ("extensions/hooks/tproj-cc-statusline-tap", "tproj-cc-statusline-tap"),
 )
 SKILL_SOURCE = Path("extensions/messaging/skill-msg/SKILL.md")
+SHARED_SKILLS_DIR = Path("extensions/skills")
+# Sessions call these on every message or role question. Without an allow rule a
+# Claude session in auto mode sends each call through the safety classifier, and a
+# classifier outage then silently stops that session from messaging at all.
+CLAUDE_ALLOW_RULES = ("Bash(tproj-msg:*)", "Bash(tproj-role:*)")
 
 
 def sha256(path: Path) -> str:
@@ -98,6 +103,42 @@ def load_json(path: Path) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def skill_installs(claude_skill: Path, codex_skill: Path) -> list[tuple[Path, Path]]:
+    """Every shared skill paired with each of its Claude and Codex targets."""
+    pairs = [(REPO_ROOT / SKILL_SOURCE, claude_skill), (REPO_ROOT / SKILL_SOURCE, codex_skill)]
+    shared = REPO_ROOT / SHARED_SKILLS_DIR
+    for source in sorted(shared.glob("*/SKILL.md")) if shared.is_dir() else []:
+        name = source.parent.name
+        for root in (claude_skill.parent.parent, codex_skill.parent.parent):
+            pairs.append((source, root / name / "SKILL.md"))
+    return pairs
+
+
+def missing_allow_rules(claude_settings: Path) -> list[str]:
+    allow = load_json(claude_settings).get("permissions", {}).get("allow", [])
+    return [rule for rule in CLAUDE_ALLOW_RULES if rule not in allow]
+
+
+def ensure_allow_rules(claude_settings: Path, dry_run: bool) -> bool:
+    # Append only: rules the owner added or removed for other tools are left alone.
+    missing = missing_allow_rules(claude_settings)
+    if not missing:
+        return False
+    if dry_run:
+        print(f"WOULD ALLOW {', '.join(missing)} in {claude_settings}")
+        return True
+    data = load_json(claude_settings)
+    permissions = data.setdefault("permissions", {})
+    permissions["allow"] = list(permissions.get("allow", [])) + missing
+    claude_settings.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=str(claude_settings.parent), prefix=".settings.", delete=False, encoding="utf-8") as tmp:
+        json.dump(data, tmp, indent=2, ensure_ascii=False)
+        tmp.write("\n")
+        tmp_path = Path(tmp.name)
+    os.replace(tmp_path, claude_settings)
+    return True
 
 
 def install_file(source: Path, target: Path, executable: bool, dry_run: bool) -> bool:
@@ -172,8 +213,7 @@ def verify_files(bin_dir: Path, claude_skill: Path, codex_skill: Path) -> list[s
             continue
         if not os.access(target, os.X_OK):
             errors.append(f"{target} is not executable")
-    skill_source = REPO_ROOT / SKILL_SOURCE
-    for skill_target in (claude_skill, codex_skill):
+    for skill_source, skill_target in skill_installs(claude_skill, codex_skill):
         if not skill_target.is_file():
             errors.append(f"{skill_target} missing")
         elif sha256(skill_source) != sha256(skill_target):
@@ -200,6 +240,9 @@ def check(args: argparse.Namespace, home: Path) -> int:
     errors.extend(unified_runtime(args, home, check_only=True))
     errors.extend(verify_files(args.bin_dir, args.claude_skill, args.codex_skill))
     errors.extend(verify_hook_configs(args.claude_settings, args.codex_hooks, home))
+    missing = missing_allow_rules(args.claude_settings)
+    if missing:
+        errors.append(f"{args.claude_settings} missing allow rules: {', '.join(missing)}")
     if errors:
         for line in errors:
             print(line)
@@ -213,10 +256,10 @@ def install(args: argparse.Namespace, home: Path) -> int:
     unified_runtime(args, home)
     for source, dest_name in runtime_sources():
         changed |= install_file(source, args.bin_dir / dest_name, executable=True, dry_run=args.dry_run)
-    skill_source = REPO_ROOT / SKILL_SOURCE
-    changed |= install_file(skill_source, args.claude_skill, executable=False, dry_run=args.dry_run)
-    changed |= install_file(skill_source, args.codex_skill, executable=False, dry_run=args.dry_run)
+    for skill_source, skill_target in skill_installs(args.claude_skill, args.codex_skill):
+        changed |= install_file(skill_source, skill_target, executable=False, dry_run=args.dry_run)
     run_hook_installer(args, home)
+    changed |= ensure_allow_rules(args.claude_settings, args.dry_run)
     if args.dry_run:
         print("WOULD INIT tproj-msg DB")
         return 0

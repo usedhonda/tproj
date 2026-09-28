@@ -69,7 +69,7 @@ check "dry-run does not create runtime files" test ! -e "$dry_home/bin/tproj-msg
 home_root="$TMP/home"
 mkdir -p "$home_root/.claude" "$home_root/.codex"
 cat > "$home_root/.claude/settings.json" <<'EOF'
-{"preserve":"claude","hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"keep-claude-hook"}]}]}}
+{"preserve":"claude","permissions":{"allow":["keep-allow-rule"]},"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"keep-claude-hook"}]}]}}
 EOF
 cat > "$home_root/.codex/hooks.json" <<'EOF'
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"keep-codex-hook"}]}]}}
@@ -95,7 +95,9 @@ for target in "${runtime_targets[@]}"; do
 done
 check "required runtime files are installed executable and byte-equal" test "$runtime_ok" -eq 0
 check "msg skill is refreshed for Claude and Codex" sh -c "cmp -s '$REPO/extensions/messaging/skill-msg/SKILL.md' '$home_root/.claude/skills/msg/SKILL.md' && cmp -s '$REPO/extensions/messaging/skill-msg/SKILL.md' '$home_root/.codex/skills/msg/SKILL.md'"
-check "unrelated config remains in Claude/Codex settings" sh -c "grep -q keep-claude-hook '$home_root/.claude/settings.json' && grep -q keep-codex-hook '$home_root/.codex/hooks.json' && grep -q '^keep = true$' '$home_root/.codex/config.toml'"
+check "shared role skill is installed for Claude and Codex" sh -c "cmp -s '$REPO/extensions/skills/role/SKILL.md' '$home_root/.claude/skills/role/SKILL.md' && cmp -s '$REPO/extensions/skills/role/SKILL.md' '$home_root/.codex/skills/role/SKILL.md'"
+check "Claude allow rules for tproj-msg and tproj-role are appended" sh -c "jq -e '.permissions.allow | index(\"Bash(tproj-msg:*)\") and index(\"Bash(tproj-role:*)\")' '$home_root/.claude/settings.json' >/dev/null"
+check "unrelated config remains in Claude/Codex settings" sh -c "grep -q keep-allow-rule '$home_root/.claude/settings.json' && grep -q keep-claude-hook '$home_root/.claude/settings.json' && grep -q keep-codex-hook '$home_root/.codex/hooks.json' && grep -q '^keep = true$' '$home_root/.codex/config.toml'"
 check "Claude and Codex hook configs register lifecycle and mutation guards" sh -c "grep -Fq '\$HOME/bin/tproj-mutation-guard' '$home_root/.claude/settings.json' && grep -Fq '\$HOME/bin/tproj-completion-guard' '$home_root/.claude/settings.json' && grep -Fq '\$HOME/bin/tproj-cc-cache-observer notification' '$home_root/.claude/settings.json' && grep -Fq 'idle_prompt' '$home_root/.claude/settings.json' && grep -Fq '$home_root/bin/tproj-mutation-guard --platform codex' '$home_root/.codex/hooks.json' && grep -Fq '$home_root/bin/tproj-completion-guard --platform codex' '$home_root/.codex/hooks.json' && grep -Fq '$home_root/bin/tproj-codex-cache-observer prompt' '$home_root/.codex/hooks.json' && grep -Fq '$home_root/bin/tproj-codex-cache-observer stop' '$home_root/.codex/hooks.json' && grep -Fq 'trusted_hash = \"sha256:abc003\"' '$home_root/.codex/config.toml'"
 check "installer check mode passes after install" sh -c "'$INSTALLER' --home '$home_root' --check >/dev/null 2>&1"
 check "unified client and host are installed without enrollment" sh -c "test -x '$home_root/bin/tproj-msg-unified' && cmp -s '$REPO/extensions/messaging/unified/host.py' '$home_root/lib/tproj-msg-unified/host.py' && test ! -e '$home_root/.config/tproj/msg-client.json'"

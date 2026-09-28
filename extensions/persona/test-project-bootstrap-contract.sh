@@ -63,6 +63,9 @@ cp -L "$MODEL_ROLE_ROUTER_LINK" "$TEST_HOME/bin/model-role-router"
 mkdir -p "$TEST_HOME/.claude/skills/msg" "$TEST_HOME/.codex/skills/msg"
 cp "$REPO_ROOT/extensions/messaging/skill-msg/SKILL.md" "$TEST_HOME/.claude/skills/msg/SKILL.md"
 cp "$REPO_ROOT/extensions/messaging/skill-msg/SKILL.md" "$TEST_HOME/.codex/skills/msg/SKILL.md"
+mkdir -p "$TEST_HOME/.claude/skills/role" "$TEST_HOME/.codex/skills/role"
+cp "$REPO_ROOT/extensions/skills/role/SKILL.md" "$TEST_HOME/.claude/skills/role/SKILL.md"
+cp "$REPO_ROOT/extensions/skills/role/SKILL.md" "$TEST_HOME/.codex/skills/role/SKILL.md"
 
 check_output=$(HOME="$TEST_HOME" "$REPO_ROOT/install.sh" --check)
 [[ "$check_output" == *"canonical extension chains match"* ]] || \

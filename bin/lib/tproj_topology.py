@@ -155,7 +155,19 @@ def command(argv: list[str]) -> int:
         data = status(); print(json.dumps({"local": data["local"], "hosts": data["hosts"]}, sort_keys=True) if "--json" in argv else "\n".join(f"{h['ssh_alias']}\t{h['display_name']}\t{h['id']}" for h in data["hosts"]))
         return 0
     if action == "check" and len(argv) == 3:
-        result = probe(argv[2]); print(json.dumps(result, sort_keys=True)); return 0 if result["ok"] else 1
+        result = probe(argv[2])
+        if result["ok"]:
+            # A reachable host can still run stale skills or lack the Claude allow
+            # rules its sessions need; report that drift without installing anything.
+            setup = os.environ.get("TPROJ_REMOTE_SETUP", "tproj-remote-setup")
+            try:
+                drift = subprocess.run([setup, "check", argv[2]], check=False, capture_output=True, text=True, timeout=30)
+                lines = [line for line in drift.stdout.splitlines() if line.strip()]
+                result["setup"] = {"ok": drift.returncode == 0, "report": lines}
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                result["setup"] = {"ok": False, "report": [f"setup check unavailable: {type(exc).__name__}"]}
+            result["ok"] = result["setup"]["ok"]
+        print(json.dumps(result, sort_keys=True)); return 0 if result["ok"] else 1
     if action == "add" and len(argv) >= 3:
         alias = argv[2]; name = None
         if "--name" in argv:
