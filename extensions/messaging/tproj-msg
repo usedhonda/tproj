@@ -166,7 +166,7 @@ show_usage_unified() {
 tproj-msg - Inter-pane messaging (unified transport active)
 
 Usage:
-  tproj-msg --status [target]          Show idle/busy state + queue info
+  tproj-msg --status [target]          Show target directory entry (JSON; online = recent heartbeat)
   tproj-msg --list                     List available targets
   tproj-msg <target> <message>         Send message
   tproj-msg --stdin <target>           Send message from stdin
