@@ -13,9 +13,14 @@ alias,root,mode=sys.argv[1],pathlib.Path(sys.argv[2]),sys.argv[3]
 ssh=['ssh','-o','BatchMode=yes','-o','ConnectTimeout=5','-T','--',alias]
 # Shared skills live in one place on the remote Mac and are linked into both agents'
 # skill directories, so Claude and Codex there read the same text as they do here.
-skills={'msg':root/'extensions/messaging/skill-msg/SKILL.md'}
-for source in sorted((root/'extensions/skills').glob('*/SKILL.md')):
-    skills[source.parent.name]=source
+if (root/'extensions').is_dir():
+    skills={'msg':root/'extensions/messaging/skill-msg/SKILL.md'}
+    for source in sorted((root/'extensions/skills').glob('*/SKILL.md')):
+        skills[source.parent.name]=source
+else:
+    # Run from the installed ~/bin copy: the messaging installer keeps these
+    # skill copies byte-equal to the repo (its --check reports otherwise).
+    skills={name:root/'.claude/skills'/name/'SKILL.md' for name in ('msg','role')}
 # Without these a Claude session in auto mode sends every message through the safety
 # classifier, and a classifier outage then stops it from messaging at all.
 allow_rules=['Bash(tproj-msg:*)','Bash(tproj-role:*)']
