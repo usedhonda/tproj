@@ -3539,6 +3539,7 @@ write_manifest() {
     --arg window "$window_name" \
     --arg window_layout "$window_layout" \
     --arg generated_at "$(now_utc)" \
+    --arg main_checked_epoch "${MAIN_CHECKED_EPOCH:-0}" \
     --arg script_path "$SCRIPT_PATH" \
     --arg current_manifest "$CURRENT_MANIFEST" \
     --arg opacity "$DEFAULT_OPACITY" \
@@ -3554,6 +3555,7 @@ write_manifest() {
       session: $session,
       window: $window,
       generated_at: $generated_at,
+      main_checked_epoch: ($main_checked_epoch | tonumber),
       source_script: $script_path,
       current_manifest: $current_manifest,
       default_opacity: ($opacity | tonumber),
@@ -3678,13 +3680,17 @@ sync_session() {
     # workspace that single question was most of a fast sync. So the fast path seeds
     # the answers from the manifest it wrote last time and only asks about projects it
     # has not seen. A project whose role-mode file was written after that manifest is
-    # left out of the seed, so a main/sub flip is still picked up.
+    # left out of the seed, so a main/sub flip is still picked up. The comparison is
+    # against when the last sync began asking, not when it wrote the manifest: a sync
+    # that asked just before a flip and wrote just after it would otherwise pin the
+    # old main forever. Same-second writes are treated as newer.
+    MAIN_CHECKED_EPOCH="$(date +%s)"
     if [[ "$sync_mode" == "fast" && -s "$manifest_path" ]]; then
-      manifest_mtime="$(stat -f '%m' "$manifest_path" 2>/dev/null || printf '0')"
+      manifest_mtime="$(jq -r '.main_checked_epoch // 0' "$manifest_path" 2>/dev/null || printf '0')"
       while IFS=$'\t' read -r seed_project seed_main; do
         [[ -n "$seed_project" && -n "$seed_main" ]] || continue
         mode_mtime="$(stat -f '%m' "${seed_project}/.local/role-mode.json" 2>/dev/null || printf '0')"
-        (( mode_mtime <= manifest_mtime )) || continue
+        (( mode_mtime < manifest_mtime )) || continue
         CONVERSATION_MAIN_CACHE="${CONVERSATION_MAIN_CACHE}${seed_project}=${seed_main}"$'\n'
       done < <(jq -r '
         # conversation_main is stored per pane as a boolean -- "is this pane the main
