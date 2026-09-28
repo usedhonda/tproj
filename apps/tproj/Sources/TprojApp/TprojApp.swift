@@ -101,6 +101,7 @@ struct ProcessCommandRunner: CommandRunning, Sendable {
 private struct GhosttyWindowInfo {
     let frame: NSRect
     let windowNumber: Int
+    let windowImmediatelyBelowNumber: Int?
 }
 
 private func currentGhosttyWindowInfo() -> GhosttyWindowInfo? {
@@ -111,7 +112,7 @@ private func currentGhosttyWindowInfo() -> GhosttyWindowInfo? {
     // CG origin is top-left of PRIMARY display; use screens[0] (not .main which follows focus)
     guard let screenHeight = NSScreen.screens.first?.frame.height else { return nil }
 
-    for info in list {
+    for (index, info) in list.enumerated() {
         guard let name = info[kCGWindowOwnerName as String] as? String,
               name == "Ghostty",
               let layer = info[kCGWindowLayer as String] as? Int,
@@ -132,7 +133,10 @@ private func currentGhosttyWindowInfo() -> GhosttyWindowInfo? {
         let cocoaY = screenHeight - cgY - cgH
         return GhosttyWindowInfo(
             frame: NSRect(x: cgX, y: cocoaY, width: cgW, height: cgH),
-            windowNumber: number
+            windowNumber: number,
+            windowImmediatelyBelowNumber: list.dropFirst(index + 1).first {
+                ($0[kCGWindowLayer as String] as? Int) == 0
+            }?[kCGWindowNumber as String] as? Int
         )
     }
     return nil
@@ -456,6 +460,7 @@ final class PaneBackgroundUnderlayController: ObservableObject {
     private var pollTimer: DispatchSourceTimer?
     private var lastManifestDate: Date?
     private var cachedManifest: PaneBackgroundManifest?
+    private var appliedManifest: PaneBackgroundManifest?
     private var lastGhosttyWindowNumber: Int?
     private var manifestWatch: DispatchSourceFileSystemObject?
     private var manifestWatchDebounce: DispatchWorkItem?
@@ -592,9 +597,19 @@ final class PaneBackgroundUnderlayController: ObservableObject {
         )
 
         let window = ensureUnderlayWindow()
-        window.setFrame(ghosttyInfo.frame, display: true)
-        updateContent(of: window, manifest: filteredManifest)
-        window.order(.below, relativeTo: ghosttyInfo.windowNumber)
+        if window.frame != ghosttyInfo.frame {
+            window.setFrame(ghosttyInfo.frame, display: true)
+        }
+        if appliedManifest != filteredManifest {
+            updateContent(of: window, manifest: filteredManifest)
+            appliedManifest = filteredManifest
+        }
+        // App activation can change stacking without changing the tracked target.
+        // Repair that relation, but leave an already adjacent underlay untouched.
+        if !window.isVisible || lastGhosttyWindowNumber != ghosttyInfo.windowNumber ||
+            ghosttyInfo.windowImmediatelyBelowNumber != window.windowNumber {
+            window.order(.below, relativeTo: ghosttyInfo.windowNumber)
+        }
         lastGhosttyWindowNumber = ghosttyInfo.windowNumber
     }
 
@@ -657,9 +672,12 @@ final class PaneBackgroundUnderlayController: ObservableObject {
 
     private func hideUnderlay() {
         cachedManifest = nil
+        appliedManifest = nil
         lastManifestDate = nil
         lastGhosttyWindowNumber = nil
-        underlayWindow?.orderOut(nil)
+        if let underlayWindow, underlayWindow.isVisible {
+            underlayWindow.orderOut(nil)
+        }
     }
 }
 
