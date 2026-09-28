@@ -29,6 +29,12 @@ tproj-msg reply <message-id> --stdin <<'EOF'   # 受信メッセージへの返�
 EOF
 ```
 
+自分と相手がどのMacにいるか:
+- tproj は複数のMacにまたがる。ペインは必ずどれか1台で動いており、自分のMacは `hostname` で分かる。
+- 手元Macの画面に映っていても、実体は SSH 越しに別Mac（例 Mac mini）で動いているペインがある。その場合、ファイル・プロセス・`~/` はすべて実体側のMacのもの。
+- 相手が別Macにいても送り方は変わらない。`tproj-msg --status <宛先>` の JSON にある `host_id` が自分と違えば別Mac。
+- 相手のMacのファイルを「見て」と頼む／パスを渡す時は、そのパスがどのMacのものかを本文に書く。
+
 宛先の書き方:
 - `cc` / `cdx`: 自分と同じプロジェクトの相方。
 - `<project>.cc` / `<project>.cdx`: 他プロジェクト（別Macでも同じ書き方）。例 `clawgate.cc`, `artist.cdx`。
