@@ -413,7 +413,10 @@ has_claude_session() {
   local abs_path="$1"
   local encoded="${abs_path//\//-}"
   local proj_dir="$HOME/.claude/projects/$encoded"
-  [[ -f "$proj_dir/sessions-index.json" ]] || ls "$proj_dir"/*.jsonl &>/dev/null
+  # Only a transcript lets `claude --continue` resume. A sessions-index.json can
+  # outlive its transcripts, and trusting it left the pane at a shell with
+  # "No conversation found to continue".
+  ls "$proj_dir"/*.jsonl &>/dev/null
 }
 
 # ペインラベル生成
