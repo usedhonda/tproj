@@ -5933,11 +5933,15 @@ struct ContentView: View {
                 Text("#\(column.column)")
                     .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
+                    .fixedSize()
                 pill(liveHostLabel(column), tint: column.hostLabel == "local" ? GhosttyTheme.current.accentGreen : GhosttyTheme.current.accentYellow)
                 Text(columnPrimaryName(column))
                     .font(GhosttyTheme.current.font(size: 13, weight: .semibold))
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
                     .lineLimit(1)
+                    // Keep the whole name; when the row is too narrow the buttons
+                    // on the right are cut off instead (see the frame below).
+                    .fixedSize(horizontal: true, vertical: false)
                     .help(columnAgentNamesText(column) ?? columnPrimaryName(column))
                 Spacer(minLength: 0)
                 ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? mainTint : nil) {
@@ -5971,6 +5975,8 @@ struct ContentView: View {
                 .disabled(vm.isBusy || vm.isDropPending(column.column))
                 .help("Drop column #\(column.column)")
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .clipped()
 
             // Row 2: every per-column setting behind one pill.
             columnSettingsPill(column)
@@ -6801,8 +6807,12 @@ struct ContentView: View {
     }
 
     private func pill(_ text: String, tint: Color) -> some View {
+        // Never wrap a pill onto two lines (e.g. "@macmini"); a narrow row may
+        // cut off what is to its right instead.
         Text(text)
             .font(GhosttyTheme.current.font(size: 9, weight: .bold))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
             .background(
