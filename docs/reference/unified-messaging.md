@@ -82,7 +82,9 @@ themselves. A fresh `typing`, `busy`, or `running` value still blocks delivery.
 Independent draft detection is coordinate-aware: it binds the native composer
 to the live cursor/pane position and keeps trailing status/footer rows in the
 snapshot for alignment, rather than assuming the prompt is the last captured
-line.
+line. Footer trimming requires a native prompt at the actual cursor row and
+an immediately following divider; historical prompts do not gain trust from
+footer trimming. Real text in that composer remains protected.
 
 `--status cc` and `--status cdx` use the same authenticated project as send,
 not a local GUI label. Once enrolled, the persistent `msg-client.enrolled`

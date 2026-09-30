@@ -243,11 +243,32 @@ measure_input_line_draft() {
   INPUT_DRAFT_RESULT="unknown"
   INPUT_DRAFT_SNIPPET=""
 
-  raw_captured=$(tmux capture-pane -t "$pane" -e -p -S "-${TMUX_TYPING_GUARD_READ_LINES}" 2>/dev/null || true)
+  # Preserve trailing blank terminal rows for cursor-to-snapshot alignment.
+  raw_captured=$(tmux capture-pane -t "$pane" -e -p -S "-${TMUX_TYPING_GUARD_READ_LINES}" 2>/dev/null; printf '.')
+  raw_captured="${raw_captured%.}"
   if [[ -z "$raw_captured" ]]; then
     return 0  # capture failed -> unknown (fail-open)
   fi
-  captured=$(printf '%s\n' "$raw_captured" | strip_ansi)
+  captured=$(printf '%s' "$raw_captured" | strip_ansi; printf '.')
+  captured="${captured%.}"
+  # Claude can render several status/subagent rows below its composer. Use
+  # the actual terminal cursor to distinguish that live composer from an old
+  # prompt in scrollback; never treat the status rows as continuation input.
+  local cursor_row pane_height cursor_info total_lines prompt_row cursor_line next_line
+  cursor_info=$(tmux display-message -p -t "$pane" '#{cursor_y} #{pane_height}' 2>/dev/null || true)
+  if [[ "$cursor_info" =~ ^([0-9]+)[[:space:]]+([0-9]+)$ ]]; then
+    cursor_row="${BASH_REMATCH[1]}"
+    pane_height="${BASH_REMATCH[2]}"
+    total_lines=$(printf '%s' "$captured" | wc -l | tr -d ' ')
+    prompt_row=$((total_lines - pane_height + cursor_row + 1))
+    if (( cursor_row < pane_height && prompt_row > 0 && prompt_row < total_lines )); then
+      cursor_line=$(printf '%s\n' "$captured" | sed -n "${prompt_row}p")
+      next_line=$(printf '%s\n' "$captured" | sed -n "$((prompt_row + 1))p")
+      if printf '%s\n' "$cursor_line" | grep -Eq '^[[:space:]]*[❯›]' && is_tmux_divider_line "$next_line"; then
+        captured=$(printf '%s\n' "$captured" | head -n "$prompt_row")
+      fi
+    fi
+  fi
   parse_prompt_snapshot "$captured"
   if [[ "$PROMPT_PARSE_OK" != "true" ]]; then
     return 0  # no locatable prompt line -> unknown (fail-open)

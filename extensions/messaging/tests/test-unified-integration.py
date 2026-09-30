@@ -89,4 +89,27 @@ class Integration(unittest.TestCase):
                 result=subprocess.run(['bash',str(ROOT/'terminal-guard.sh'),'%1'],env=env,capture_output=True,text=True)
                 self.assertEqual(result.returncode==0,safe,result.stdout+result.stderr)
 
+    def test_live_composer_above_long_footer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tool=Path(tmp)/'tmux'
+            tool.write_text('#!/bin/bash\ncase "$1" in display-message) printf "%s\\n" "$CURSOR_INFO";; capture-pane) cat "$FIXTURE";; esac\n')
+            tool.chmod(0o755)
+            fixture=Path(tmp)/'capture'
+            footer='─'*20+'\n'+'status row\n'*10+'\n\n'
+            env=dict(os.environ,PATH=tmp+':'+os.environ['PATH'],FIXTURE=str(fixture))
+            script='source "$1"; measure_input_line_draft %1; printf "%s" "$INPUT_DRAFT_RESULT"'
+            cases=[('❯ \x1b[2mSuggested question\x1b[0m\n','clear'),
+                   ('❯ actual unsent draft\n','draft'),('❯ \n','clear')]
+            for prompt,expected in cases:
+                capture='history\nold output\n'+prompt+footer
+                fixture.write_text(capture)
+                env['CURSOR_INFO']='0 '+str(len((prompt+footer).splitlines()))
+                result=subprocess.run(['bash','-c',script,'_',str(ROOT/'terminal-parser.sh')],env=env,capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual(result.stdout,expected)
+            # A historical native marker not under the cursor remains untrusted.
+            env['CURSOR_INFO']='1 '+str(len((prompt+footer).splitlines()))
+            result=subprocess.run(['bash','-c',script,'_',str(ROOT/'terminal-parser.sh')],env=env,capture_output=True,text=True)
+            self.assertEqual(result.stdout,'unknown')
+
 if __name__=='__main__':unittest.main()
