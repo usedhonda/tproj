@@ -79,6 +79,10 @@ more than 2 seconds in the future. Missing, malformed, stale, or far-future
 timestamps fall through to the independent current-screen, approval, and
 draft checks; they never clear a real guard and never authorize injection by
 themselves. A fresh `typing`, `busy`, or `running` value still blocks delivery.
+Independent draft detection is coordinate-aware: it binds the native composer
+to the live cursor/pane position and keeps trailing status/footer rows in the
+snapshot for alignment, rather than assuming the prompt is the last captured
+line.
 
 `--status cc` and `--status cdx` use the same authenticated project as send,
 not a local GUI label. Once enrolled, the persistent `msg-client.enrolled`
