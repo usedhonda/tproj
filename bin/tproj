@@ -167,7 +167,8 @@ For more information, see: README.md
 EOF
 }
 
-NO_UPDATE=true  # npm update は手動で実行してください
+NO_UPDATE=true  # Claude updates remain manual.
+CODEX_NO_UPDATE=false  # Update new Codex launches unless explicitly skipped.
 REMOTE_HOST=""
 FORCE_SINGLE_MODE=false
 ADD_MODE=false
@@ -398,7 +399,7 @@ while [[ $# -gt 0 ]]; do
     -c|--columns)
       [[ -z "${2:-}" ]] && { echo "Error: -c requires a number" >&2; exit 1; }
       MAX_COLUMNS="$2"; shift 2 ;;
-    -n|--no-update) NO_UPDATE=true; shift ;;
+    -n|--no-update) NO_UPDATE=true; CODEX_NO_UPDATE=true; shift ;;
     -s|--single) FORCE_SINGLE_MODE=true; shift ;;
     -r|--remote)
       [[ -z "${2:-}" ]] && { echo "Error: -r requires a hostname" >&2; exit 1; }
@@ -534,7 +535,7 @@ with_claude_update_prefix() {
 
 with_codex_update_prefix() {
   local command="$1"
-  local no_update_mode="${2:-$NO_UPDATE}"
+  local no_update_mode="${2:-$CODEX_NO_UPDATE}"
   if [[ "$no_update_mode" == "true" ]]; then
     printf '%s' "$command"
     return 0
@@ -1184,7 +1185,7 @@ add_workspace_column() {
   unset TPROJ_LAYOUT_LOCK_INHERITED
   sleep 0.15
 
-  # Add 時は npm update をスキップ（既存セッションで CC/Cdx は更新済み前提）
+  # Adding a column keeps Claude updates manual; new Codex launches update.
   NO_UPDATE=true
 
   if [[ "$src_type" == "remote" ]]; then
@@ -2213,7 +2214,7 @@ start_workspace_tools() {
     local col_alias
     col_alias="$(basename "${paths[$((i-1))]}" 2>/dev/null || echo "project")"
     echo "tproj: starting ${col_alias} [$i/${num_projects}]..." >&2
-    start_codex_for_column "$session" "$no_update" "$i" \
+    start_codex_for_column "$session" "$CODEX_NO_UPDATE" "$i" \
       "${paths[$((i-1))]}" "${types[$((i-1))]}" "${hosts[$((i-1))]}" "${cdx_launches[$((i-1))]:-true}"
     sleep 0.5
     start_claude_for_column "$session" "$no_update" "$i" \
