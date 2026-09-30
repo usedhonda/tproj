@@ -327,9 +327,13 @@ brew untap usedhonda/tproj
 
 ## Notes
 
-- tproj does not run `npm update` automatically. Update manually:
+- New local and remote Codex launches run `npm update -g @openai/codex` (and
+  optional `sign-codex`) before resume; failures fall back to the installed
+  version. Existing sessions are never updated or restarted. The CLI
+  `--no-update` option skips this Codex startup refresh. Claude Code is not
+  auto-updated; update it manually when needed:
   ```bash
-  npm update -g @anthropic-ai/claude-code @openai/codex
+  npm update -g @anthropic-ai/claude-code
   ```
 - For heavy multi-pane usage in Ghostty, consider lowering `scrollback-limit` (e.g. `3000`) to reduce memory pressure.
 

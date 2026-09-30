@@ -2977,7 +2977,10 @@ final class AppViewModel: ObservableObject {
                 _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "allow-set-title", "off"])
                 launchCmd = "cd \(shellSingleQuote(projPath)) && claude --continue 2>/dev/null || claude"
             case "codex":
-                launchCmd = "cd \(shellSingleQuote(projPath)) && codex resume --last -s danger-full-access -a never --search"
+                let codexResume = "cd \(shellSingleQuote(projPath)) && codex resume --last -s danger-full-access -a never --search"
+                // Match the local CLI startup path: refresh Codex and sign it when
+                // available, but never let maintenance tooling prevent resume.
+                launchCmd = "if command -v npm >/dev/null 2>&1; then npm update -g @openai/codex || true; fi; if command -v sign-codex >/dev/null 2>&1; then sign-codex || true; fi; hash -r; \(codexResume)"
             default: return
             }
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, launchCmd, "C-m"])
