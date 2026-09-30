@@ -6,8 +6,28 @@ fail() { printf '{"safe":false,"reason":"%s"}\n' "$1"; exit 1; }
 pane="${1:-}"
 [[ "$pane" =~ ^%[0-9]+$ ]] || fail invalid_pane
 [[ "$(tmux display-message -t "$pane" -p '#{pane_dead}' 2>/dev/null)" == 0 ]] || fail offline
+
+# @prompt_state is an optional tmux hint.  Treat it as authoritative only
+# while its timestamp is fresh; stale, malformed, or far-future values must
+# fall through to the independent capture and draft/approval guards below.
+PROMPT_SIGNAL_MAX_AGE_SEC=5
+PROMPT_SIGNAL_FUTURE_TOLERANCE_SEC=2
+prompt_state_is_fresh() {
+  local ts now age
+  ts="$(tmux show-options -p -t "$pane" -v @prompt_state_ts 2>/dev/null || true)"
+  [[ "$ts" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)"
+  (( ts <= now + PROMPT_SIGNAL_FUTURE_TOLERANCE_SEC )) || return 1
+  age=$((now - ts))
+  (( age <= PROMPT_SIGNAL_MAX_AGE_SEC ))
+}
+
 state="$(tmux show-options -p -t "$pane" -v @prompt_state 2>/dev/null || true)"
-case "$state" in typing|busy|running) fail busy ;; esac
+case "$state" in
+  typing|busy|running)
+    prompt_state_is_fresh && fail busy
+    ;;
+esac
 raw="$(tmux capture-pane -t "$pane" -e -p -S -120 2>/dev/null)" || fail capture_failed
 plain="$(printf '%s\n' "$raw" | strip_ansi)"
 # Busy rendering is independent of potentially stale prompt-state options.

@@ -73,6 +73,13 @@ Claude session transcript may resolve an uncertain write without reinjection.
 Observer running state, selection screens and independent draft measurement
 block injection; terminal write success is never a presentation receipt.
 
+The terminal guard treats the optional tmux `@prompt_state` value as a hint
+only when its numeric `@prompt_state_ts` is no more than 5 seconds old and no
+more than 2 seconds in the future. Missing, malformed, stale, or far-future
+timestamps fall through to the independent current-screen, approval, and
+draft checks; they never clear a real guard and never authorize injection by
+themselves. A fresh `typing`, `busy`, or `running` value still blocks delivery.
+
 `--status cc` and `--status cdx` use the same authenticated project as send,
 not a local GUI label. Once enrolled, the persistent `msg-client.enrolled`
 marker prevents missing or malformed client configuration from restoring the
