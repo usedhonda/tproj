@@ -40,8 +40,8 @@ EOF
 - 本文は常に `--stdin` + `<<'EOF'`（引用符付き）。バッククォートや `$` が壊れない。
 - unified の通常送信は mailbox への置き配だけではない。受信 endpoint が利用可能なら delivery worker が束縛された相手のペインへ自動提示する。別途「起こす」「wake する」「`--new-task` で押し込む」操作は不要で、通常の相談・会話に legacy 委任経路を使わない。
 - 相手が入力中の下書き、typing、observer/draft guard などで busy の場合は提示が保留され得る。下書きを上書きしたり、force/旧方式で回避したりせず、状態を未提示・返信待ちとして扱う。
-- 送信結果の `message_id` は必ず保持する。`state: queued` / `accepted` は受付・永続化だけで、提示（相手が見たこと）や返信の証拠ではない。
-- 送信後は待たずに作業を続ける。返信は自動で届く。`--read` や `sleep`、手動ポーリングで待たない。
+- 送信結果の `message_id` は必ず保持する。`state: queued` / `accepted` は受付・永続化だけで、受信側への提示や読了・返信の証拠ではない。
+- 返答に依存しない作業は続けてよいが、相談は返信待ちとして保持する。返答が必要な判断を、相談が済んだものとして進めない。返信は自動で届くため、`--read` や `sleep` の連続ポーリングで待たない。
 - `command not found: tproj-msg` なら `export PATH="$HOME/bin:$PATH"` してから再実行。
 - `--session` / `--as` は「自分が誰か」を指定するだけの補助。自分の正しい値だけを使う
   （Cdx は共通契約どおり `--session <session> --as <project>.cdx` を付けてよい）。
@@ -72,7 +72,7 @@ EOF
 - `"delivery_pending": true` 付き … 別Macへの転送がまだ途中。自動で再試行されるので、自分で再送しない。
 - `tproj-msg message <ID>` … 当事者（送信者または受信者）がその ID の現在状態を一度確認できる。`presented` だけが受信者への提示記録で、`adapter_received` / `queued` はそれ未満。
 - `"state": "rejected"` / `"expired"` / `"stale_session"` … 届かなかった、または受信 endpoint が失効した。具体的な状態をユーザーに伝える。
-- 返答が必要な相談は、`presented` または `queued` のどちらでも返信が来るまで未完了。返信が自動表示された時だけ実質的な応答として扱う。
+- 返答が必要な相談は、`presented` または `queued` のどちらでも返信が来るまで未完了。自動配信または自分の inbox で実際の回答本文を読んで、依頼した質問への回答か確認し、元の作業へ反映する。受信確認だけの返事は回答の代わりではない。
 
 受信者側で実際に inbox を消費した場合だけ、受信者自身が次を実行できる:
 
@@ -101,7 +101,7 @@ Reply to this message with: tproj-msg reply <ID> --stdin
 
 | 症状 | どうするか |
 |---|---|
-| 送信は `queued` だが返答がない | `tproj-msg message <ID>` を一度確認し、`queued` / `adapter_received` / `presented` を区別する。`queued` のままなら未提示として報告し、再送・force・旧方式への切替をしない。相手を起こすようユーザーに依頼しない |
+| 送信は `queued` だが返答がない | `tproj-msg message <ID>` を一度確認し、`queued` / `adapter_received` / `presented` を区別する。未提示なら、確認できるペイン・配達ログ・生存状態から、入力中/作業中による保留、接続断、endpoint失効、配達処理の故障を切り分ける。許可された範囲で安全に直せる原因は解消する。正当な保留は理由と返信待ちを残し、受付だけで完了扱いにしない。再送・force・旧方式への切替や、ユーザーへの起動代行依頼はしない |
 | `presented` だが実質的な返答がない | 提示済み・返信待ちとして扱う。`ack` を返信や完了の代用にせず、`--read` / `sleep` のポーリングもしない |
 | 結果がはっきりしない（`Submission ID: <id>` が表示された） | `tproj-msg --retry <その submission ID>` だけ使う。普通に打ち直すと二重送信になる |
 | `identity_rejected` | 送信者の本人確認で拒否された。`--as` や別名に替えて送り直さない。ユーザーに報告 |
