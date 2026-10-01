@@ -91,10 +91,11 @@ Before implementation, the external assistant integration needs:
    IDs, idempotent retry, expiry, replay rejection, and explicit states for
    accepted, presented, and replied. Unknown outcomes must remain recoverable
    without creating a second message.
-4. **Provider API evidence.** Document the official API surface, authentication
-   model, webhook or stream signature, ordering/duplication rules, rate/error
-   behavior, and data-retention limits. Do not infer these from a successful
-   network connection.
+4. **Supported integration-surface evidence.** Document the provider's
+   officially supported transport (an authenticated MCP/event path may be
+   sufficient), authentication model, webhook or stream signature,
+   ordering/duplication rules, rate/error behavior, and data-retention limits.
+   Do not infer these from a successful network connection.
 5. **Restart semantics.** Reconnect must either preserve the authenticated
    conversation binding or intentionally create a new endpoint incarnation;
    only the documented OpenClaw participant exception may rebind a pinned
@@ -118,6 +119,83 @@ These are acceptance targets, not current results:
 
 Until these cases are demonstrated with the provider's official interfaces,
 the correct status remains **unimplemented; no live success proven**.
+
+## Staged implementation sequence (future work)
+
+The implementation order is deliberately gated. Each stage must leave the
+existing local transport usable and must not silently broaden authority.
+
+1. **Discovery gate.** Obtain and record the provider's officially supported
+   outbound/inbound transport (including an authenticated MCP/event path if
+   that is the supported route), authentication, event-signature, retry, and
+   conversation-binding documentation. Reproduce a bounded request/event
+   exchange in a disposable test participant. Do not write runtime code until
+   the provider's native conversation-to-event mapping is evidenced. The
+   current issue trail is
+   [issue #14](https://github.com/usedhonda/tproj/issues/14) and
+   [comment 5925344889](https://github.com/usedhonda/tproj/issues/14#issuecomment-5925344889);
+   it currently has no provider reply proving those prerequisites.
+2. **Independent multi-service registry and adapter.** Add a registry model
+   in which every external service has its own participant, credential,
+   endpoint incarnation, owner host, and revocation state. The adapter stores
+   only authenticated conversation bindings and delivery cursors. The
+   existing host-local mailbox remains the sole message authority; the adapter
+   must not create a second message ledger or claim presentation independently
+   of the mailbox.
+3. **Bounded acceptance.** Enable one enrolled service and one or two known
+   conversations behind explicit operator control. Prove send, receive,
+   reply, restart, duplicate-event, expiry, and revocation cases, then review
+   logs and receipts for cross-project isolation before any broader rollout.
+
+### Operator boundaries
+
+Installation, enrollment, credential rotation, revocation, and recovery are
+operator actions. An installer may provision the adapter and its local
+configuration only after the operator selects the service and owner host; it
+must not auto-enroll a host, change existing project aliases, restart agent
+sessions, or create a fallback identity. Revocation must retire the service
+endpoint and invalidate its credential before deleting local binding material.
+Recovery must preserve the mailbox's message IDs and receipts, reconcile
+unknown delivery states, and require an explicit decision before replaying or
+discarding pending events. A provider outage, missing signature, or ambiguous
+conversation binding is a fail-closed condition, not an invitation to use an
+alias or a new active conversation.
+
+### Addressing and v1 surface
+
+Every request uses a full recipient address (`<project>.cc`, `<project>.cdx`,
+or a registered service address). Replies are routed to the conversation that
+originated the message, using its authenticated binding and original message
+ID; the adapter must never reply to whichever cloud conversation happens to
+be active at delivery time.
+
+The first version is intentionally narrow: `list`, `status`, `send`, `inbox`,
+`message`, `reply`, and `ack`. It does not expose shell execution, tasks, role
+handoff, or a new authority channel. Existing Chi and Role behavior remains
+unchanged; no compatibility claim is made for those out-of-scope surfaces.
+Draft and composer safety remains a host-side guard: an adapter may not inject
+into a live draft, typing/busy pane, selection screen, or otherwise uncertain
+terminal state merely because a provider event arrived.
+
+## Official-document evidence distinction
+
+The provider's official MCP events documentation,
+[MCP events](https://developers.openai.com/plugins/build/mcp-events), describes
+event subscriptions, signed webhooks, replay handling, and accepting an event
+only after a `2xx` response. That documents an event-delivery mechanism; it
+does **not** prove that an original cloud conversation can be resumed after a
+restart or mapped to a tproj endpoint without an additional trusted binding.
+
+The official client reference's provider-supplied `_meta` session value,
+[client-provided `_meta`](https://developers.openai.com/plugins/reference),
+can carry correlation data, but a client-provided value alone does **not**
+authenticate the caller or establish conversation ownership. It must be
+combined with an authenticated adapter context and endpoint incarnation.
+
+Dots/KAI capability and any native API that could provide that trusted mapping
+remain unproven in this investigation. A successful connection, an event
+receipt, or a self-reported session identifier is therefore insufficient live
+evidence.
 
 ## Source pointers
 
