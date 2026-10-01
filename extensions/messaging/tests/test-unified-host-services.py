@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,7 +88,24 @@ class UnifiedHostServicesTest(unittest.TestCase):
             }, recover=False)
             self.assertEqual(host._service_binding({})[0], "openclaw")
             self.assertEqual(host._service_binding({})[1]["address"], "gate")
+            host.hub = lambda op, **args: {"endpoints": []} if op == "endpoints_list" else {}
+            with patch.object(host_mod.subprocess, "run", return_value=self.launchd(os.getpid())), \
+                 patch("identity._process_info", return_value={"pid_start": 42}):
+                ep = host.service(os.getpid(), os.getuid(), {"service_token": "token", "address": "gate"})
+            expected = str(uuid.uuid5(uuid.NAMESPACE_URL, "host-a:gate:%d:42" % os.getpid()))
+            self.assertEqual(ep["endpoint_id"], expected)
             host.db.close()
+
+    def test_duplicate_service_participant_or_address_rejected_before_retirement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self.host(tmp)
+            host.config["services"]["kai"]["participant_id"] = "gate"
+            calls = []
+            host.hub = lambda op, **args: calls.append((op, args)) or {"endpoints": []}
+            with self.assertRaisesRegex(HubError, "duplicate service participant_id"):
+                host.service(os.getpid(), os.getuid(), {
+                    "service_id": "kai", "service_token": "kai-token", "address": "kai"})
+            self.assertEqual(calls, [])
 
     def test_scoped_inbox_message_and_ack_use_authenticated_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp:

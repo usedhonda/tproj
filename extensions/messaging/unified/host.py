@@ -155,7 +155,29 @@ class Host:
             return 'openclaw', cfg
         raise HubError('identity_rejected', 'service identity required')
 
+    def _validate_service_registry(self):
+        """Reject ambiguous service ownership before touching endpoint state."""
+        services = self.config.get('services') or {}
+        if services and not isinstance(services, dict):
+            raise HubError('identity_rejected', 'service registry must be keyed by identity')
+        bindings = []
+        legacy = self.config.get('service') or {}
+        if legacy:
+            bindings.append(('openclaw', legacy))
+        bindings.extend(services.items())
+        seen = {}
+        for service_id, cfg in bindings:
+            if not isinstance(cfg, dict):
+                raise HubError('identity_rejected', 'invalid service binding')
+            for field in ('participant_id', 'address'):
+                value = cfg.get(field)
+                if value and (field, value) in seen:
+                    raise HubError('identity_rejected', f'duplicate service {field}')
+                if value:
+                    seen[(field, value)] = service_id
+
     def service(self, pid, uid, req):
+        self._validate_service_registry()
         service_id, cfg = self._service_binding(req)
         if not all(cfg.get(key) for key in ('token', 'address', 'participant_id')):
             raise HubError('identity_rejected', 'incomplete service binding')
@@ -178,7 +200,11 @@ class Host:
         from identity import _process_info
         info = _process_info(pid)
         start = info['pid_start']
-        ep = dict(endpoint_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{self.config['host_id']}:{service_id}:{cfg['participant_id']}:{pid}:{start}")),
+        legacy_binding = req.get('service_id') is None and bool(self.config.get('service'))
+        endpoint_seed = (f"{self.config['host_id']}:{cfg['participant_id']}:{pid}:{start}"
+                         if legacy_binding else
+                         f"{self.config['host_id']}:{service_id}:{cfg['participant_id']}:{pid}:{start}")
+        ep = dict(endpoint_id=str(uuid.uuid5(uuid.NAMESPACE_URL, endpoint_seed)),
                   participant_id=cfg['participant_id'], host_id=self.config['host_id'],
                   session=cfg['address'], pane='', pid=pid, pid_start=start,
                   runtime_id=f'{pid}:{start}', platform=platform, address=cfg['address'],
