@@ -139,6 +139,12 @@ class MailboxTools:
         except MailboxToolError:
             raise
         except Exception as exc:
+            # Preserve structured host reasons for embedders that expose a
+            # typed RPC exception rather than going through socket_rpc.
+            code = getattr(exc, "code", None)
+            message = getattr(exc, "message", None) or str(exc)
+            if code:
+                raise MailboxToolError(str(code), message) from exc
             raise MailboxToolError("unavailable", "host request failed") from exc
 
     def _list(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
@@ -205,4 +211,3 @@ class MailboxTools:
         for source, dest in (("in_reply_to", "in_reply_to"), ("sender_address", "sender_address")):
             if item.get(source) is not None: out[dest] = item[source]
         return out
-
