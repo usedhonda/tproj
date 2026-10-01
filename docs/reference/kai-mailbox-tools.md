@@ -17,7 +17,15 @@ provide the authorizer, service identity, or credential.
 `MCPServer` also accepts an optional trusted event dispatcher. Only when one is
 injected does `initialize` advertise the `events` capability and route
 `events/list`, `events/subscribe`, and `events/unsubscribe`; the default CLI
-does not advertise or expose event methods.
+does not advertise or expose event methods. Event-enabled initialization
+negotiates protocol `2026-07-28`; mailbox-only initialization remains
+compatible with `2024-11-05`. Subscription and unsubscription preserve the
+MCP event name, empty arguments, webhook mode, and delivery URL shape.
+
+The sibling `external-assistant-tools.json` is a distributed copy of the
+reviewed catalog, so a standalone deployment does not depend on the repository
+`docs/` tree. The server validates that all seven expected names are present;
+it never logs catalog contents, credentials, or callback secrets.
 
 The adapter is not an MCP server, does not register cloud tools, and does not
 start a daemon.  A host integration must inject both a host-socket call and a

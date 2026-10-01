@@ -33,10 +33,22 @@ class MCPServerTest(unittest.TestCase):
         instance = server.MCPServer(events=Events())
         initialized = instance.handle({"jsonrpc": "2.0", "id": 5, "method": "initialize", "params": {}})
         self.assertIn("events", initialized["result"]["capabilities"])
-        response = instance.handle({"jsonrpc": "2.0", "id": 6, "method": "events/subscribe", "params": {}})
+        response = instance.handle({"jsonrpc": "2.0", "id": 6, "method": "events/subscribe", "params": {
+            "name": "kai.mailbox.message", "arguments": {},
+            "delivery": {"mode": "webhook", "url": "https://example.test/hook", "secret": "hidden"},
+        }})
         self.assertEqual(response["result"], {"id": "sub-1"})
         listed = instance.handle({"jsonrpc": "2.0", "id": 7, "method": "events/list", "params": {}})
         self.assertEqual(listed["result"]["events"][0]["name"], "kai.mailbox.message")
+
+    def test_event_protocol_negotiates_2026_and_rejects_old_clients(self):
+        instance = server.MCPServer(events=object())
+        ok = instance.handle({"jsonrpc": "2.0", "id": 8, "method": "initialize",
+                              "params": {"protocolVersion": "2026-07-28"}})
+        self.assertEqual(ok["result"]["protocolVersion"], "2026-07-28")
+        bad = instance.handle({"jsonrpc": "2.0", "id": 9, "method": "initialize",
+                               "params": {"protocolVersion": "2024-11-05"}})
+        self.assertEqual(bad["error"]["code"], -32602)
 
     def test_default_call_fails_closed_without_host_access(self):
         response = server.MCPServer().handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",

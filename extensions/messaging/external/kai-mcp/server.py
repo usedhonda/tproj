@@ -17,17 +17,24 @@ except ImportError:  # direct ``python server.py`` invocation
     from mailbox_tools import MailboxToolError, MailboxTools
 
 PROTOCOL_VERSION = "2024-11-05"
+EVENTS_PROTOCOL_VERSION = "2026-07-28"
+SUPPORTED_PROTOCOL_VERSIONS = (EVENTS_PROTOCOL_VERSION, PROTOCOL_VERSION)
 SERVER_INFO = {"name": "kai-mailbox", "version": "0.1.0"}
 TOOL_NAMES = set(MailboxTools.TOOLS)
 
 
 def _catalog() -> list[dict[str, Any]]:
-    path = Path(__file__).resolve().parents[4] / "docs" / "reference" / "external-assistant-tools.json"
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        tools = value.get("tools") if isinstance(value, dict) else None
-    except (OSError, ValueError, TypeError):
-        tools = None
+    paths = [Path(__file__).with_name("external-assistant-tools.json"),
+             Path(__file__).resolve().parents[4] / "docs" / "reference" / "external-assistant-tools.json"]
+    tools = None
+    for path in paths:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            tools = value.get("tools") if isinstance(value, dict) else None
+        except (OSError, ValueError, TypeError):
+            continue
+        if isinstance(tools, list):
+            break
     if not isinstance(tools, list) or {item.get("name") for item in tools if isinstance(item, dict)} != TOOL_NAMES:
         raise RuntimeError("mailbox tool catalog unavailable or incomplete")
     return tools
@@ -61,16 +68,32 @@ class MCPServer:
         if not isinstance(params, dict):
             return _error(req_id, -32602, "Invalid params")
         if method == "initialize":
+            requested = params.get("protocolVersion")
+            if self.events is not None:
+                if requested not in (None, EVENTS_PROTOCOL_VERSION):
+                    return _error(req_id, -32602, "events require protocol 2026-07-28")
+                selected_version = EVENTS_PROTOCOL_VERSION
+            else:
+                selected_version = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
             capabilities = {"tools": {"listChanged": False}}
             if self.events is not None:
                 capabilities["events"] = {}
             return {"jsonrpc": "2.0", "id": req_id, "result": {
-                "protocolVersion": PROTOCOL_VERSION,
+                "protocolVersion": selected_version,
                 "capabilities": capabilities,
                 "serverInfo": SERVER_INFO,
             }}
         if method == "ping":
             return {"jsonrpc": "2.0", "id": req_id, "result": {}}
+        if method == "server/discover":
+            capabilities = {"tools": {}}
+            if self.events is not None:
+                capabilities["events"] = {}
+            return {"jsonrpc": "2.0", "id": req_id, "result": {
+                "resultType": "complete",
+                "supportedVersions": [EVENTS_PROTOCOL_VERSION] if self.events is not None else list(SUPPORTED_PROTOCOL_VERSIONS),
+                "capabilities": capabilities,
+            }}
         if method == "tools/list":
             return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOL_CATALOG}}
         if method in ("events/list", "events/subscribe", "events/unsubscribe"):
@@ -78,13 +101,23 @@ class MCPServer:
                 return _error(req_id, -32601, "Method not found")
             try:
                 if method == "events/list" and hasattr(self.events, "definition"):
+                    if params.get("cursor") not in (None, ""):
+                        return {"jsonrpc": "2.0", "id": req_id, "result": {"events": [], "nextCursor": None}}
                     result = {"events": [self.events.definition()], "nextCursor": None}
                 elif method == "events/subscribe" and hasattr(self.events, "subscribe"):
+                    if params.get("name") != getattr(self.events, "definition")().get("name") or params.get("arguments", {}) != {}:
+                        return _error(req_id, -32602, "Invalid event arguments")
                     delivery = params.get("delivery") if isinstance(params.get("delivery"), dict) else params
+                    if not isinstance(delivery, dict) or delivery.get("mode") != "webhook":
+                        return _error(req_id, -32602, "Invalid webhook delivery")
                     result = self.events.subscribe(delivery.get("url"), delivery.get("secret"), params.get("ttlMs"))
                 elif method == "events/unsubscribe" and hasattr(self.events, "unsubscribe"):
-                    subscription_id = params.get("id") or params.get("subscription_id")
-                    result = self.events.unsubscribe(subscription_id)
+                    if params.get("name") != getattr(self.events, "definition")().get("name"):
+                        return _error(req_id, -32602, "Invalid unsubscribe request")
+                    delivery = params.get("delivery")
+                    if not isinstance(delivery, dict) or not isinstance(delivery.get("url"), str):
+                        return _error(req_id, -32602, "Invalid unsubscribe request")
+                    result = self.events.unsubscribe(delivery.get("url"))
                 elif hasattr(self.events, "handle"):
                     result = self.events.handle(method, params)
                 else:
