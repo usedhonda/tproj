@@ -128,6 +128,28 @@ versions fail closed for that connection, without selecting legacy transport.
 The optional OpenClaw participant obeys the same ownership rule; its absence
 has no effect on ordinary project messaging.
 
+## Independent local services
+
+The host adapter may retain the legacy `service` object for the projectless
+OpenClaw main participant and may additionally configure a `services` mapping
+keyed by stable service identity (for example, `kai`). Each entry has its own
+participant ID, address, token, launchd label, process incarnation, and
+`platform`. A non-OpenClaw identity cannot claim `platform: "openclaw"`.
+Service requests select the identity with `service_id`; an address or token
+alone never selects another service. The host verifies the local UID, token,
+exact configured address, launchd PID, and kernel process-start value before
+registering that service endpoint. This authenticates only the local service
+process; it does not establish a cloud-provider adapter or conversation
+binding.
+
+In addition to `service_send`, `service_reply`, `service_claim`, and
+`service_receipt`, an authenticated service may use `service_inbox`,
+`service_message`, and `service_ack`. These are endpoint-scoped equivalents
+of `inbox`, `message`, and `ack`: query and acknowledgement remain bound to
+the authenticated recipient and preserve the original-recipient check for
+replies and receipts. Independent service configuration does not replace or
+restart the OpenClaw participant.
+
 Standalone tmux discovery retains each live candidate found in a distinct pane
 for an otherwise-unregistered participant.  If more than one such endpoint is
 live, binding and target resolution fail closed as ambiguous; discovery never

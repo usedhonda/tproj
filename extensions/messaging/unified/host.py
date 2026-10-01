@@ -131,12 +131,41 @@ class Host:
         except IdentityError as exc:
             raise HubError('identity_rejected', str(exc)) from exc
 
-    def service(self, pid, uid, req):
+    def _service_binding(self, req):
+        """Return (stable service identity, config) without alias inference.
+
+        ``service`` is the legacy OpenClaw singleton.  New deployments use a
+        mapping keyed by an explicit stable service identity; callers must
+        name that identity rather than selecting a credential by address.
+        """
+        services = self.config.get('services') or {}
+        if services and not isinstance(services, dict):
+            raise HubError('identity_rejected', 'service registry must be keyed by identity')
+        service_id = req.get('service_id')
+        if service_id is not None:
+            if not isinstance(service_id, str) or not service_id or service_id not in services:
+                raise HubError('identity_rejected', 'unknown service identity')
+            cfg = services[service_id]
+            if not isinstance(cfg, dict):
+                raise HubError('identity_rejected', 'invalid service binding')
+            return service_id, cfg
+        # Keep the existing OpenClaw configuration path working unchanged.
         cfg = self.config.get('service') or {}
+        if cfg:
+            return 'openclaw', cfg
+        raise HubError('identity_rejected', 'service identity required')
+
+    def service(self, pid, uid, req):
+        service_id, cfg = self._service_binding(req)
+        if not all(cfg.get(key) for key in ('token', 'address', 'participant_id')):
+            raise HubError('identity_rejected', 'incomplete service binding')
         if uid != os.getuid() or not cfg.get('token') or not secrets.compare_digest(str(req.get('service_token', '')), cfg['token']):
             raise HubError('identity_rejected', 'invalid service credential')
         if req.get('address', cfg['address']) != cfg['address']:
             raise HubError('identity_rejected', 'service address mismatch')
+        platform = cfg.get('platform', 'openclaw' if service_id == 'openclaw' else service_id)
+        if service_id != 'openclaw' and platform == 'openclaw':
+            raise HubError('identity_rejected', 'non-OpenClaw service cannot use openclaw platform')
         label = cfg.get('launchd_label')
         if not label:
             raise HubError('identity_rejected', 'service launchd binding required')
@@ -149,10 +178,11 @@ class Host:
         from identity import _process_info
         info = _process_info(pid)
         start = info['pid_start']
-        ep = dict(endpoint_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{self.config['host_id']}:{cfg['participant_id']}:{pid}:{start}")),
+        ep = dict(endpoint_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{self.config['host_id']}:{service_id}:{cfg['participant_id']}:{pid}:{start}")),
                   participant_id=cfg['participant_id'], host_id=self.config['host_id'],
                   session=cfg['address'], pane='', pid=pid, pid_start=start,
-                  runtime_id=f'{pid}:{start}', platform='openclaw', address=cfg['address'])
+                  runtime_id=f'{pid}:{start}', platform=platform, address=cfg['address'],
+                  service_id=service_id)
         for old in self.hub('endpoints_list')['endpoints']:
             if old['participant_id'] == ep['participant_id'] and old['endpoint_id'] != ep['endpoint_id'] and not old['retired']:
                 self.hub('endpoint_retire', endpoint_id=old['endpoint_id'])
@@ -209,12 +239,12 @@ class Host:
         if op == 'service_receipt':
             return self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=req['message_id'],
                             state=req['state'], evidence=json.dumps(req.get('evidence', {})))
-        if op == 'inbox':
+        if op in ('inbox', 'service_inbox'):
             return self.hub('inbox', endpoint_id=ep['endpoint_id'],
                             cursor=req.get('cursor', 0), limit=req.get('limit', 100))
-        if op == 'message':
+        if op in ('message', 'service_message'):
             return self.hub('query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
-        if op == 'ack':
+        if op in ('ack', 'service_ack'):
             message = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
             if message['recipient_endpoint'] != ep['endpoint_id']:
                 raise HubError('identity_rejected', 'only recipient may acknowledge')
