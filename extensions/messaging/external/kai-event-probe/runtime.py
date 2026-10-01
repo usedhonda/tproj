@@ -102,6 +102,7 @@ def _runner(binary: Path, base: Path, profile_dir: Path, profile: str, key_file:
             f"BASE={shlex.quote(str(base))}\nPROFILE_DIR={shlex.quote(str(profile_dir))}\n" +
             f"KEY_FILE={k}\n" +
             "[ -d \"$BASE\" ] && [ ! -L \"$BASE\" ] || { echo 'unsafe runtime base' >&2; exit 78; }\n" +
+            "[ -d \"$PROFILE_DIR\" ] && [ ! -L \"$PROFILE_DIR\" ] || { echo 'missing or unsafe profile directory' >&2; exit 78; }\n" +
             "[ -f \"$KEY_FILE\" ] && [ ! -L \"$KEY_FILE\" ] || { echo 'missing or symlinked credential file' >&2; exit 78; }\n" +
             "MODE=$(stat -f '%Lp' \"$KEY_FILE\" 2>/dev/null || stat -c '%a' \"$KEY_FILE\")\n" +
             "[ \"$MODE\" = 600 ] || [ \"$MODE\" = 400 ] || { echo 'credential file must be owner-only' >&2; exit 78; }\n" +
