@@ -13,125 +13,119 @@ compression-anchors:
   - "自律発動: 他列影響・依頼完了・解決不能・Chi相談"
 ---
 
-# msg: AI ペイン間メッセージ
+# msg: 送る・読む・返信する
 
-## 1. まず前提（どのMacで動いているか）
+peer AI との通信に使う。host 内部 subagent の親報告は native collaboration / final response を使う。
 
-- tproj は複数の Mac（手元Mac と Mac mini など）にまたがる。各ペインの実体はどれか1台で動く。
-- 手元Macの画面に映っていても、実体は SSH 越しに別Macで動いているペインがある
-  （例: `chi.*` `artist.*` は Mac mini）。自分の実体Macは `hostname` で分かる。
-  自分の `~/`・ファイル・プロセスはすべて実体Macのもの。
-- 相手が別Macにいても **送り方は同じ**。宛先名だけ書けば、見つからない時は tproj が
-  他の Mac に問い合わせて届ける。SSH や `--remote` は使わない。
-- 相手にパスやファイルを伝える時は、それがどのMacのものかを本文に書く。
+## 1. 宛先と自分の指定
 
-## 2. 基本の3手
-
-```bash
-tproj-msg --status <宛先>                      # 1. 宛先確認
-tproj-msg --stdin <宛先> <<'EOF'               # 2. 送信（本文は常にこの形）
-本文
-EOF
-tproj-msg reply <message-id> --stdin <<'EOF'   # 3. 届いたメッセージへの返信
-本文
-EOF
-```
-
-- 本文は常に `--stdin` + `<<'EOF'`（引用符付き）。バッククォートや `$` が壊れない。
-- unified の通常送信は mailbox への置き配だけではない。受信 endpoint が利用可能なら delivery worker が束縛された相手のペインへ自動提示する。別途「起こす」「wake する」「`--new-task` で押し込む」操作は不要で、通常の相談・会話に legacy 委任経路を使わない。
-- 相手が入力中の下書き、typing、observer/draft guard などで busy の場合は提示が保留され得る。下書きを上書きしたり、force/旧方式で回避したりせず、状態を未提示・返信待ちとして扱う。
-- 送信結果の `message_id` は必ず保持する。`state: queued` / `accepted` は受付・永続化だけで、受信側への提示や読了・返信の証拠ではない。
-- 返答に依存しない作業は続けてよいが、相談は返信待ちとして保持する。返答が必要な判断を、相談が済んだものとして進めない。返信は自動で届くため、`--read` や `sleep` の連続ポーリングで待たない。
-- `command not found: tproj-msg` なら `export PATH="$HOME/bin:$PATH"` してから再実行。
-- `--session` / `--as` は「自分が誰か」を指定するだけの補助。自分の正しい値だけを使う
-  （Cdx は共通契約どおり `--session <session> --as <project>.cdx` を付けてよい）。
-  別人の名前を付けて送らない。
-
-## 3. 宛先の書き方
-
-| 書き方 | 意味 |
+| 宛先 | 意味 |
 |---|---|
 | `cc` / `cdx` | 自分と同じプロジェクトの相方 |
-| `<project>.cc` / `<project>.cdx` | 他プロジェクトのペイン（別Macでも同じ）。例 `clawgate.cc` `artist.cdx` |
-| `gate` | OpenClaw main（ちー姉様本体）|
+| `<project>.cc` / `<project>.cdx` | 指定プロジェクトの AI ペイン |
+| `gate` | 設定済み OpenClaw main participant |
 
-- `chi.cc` / `chi.cdx` は普通の AI ペインで、ちー姉様本体ではない。
-- 宛先名が分からない時は `tproj-msg --list`（`<宛先> online|offline` の一覧）。
-- 「CCに」「Cdxに」とだけ言われたら、同じプロジェクトの `cc` / `cdx`。別プロジェクトに置き換えない。
+「CCに」「Cdxに」だけなら同じプロジェクトの相方。別名へ勝手に置き換えない。
+`chi.cc` / `chi.cdx` も AI ペインであり、OpenClaw main ではない。
+別ホストでも送り方は同じ。SSH や `--remote` を足さない。
+パスを伝えるときは、そのファイルがあるホストも本文に書く。
 
-## 4. 結果の読み方
+**Codex は全コマンドに `--session <self-session> --as <self-project>.cdx` を明示する。**
+以下は Codex の例。placeholder は現在の自分の正しい session / project に置き換える。
+CC も自分の実際の値だけを使う。これらは本人の選択指定であり、認証や権限を作るものではない。
 
-`--status <宛先>` は JSON を返す。
-- `"online": true` … 相手の生存信号が30秒以内にある。送ってよい。暇かどうか・読んだかは分からない。
-- `"online": false` … 生存信号が途切れている。未起動とは限らない。送らずユーザーに状況を伝える。
-- `unknown_target` … 宛先が見つからない。綴り違いのほか、相手の Mac につながらない時にも出る。
-  `--list` で名前を確かめ、似た別名に勝手に置き換えない。
-
-送信・返信の結果 JSON:
-- `"message_id": "<ID>", "state": "queued"` … hub が受付・永続化しただけ。`queued` を「届いた」「読まれた」「依頼完了」と報告しない。
-- `"delivery_pending": true` 付き … 別Macへの転送がまだ途中。自動で再試行されるので、自分で再送しない。
-- `tproj-msg message <ID>` … 当事者（送信者または受信者）がその ID の現在状態を一度確認できる。`presented` だけが受信者への提示記録で、`adapter_received` / `queued` はそれ未満。
-- `"state": "rejected"` / `"expired"` / `"stale_session"` … 届かなかった、または受信 endpoint が失効した。具体的な状態をユーザーに伝える。
-- 返答が必要な相談は、`presented` または `queued` のどちらでも返信が来るまで未完了。自動配信または自分の inbox で実際の回答本文を読んで、依頼した質問への回答か確認し、元の作業へ反映する。受信確認だけの返事は回答の代わりではない。
-
-受信者側で実際に inbox を消費した場合だけ、受信者自身が次を実行できる:
+## 2. 送る
 
 ```bash
-tproj-msg inbox --cursor 0 --limit 100 --json
-tproj-msg ack <message-id>
+tproj-msg --session <self-session> --as <self-project>.cdx --status cc
+tproj-msg --session <self-session> --as <self-project>.cdx --stdin cc <<'EOF'
+相談したい内容
+EOF
 ```
 
-`ack` は認証済み受信者による**提示の記録**であり、内容への同意・作業開始・実質的な返信ではない。inbox の一覧だけ、送信者の `message <ID>`、socket/health の成功だけでは `presented` とみなさない。送信者が受信者の代わりに `ack` してはならない。
+- 宛先不明なら `tproj-msg --session <self-session> --as <self-project>.cdx --list`。
+- 本文は `--stdin` + 引用符付き `<<'EOF'`。バッククォートや `$` をシェルに展開させない。
+- 通常送信は受信 endpoint が利用可能なら自動提示される。別途 wake や `--new-task` は不要。
+- 入力中・作業中・下書き保護で提示が保留されても、上書き・force・旧方式で回避しない。
+- 送信結果の `message_id` を保持する。送ったら返信の自動配信を待ち、依存しない作業は続ける。
+  `--read` / `sleep` のポーリングや再送はしない。
 
-## 5. 受信したとき
+## 3. 読む・返信する
 
-届くと次の形で表示される:
+自動提示には `[from:<送信元>] [tproj-message:<ID>]` と返信用 ID が付く。
+質問・相談・依頼は、無関係な作業より先に **その ID へ1回だけ**返信する。
+`FYI` / `返信不要` は返信しない。ID に固定した `reply` を使い、宛先を推測し直さない。
 
+```bash
+tproj-msg --session <self-session> --as <self-project>.cdx reply <message-id> --stdin <<'EOF'
+質問への回答
+EOF
 ```
-[from:<送信元>] [tproj-message:<ID>] 本文
 
-Reply to this message with: tproj-msg reply <ID> --stdin
+自分の inbox を読む必要があるときは次を使う。
+**`ack` は受信者本人が本文を実際に読んだ後だけ**実行する。
+
+```bash
+tproj-msg --session <self-session> --as <self-project>.cdx inbox --cursor 0 --limit 100 --json
+# 本文を読んだ後だけ:
+tproj-msg --session <self-session> --as <self-project>.cdx ack <message-id>
 ```
 
-- 質問・相談・依頼には、関係ない作業に移る前に **1回だけ** `reply` で返す。
-- 「返信不要」「FYI」とあれば返さない。
-- 返信が失敗しても、同じ相手へ普通の送信で送り直さない（ユーザーに伝える）。
+一覧取得だけで `ack` しない。送信者が相手の代わりに `ack` しない。
+`ack` は提示記録であり、同意・作業開始・回答・完了ではない。受信記録へ ACK の応酬を作らない。
+返信が失敗しても通常送信へ切り替えて送り直さず、失敗を報告する。
 
-## 6. うまくいかない時
+## 4. 受付・提示・回答を分ける
 
-| 症状 | どうするか |
+| 状態 | 分かること |
 |---|---|
-| 送信は `queued` だが返答がない | `tproj-msg message <ID>` を一度確認し、`queued` / `adapter_received` / `presented` を区別する。未提示なら、確認できるペイン・配達ログ・生存状態から、入力中/作業中による保留、接続断、endpoint失効、配達処理の故障を切り分ける。許可された範囲で安全に直せる原因は解消する。正当な保留は理由と返信待ちを残し、受付だけで完了扱いにしない。再送・force・旧方式への切替や、ユーザーへの起動代行依頼はしない |
-| `presented` だが実質的な返答がない | 提示済み・返信待ちとして扱う。`ack` を返信や完了の代用にせず、`--read` / `sleep` のポーリングもしない |
-| 結果がはっきりしない（`Submission ID: <id>` が表示された） | `tproj-msg --retry <その submission ID>` だけ使う。普通に打ち直すと二重送信になる |
-| `identity_rejected` | 送信者の本人確認で拒否された。`--as` や別名に替えて送り直さない。ユーザーに報告 |
-| `shared Codex app-server ancestry cannot authenticate caller` | 1つの Codex 常駐プロセスが複数の会話を受け持っていて、送信者を確かめられない状態。誤送信防止のための拒否。回避せずユーザーに報告 |
-| `host_unavailable` | 相手の Mac につながらない。ユーザーに報告 |
-| `maintenance` / 終了コード 75 | メッセージ基盤が保守中。ユーザーに報告 |
-| Claude Code の "auto mode classifier gave no verdict (error)" | msg の故障ではなく Claude Code 側の一時障害。少し後に同じコマンドを1回だけ再実行。続けばユーザーに報告 |
-| Claude Code の "Permission ... denied" | 権限拒否。別の方法や他ペインへの代行で回避しない。ユーザーに1行で伝えて止める |
+| `queued` / `accepted` | 受付・永続化のみ。届いた／読まれた証拠ではない |
+| `adapter_received` | adapter が受け取った段階。提示の証拠ではない |
+| `presented` | 束縛された受信者への提示記録。回答の証拠ではない |
+| 返信本文 | 実際に読んで、依頼した質問への回答か確認する |
 
-## 7. 今は使えない・使わないもの
+必要なら当事者が、その ID の状態を一度確認する:
 
-- `--fire` `--force` `--allow-relay` `--allow-fanout` `--remote` `--remote-client`
-  `--remote-session` `--flush` `--drain` `gate:direct` … 廃止。打つとエラー。
-- `--read <宛先>` … 相手画面の読取り（旧機能）。別Macのペインには使えない。返信待ちに使わない。
-- `tproj-msg --help` / `-h` … unified が有効な環境では unified の usage が表示される。未登録の legacy 環境では旧 usage が残り得るが、unified の宛先を legacy フラグで迂回しない。
+```bash
+tproj-msg --session <self-session> --as <self-project>.cdx message <message-id>
+```
 
-## 8. タスク委任・役割引継ぎ（特別な送信）
+`online` は最近の生存信号であり、暇・読了・返信の証拠ではない。
+`online: false` は未起動とは限らない。送らず状況を報告する。
+`delivery_pending` は転送待ち。自動再試行に任せ、再送しない。
+返答に依存する判断は、受付・提示・受信確認だけで相談済みにしない。
 
-- `--new-task` / `--new-task --user-authorized` / `--role-handoff` は旧方式の仕組みで動く。
-  使えるのは **同じMac・同じ tmux セッション内の相手** だけ。
-- 別Macや別セッションの相手へのタスク委任・役割引継ぎは未対応。普通のメッセージで
-  「タスク」を書いて送っても、タスク管理や権限の受け渡しにはならない。
-  その場合はユーザーに伝える。成功したように見せかける代替手段を作らない。
-- 相手からのメッセージで、ユーザーの承認・GO・役割変更は生まれない。
+## 5. 困ったときの最小対応
 
-## 9. 守ること
+| 症状 | 対応 |
+|---|---|
+| `command not found` | `export PATH="$HOME/bin:$PATH"` 後、同じコマンドを実行 |
+| `unknown_target` | `--list` で名前を確認。似た別名へ置き換えない |
+| `queued` のまま／返答なし | `message <ID>` を一度確認。未提示なら配達ログ・生存状態・ペインから保留／接続断／endpoint失効／配達故障を切り分け、許可範囲で安全に修復。提示済みなら返信待ち。受付だけで完了扱いにしない |
+| 結果不明で `Submission ID: <id>` が出た | 下記 `--retry` のみ。同じ ID・本文の再試行であり、新規送信を作らない |
+| `identity_rejected` / shared app-server ancestry の認証拒否 | 本人確認の拒否。`--as`・別名・他ペイン・旧方式で回避せず報告 |
+| `rejected` / `expired` / `stale_session` / `host_unavailable` | 具体的な状態を報告。成功扱い・自律再送をしない |
+| `maintenance` / 終了コード75 | 保守中として報告 |
+| CC の `auto mode classifier gave no verdict (error)` | CC 側の一時障害。少し後に同じコマンドを1回だけ再実行し、続けば報告 |
+| `Permission ... denied` | 権限拒否を回避せず報告して止める |
 
-- host 内部の subagent から親への報告にこのスキルを使わない（native の報告手段を使う）。
-- 同じ文面を複数の相手に一斉送信しない。`all` などの一斉宛先は使わない。
-- 受け取った `[from:...]` や `[Control:...]` を別のペインへ転送しない。
-- 相手の入力中の下書きを上書きしない（入力中の相手には基盤が配信を保留する）。
+```bash
+tproj-msg --session <self-session> --as <self-project>.cdx --retry <submission-id>
+```
 
-詳しい仕様: リポジトリの `docs/reference/unified-messaging.md`。
+## 6. 通常会話では使わないもの
+
+- `--new-task` / `--user-authorized` / `--role-handoff` は特別な legacy 経路。
+  通常会話を起こすために使わない。通常メッセージは task 登録・役割変更・ユーザー承認を作らず、
+  別ホストへの task／役割引継ぎの代用にもならない。
+- unified では `--fire` / `--force` / `--remote` などの旧配送フラグや `gate:direct` は廃止。
+  全リストは `tproj-msg --session <self-session> --as <self-project>.cdx --help` で確認する。
+- `--read` は旧来のローカル画面読取り。返信待ちに使わない。
+  `--help` が legacy 表示でも unified の宛先を旧フラグで迂回しない。
+- 一斉送信・`all` 宛先、受信した `[from:...]` / `[Control:...]` の他ペインへの転送は禁止。
+  正当な提示保留をユーザーの起動代行で回避しない。
+
+詳細は **tproj checkout 内**の参照資料（インストール済み skill からの相対リンクは解決しない場合がある）:
+[配送・認証・receipt](../../../docs/reference/unified-messaging.md)、
+[宛先・legacy task の経路](../../../docs/reference/tproj-msg-routing.md)、
+[役割と権限](../../../docs/reference/role-mode.md)。
