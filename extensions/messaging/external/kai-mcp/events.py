@@ -63,7 +63,10 @@ class KAIEventDelivery:
         return {"id": sid, "refreshBefore": expiry}
 
     def unsubscribe(self, sid: str) -> None:
-        binding=self._binding(); state = self._load(); sub=state.setdefault("subscriptions", {}).get(sid)
+        binding=self._binding(); state = self._load()
+        if sid.startswith("https://"):
+            sid = "sub_" + hashlib.sha256((sid + binding.binding_id).encode()).hexdigest()[:32]
+        sub=state.setdefault("subscriptions", {}).get(sid)
         if sub and (sub.get("binding") != binding.binding_id or sub.get("incarnation") != binding.incarnation): raise RuntimeError("subscription ownership mismatch")
         state["subscriptions"].pop(sid, None); self._save(state)
 
@@ -71,14 +74,14 @@ class KAIEventDelivery:
         binding = self._binding(); state = self._load(); now = time.time(); queued = 0
         for sid, sub in list(state.get("subscriptions", {}).items()):
             if sub.get("binding") != binding.binding_id or sub.get("incarnation") != binding.incarnation or now >= sub.get("expiresAt", 0): continue
-            result=binding.reader(state.get("cursor", {}).get(sid)); messages=result.get("messages",[]) if isinstance(result,dict) else result
+            result=binding.reader(state.get("cursor", {}).get(sid)); messages=result.get("messages",[]) if isinstance(result,dict) else []
             for message in messages:
-                mid = message.get("id") if isinstance(message, dict) else None
+                mid = message.get("message_id") if isinstance(message, dict) else None
                 if not isinstance(mid, str) or not mid: continue
                 eid = "evt_" + hashlib.sha256((sid + "\0" + mid).encode()).hexdigest()[:32]
                 if eid in state.setdefault("outbox", {}): continue
                 state["outbox"][eid] = {"subscription": sid, "payload": {"eventId": eid, "name": EVENT_NAME, "timestamp": time.time(), "data": {"messageId": mid}, "cursor": None}, "attempts": 0, "nextAt": now}
-                state.setdefault("cursor", {})[sid] = message.get("cursor",mid) if isinstance(message,dict) else mid; queued += 1
+                state.setdefault("cursor", {})[sid] = result.get("next_cursor") if isinstance(result,dict) else None; queued += 1
                 if queued >= limit: break
         for eid, item in state.get("outbox", {}).items():
             if item.get("nextAt", 0) > now or item.get("status") in ("sent","terminal"): continue
