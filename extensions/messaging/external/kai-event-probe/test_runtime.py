@@ -17,7 +17,7 @@ class RuntimeTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.binary = self.root / "tunnel-client"
-        self.binary.write_text("#!/bin/sh\nmkdir -p \"$5/profiles\"\nprintf '{}' > \"$5/profiles/kai-event-probe.yaml\"\n")
+        self.binary.write_text("#!/bin/sh\nmkdir -p \"$5\"\nprintf '{}' > \"$5/kai-event-probe.yaml\"\n")
         self.binary.chmod(0o700)
 
     def tearDown(self):

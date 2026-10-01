@@ -110,7 +110,7 @@ def _runner(binary: Path, base: Path, profile_dir: Path, profile: str, key_file:
             f"KEY_FILE={k}\n" +
             "[ -d \"$BASE\" ] && [ ! -L \"$BASE\" ] || { echo 'unsafe runtime base' >&2; exit 78; }\n" +
             "[ -d \"$PROFILE_DIR\" ] && [ ! -L \"$PROFILE_DIR\" ] || { echo 'missing or unsafe profile directory' >&2; exit 78; }\n" +
-            f"PROFILE_FILE=\"$PROFILE_DIR/profiles/{profile}.yaml\"\n" +
+            f"PROFILE_FILE=\"$PROFILE_DIR/{profile}.yaml\"\n" +
             "[ -f \"$PROFILE_FILE\" ] && [ ! -L \"$PROFILE_FILE\" ] || { echo 'profile is not initialized' >&2; exit 78; }\n" +
             "[ -f \"$KEY_FILE\" ] && [ ! -L \"$KEY_FILE\" ] || { echo 'missing or symlinked credential file' >&2; exit 78; }\n" +
             "MODE=$(stat -f '%Lp' \"$KEY_FILE\" 2>/dev/null || stat -c '%a' \"$KEY_FILE\")\n" +
@@ -138,7 +138,7 @@ def prepare(args: argparse.Namespace) -> dict:
     profile = _token(args.profile, "profile")
     tunnel_id = _token(args.tunnel_id, "tunnel ID")
     label = _token(args.label, "launchd label")
-    profile_dir = base
+    profile_dir = base / "profiles"
     runner_path = base / "run.sh"
     plist_path = base / f"{label}.plist"
     manifest_path = base / MANIFEST
@@ -155,7 +155,9 @@ def prepare(args: argparse.Namespace) -> dict:
             raise RuntimeError_("conflicting runtime manifest; refusing overwrite")
     else:
         _write_new(manifest_path, (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(), 0o600)
-    expected_profile = profile_dir / "profiles" / f"{profile}.yaml"
+    expected_profile = profile_dir / f"{profile}.yaml"
+    if not profile_dir.exists():
+        profile_dir.mkdir(mode=0o700)
     if expected_profile.exists() and expected_profile.is_symlink():
         raise RuntimeError_("conflicting symlinked profile")
     if not expected_profile.exists() and _safe_key(key_file):
