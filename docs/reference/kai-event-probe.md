@@ -12,7 +12,9 @@ or imports mailbox data.
 - `events/subscribe` verifies a public HTTPS callback with a signed one-use
   challenge, then stores an idempotent subscription in local state.
 - `events/unsubscribe` is idempotent.
-- `--send-event SUBSCRIPTION_ID` sends exactly one synthetic event. This is an
+- `--send-event SUBSCRIPTION_ID` sends exactly one synthetic event. Add
+  `--event-id evt_fixed` when a retry must reconcile the same event; the probe
+  persists the exact payload and rejects reuse with different data. This is an
   explicit operator command; it is not wired to a mailbox or tproj runtime.
 
 Subscriptions are stored at `~/.local/share/tproj/kai-event-probe/` (or
@@ -20,7 +22,15 @@ Subscriptions are stored at `~/.local/share/tproj/kai-event-probe/` (or
 Secrets are never printed. Callback validation requires HTTPS and rejects
 private, loopback, link-local, reserved, multicast, and unspecified addresses;
 redirects are not followed. Delivery uses Standard Webhooks HMAC headers and
-one event per request, with a 256 KiB body limit.
+one event per request, with a 256 KiB body limit. DNS is resolved once per
+connection and the validated public address is pinned while TLS still uses the
+original hostname. State is locked across processes; malformed state fails
+closed rather than being replaced.
+
+The probe reports only presence and SHA-256 digests of supported client context
+metadata (`_meta` subject/session/organization). These digests are diagnostics,
+not authentication or proof of ownership of a cloud conversation; missing
+metadata remains absent/unverified.
 
 ## Launch
 
@@ -35,6 +45,7 @@ probe does not enroll, send, or push anything externally by itself.
 
 ```bash
 python3 -m py_compile extensions/messaging/external/kai-event-probe/server.py
+python3 -m unittest extensions/messaging/external/kai-event-probe/test_server.py
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"server/discover"}' | python3 extensions/messaging/external/kai-event-probe/server.py
 ```
 
