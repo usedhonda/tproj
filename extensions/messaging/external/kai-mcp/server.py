@@ -77,7 +77,15 @@ class MCPServer:
             if self.events is None:
                 return _error(req_id, -32601, "Method not found")
             try:
-                if hasattr(self.events, "handle"):
+                if method == "events/list" and hasattr(self.events, "definition"):
+                    result = {"events": [self.events.definition()], "nextCursor": None}
+                elif method == "events/subscribe" and hasattr(self.events, "subscribe"):
+                    delivery = params.get("delivery") if isinstance(params.get("delivery"), dict) else params
+                    result = self.events.subscribe(delivery.get("url"), delivery.get("secret"), params.get("ttlMs"))
+                elif method == "events/unsubscribe" and hasattr(self.events, "unsubscribe"):
+                    subscription_id = params.get("id") or params.get("subscription_id")
+                    result = self.events.unsubscribe(subscription_id)
+                elif hasattr(self.events, "handle"):
                     result = self.events.handle(method, params)
                 else:
                     handler = getattr(self.events, method.split("/", 1)[1])
@@ -86,6 +94,8 @@ class MCPServer:
                 return _error(req_id, -32000, exc.message, {"code": exc.code})
             except (AttributeError, TypeError, ValueError) as exc:
                 return _error(req_id, -32602, "Invalid event arguments")
+            except Exception:
+                return _error(req_id, -32000, "Event operation rejected")
             if isinstance(result, dict) and result.get("jsonrpc") == "2.0":
                 return dict(result, id=req_id)
             return {"jsonrpc": "2.0", "id": req_id, "result": result if result is not None else {}}

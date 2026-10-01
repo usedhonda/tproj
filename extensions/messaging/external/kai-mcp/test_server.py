@@ -24,7 +24,10 @@ class MCPServerTest(unittest.TestCase):
 
     def test_optional_event_dispatcher_adds_capability_only_when_injected(self):
         class Events:
-            def subscribe(self, params):
+            def definition(self):
+                return {"name": "kai.mailbox.message"}
+
+            def subscribe(self, url, secret, ttl_ms=None):
                 return {"id": "sub-1"}
 
         instance = server.MCPServer(events=Events())
@@ -32,6 +35,8 @@ class MCPServerTest(unittest.TestCase):
         self.assertIn("events", initialized["result"]["capabilities"])
         response = instance.handle({"jsonrpc": "2.0", "id": 6, "method": "events/subscribe", "params": {}})
         self.assertEqual(response["result"], {"id": "sub-1"})
+        listed = instance.handle({"jsonrpc": "2.0", "id": 7, "method": "events/list", "params": {}})
+        self.assertEqual(listed["result"]["events"][0]["name"], "kai.mailbox.message")
 
     def test_default_call_fails_closed_without_host_access(self):
         response = server.MCPServer().handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
