@@ -24,8 +24,8 @@ TOOL_NAMES = set(MailboxTools.TOOLS)
 
 
 def _catalog() -> list[dict[str, Any]]:
-    paths = [Path(__file__).with_name("external-assistant-tools.json"),
-             Path(__file__).resolve().parents[4] / "docs" / "reference" / "external-assistant-tools.json"]
+    paths = [Path(__file__).resolve().parents[4] / "docs" / "reference" / "external-assistant-tools.json",
+             Path(__file__).with_name("external-assistant-tools.json")]
     tools = None
     for path in paths:
         try:
