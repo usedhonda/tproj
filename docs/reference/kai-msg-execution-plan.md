@@ -1,6 +1,6 @@
 # KAI MSG integration: execution plan
 
-Status: remaining-work plan, 2026-10-01. Implementation is **not complete**.
+Status: implementation checkpoint, 2026-10-02. Integration is **not complete**.
 This document owns execution order and acceptance; the linked reference
 contracts own protocol semantics. Machine-specific routes and credentials
 remain in ignored local state.
@@ -26,14 +26,16 @@ tool listing, callback acceptance, or synthetic event alone is not completion.
 | Area | Evidence already available | Still missing |
 | --- | --- | --- |
 | Existing KAI conversation | Development message read and answered through browser | Actual MSG delivery and return to that conversation |
-| Connection-only event probe | `6115aa3`, hardened in `3e1ab9a`; focused tests passed; remote stdio discovery passed | Tunnel connection, subscription, original-chat delivery |
-| Independent service registry | `66cf80a`, corrected in `a7fab6d`; service and integration tests passed | Safe live reflection and KAI enrollment |
+| Connection-only event probe | Dedicated tunnel and plugin connected; original Dots invoked status; event recognized | Subscription, original-chat event receipt and stop proof |
+| Independent service registry | `66cf80a`, corrected in `a7fab6d`; reflected on both hosts without session termination | Authenticated KAI enrollment |
 | Remote wrapper | `c4f94b8` | Shared-app-server conversation authentication remains rejected |
-| Native identity investigation | Read-only native daemon queries work; background terminal results can expose PID fields | Genuine calling-conversation/tool-PID association and isolation |
+| Native identity investigation | Installed version source hardcodes native background-terminal OS PID as absent; `--no-daemon` selects embedded runtime | Authentication of existing caller; endpoint and subagent isolation |
+| Mailbox MCP tools/events | Seven tool dispatcher, durable outbox and bounded retries implemented; `03a0c9d`; Python 15/15 and required shell 11/11 passed | Trusted cloud binding, activation and six live acceptance cases |
 
 Do not repeat the initial KAI capability question or rebuild these completed
-slices. Empty background-terminal results do not establish feasibility or
-infeasibility of native identity binding. Context metadata hashes are diagnostics,
+slices. Native background-terminal logical process IDs are not OS PIDs. The supported
+isolated launch flag does not authenticate an existing caller, and restoring the
+same thread concurrently is not a proven safe migration. Context metadata hashes are diagnostics,
 not authenticated conversation identity.
 
 ## Ordered tasks
