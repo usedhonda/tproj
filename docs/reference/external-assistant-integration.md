@@ -108,14 +108,17 @@ These are acceptance targets, not current results:
 * An enrolled external service can send one message and receive one durable
   reply with matching message ID, thread ID, endpoint incarnation, and
   provider request/event IDs.
-* Two external conversations cannot read, acknowledge, or reply to each
-  other's messages; an expired, retired, or replayed credential is rejected.
+* Two projects, each with two concurrent external conversations, cannot read,
+  acknowledge, or reply to another project's or conversation's messages; an
+  expired, retired, or replayed credential is rejected.
 * A duplicate webhook or retry is idempotent and does not create a second
   message or second presentation receipt.
 * A service restart either resumes through a verified binding or is rejected as
   a new incarnation; no alias-only rebinding occurs.
 * Loss of the provider API, webhook, or host leaves an explicit pending or
   unknown state that can be reconciled without claiming live success.
+* Existing Chi and Role behavior remains unchanged, and the bounded test does
+  not grant either surface new authority or routing semantics.
 
 Until these cases are demonstrated with the provider's official interfaces,
 the correct status remains **unimplemented; no live success proven**.
@@ -170,9 +173,11 @@ ID; the adapter must never reply to whichever cloud conversation happens to
 be active at delivery time.
 
 The first version is intentionally narrow: `list`, `status`, `send`, `inbox`,
-`message`, `reply`, and `ack`. It does not expose shell execution, tasks, role
-handoff, or a new authority channel. Existing Chi and Role behavior remains
-unchanged; no compatibility claim is made for those out-of-scope surfaces.
+`message`, `reply`, and `ack`, for authenticated Claude Code (CC) and
+standalone Codex endpoints only. Shared `codex app-server` conversations are
+not supported by v1. It does not expose shell execution, tasks, role handoff,
+or a new authority channel. Existing Chi and Role behavior remains unchanged;
+no compatibility claim is made for those out-of-scope surfaces.
 Draft and composer safety remains a host-side guard: an adapter may not inject
 into a live draft, typing/busy pane, selection screen, or otherwise uncertain
 terminal state merely because a provider event arrived.
@@ -181,10 +186,12 @@ terminal state merely because a provider event arrived.
 
 The provider's official MCP events documentation,
 [MCP events](https://developers.openai.com/plugins/build/mcp-events), describes
-event subscriptions, signed webhooks, replay handling, and accepting an event
-only after a `2xx` response. That documents an event-delivery mechanism; it
-does **not** prove that an original cloud conversation can be resumed after a
-restart or mapped to a tproj endpoint without an additional trusted binding.
+event subscriptions, signed webhooks, and replay handling. A `2xx` webhook
+response proves delivery acceptance only, not presentation, reading, a reply,
+or original-conversation resumption. That documents an event-delivery
+mechanism; it does **not** prove that an original cloud conversation can be
+resumed after a restart or mapped to a tproj endpoint without an additional
+trusted binding.
 
 The official client reference's provider-supplied `_meta` session value,
 [client-provided `_meta`](https://developers.openai.com/plugins/reference),
