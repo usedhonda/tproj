@@ -20,6 +20,18 @@ class MCPServerTest(unittest.TestCase):
         listed = instance.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         self.assertEqual({tool["name"] for tool in listed["result"]["tools"]}, server.TOOL_NAMES)
         self.assertTrue(all("inputSchema" in tool and "annotations" in tool for tool in listed["result"]["tools"]))
+        self.assertNotIn("events", initialized["result"]["capabilities"])
+
+    def test_optional_event_dispatcher_adds_capability_only_when_injected(self):
+        class Events:
+            def subscribe(self, params):
+                return {"id": "sub-1"}
+
+        instance = server.MCPServer(events=Events())
+        initialized = instance.handle({"jsonrpc": "2.0", "id": 5, "method": "initialize", "params": {}})
+        self.assertIn("events", initialized["result"]["capabilities"])
+        response = instance.handle({"jsonrpc": "2.0", "id": 6, "method": "events/subscribe", "params": {}})
+        self.assertEqual(response["result"], {"id": "sub-1"})
 
     def test_default_call_fails_closed_without_host_access(self):
         response = server.MCPServer().handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",

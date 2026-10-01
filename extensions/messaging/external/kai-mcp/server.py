@@ -44,8 +44,9 @@ def _error(req_id: Any, code: int, message: str, data: Any = None) -> dict[str, 
 
 
 class MCPServer:
-    def __init__(self, tools: MailboxTools | None = None):
+    def __init__(self, tools: MailboxTools | None = None, events: Any = None):
         self.tools = tools
+        self.events = events
 
     def handle(self, request: Any) -> dict[str, Any] | None:
         if not isinstance(request, dict):
@@ -60,15 +61,34 @@ class MCPServer:
         if not isinstance(params, dict):
             return _error(req_id, -32602, "Invalid params")
         if method == "initialize":
+            capabilities = {"tools": {"listChanged": False}}
+            if self.events is not None:
+                capabilities["events"] = {}
             return {"jsonrpc": "2.0", "id": req_id, "result": {
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {"listChanged": False}},
+                "capabilities": capabilities,
                 "serverInfo": SERVER_INFO,
             }}
         if method == "ping":
             return {"jsonrpc": "2.0", "id": req_id, "result": {}}
         if method == "tools/list":
             return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOL_CATALOG}}
+        if method in ("events/list", "events/subscribe", "events/unsubscribe"):
+            if self.events is None:
+                return _error(req_id, -32601, "Method not found")
+            try:
+                if hasattr(self.events, "handle"):
+                    result = self.events.handle(method, params)
+                else:
+                    handler = getattr(self.events, method.split("/", 1)[1])
+                    result = handler(params)
+            except MailboxToolError as exc:
+                return _error(req_id, -32000, exc.message, {"code": exc.code})
+            except (AttributeError, TypeError, ValueError) as exc:
+                return _error(req_id, -32602, "Invalid event arguments")
+            if isinstance(result, dict) and result.get("jsonrpc") == "2.0":
+                return dict(result, id=req_id)
+            return {"jsonrpc": "2.0", "id": req_id, "result": result if result is not None else {}}
         if method != "tools/call":
             return _error(req_id, -32601, "Method not found")
         name = params.get("name")

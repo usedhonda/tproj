@@ -14,6 +14,11 @@ until a trusted runtime injects a configured `MailboxTools` instance. An
 embedding runtime may inject that instance explicitly; no caller argument can
 provide the authorizer, service identity, or credential.
 
+`MCPServer` also accepts an optional trusted event dispatcher. Only when one is
+injected does `initialize` advertise the `events` capability and route
+`events/list`, `events/subscribe`, and `events/unsubscribe`; the default CLI
+does not advertise or expose event methods.
+
 The adapter is not an MCP server, does not register cloud tools, and does not
 start a daemon.  A host integration must inject both a host-socket call and a
 trusted conversation authorizer.  The authorizer is mandatory on every call;
