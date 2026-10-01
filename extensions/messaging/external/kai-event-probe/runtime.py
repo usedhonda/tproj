@@ -186,7 +186,7 @@ def prepare(args: argparse.Namespace) -> dict:
         # later run; generated startup still fails closed until then.
         os.chmod(profile_dir, 0o700)
     if profile_sha is None:
-        profile_sha = "" * 64
+        profile_sha = "0" * 64
     _write_new(runner_path, _runner(binary, base, profile_dir, profile, key_file, profile_sha), 0o700)
     plist = {"Label": label, "ProgramArguments": [str(runner_path)],
              "RunAtLoad": False, "KeepAlive": False, "ProcessType": "Background"}
