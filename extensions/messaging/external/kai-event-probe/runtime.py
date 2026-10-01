@@ -160,6 +160,8 @@ def prepare(args: argparse.Namespace) -> dict:
         raise RuntimeError_("conflicting symlinked profile")
     if not expected_profile.exists() and _safe_key(key_file):
         _init_profile(binary, profile_dir, profile, tunnel_id, key_file, mcp)
+        if not expected_profile.is_file() or expected_profile.is_symlink():
+            raise RuntimeError_("tunnel client init produced no expected profile")
     elif not expected_profile.exists():
         # Offline preparation leaves profile creation for the operator's
         # later run; generated startup still fails closed until then.
