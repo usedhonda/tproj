@@ -5,6 +5,15 @@ local adapter for the seven reviewed tool shapes: `tproj_list`,
 `tproj_status`, `tproj_send`, `tproj_inbox`, `tproj_message`, `tproj_reply`,
 and `tproj_ack`.
 
+`extensions/messaging/external/kai-mcp/server.py` adds standard MCP stdio
+plumbing (`initialize`, `tools/list`, `tools/call`, `ping`, and notification
+handling). It loads the reviewed machine-readable catalog for exact schemas
+and annotations. The command-line entrypoint deliberately constructs no
+mailbox client: `tools/call` returns a structured `identity_rejected` error
+until a trusted runtime injects a configured `MailboxTools` instance. An
+embedding runtime may inject that instance explicitly; no caller argument can
+provide the authorizer, service identity, or credential.
+
 The adapter is not an MCP server, does not register cloud tools, and does not
 start a daemon.  A host integration must inject both a host-socket call and a
 trusted conversation authorizer.  The authorizer is mandatory on every call;
@@ -40,4 +49,5 @@ Focused verification:
 
 ```bash
 python3 -m unittest extensions/messaging/external/kai-mcp/test_mailbox_tools.py
+python3 -m unittest extensions/messaging/external/kai-mcp/test_server.py
 ```
