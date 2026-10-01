@@ -47,6 +47,15 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(MODULE.RuntimeError_):
             MODULE.prepare(altered)
 
+    def test_offline_then_unexpected_profile_is_rejected(self):
+        base = self.root / "runtime"
+        key = self.root / "secret"
+        MODULE.prepare(self.args(base, key))
+        profile = base / "profiles" / "kai-event-probe.yaml"
+        profile.write_text("unexpected")
+        with self.assertRaises(MODULE.RuntimeError_):
+            MODULE.prepare(self.args(base, key))
+
     def test_runner_rejects_missing_or_insecure_key(self):
         base = self.root / "runtime"
         key = self.root / "secret"

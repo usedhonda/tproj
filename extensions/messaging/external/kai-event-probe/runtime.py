@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import re
+import hashlib
 from pathlib import Path
 
 
@@ -61,7 +62,9 @@ def _safe_dir(path: Path, *, create: bool = False) -> None:
 
 
 def _write_new(path: Path, data: bytes, mode: int) -> None:
-    if path.exists() or path.is_symlink():
+    if path.is_symlink():
+        raise RuntimeError_(f"refusing symlink artifact: {path}")
+    if path.exists():
         if not path.is_file() or path.read_bytes() != data:
             raise RuntimeError_(f"refusing to overwrite conflicting artifact: {path}")
         return
@@ -103,7 +106,7 @@ def _init_profile(binary: Path, profile_dir: Path, profile: str, tunnel_id: str,
         raise RuntimeError_("tunnel client init produced no profile artifacts")
 
 
-def _runner(binary: Path, base: Path, profile_dir: Path, profile: str, key_file: Path) -> bytes:
+def _runner(binary: Path, base: Path, profile_dir: Path, profile: str, key_file: Path, profile_sha: str) -> bytes:
     b, p, k = map(shlex.quote, map(str, (binary, profile, key_file)))
     return ("#!/bin/sh\nset -eu\n" +
             f"BASE={shlex.quote(str(base))}\nPROFILE_DIR={shlex.quote(str(profile_dir))}\n" +
@@ -112,6 +115,7 @@ def _runner(binary: Path, base: Path, profile_dir: Path, profile: str, key_file:
             "[ -d \"$PROFILE_DIR\" ] && [ ! -L \"$PROFILE_DIR\" ] || { echo 'missing or unsafe profile directory' >&2; exit 78; }\n" +
             f"PROFILE_FILE=\"$PROFILE_DIR/{profile}.yaml\"\n" +
             "[ -f \"$PROFILE_FILE\" ] && [ ! -L \"$PROFILE_FILE\" ] || { echo 'profile is not initialized' >&2; exit 78; }\n" +
+            f"[ \"$(shasum -a 256 \"$PROFILE_FILE\" | awk '{{print $1}}')\" = {profile_sha} ] || {{ echo 'profile digest mismatch' >&2; exit 78; }}\n" +
             "[ -f \"$KEY_FILE\" ] && [ ! -L \"$KEY_FILE\" ] || { echo 'missing or symlinked credential file' >&2; exit 78; }\n" +
             "MODE=$(stat -f '%Lp' \"$KEY_FILE\" 2>/dev/null || stat -c '%a' \"$KEY_FILE\")\n" +
             "[ \"$MODE\" = 600 ] || [ \"$MODE\" = 400 ] || { echo 'credential file must be owner-only' >&2; exit 78; }\n" +
@@ -124,9 +128,9 @@ def prepare(args: argparse.Namespace) -> dict:
     binary = _binary(Path(args.binary).expanduser())
     raw_base = Path(args.base_dir).expanduser()
     raw_key = Path(args.credential_file).expanduser()
-    if raw_base.exists() and raw_base.is_symlink():
+    if raw_base.is_symlink():
         raise RuntimeError_("unsafe symlink path: base directory")
-    if raw_key.exists() and raw_key.is_symlink():
+    if raw_key.is_symlink():
         raise RuntimeError_("credential file must not be a symlink")
     base = raw_base.absolute()
     key_file = raw_key.absolute()
@@ -147,28 +151,43 @@ def prepare(args: argparse.Namespace) -> dict:
                 "profile": profile, "tunnelId": tunnel_id, "label": label,
                 "mcpCommand": mcp, "healthListenAddr": "127.0.0.1:0"}
     if manifest_path.exists():
+        if manifest_path.is_symlink():
+            raise RuntimeError_("refusing symlink manifest")
         try:
             old = json.loads(manifest_path.read_text())
         except (OSError, ValueError) as exc:
             raise RuntimeError_("invalid existing runtime manifest") from exc
-        if old != manifest:
+        if {k: v for k, v in old.items() if k != "profileSha256"} != manifest:
             raise RuntimeError_("conflicting runtime manifest; refusing overwrite")
     else:
         _write_new(manifest_path, (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(), 0o600)
     expected_profile = profile_dir / f"{profile}.yaml"
     if not profile_dir.exists():
         profile_dir.mkdir(mode=0o700)
-    if expected_profile.exists() and expected_profile.is_symlink():
+    if expected_profile.is_symlink():
         raise RuntimeError_("conflicting symlinked profile")
+    profile_sha = None
+    if expected_profile.exists():
+        if not manifest_path.exists():
+            raise RuntimeError_("refusing unowned existing profile")
+        profile_sha = hashlib.sha256(expected_profile.read_bytes()).hexdigest()
+        old_sha = json.loads(manifest_path.read_text()).get("profileSha256")
+        if old_sha != profile_sha:
+            raise RuntimeError_("profile digest mismatch")
     if not expected_profile.exists() and _safe_key(key_file):
         _init_profile(binary, profile_dir, profile, tunnel_id, key_file, mcp)
         if not expected_profile.is_file() or expected_profile.is_symlink():
             raise RuntimeError_("tunnel client init produced no expected profile")
+        profile_sha = hashlib.sha256(expected_profile.read_bytes()).hexdigest()
+        manifest["profileSha256"] = profile_sha
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     elif not expected_profile.exists():
         # Offline preparation leaves profile creation for the operator's
         # later run; generated startup still fails closed until then.
         os.chmod(profile_dir, 0o700)
-    _write_new(runner_path, _runner(binary, base, profile_dir, profile, key_file), 0o700)
+    if profile_sha is None:
+        profile_sha = "" * 64
+    _write_new(runner_path, _runner(binary, base, profile_dir, profile, key_file, profile_sha), 0o700)
     plist = {"Label": label, "ProgramArguments": [str(runner_path)],
              "RunAtLoad": False, "KeepAlive": False, "ProcessType": "Background"}
     _write_new(plist_path, plistlib.dumps(plist, fmt=plistlib.FMT_XML), 0o600)

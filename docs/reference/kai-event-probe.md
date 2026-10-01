@@ -77,5 +77,5 @@ python3 -m unittest extensions/messaging/external/kai-event-probe/test_runtime.p
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"server/discover"}' | python3 extensions/messaging/external/kai-event-probe/server.py
 ```
 
-The second command is discovery-only and should report `supportedVersions` as
+The discovery command is discovery-only and should report `supportedVersions` as
 `["2026-07-28"]` plus `events` capability.
