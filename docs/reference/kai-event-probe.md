@@ -41,11 +41,39 @@ python3 extensions/messaging/external/kai-event-probe/server.py
 The stdio process is suitable for an existing Secure MCP Tunnel client. The
 probe does not enroll, send, or push anything externally by itself.
 
+## Isolated Secure MCP Tunnel preparation
+
+`runtime.py` prepares local launch artifacts for the official tunnel client
+without starting it. The runtime has its own base directory and profile, uses
+only the explicit loopback health listener (`127.0.0.1:0`), and does not inherit
+Observation or shared-tunnel environment settings. It never creates a tunnel
+or cloud resource and never reads the credential contents.
+
+```bash
+python3 extensions/messaging/external/kai-event-probe/runtime.py \
+  --binary /absolute/path/to/tunnel-client \
+  --tunnel-id tnl_example \
+  --base-dir /absolute/path/to/private/kai-probe-runtime \
+  --credential-file /absolute/path/to/control-plane-key
+```
+
+Preparation is idempotent for the exact same manifest and refuses conflicting
+artifacts or profiles. If the credential file is not present, preparation still
+writes the runner and launchd plist but leaves the profile uninitialized; the
+runner exits before starting until the key exists, is a regular owner-only file
+(`0600` or `0400`), and the profile has been initialized. With a safe existing
+key, the preparer invokes only the client's local `init` command. It never
+invokes `doctor`, `run`, `bootstrap`, or launchctl.
+
+The generated plist is inert (`RunAtLoad=false`, `KeepAlive=false`); loading or
+starting it is an explicit operator action outside this preparation step.
+
 ## Verification
 
 ```bash
 python3 -m py_compile extensions/messaging/external/kai-event-probe/server.py
 python3 -m unittest extensions/messaging/external/kai-event-probe/test_server.py
+python3 -m unittest extensions/messaging/external/kai-event-probe/test_runtime.py
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"server/discover"}' | python3 extensions/messaging/external/kai-event-probe/server.py
 ```
 
