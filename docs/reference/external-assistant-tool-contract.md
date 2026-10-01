@@ -15,9 +15,10 @@ the latter requires an authenticated adapter mapping. Neither may be supplied
 as caller text. In particular, callers cannot pass `role`, `as`, `session`, a
 conversation selector, endpoint/PID/host data, or a receiver override.
 
-Only full project-qualified addresses such as `alpha.cc` and `alpha.cdx` are
-valid targets. Bare `cc` or `cdx` is rejected because it is projectless and
-ambiguous. `tproj_reply` is pinned to the supplied original `message_id`; the
+Send/status inputs require full project-qualified addresses such as `alpha.cc`
+and `alpha.cdx`; bare `cc` or `cdx` is rejected because it is projectless and
+ambiguous. Message views may show a registry-validated service address as a
+sender or target. `tproj_reply` is pinned to the supplied original `message_id`; the
 adapter resolves the original thread and recipient and does not accept a
 receiver or conversation argument.
 
@@ -53,9 +54,9 @@ response with `queued` (or an existing state and `duplicate: true`) means the
 mailbox accepted or recovered a durable row; it does **not** mean the message
 was received by an adapter or shown to a user. `adapter_received` means the
 bound adapter claimed it, while `presented` is reserved for an explicit
-recipient acknowledgement after consumption. `uncertain`, `stale_session`,
-`rejected`, and `expired` remain terminal/diagnostic states as defined by the
-hub.
+recipient acknowledgement after consumption. `uncertain` is recoverable by
+reconciliation; `stale_session`, `rejected`, and `expired` are
+diagnostic/terminal outcomes as defined by the hub.
 
 Every send or reply requires a caller-persisted stable `submission_id`. The
 mailbox's saved submission record is the idempotency authority. Reusing that
@@ -75,13 +76,16 @@ incarnation, fails closed.
 
 ## Error contract
 
-Implementations should preserve the existing structured error shape:
-`{"ok":false,"error":{"code":"...","message":"..."}}`. At minimum,
+The local host RPC currently uses the structured error shape
+`{"ok":false,"error":{"code":"...","message":"..."}}`; an MCP adapter
+may project these codes into its provider error envelope but must preserve the
+distinction. At minimum,
 the following cases are required:
 
 * missing or invalid trusted identity: `identity_rejected` (fail closed);
 * bare or unknown target, or ambiguous catalog entry: `unknown_target`;
-* malformed body/submission/message ID: `invalid_message`;
+* malformed body/submission/message ID: `invalid_message` (including the
+  server's UTF-8 byte limit and forbidden terminal-control check);
 * duplicate ID with a different payload or sender: `id_conflict`;
 * reply from a non-recipient, receiver override, or cross-conversation use:
   `identity_rejected`;
