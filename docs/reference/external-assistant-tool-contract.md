@@ -50,6 +50,12 @@ participant or conversation authorization.
 ## States and idempotency
 
 Tool responses identify unique `message_id` and `thread_id` values. A submit
+projection must enrich the current host/hub response: `submit` currently returns
+`message_id`, `state` and optionally `duplicate`, not `thread_id`. The proposed
+adapter retrieves the authorized durable row to return its thread and reply
+linkage. Message views project `target_address` to `target` and omit raw
+endpoint/process fields; the JSON outputs are not unmodified host RPC results.
+A submit
 response with `queued` (or an existing state and `duplicate: true`) means the
 mailbox accepted or recovered a durable row; it does **not** mean the message
 was received by an adapter or shown to a user. `adapter_received` means the
@@ -59,7 +65,8 @@ reconciliation; `stale_session`, `rejected`, and `expired` are
 diagnostic/terminal outcomes as defined by the hub.
 
 Every send or reply requires a caller-persisted stable `submission_id`. The
-mailbox's saved submission record is the idempotency authority. Reusing that
+current host uses that value as `message_id`; a new chat's `thread_id` starts
+with the same value. The mailbox's saved submission record is the idempotency authority. Reusing that
 ID with the same sender and payload recovers the existing result; reusing it
 with a different payload or sender fails with `id_conflict`. A timeout or
 unknown network result must therefore be reconciled by retrying the same ID,
@@ -85,7 +92,8 @@ the following cases are required:
 * missing or invalid trusted identity: `identity_rejected` (fail closed);
 * bare or unknown target, or ambiguous catalog entry: `unknown_target`;
 * malformed body/submission/message ID: `invalid_message` (including the
-  server's UTF-8 byte limit and forbidden terminal-control check);
+  server's 64 KiB UTF-8 byte limit and forbidden terminal-control check;
+  JSON Schema's character-count bound alone is insufficient);
 * duplicate ID with a different payload or sender: `id_conflict`;
 * reply from a non-recipient, receiver override, or cross-conversation use:
   `identity_rejected`;
@@ -102,11 +110,15 @@ successful-looking result.
 
 ## Schematic exchange (not a live example)
 
+The first call is from the external sender context. The following inbox and
+ack calls illustrate the separate, authenticated recipient context; the sender
+does not receive its own outgoing message in its inbox.
+
 ```json
-{"name":"tproj_send","arguments":{"target":"voyager.cc","body":"ping","submission_id":"sub-01"}}
-{"message_id":"msg-01","thread_id":"thread-01","state":"queued"}
+{"name":"tproj_send","arguments":{"target":"voyager.cc","body":"ping","submission_id":"msg-01"}}
+{"message_id":"msg-01","thread_id":"msg-01","state":"queued"}
 {"name":"tproj_inbox","arguments":{"cursor":0,"limit":10}}
-{"messages":[{"message_id":"msg-01","thread_id":"thread-01","state":"adapter_received"}],"next_cursor":1}
+{"messages":[{"message_id":"msg-01","thread_id":"msg-01","target":"voyager.cc","body":"ping","state":"adapter_received"}],"next_cursor":1}
 {"name":"tproj_ack","arguments":{"message_id":"msg-01"}}
 {"message_id":"msg-01","state":"presented"}
 ```

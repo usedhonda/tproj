@@ -137,7 +137,11 @@ existing local transport usable and must not silently broaden authority.
    current issue trail is
    [issue #14](https://github.com/usedhonda/tproj/issues/14) and
    [comment 5925344889](https://github.com/usedhonda/tproj/issues/14#issuecomment-5925344889);
-   it currently has no provider reply proving those prerequisites.
+   the [assistant's response](https://github.com/usedhonda/tproj/issues/14#issuecomment-5925714846)
+   confirms connected-computer tasks and Slack delivery, but leaves custom MCP,
+   events and native conversation binding unverified. The next review packet
+   is [the connection proposal](external-assistant-connection.md) and its
+   linked proposed tool catalog. No runtime route is installed.
 2. **Independent multi-service registry and adapter.** Add a registry model
    in which every external service has its own participant, credential,
    endpoint incarnation, owner host, and revocation state. The adapter stores
