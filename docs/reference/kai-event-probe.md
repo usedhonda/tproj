@@ -61,7 +61,7 @@ Preparation is idempotent for the exact same manifest and refuses conflicting
 artifacts or profiles. If the credential file is not present, preparation still
 writes the runner and launchd plist but leaves the profile uninitialized; the
 runner exits before starting until the key exists, is a regular owner-only file
-(`0600` or `0400`), and the profile has been initialized. With a safe existing
+(`0600` or `0400`), and `profiles/<profile>.yaml` exists. With a safe existing
 key, the preparer invokes only the client's local `init` command. It never
 invokes `doctor`, `run`, `bootstrap`, or launchctl.
 

@@ -18,6 +18,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import re
 from pathlib import Path
 
 
@@ -79,12 +80,18 @@ def _binary(path: Path) -> Path:
     return path
 
 
+def _token(value: str, name: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", value):
+        raise RuntimeError_(f"invalid {name}")
+    return value
+
+
 def _init_profile(binary: Path, profile_dir: Path, profile: str, tunnel_id: str,
                   key_file: Path, mcp_command: str) -> None:
     """Run only the official local init; env is deliberately tunnel-neutral."""
     _safe_dir(profile_dir, create=True)
     env = {key: os.environ[key] for key in ("PATH", "HOME", "LANG", "LC_ALL") if key in os.environ}
-    env["PATH"] = str(binary.parent)
+    env["PATH"] = str(binary.parent) + ":/usr/bin:/bin"
     cmd = [str(binary), "init", "--profile", profile, "--profile-dir", str(profile_dir),
            "--tunnel-id", tunnel_id, "--mcp-command", mcp_command,
            "--control-plane-api-key-ref", f"file:{key_file}",
@@ -97,35 +104,47 @@ def _init_profile(binary: Path, profile_dir: Path, profile: str, tunnel_id: str,
 
 
 def _runner(binary: Path, base: Path, profile_dir: Path, profile: str, key_file: Path) -> bytes:
-    b, p, d, k = map(shlex.quote, map(str, (binary, profile, profile_dir, key_file)))
+    b, p, k = map(shlex.quote, map(str, (binary, profile, key_file)))
     return ("#!/bin/sh\nset -eu\n" +
             f"BASE={shlex.quote(str(base))}\nPROFILE_DIR={shlex.quote(str(profile_dir))}\n" +
             f"KEY_FILE={k}\n" +
             "[ -d \"$BASE\" ] && [ ! -L \"$BASE\" ] || { echo 'unsafe runtime base' >&2; exit 78; }\n" +
             "[ -d \"$PROFILE_DIR\" ] && [ ! -L \"$PROFILE_DIR\" ] || { echo 'missing or unsafe profile directory' >&2; exit 78; }\n" +
+            f"PROFILE_FILE=\"$PROFILE_DIR/profiles/{profile}.yaml\"\n" +
+            "[ -f \"$PROFILE_FILE\" ] && [ ! -L \"$PROFILE_FILE\" ] || { echo 'profile is not initialized' >&2; exit 78; }\n" +
             "[ -f \"$KEY_FILE\" ] && [ ! -L \"$KEY_FILE\" ] || { echo 'missing or symlinked credential file' >&2; exit 78; }\n" +
             "MODE=$(stat -f '%Lp' \"$KEY_FILE\" 2>/dev/null || stat -c '%a' \"$KEY_FILE\")\n" +
             "[ \"$MODE\" = 600 ] || [ \"$MODE\" = 400 ] || { echo 'credential file must be owner-only' >&2; exit 78; }\n" +
-            f"exec {b} run --profile {p} --profile-dir \"$PROFILE_DIR\" --config \"$PROFILE_DIR/config.json\"\n").encode()
+            "OWNER=$(stat -f '%u' \"$KEY_FILE\" 2>/dev/null || stat -c '%u' \"$KEY_FILE\")\n" +
+            "[ \"$OWNER\" = \"$(id -u)\" ] || { echo 'credential file is not user-owned' >&2; exit 78; }\n" +
+            f"exec env -i PATH={shlex.quote(str(binary.parent) + ': /usr/bin:/bin').replace(': ', ':')} HOME={shlex.quote(str(Path.home()))} LANG=C LC_ALL=C HEALTH_URL_FILE=\"$BASE/health-url\" {b} run --profile {p} --profile-dir \"$PROFILE_DIR\"\n").encode()
 
 
 def prepare(args: argparse.Namespace) -> dict:
     binary = _binary(Path(args.binary).expanduser())
-    base = Path(args.base_dir).expanduser().resolve()
-    key_file = Path(args.credential_file).expanduser().resolve()
+    raw_base = Path(args.base_dir).expanduser()
+    raw_key = Path(args.credential_file).expanduser()
+    if raw_base.exists() and raw_base.is_symlink():
+        raise RuntimeError_("unsafe symlink path: base directory")
+    if raw_key.exists() and raw_key.is_symlink():
+        raise RuntimeError_("credential file must not be a symlink")
+    base = raw_base.absolute()
+    key_file = raw_key.absolute()
     if base == Path("/") or base == Path.home():
         raise RuntimeError_("dedicated --base-dir is required")
     _safe_dir(base, create=True)
     if key_file == base or str(key_file).startswith(str(base) + os.sep):
         raise RuntimeError_("credential file must remain separate from runtime base")
-    profile = args.profile
-    profile_dir = base / "profile"
+    profile = _token(args.profile, "profile")
+    tunnel_id = _token(args.tunnel_id, "tunnel ID")
+    label = _token(args.label, "launchd label")
+    profile_dir = base
     runner_path = base / "run.sh"
-    plist_path = base / f"{args.label}.plist"
+    plist_path = base / f"{label}.plist"
     manifest_path = base / MANIFEST
-    mcp = args.mcp_command or f"{sys.executable} {SERVER}"
+    mcp = args.mcp_command or shlex.join([sys.executable, str(SERVER)])
     manifest = {"binary": str(binary), "baseDir": str(base), "credentialFile": str(key_file),
-                "profile": profile, "tunnelId": args.tunnel_id, "label": args.label,
+                "profile": profile, "tunnelId": tunnel_id, "label": label,
                 "mcpCommand": mcp, "healthListenAddr": "127.0.0.1:0"}
     if manifest_path.exists():
         try:
@@ -136,22 +155,21 @@ def prepare(args: argparse.Namespace) -> dict:
             raise RuntimeError_("conflicting runtime manifest; refusing overwrite")
     else:
         _write_new(manifest_path, (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(), 0o600)
-    if profile_dir.exists() and not profile_dir.is_dir():
-        raise RuntimeError_("conflicting profile path")
-    if not profile_dir.exists():
-        profile_dir.mkdir(mode=0o700)
-    if not any(profile_dir.iterdir()) and _safe_key(key_file):
-        _init_profile(binary, profile_dir, profile, args.tunnel_id, key_file, mcp)
-    elif not any(profile_dir.iterdir()):
+    expected_profile = profile_dir / "profiles" / f"{profile}.yaml"
+    if expected_profile.exists() and expected_profile.is_symlink():
+        raise RuntimeError_("conflicting symlinked profile")
+    if not expected_profile.exists() and _safe_key(key_file):
+        _init_profile(binary, profile_dir, profile, tunnel_id, key_file, mcp)
+    elif not expected_profile.exists():
         # Offline preparation leaves profile creation for the operator's
         # later run; generated startup still fails closed until then.
         os.chmod(profile_dir, 0o700)
     _write_new(runner_path, _runner(binary, base, profile_dir, profile, key_file), 0o700)
-    plist = {"Label": args.label, "ProgramArguments": [str(runner_path)],
+    plist = {"Label": label, "ProgramArguments": [str(runner_path)],
              "RunAtLoad": False, "KeepAlive": False, "ProcessType": "Background"}
     _write_new(plist_path, plistlib.dumps(plist, fmt=plistlib.FMT_XML), 0o600)
     return {"baseDir": str(base), "runner": str(runner_path), "plist": str(plist_path),
-            "profileInitialized": bool(any(profile_dir.iterdir())), "credentialPresent": _safe_key(key_file)}
+            "profileInitialized": expected_profile.is_file(), "credentialPresent": _safe_key(key_file)}
 
 
 def main(argv: list[str] | None = None) -> int:
