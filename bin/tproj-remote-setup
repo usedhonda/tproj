@@ -14,12 +14,14 @@ ssh=['ssh','-o','BatchMode=yes','-o','ConnectTimeout=5','-T','--',alias]
 # Shared skills live in one place on the remote Mac and are linked into both agents'
 # skill directories, so Claude and Codex there read the same text as they do here.
 if (root/'extensions').is_dir():
+    wrapper=root/'extensions/messaging/tproj-msg'
     skills={'msg':root/'extensions/messaging/skill-msg/SKILL.md'}
     for source in sorted((root/'extensions/skills').glob('*/SKILL.md')):
         skills[source.parent.name]=source
 else:
     # Run from the installed ~/bin copy: the messaging installer keeps these
     # skill copies byte-equal to the repo (its --check reports otherwise).
+    wrapper=root/'bin/tproj-msg'
     skills={name:root/'.claude/skills'/name/'SKILL.md' for name in ('msg','role')}
 # Without these a Claude session in auto mode sends every message through the safety
 # classifier, and a classifier outage then stops it from messaging at all.
@@ -29,7 +31,10 @@ if mode=='check':
     probe=r'''
 import hashlib, json, os, pathlib, sys
 home=pathlib.Path.home()
-out={'skills':{},'allow':[],'tproj_msg':os.access(home/'bin/tproj-msg',os.X_OK)}
+wrapper=home/'bin/tproj-msg'
+out={'skills':{},'allow':[],
+     'tproj_msg':hashlib.sha256(wrapper.read_bytes()).hexdigest() if wrapper.is_file() else None,
+     'tproj_msg_executable':os.access(wrapper,os.X_OK)}
 for name in sys.argv[1].split(','):
     for agent in ('.claude','.codex'):
         path=home/agent/'skills'/name/'SKILL.md'
@@ -50,8 +55,12 @@ print(json.dumps(out))
             if got!=want:
                 drift.append(f'skill {agent}/skills/{name}: '+('missing' if got is None else 'differs'))
     drift+=[f'claude allow rule missing: {rule}' for rule in allow_rules if rule not in remote['allow']]
-    if not remote['tproj_msg']:
-        drift.append('~/bin/tproj-msg missing')
+    want_wrapper=hashlib.sha256(wrapper.read_bytes()).hexdigest()
+    got_wrapper=remote.get('tproj_msg')
+    if got_wrapper != want_wrapper:
+        drift.append('~/bin/tproj-msg: '+('missing' if got_wrapper is None else 'differs (CLI drift)'))
+    if got_wrapper is not None and not remote.get('tproj_msg_executable',False):
+        drift.append('~/bin/tproj-msg: not executable')
     for line in drift:
         print(line)
     print(f'{alias}: '+('no drift' if not drift else f'{len(drift)} drift item(s); run tproj-remote-setup add {alias}'))
@@ -60,6 +69,7 @@ print(json.dumps(out))
 files={}
 for name in ('tproj','tproj-topology','tproj-remote-host','tproj-remote-cache','tproj-msg-runtime'):
     files['bin/'+name]=root/'bin'/name
+files['bin/tproj-msg']=wrapper
 for name in ('tproj_topology.py','tproj-common.sh','tproj-model-role.sh'):
     files['bin/lib/'+name]=root/'bin/lib'/name
 library=root/'extensions/messaging/unified'
