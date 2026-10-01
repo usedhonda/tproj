@@ -75,6 +75,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(result["profileInitialized"])
         self.assertTrue((base / "profiles" / "kai-event-probe.yaml").exists())
 
+    def test_offline_then_key_init_keeps_runner_idempotent(self):
+        base = self.root / "runtime"
+        key = self.root / "secret"
+        MODULE.prepare(self.args(base, key))
+        before = (base / "run.sh").read_bytes()
+        key.write_text("opaque")
+        key.chmod(0o600)
+        MODULE.prepare(self.args(base, key))
+        self.assertEqual(before, (base / "run.sh").read_bytes())
+        MODULE.prepare(self.args(base, key))
+
 
 if __name__ == "__main__":
     unittest.main()

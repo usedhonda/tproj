@@ -106,7 +106,7 @@ def _init_profile(binary: Path, profile_dir: Path, profile: str, tunnel_id: str,
         raise RuntimeError_("tunnel client init produced no profile artifacts")
 
 
-def _runner(binary: Path, base: Path, profile_dir: Path, profile: str, key_file: Path, profile_sha: str) -> bytes:
+def _runner(binary: Path, base: Path, profile_dir: Path, profile: str, key_file: Path) -> bytes:
     b, p, k = map(shlex.quote, map(str, (binary, profile, key_file)))
     return ("#!/bin/sh\nset -eu\n" +
             f"BASE={shlex.quote(str(base))}\nPROFILE_DIR={shlex.quote(str(profile_dir))}\n" +
@@ -115,7 +115,8 @@ def _runner(binary: Path, base: Path, profile_dir: Path, profile: str, key_file:
             "[ -d \"$PROFILE_DIR\" ] && [ ! -L \"$PROFILE_DIR\" ] || { echo 'missing or unsafe profile directory' >&2; exit 78; }\n" +
             f"PROFILE_FILE=\"$PROFILE_DIR/{profile}.yaml\"\n" +
             "[ -f \"$PROFILE_FILE\" ] && [ ! -L \"$PROFILE_FILE\" ] || { echo 'profile is not initialized' >&2; exit 78; }\n" +
-            f"[ \"$(shasum -a 256 \"$PROFILE_FILE\" | awk '{{print $1}}')\" = {profile_sha} ] || {{ echo 'profile digest mismatch' >&2; exit 78; }}\n" +
+            "PROFILE_SHA=$(sed -n 's/.*\"profileSha256\": \"\\([0-9a-f]\\{64\\}\\)\".*/\\1/p' \"$BASE/runtime.json\")\n" +
+            "[ -n \"$PROFILE_SHA\" ] && [ \"$(shasum -a 256 \"$PROFILE_FILE\" | awk '{print $1}')\" = \"$PROFILE_SHA\" ] || { echo 'profile digest mismatch' >&2; exit 78; }\n" +
             "[ -f \"$KEY_FILE\" ] && [ ! -L \"$KEY_FILE\" ] || { echo 'missing or symlinked credential file' >&2; exit 78; }\n" +
             "MODE=$(stat -f '%Lp' \"$KEY_FILE\" 2>/dev/null || stat -c '%a' \"$KEY_FILE\")\n" +
             "[ \"$MODE\" = 600 ] || [ \"$MODE\" = 400 ] || { echo 'credential file must be owner-only' >&2; exit 78; }\n" +
@@ -185,9 +186,7 @@ def prepare(args: argparse.Namespace) -> dict:
         # Offline preparation leaves profile creation for the operator's
         # later run; generated startup still fails closed until then.
         os.chmod(profile_dir, 0o700)
-    if profile_sha is None:
-        profile_sha = "0" * 64
-    _write_new(runner_path, _runner(binary, base, profile_dir, profile, key_file, profile_sha), 0o700)
+    _write_new(runner_path, _runner(binary, base, profile_dir, profile, key_file), 0o700)
     plist = {"Label": label, "ProgramArguments": [str(runner_path)],
              "RunAtLoad": False, "KeepAlive": False, "ProcessType": "Background"}
     _write_new(plist_path, plistlib.dumps(plist, fmt=plistlib.FMT_XML), 0o600)
