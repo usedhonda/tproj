@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/usedhonda/tproj/blob/main/docs/reference/external-assistant-tools.json",
+  "title": "Proposed tproj external-assistant MCP tools",
+  "description": "Proposed, unimplemented MCP tool catalog for an independently authenticated external assistant adapter.",
+  "status": "proposed",
+  "implementationStatus": "not_implemented",
+  "authentication": {
+    "proposedScopes": {"read": "tproj:read", "write": "tproj:write"},
+    "note": "Application-policy scopes proposed by the connection contract; they are not existing provider or tproj scopes. Scope checks do not replace participant or conversation authorization."
+  },
+  "identity": {
+    "source": "trusted authenticated adapter context only",
+    "callerArguments": "must not be supplied by a tool caller",
+    "requiredBinding": ["service participant", "endpoint incarnation", "authenticated conversation binding"],
+    "forbiddenCallerSelectors": ["role", "as", "session", "conversation", "conversation_id", "endpoint_id", "pid", "host"]
+  },
+  "$defs": {
+    "submissionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Caller-persisted stable idempotency key. Reuse with an identical payload to recover an unknown result."
+    },
+    "target": {
+      "type": "string",
+      "pattern": "^[^./\\s]+\\.(cc|cdx)$",
+      "description": "Full project-qualified recipient address; bare cc/cdx and provider conversation selectors are invalid."
+    },
+    "messageId": {"type": "string", "minLength": 1},
+    "threadId": {"type": "string", "minLength": 1},
+    "state": {
+      "type": "string",
+      "enum": ["accepted", "queued", "adapter_received", "presented", "uncertain", "stale_session", "rejected", "expired"]
+    },
+    "message": {
+      "type": "object",
+      "required": ["message_id", "thread_id", "target", "body", "state"],
+      "properties": {
+        "message_id": {"$ref": "#/$defs/messageId"},
+        "thread_id": {"$ref": "#/$defs/threadId"},
+        "in_reply_to": {"$ref": "#/$defs/messageId"},
+        "sender_address": {"type": "string"},
+        "target": {"$ref": "#/$defs/target"},
+        "body": {"type": "string"},
+        "state": {"$ref": "#/$defs/state"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "tools": [
+    {
+      "name": "tproj_list",
+      "title": "List authorized tproj participants",
+      "description": "List the caller's authorized participant catalog. This is not provider enrollment or proof of message presentation.",
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "x-approvalRequired": false},
+      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "outputSchema": {"type": "object", "required": ["participants"], "properties": {"participants": {"type": "array", "items": {"type": "object", "required": ["address"], "properties": {"address": {"$ref": "#/$defs/target"}, "kind": {"type": "string"}, "available": {"type": "boolean"}}, "additionalProperties": false}}}, "additionalProperties": false}
+    },
+    {
+      "name": "tproj_status",
+      "title": "Get authorized tproj participant status",
+      "description": "Return status for one full project-qualified target from the authorized catalog; never expose raw process, host, or credential data.",
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "x-approvalRequired": false},
+      "inputSchema": {"type": "object", "required": ["target"], "properties": {"target": {"$ref": "#/$defs/target"}}, "additionalProperties": false},
+      "outputSchema": {"type": "object", "required": ["target", "available"], "properties": {"target": {"$ref": "#/$defs/target"}, "available": {"type": "boolean"}, "state": {"type": "string"}}, "additionalProperties": false}
+    },
+    {
+      "name": "tproj_send",
+      "title": "Submit a tproj message",
+      "description": "Submit one message to a full target address using a caller-persisted stable submission_id.",
+      "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "x-approvalRequired": true},
+      "inputSchema": {"type": "object", "required": ["target", "body", "submission_id"], "properties": {"target": {"$ref": "#/$defs/target"}, "body": {"type": "string", "maxLength": 65536}, "submission_id": {"$ref": "#/$defs/submissionId"}}, "additionalProperties": false},
+      "outputSchema": {"type": "object", "required": ["message_id", "thread_id", "state"], "properties": {"message_id": {"$ref": "#/$defs/messageId"}, "thread_id": {"$ref": "#/$defs/threadId"}, "state": {"$ref": "#/$defs/state"}, "duplicate": {"type": "boolean"}}, "additionalProperties": false}
+    },
+    {
+      "name": "tproj_inbox",
+      "title": "Read the authorized tproj inbox",
+      "description": "Read a bounded page for the authenticated recipient binding. Reading or enumerating does not acknowledge presentation.",
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "x-approvalRequired": false},
+      "inputSchema": {"type": "object", "properties": {"cursor": {"type": "integer", "minimum": 0, "default": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100}}, "additionalProperties": false},
+      "outputSchema": {"type": "object", "required": ["messages", "next_cursor"], "properties": {"messages": {"type": "array", "items": {"$ref": "#/$defs/message"}}, "next_cursor": {"type": "integer", "minimum": 0}}, "additionalProperties": false}
+    },
+    {
+      "name": "tproj_message",
+      "title": "Read one authorized tproj message",
+      "description": "Read one message only when the authenticated context is a sender or recipient.",
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "x-approvalRequired": false},
+      "inputSchema": {"type": "object", "required": ["message_id"], "properties": {"message_id": {"$ref": "#/$defs/messageId"}}, "additionalProperties": false},
+      "outputSchema": {"$ref": "#/$defs/message"}
+    },
+    {
+      "name": "tproj_reply",
+      "title": "Reply to a pinned tproj message",
+      "description": "Reply to the original message_id. The authenticated adapter resolves the original thread and recipient; callers cannot choose a receiver or conversation.",
+      "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "x-approvalRequired": true},
+      "inputSchema": {"type": "object", "required": ["message_id", "body", "submission_id"], "properties": {"message_id": {"$ref": "#/$defs/messageId"}, "body": {"type": "string", "maxLength": 65536}, "submission_id": {"$ref": "#/$defs/submissionId"}}, "additionalProperties": false},
+      "outputSchema": {"type": "object", "required": ["message_id", "thread_id", "in_reply_to", "state"], "properties": {"message_id": {"$ref": "#/$defs/messageId"}, "thread_id": {"$ref": "#/$defs/threadId"}, "in_reply_to": {"$ref": "#/$defs/messageId"}, "state": {"$ref": "#/$defs/state"}, "duplicate": {"type": "boolean"}}, "additionalProperties": false}
+    },
+    {
+      "name": "tproj_ack",
+      "title": "Acknowledge consumed tproj message",
+      "description": "Acknowledge presentation only after explicit consumption by the authenticated recipient. Enumeration alone is insufficient.",
+      "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "x-approvalRequired": true},
+      "inputSchema": {"type": "object", "required": ["message_id"], "properties": {"message_id": {"$ref": "#/$defs/messageId"}}, "additionalProperties": false},
+      "outputSchema": {"type": "object", "required": ["message_id", "state"], "properties": {"message_id": {"$ref": "#/$defs/messageId"}, "state": {"const": "presented"}}, "additionalProperties": false}
+    }
+  ]
+}
