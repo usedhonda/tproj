@@ -110,7 +110,7 @@ class MCPServer:
                     delivery = params.get("delivery") if isinstance(params.get("delivery"), dict) else params
                     if not isinstance(delivery, dict) or delivery.get("mode") != "webhook":
                         return _error(req_id, -32602, "Invalid webhook delivery")
-                    result = self.events.subscribe(delivery.get("url"), delivery.get("secret"), params.get("ttlMs"))
+                    result = self.events.subscribe(delivery.get("url"), delivery.get("secret"), params.get("ttlMs", 86400000))
                 elif method == "events/unsubscribe" and hasattr(self.events, "unsubscribe"):
                     if params.get("name") != getattr(self.events, "definition")().get("name"):
                         return _error(req_id, -32602, "Invalid unsubscribe request")

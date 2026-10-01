@@ -43,3 +43,5 @@ jobs:
         run: bash extensions/hooks/tests/test-mutation-guard.sh
       - name: Bridge server
         run: bash extensions/messaging/tests/test-bridge-server.sh
+      - name: KAI mailbox MCP contracts
+        run: python3 -m unittest discover -s extensions/messaging/external/kai-mcp -p 'test_*.py'
