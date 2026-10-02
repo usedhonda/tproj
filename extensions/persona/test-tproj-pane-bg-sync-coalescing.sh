@@ -27,3 +27,20 @@ TPROJ_PANE_BG_WORK_ROOT="$ROOT" "$SCRIPT" sync --session demo --fast >/dev/null
 test "$(cat "$ROOT/pending.demo")" = full
 
 echo "PASS: full sync remains sticky over a queued fast sync"
+
+# Exercise the holder's promotion seam without tmux or provider calls.
+export TPROJ_PANE_BG_SOURCE_ONLY=1
+source "$SCRIPT"
+PENDING="$ROOT/pending.claim"
+CLAIM="$ROOT/pending.claim.$$"
+printf '%s\n' full > "$PENDING"
+mode="$(claim_pending_sync_mode "$PENDING" "$CLAIM")"
+test "$mode" = full
+test ! -e "$PENDING"
+PROMOTION_LOG="$WORK/promotion.log"
+prime_session_api_env() { printf '%s\n' prime >> "$PROMOTION_LOG"; }
+hydrate_api_env_from_session() { printf '%s\n' hydrate >> "$PROMOTION_LOG"; }
+ensure_all_runtime_placeholders() { printf '%s\n' placeholders >> "$PROMOTION_LOG"; }
+prepare_promoted_full_sync demo
+test "$(paste -sd, "$PROMOTION_LOG")" = prime,hydrate,placeholders
+echo "PASS: claimed full sync promotes with runtime preparation"

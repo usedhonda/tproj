@@ -3612,6 +3612,22 @@ write_manifest() {
   mv "${CURRENT_MANIFEST}.tmp" "$CURRENT_MANIFEST"
 }
 
+prepare_promoted_full_sync() {
+  local session="$1"
+  prime_session_api_env "$session"
+  hydrate_api_env_from_session "$session"
+  ensure_all_runtime_placeholders
+}
+
+claim_pending_sync_mode() {
+  local pending_file="$1"
+  local pending_claim="$2"
+  if mv "$pending_file" "$pending_claim" 2>/dev/null; then
+    head -n 1 "$pending_claim" 2>/dev/null || true
+    rm -f "$pending_claim"
+  fi
+}
+
 sync_session() {
   local session="$1"
   local sync_mode="${2:-full}"
@@ -3656,6 +3672,7 @@ sync_session() {
   local now_epoch=""
   local pending_mode=""
   local pending_claim=""
+  local pending_write=""
 
   require_cmd tmux
   require_cmd jq
@@ -3683,7 +3700,9 @@ sync_session() {
   if ! mkdir "$lock_dir" 2>/dev/null; then
     if [[ "$sync_mode" != "fast" ]]; then
       # A full request is sticky: a concurrent fast request may not downgrade it.
-      printf '%s\n' full > "$pending_file"
+      pending_write="${pending_file}.full.$$"
+      printf '%s\n' full > "$pending_write"
+      mv -f "$pending_write" "$pending_file"
     elif [[ ! -e "$pending_file" ]]; then
       # Avoid clobbering a full marker if both callers arrive together.
       (set -o noclobber; printf '%s\n' fast > "$pending_file") 2>/dev/null || true
@@ -3703,15 +3722,10 @@ sync_session() {
   while true; do
     pending_mode=""
     pending_claim="${pending_file}.claim.$$"
-    if mv "$pending_file" "$pending_claim" 2>/dev/null; then
-      pending_mode="$(head -n 1 "$pending_claim" 2>/dev/null || true)"
-      rm -f "$pending_claim"
-    fi
+    pending_mode="$(claim_pending_sync_mode "$pending_file" "$pending_claim")"
     if [[ "$sync_mode" == "fast" && "$pending_mode" == "full" ]]; then
       sync_mode="full"
-      prime_session_api_env "$session"
-      hydrate_api_env_from_session "$session"
-      ensure_all_runtime_placeholders
+      prepare_promoted_full_sync "$session"
     fi
 
     tmp_dir="$(mktemp -d)"
@@ -4156,4 +4170,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${TPROJ_PANE_BG_SOURCE_ONLY:-}" != 1 ]]; then
+  main "$@"
+fi
