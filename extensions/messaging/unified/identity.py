@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import sqlite3
 import socket
 import subprocess
 import sys
@@ -186,6 +187,57 @@ def _conversation_matches(endpoint: Mapping[str, Any], context: Mapping[str, Any
     return not platform or str(endpoint.get("platform", "")) == str(platform)
 
 
+def native_thread_metadata(thread_id: str, db_path: str | os.PathLike | None = None) -> list[dict[str, Any]]:
+    """Read host-local Codex thread catalog metadata without opening a writer."""
+    thread_id = str(thread_id or "").strip()
+    if not thread_id:
+        return []
+    path = Path(db_path or (Path.home() / ".codex/sqlite/codex-dev.db"))
+    if not path.is_file():
+        return []
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                "SELECT host_id,thread_id,cwd,source_kind,source_updated_at FROM local_thread_catalog WHERE thread_id=?",
+                (thread_id,),
+            ).fetchall()
+        return [dict(row) for row in rows if row["host_id"] in (None, "local") and row["cwd"]]
+    except (OSError, sqlite3.Error):
+        return []
+
+
+def adopt_native_conversation(endpoints: Iterable[Mapping[str, Any]], context: Mapping[str, Any],
+                              metadata: Iterable[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Annotate a unique live tmux endpoint from native thread catalog evidence."""
+    thread = str(context.get("thread_id", "")).strip()
+    if not thread:
+        return [dict(endpoint) for endpoint in endpoints]
+    records = list(metadata) if metadata is not None else native_thread_metadata(thread)
+    projects = {_canonical(row.get("cwd")) for row in records if row.get("cwd")}
+    if len(projects) != 1:
+        return [dict(endpoint) for endpoint in endpoints]
+    candidates = []
+    for endpoint in endpoints:
+        platform = str(endpoint.get("platform", ""))
+        if context.get("platform") and platform != str(context["platform"]):
+            continue
+        project_path = endpoint.get("project_path") or endpoint.get("path")
+        if project_path and _canonical(project_path) == next(iter(projects)):
+            candidates.append(endpoint)
+    if len(candidates) != 1:
+        return [dict(endpoint) for endpoint in endpoints]
+    adopted = [dict(endpoint) for endpoint in endpoints]
+    selected = candidates[0]
+    for endpoint in adopted:
+        if endpoint.get("endpoint_id") == selected.get("endpoint_id"):
+            endpoint["thread_id"] = thread
+            if context.get("session_id"):
+                endpoint["session_id"] = str(context["session_id"])
+            break
+    return adopted
+
+
 def _endpoint_id(host: str, runtime: str, session: str, pid_start: int) -> str:
     return str(uuid.uuid5(_ENDPOINT_NAMESPACE, "\x1f".join((host, runtime, session, str(pid_start)))))
 
@@ -236,6 +288,7 @@ def discover_endpoints(registry_root: str | os.PathLike[str], host_id: str,
             "address": f"{project.get('alias')}.{platform}", "session": session,
             "pane": record.get("pane") or record.get("pane_id") or record.get("tmux_pane"),
             "pid": pid, "pid_start": start, "runtime_id": runtime, "platform": platform,
+            "project_path": _canonical(path),
             "thread_id": record.get("thread_id") or record.get("conversation_id"),
             "session_id": record.get("session_id") or record.get("codex_session_id"),
         })
@@ -344,6 +397,7 @@ def discover_tmux_endpoints(host_id: str, projects: Iterable[Mapping[str, Any]],
                 "host_id": host_id, "address": f"{project.get('alias')}.{platform}",
                 "session": session, "pane": pane_id, "pid": int(pid), "pid_start": start,
                 "runtime_id": runtime, "platform": platform,
+                "project_path": _canonical(raw_project),
                 "thread_id": pane.get("thread_id") or pane.get("conversation_id"),
                 "session_id": pane.get("session_id") or pane.get("codex_session_id"),
             })

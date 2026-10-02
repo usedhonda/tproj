@@ -147,6 +147,16 @@ class UnifiedIdentityTest(unittest.TestCase):
         self.assertEqual(identity.native_conversation_context({"CODEX_SESSION_ID": "s"}), {"session_id": "s"})
         self.assertEqual(identity.native_conversation_context({}), {})
 
+    def test_native_catalog_adopts_unique_tmux_endpoint_without_replacing_id(self):
+        endpoint = {"endpoint_id": "stable", "platform": "cdx", "project_path": str(self.project),
+                    "runtime_id": "tmux:sess:%1:77"}
+        adopted = identity.adopt_native_conversation(
+            [endpoint], {"thread_id": "thread-native", "session_id": "session-native"},
+            [{"host_id": "local", "thread_id": "thread-native", "cwd": str(self.project)}])
+        self.assertEqual(adopted[0]["endpoint_id"], "stable")
+        self.assertEqual(adopted[0]["thread_id"], "thread-native")
+        self.assertEqual(adopted[0]["session_id"], "session-native")
+
     def test_tmux_fallback_requires_live_agent_descendant_and_deduplicates_registry(self):
         panes = lambda: [
             {"session": "sess", "pane": "%1", "pane_pid": "10", "project": str(self.project),
