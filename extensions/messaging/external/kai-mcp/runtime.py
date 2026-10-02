@@ -29,6 +29,12 @@ class RuntimeConfigError(RuntimeError):
     pass
 
 
+BRIDGE_OPS = frozenset({
+    "list", "status", "service_send", "service_reply", "service_inbox",
+    "service_message", "service_ack", "service_whoami",
+})
+
+
 def _required(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value or len(value) > 512:
         raise RuntimeConfigError(f"invalid {name}")
@@ -138,7 +144,12 @@ def bridge(config: Mapping[str, Any]) -> int:
                     if request.get("op") == "whoami":
                         result = runtime._attest()
                     elif request.get("op") == "call" and isinstance(request.get("request"), dict):
-                        result = runtime._request(request["request"])
+                        forwarded = request["request"]
+                        if forwarded.get("op") not in BRIDGE_OPS:
+                            raise RuntimeConfigError("bridge operation is not allowlisted")
+                        # _request overwrites service identity and credential;
+                        # tunnel children cannot select another enrollment.
+                        result = runtime._request(forwarded)
                     else:
                         raise RuntimeConfigError("invalid bridge request")
                     response = {"ok": True, "result": result}

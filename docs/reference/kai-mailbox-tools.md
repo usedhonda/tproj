@@ -47,6 +47,10 @@ python3 /path/to/extensions/messaging/external/kai-mcp/runtime.py --config /priv
 
 The tunnel child uses the same config with `bridge_socket` and omits
 `--bridge`, so no credential is copied into the child command line.
+The stdio runtime runs a bounded background event pump while serving MCP
+requests, so mailbox notifications do not depend on a later tool call. The
+pump reuses the durable subscription IDs and event outbox; a child restart
+therefore reconciles state rather than replacing the fixed subscription.
 
 The sibling `external-assistant-tools.json` is a distributed copy of the
 reviewed catalog, so a standalone deployment does not depend on the repository

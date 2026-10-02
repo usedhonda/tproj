@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import threading
+import time
 from typing import Any, TextIO
 
 try:
@@ -159,16 +161,37 @@ class MCPServer:
 
 
 def run_stdio(server: MCPServer, stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout) -> int:
-    for line in stdin:
-        try:
-            request = json.loads(line)
-        except (ValueError, TypeError):
-            response = _error(None, -32700, "Parse error")
-        else:
-            response = server.handle(request)
-        if response is not None:
-            stdout.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
-            stdout.flush()
+    stop = threading.Event()
+    pump = getattr(server.events, "pump_once", None) if server.events is not None else None
+
+    def deliver() -> None:
+        while not stop.wait(1.0):
+            try:
+                if callable(pump):
+                    pump()
+            except Exception:
+                # Delivery state is durable and the next tick revalidates the
+                # binding; MCP request handling must remain available.
+                continue
+
+    worker = threading.Thread(target=deliver, name="kai-event-pump", daemon=True)
+    if callable(pump):
+        worker.start()
+    try:
+        for line in stdin:
+            try:
+                request = json.loads(line)
+            except (ValueError, TypeError):
+                response = _error(None, -32700, "Parse error")
+            else:
+                response = server.handle(request)
+            if response is not None:
+                stdout.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
+                stdout.flush()
+    finally:
+        stop.set()
+        if worker.is_alive():
+            worker.join(timeout=2)
     return 0
 
 

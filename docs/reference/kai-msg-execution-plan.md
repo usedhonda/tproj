@@ -44,28 +44,26 @@ not authenticated conversation identity.
 
 ## Ordered tasks
 
-### P1 — Prove the cloud route and conversation identity
+### P1 — Activate the approved connection-principal route
 
-1. Finish the prepared, connection-only dedicated tunnel registration. Keep
-   the existing Observation tunnel/profile untouched. Record the outstanding
-   action-time access confirmation; do not ask again if it has been answered.
-2. Provision a separate restricted runtime credential using the supported flow;
-   never display it, put it in a prompt, or borrow another service's key.
-3. Prepare a dedicated profile and launchd runner on the remote host, using the
-   already verified tunnel binary and deployed stdio probe. Limit exposure to
-   connection status and synthetic events. Start only this new component.
-4. Connect that probe in the existing KAI conversation. Have KAI subscribe there,
-   send one signed synthetic event with a stable ID, and observe receipt in the
-   **same** conversation. Record subscription expiry and unsubscribe behavior.
-5. Establish the supported provenance of cloud invocation context, account,
-   assistant, and conversation. Do not promote self-reported IDs or best-effort
-   metadata into authority. Record the exact supported mechanism before writes
-   or real mailbox data are enabled.
+1. Keep the existing Observation tunnel/profile untouched and use the prepared
+   dedicated KAI profile and no-expiry control-plane key.
+2. Run the launchd-owned KAI runtime. It authenticates `service_whoami` with
+   the configured service ID/address/token, verifies the exact launchd PID and
+   endpoint incarnation supplied by the unified host, and fixes the participant
+   allowlist. Tunnel-spawned stdio children may use only the owner-only bridge.
+3. Verify read-only discovery and one synthetic event subscription through the
+   existing KAI connection. Record callback acceptance separately from any
+   presentation or conversation receipt; callback `2xx` is not proof of either.
+4. Keep provider conversation provenance as an explicitly unresolved evidence
+   item unless KAI supplies a supported binding. Do not infer it from `_meta`,
+   display names, or a model claim, and do not use it as a prerequisite for the
+   approved local service-principal boundary.
 
-Acceptance: original-chat event receipt plus authenticated invocation binding.
-If either is unsupported, isolate that route, retain evidence, investigate the
-provider-supported alternative, and continue P2/P4 preparation. Do not silently
-replace Dots with Slack or declare the integration finished.
+Acceptance: an independently enrolled KAI service is authenticated by the
+host, restricted to the fixed participant scope, and can be revoked or fenced
+by endpoint incarnation without affecting OpenClaw or Observation. Original
+Dots conversation receipt remains a separate live acceptance case.
 
 ### P2 — Reflect and enroll the independent service
 
@@ -82,7 +80,7 @@ and sessions remain intact. Code commits alone do not satisfy this task.
 
 ### P3 — Implement real MSG tools and event delivery
 
-Dependencies: P1 binding proof and P2 live enrollment.
+Dependencies: P1 host-bound service principal and P2 live enrollment.
 
 1. Implement the seven already specified tools: `tproj_list`, `tproj_status`,
    `tproj_send`, `tproj_inbox`, `tproj_message`, `tproj_reply`, `tproj_ack`.
@@ -101,26 +99,24 @@ Dependencies: P1 binding proof and P2 live enrollment.
 Acceptance: KAI reads an actual authorized message, acknowledges consumption,
 and sends an ID-linked reply to the correct pane without identity substitution.
 
-### P4 — Repair remote Codex conversation authentication
+### P4 — Preserve remote Codex identity boundaries
 
-Run independently alongside P1/P2; required before remote-Codex acceptance.
+Run independently alongside P1/P2; required only for the distinct remote-Codex
+acceptance case, not for local KAI service activation.
 
-1. Ask the affected Codex session to run the prepared metadata-only native
-   identity probe during its own actual tool execution. Capture native thread,
-   tool item, OS PID, and registered endpoint association; no histories/secrets.
-2. Prove two root conversations and subagents cannot borrow each other's
-   identity. Daemon ancestry, cwd, aliases, and client-supplied thread IDs remain
-   insufficient. Keep the existing fail-closed rejection until proof exists.
-3. Implement a trusted host conversation adapter if native provenance is proven;
-   bind to endpoint incarnation and operation. If unavailable, investigate a
-   provider-supported isolated-runtime route without terminating existing
-   sessions. Do not promise unverified launch flags or an identity bypass.
-4. Coordinate the sibling router change with its owner. MSG and role routing
-   must consume the same authenticated identity; role/epoch remain separate.
+1. Preserve the existing fail-closed rejection for unproven shared app-server
+   conversation identity. Native metadata and daemon ancestry are diagnostics,
+   not authority for the KAI service principal.
+2. If the affected remote Codex case is exercised, capture only the prepared
+   metadata-only native identity evidence and require an independently bound
+   endpoint incarnation; never borrow another conversation's thread or alias.
+3. Coordinate any sibling router change with its owner. MSG service identity
+   and role/epoch remain separate contracts; activating KAI does not silently
+   authenticate a remote Codex conversation.
 
-Acceptance: the affected remote Codex session authenticates itself and gets the
-correct runtime role; another conversation cannot send as it. Fixing only the
-wrapper or allowing a daemon launcher to stand in for the caller is not repair.
+Acceptance: remote-Codex usage is either independently authenticated and
+isolated, or explicitly recorded as unverified while the approved KAI
+connection route remains usable.
 
 ### P5 — Minimal live acceptance and completion
 

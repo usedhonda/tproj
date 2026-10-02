@@ -37,6 +37,12 @@ class RuntimeTest(unittest.TestCase):
             with self.assertRaises(module.ConnectionBindingError):
                 runtime.server().tools.authorizer.authorize()
 
+    def test_bridge_allowlist_excludes_admin_operations(self):
+        self.assertIn("service_whoami", module.BRIDGE_OPS)
+        self.assertIn("service_inbox", module.BRIDGE_OPS)
+        self.assertNotIn("directory-sync", module.BRIDGE_OPS)
+        self.assertNotIn("service_claim", module.BRIDGE_OPS)
+
 
 if __name__ == "__main__":
     unittest.main()
