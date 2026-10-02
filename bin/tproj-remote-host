@@ -203,7 +203,7 @@ agent_status() {
   [[ -n "$pid" && ( "$cmd" == *"$c"* || "$cmd" == *"/$name "* || "$cmd" == *"/$name" ) ]] && printf '%s' "$pid"
 }
 start_command() {
-  local r=$1 c q npm_path sign_path
+  local r=$1 c q npm_path sign_path update_path
   c=$(resolve_cli "$(cli_for_role "$r")")
   [[ -n "$c" ]] || die "required CLI not found on PATH: $(cli_for_role "$r")"
   q=$(printf '%q' "$c")
@@ -212,9 +212,13 @@ start_command() {
     # existing session. An unavailable registry must not prevent work.
     npm_path=$(resolve_cli npm)
     if [[ -n "$npm_path" ]]; then
-      printf '%q update -g @openai/codex || printf "Codex update failed; using installed version\\n" >&2; ' "$npm_path"
+      update_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tproj-cli-update"
+      [[ -x "$update_path" ]] || update_path=$(resolve_cli tproj-cli-update)
+      [[ -n "$update_path" ]] || update_path=tproj-cli-update
+      printf '%q @openai/codex ' "$update_path"
       sign_path=$(resolve_cli sign-codex)
-      [[ -z "$sign_path" ]] || printf '%q; ' "$sign_path"
+      [[ -z "$sign_path" ]] || printf '%q ' "$sign_path"
+      printf '|| printf "Codex update failed; using installed version\\n" >&2; '
       printf 'hash -r; '
     fi
   fi

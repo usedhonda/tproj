@@ -48,6 +48,7 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
   [[ -f "$TMP/updates" ]] && break
   sleep 0.1
 done
+[[ $(tm display-message -p -t "$cdx_session" '#{pane_start_command}') == *tproj-cli-update* ]]
 [[ -f "$TMP/updates" && $(cat "$TMP/updates") == 'update -g @openai/codex' ]] || {
   tm capture-pane -p -t "$cdx_session"
   tm display-message -p -t "$cdx_session" '#{pane_start_command}'

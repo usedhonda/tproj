@@ -67,7 +67,7 @@ print(json.dumps(out))
     raise SystemExit(1 if drift else 0)
 
 files={}
-for name in ('tproj','tproj-topology','tproj-remote-host','tproj-remote-cache','tproj-msg-runtime'):
+for name in ('tproj','tproj-cli-update','tproj-topology','tproj-remote-host','tproj-remote-cache','tproj-msg-runtime'):
     files['bin/'+name]=root/'bin'/name
 files['bin/tproj-msg']=wrapper
 for name in ('tproj_topology.py','tproj-common.sh','tproj-model-role.sh'):

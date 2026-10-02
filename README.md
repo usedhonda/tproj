@@ -327,6 +327,9 @@ brew untap usedhonda/tproj
 
 ## Notes
 
+- Startup global npm updates share one host-local per-user lock across local
+  and remote panes. The lock includes Codex signing and releases on update
+  failure or process exit; attaching to an existing session does not update it.
 - New local and remote Codex launches run `npm update -g @openai/codex` (and
   optional `sign-codex`) before resume; failures fall back to the installed
   version. Existing sessions are never updated or restarted. The CLI

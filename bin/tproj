@@ -530,7 +530,10 @@ with_claude_update_prefix() {
     printf '%s' "$command"
     return 0
   fi
-  printf 'npm update -g @anthropic-ai/claude-code; hash -r; %s' "$command"
+  local update_cmd
+  update_cmd="$(quoted_runtime_bin_path "tproj-cli-update")"
+  [[ -z "$update_cmd" ]] && update_cmd="tproj-cli-update"
+  printf '%s @anthropic-ai/claude-code; hash -r; %s' "$update_cmd" "$command"
 }
 
 with_codex_update_prefix() {
@@ -541,10 +544,12 @@ with_codex_update_prefix() {
     return 0
   fi
 
-  local sign_codex_cmd
+  local sign_codex_cmd update_cmd
+  update_cmd="$(quoted_runtime_bin_path "tproj-cli-update")"
+  [[ -z "$update_cmd" ]] && update_cmd="tproj-cli-update"
   sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
   [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
-  printf 'npm update -g @openai/codex; %s; hash -r; %s' "$sign_codex_cmd" "$command"
+  printf '%s @openai/codex %s; hash -r; %s' "$update_cmd" "$sign_codex_cmd" "$command"
 }
 
 # @tproj セッション一覧を取得（共通ヘルパー）
