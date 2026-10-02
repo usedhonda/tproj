@@ -1207,7 +1207,7 @@ struct WorkspaceProjectLocationSnapshot: Equatable {
              project.localPath.isEmpty && project.type != "remote" ? project.path : project.localPath,
              project.remotePath.isEmpty && project.type == "remote" ? project.path : project.remotePath]
         }
-        return WorkspaceProjectLocationSnapshot(entries: entries)
+        return WorkspaceProjectLocationSnapshot(entries: WorkspaceLocationGuard.canonical(entries))
     }
 }
 
