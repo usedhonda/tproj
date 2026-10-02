@@ -136,6 +136,9 @@ class KAIEventDelivery:
             existing = state["subscriptions"].get(sid)
             if existing and not self._owned(existing, binding):
                 raise RuntimeError("subscription ownership mismatch")
+            for other_sid, other in state["subscriptions"].items():
+                if other_sid != sid and self._active(other, binding, time.time()):
+                    raise RuntimeError("subscription already bound to another callback")
             ok, echoed = self._post(url, sid, raw, {"type": "verification", "challenge": challenge}, sid)
             if not ok or not isinstance(echoed.get("challenge"), str) or not hmac.compare_digest(echoed["challenge"], challenge):
                 raise RuntimeError("callback verification failed")

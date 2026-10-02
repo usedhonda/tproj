@@ -175,7 +175,7 @@ def run_stdio(server: MCPServer, stdin: TextIO = sys.stdin, stdout: TextIO = sys
                 continue
 
     worker = threading.Thread(target=deliver, name="kai-event-pump", daemon=True)
-    if callable(pump):
+    if callable(pump) and getattr(server, "event_pump_enabled", True):
         worker.start()
     try:
         for line in stdin:

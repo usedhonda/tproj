@@ -117,6 +117,11 @@ class EventTests(unittest.TestCase):
         self.assertEqual(len(set(posted)), 1)
         self.assertEqual(next(iter(self.delivery._load()["outbox"].values()))["status"], "terminal")
 
+    def test_one_active_callback_per_binding(self):
+        self.subscribe()
+        with self.assertRaisesRegex(RuntimeError, "already bound"):
+            self.delivery.subscribe("https://callback.example/other", self.secret)
+
 
 if __name__ == "__main__":
     unittest.main()

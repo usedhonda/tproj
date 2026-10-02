@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import threading
 from typing import Any, Mapping
 
 try:
@@ -58,6 +59,7 @@ class ServiceRuntime:
             raise RuntimeConfigError("unsafe runtime path")
         bridge = config.get("bridge_socket")
         self.bridge_socket = Path(bridge).expanduser() if bridge else None
+        self._events = None
 
     def _request(self, request: Mapping[str, Any]) -> Any:
         req = dict(request)
@@ -84,12 +86,21 @@ class ServiceRuntime:
     def server(self) -> MCPServer:
         authorizer = FixedConnectionAuthorizer(self.binding, self._attest)
         tools = MailboxTools(service_id=self.binding.service_id, service_address=self.binding.address,
-                             service_token=self.binding.token, authorizer=authorizer,
+                             service_token=self.binding.token, authorizer=authorizer.authorize,
                              host_call=self._request)
-        event_auth = authorizer.event_authorizer(
-            lambda cursor: self._request({"op": "service_inbox", "cursor": cursor, "limit": 100}))
-        events = KAIEventDelivery(event_auth, self.state_path)
-        return MCPServer(tools=tools, events=events)
+        events = self.events(authorizer)
+        server = MCPServer(tools=tools, events=events)
+        server.event_pump_enabled = self.bridge_socket is None
+        return server
+
+    def events(self, authorizer: FixedConnectionAuthorizer | None = None) -> KAIEventDelivery:
+        if self._events is None:
+            if authorizer is None:
+                authorizer = FixedConnectionAuthorizer(self.binding, self._attest)
+            event_auth = authorizer.event_authorizer(
+                lambda cursor: self._request({"op": "service_inbox", "cursor": cursor, "limit": 100}))
+            self._events = KAIEventDelivery(event_auth, self.state_path)
+        return self._events
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -132,6 +143,22 @@ def bridge(config: Mapping[str, Any]) -> int:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.unlink(missing_ok=True)
     runtime = ServiceRuntime(dict(config, bridge_socket=None))
+    try:
+        runtime._attest()
+    except Exception:
+        # Keep the bridge available while launchd/host startup converges; the
+        # event pump retries the same attestation without exposing credentials.
+        pass
+    events = runtime.events()
+    stop = threading.Event()
+    def pump() -> None:
+        while not stop.wait(1.0):
+            try:
+                events.pump_once()
+            except Exception:
+                continue
+    worker = threading.Thread(target=pump, name="kai-bridge-event-pump", daemon=True)
+    worker.start()
     listener = socket.socket(socket.AF_UNIX)
     listener.bind(str(path)); os.chmod(path, 0o600); listener.listen(16)
     try:
@@ -157,6 +184,7 @@ def bridge(config: Mapping[str, Any]) -> int:
                     response = {"ok": False, "error": {"code": "identity_rejected", "message": "bridge request rejected"}}
                 conn.sendall((json.dumps(response, separators=(",", ":")) + "\n").encode())
     finally:
+        stop.set(); worker.join(timeout=2)
         listener.close(); path.unlink(missing_ok=True)
 
 
