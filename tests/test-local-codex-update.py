@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Exercise startup command generation without updating real agent installs."""
 import os
+import json
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import tempfile
 import time
@@ -13,6 +15,59 @@ SOURCE = (ROOT / 'bin/tproj').read_text()
 
 
 class CodexStartupUpdate(unittest.TestCase):
+    def test_gui_generated_update_uses_helper_and_fails_open(self):
+        gui = (ROOT / 'apps/tproj/Sources/TprojApp/TprojApp.swift').read_text()
+        template = re.search(r'launchCmd = ("if \[ -x .*?\")$', gui, re.M).group(1)
+        resume = re.search(r'let codexResume = (".*?\")$', gui, re.M).group(1)
+        with tempfile.TemporaryDirectory(prefix="tproj gui '") as directory:
+            root = Path(directory)
+            project = root / "project ' space"
+            project.mkdir()
+            trace = root / 'trace'
+            updater = root / 'tproj-cli-update'
+            sign = root / 'sign-codex'
+            for name, body in {
+                'npm': 'echo unlocked-npm >> "$TRACE"; exit 99',
+                'codex': 'printf "launch %s %s\\n" "$PWD" "$*" >> "$TRACE"',
+            }.items():
+                script = root / name
+                script.write_text('#!/bin/sh\n' + body + '\n')
+                script.chmod(0o755)
+            resume_command = json.loads(resume.replace(
+                r'\(shellSingleQuote(projPath))', '{project}')).replace(
+                '{project}', shlex.quote(str(project)))
+            command = json.loads(template.replace(
+                r'\(codexUpdater)', '{updater}').replace(
+                r'\(codexResume)', '{resume}')).replace(
+                '{updater}', shlex.quote(str(updater))).replace('{resume}', resume_command)
+            for present, signing, rc in [(True, True, 0), (True, False, 1), (False, True, 0)]:
+                with self.subTest(present=present, signing=signing, rc=rc):
+                    trace.write_text('')
+                    updater.write_text('#!/bin/sh\n'
+                                       'printf "helper %s %s\\n" "$1" "${2:-}" >> "$TRACE"\n'
+                                       'if [ "$#" = 2 ]; then "$2"; fi\n'
+                                       'exit "${UPDATE_RC:-0}"\n')
+                    updater.chmod(0o755 if present else 0o644)
+                    sign.write_text('#!/bin/sh\necho sign >> "$TRACE"\n')
+                    if signing:
+                        sign.chmod(0o755)
+                    else:
+                        sign.unlink()
+                    result = subprocess.run(['bash', '-c', command], env=dict(
+                        os.environ, PATH=str(root) + ':/usr/bin:/bin',
+                        TRACE=str(trace), UPDATE_RC=str(rc)),
+                        capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    expected = []
+                    if present:
+                        expected.append('helper @openai/codex ' + (str(sign) if signing else ''))
+                        if signing:
+                            expected.append('sign')
+                    expected.append(f'launch {project} resume --last -s danger-full-access -a never --search')
+                    self.assertEqual(trace.read_text().splitlines(), expected)
+                    if not present:
+                        self.assertIn('updater missing; using installed agent', result.stderr)
+
     def test_default_update_failure_and_explicit_skip(self):
         defaults = '\n'.join(re.findall(r'^(?:NO_UPDATE|CODEX_NO_UPDATE)=.*$', SOURCE, re.M))
         helper = re.search(r'^with_codex_update_prefix\(\) \{.*?^\}', SOURCE, re.M | re.S).group()

@@ -2978,9 +2978,10 @@ final class AppViewModel: ObservableObject {
                 launchCmd = "cd \(shellSingleQuote(projPath)) && claude --continue 2>/dev/null || claude"
             case "codex":
                 let codexResume = "cd \(shellSingleQuote(projPath)) && codex resume --last -s danger-full-access -a never --search"
-                // Match the local CLI startup path: refresh Codex and sign it when
-                // available, but never let maintenance tooling prevent resume.
-                launchCmd = "if command -v npm >/dev/null 2>&1; then npm update -g @openai/codex || true; fi; if command -v sign-codex >/dev/null 2>&1; then sign-codex || true; fi; hash -r; \(codexResume)"
+                let codexUpdater = shellSingleQuote(NSHomeDirectory() + "/bin/tproj-cli-update")
+                // Keep npm and signing under the shared startup lock; a missing
+                // updater skips maintenance without preventing resume.
+                launchCmd = "if [ -x \(codexUpdater) ]; then if command -v sign-codex >/dev/null 2>&1; then \(codexUpdater) @openai/codex \"$(command -v sign-codex)\" || true; else \(codexUpdater) @openai/codex || true; fi; else printf '%s\\n' 'tproj: Codex updater missing; using installed agent' >&2; fi; hash -r; \(codexResume)"
             default: return
             }
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, launchCmd, "C-m"])
