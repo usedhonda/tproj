@@ -68,6 +68,18 @@ class MailboxToolsTest(unittest.TestCase):
         result = self.tools.dispatch("tproj_list", {})
         self.assertEqual(result, {"participants": [{"address": "voyager.cc", "kind": "cc", "available": True}]})
 
+    def test_inbox_hides_cancelled_envelopes(self):
+        def cancelled_host(req):
+            if req["op"] == "service_inbox":
+                return {"messages": [{"message_id": "gone", "thread_id": "t", "target_address": "kai",
+                                       "body": "do not deliver", "state": "cancelled"},
+                                      {"message_id": "live", "thread_id": "t2", "target_address": "kai",
+                                       "body": "deliver", "state": "queued"}], "next_cursor": 2}
+            return self.host(req)
+        self.tools.host_call = cancelled_host
+        result = self.tools.dispatch("tproj_inbox", {})
+        self.assertEqual([item["message_id"] for item in result["messages"]], ["live"])
+
 
 if __name__ == "__main__":
     unittest.main()

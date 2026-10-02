@@ -26,6 +26,7 @@ EVENT_NAME = "kai.mailbox.message"
 MAX_ATTEMPTS = 3
 MAX_BATCH = 100
 DEFAULT_TTL_MS = 86400000
+CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal"))
 
 
 @dataclass(frozen=True)
@@ -202,6 +203,8 @@ class KAIEventDelivery:
                     mid = message.get("message_id") if isinstance(message, dict) else None
                     if not isinstance(mid, str) or not mid:
                         raise RuntimeError("invalid mailbox message")
+                    if message.get("state") in CANCELLED_STATES:
+                        continue
                     eid = "evt_" + hashlib.sha256((sid + "\0" + mid).encode()).hexdigest()[:32]
                     if eid not in state["outbox"]:
                         state["outbox"][eid] = {

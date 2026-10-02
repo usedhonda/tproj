@@ -84,6 +84,11 @@ filter and sanitize results to the contract.  They fail closed when the
 authorizer supplies no participant scope.  Directory visibility is not proof
 of enrollment, cloud conversation identity, delivery, or presentation.
 
+Inbox projections and direct message views hide host envelopes whose durable
+state is `cancelled`, `canceled`, `expired`, or `terminal`; those states are
+never offered to KAI as new work. The host remains responsible for the atomic
+cancel-versus-present gate and for truthful presentation receipts.
+
 ## Connection-principal boundary
 
 `KaiServiceBinding` fixes the service ID, address, participant ID, credential,

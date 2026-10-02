@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping
 MAX_BODY_BYTES = 64 * 1024
 MAX_LIMIT = 100
 WIRE_LIMIT = 262_144
+CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal"))
 ADDRESS_RE = re.compile(r"^[^./\s]+\.(?:cc|cdx)$")
 ID_RE = re.compile(r"^[^\s]+$")
 FORBIDDEN_SELECTORS = {"role", "as", "session", "conversation", "conversation_id", "endpoint_id", "pid", "host"}
@@ -179,7 +180,9 @@ class MailboxTools:
         if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0 or not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_LIMIT:
             raise MailboxToolError("invalid_request", "cursor and limit are out of bounds")
         result = self._host("service_inbox", cursor=cursor, limit=limit) or {}
-        return {"messages": [self._view(item) for item in result.get("messages", [])], "next_cursor": int(result.get("next_cursor", cursor))}
+        messages = [item for item in result.get("messages", [])
+                    if isinstance(item, Mapping) and item.get("state") not in CANCELLED_STATES]
+        return {"messages": [self._view(item) for item in messages], "next_cursor": int(result.get("next_cursor", cursor))}
 
     def _message(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, {"message_id"}); mid = self._id(args["message_id"])
@@ -206,6 +209,8 @@ class MailboxTools:
         required = ("message_id", "thread_id", "target_address", "body", "state")
         if any(key not in item for key in required):
             raise MailboxToolError("unavailable", "host returned incomplete message")
+        if item.get("state") in CANCELLED_STATES:
+            raise MailboxToolError("not_found", "message is no longer available")
         out = {"message_id": item["message_id"], "thread_id": item["thread_id"], "target": item["target_address"],
                "body": item["body"], "state": item["state"]}
         for source, dest in (("in_reply_to", "in_reply_to"), ("sender_address", "sender_address")):

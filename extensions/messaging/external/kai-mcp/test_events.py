@@ -122,6 +122,14 @@ class EventTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "already bound"):
             self.delivery.subscribe("https://callback.example/other", self.secret)
 
+    def test_cancelled_mailbox_entry_never_becomes_event(self):
+        self.authorizer.reader = lambda cursor: {
+            "messages": [{"message_id": "gone", "state": "cancelled"}], "next_cursor": 1}
+        self.subscribe()
+        self.delivery._post = lambda *args: self.fail("cancelled entry was posted")
+        self.assertEqual(self.delivery.pump_once(), 0)
+        self.assertEqual(self.delivery._load()["outbox"], {})
+
 
 if __name__ == "__main__":
     unittest.main()
