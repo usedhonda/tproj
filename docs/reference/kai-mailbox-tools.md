@@ -88,7 +88,7 @@ of enrollment, cloud conversation identity, delivery, or presentation.
 
 `KaiServiceBinding` fixes the service ID, address, participant ID, credential,
 and participant allowlist at enrollment. It also requires a persistent
-`binding_generation` UUID. A verified service restart may change endpoint
+`binding_generation` random identifier. A verified service restart may change endpoint
 incarnation while retaining that generation and its one callback subscription;
 explicit reenrollment or revocation must rotate the generation. The host
 attestor must return the matching binding and live incarnation; an address or
