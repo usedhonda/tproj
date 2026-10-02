@@ -257,7 +257,7 @@ def adopt_native_conversation(endpoints: Iterable[Mapping[str, Any]], context: M
     for endpoint in adopted:
         if endpoint.get("endpoint_id") == selected.get("endpoint_id"):
             endpoint["thread_id"] = thread
-            if context.get("session_id") and proven_sessions:
+            if context.get("session_id") and (proven_sessions or str(context["session_id"]) == thread):
                 endpoint["session_id"] = str(context["session_id"])
             break
     return adopted

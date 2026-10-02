@@ -155,7 +155,7 @@ class UnifiedIdentityTest(unittest.TestCase):
             [{"host_id": "local", "thread_id": "thread-native", "cwd": str(self.project)}])
         self.assertEqual(adopted[0]["endpoint_id"], "stable")
         self.assertEqual(adopted[0]["thread_id"], "thread-native")
-        self.assertNotIn("session_id", adopted[0])
+        self.assertEqual(adopted[0]["session_id"], "thread-native")
 
     def test_native_adoption_scopes_codex_and_preserves_conflicting_binding(self):
         cdx = {"endpoint_id": "cdx", "platform": "cdx", "project_path": str(self.project),
@@ -172,6 +172,23 @@ class UnifiedIdentityTest(unittest.TestCase):
             [bound], {"thread_id": "thread-native", "session_id": "session-native"},
             [{"host_id": "local", "thread_id": "thread-native", "cwd": str(self.project)}])
         self.assertEqual(preserved[0]["thread_id"], "other-thread")
+
+    def test_composed_adoption_binds_shared_daemon_tmux_endpoint(self):
+        cdx = {"endpoint_id": "tmux-cdx", "participant_id": "demo:cdx", "platform": "cdx",
+               "project_path": str(self.project), "session": "tproj", "runtime_id": "tmux:tproj:%3:77",
+               "pid": 101, "pid_start": 77}
+        cc = dict(cdx, endpoint_id="tmux-cc", participant_id="demo:cc", platform="cc", pid=111, pid_start=88)
+        context = {"thread_id": "native-equal", "session_id": "native-equal", "platform": "cdx"}
+        adopted = identity.adopt_native_conversation([cdx, cc], context,
+                    [{"host_id": "local", "thread_id": "native-equal", "cwd": str(self.project)}])
+        processes = {
+            101: {"ppid": 1, "pid_start": 77, "uid": 501, "command": "codex"},
+            201: {"ppid": 1, "pid_start": 99, "uid": 501, "command": "codex app-server --stdio"},
+            202: {"ppid": 201, "pid_start": 100, "uid": 501, "command": "tproj-msg"},
+        }
+        bound = identity.bind_caller(202, 501, adopted, conversation=context,
+                                     inspect_process=processes.__getitem__)
+        self.assertEqual(bound["endpoint_id"], "tmux-cdx")
 
     def test_tmux_fallback_requires_live_agent_descendant_and_deduplicates_registry(self):
         panes = lambda: [
