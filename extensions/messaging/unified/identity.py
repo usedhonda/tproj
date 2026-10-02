@@ -191,28 +191,77 @@ def _conversation_matches(endpoint: Mapping[str, Any], context: Mapping[str, Any
     return not platform or str(endpoint.get("platform", "")) == str(platform)
 
 
-def native_thread_metadata(thread_id: str, db_path: str | os.PathLike | None = None) -> list[dict[str, Any]]:
-    """Read host-local Codex thread catalog metadata without opening a writer."""
+_NATIVE_THREAD_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+def _native_rollout_metadata(thread_id: str, sessions_root: Path) -> list[dict[str, Any]]:
+    """Read one exact Codex TUI session header as bounded local evidence."""
+    if not _NATIVE_THREAD_ID.fullmatch(thread_id) or not sessions_root.is_dir():
+        return []
+    pattern = f"rollout-*-{thread_id}.jsonl"
+    found: list[dict[str, Any]] = []
+    try:
+        paths = sessions_root.glob("[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9]/" + pattern)
+    except OSError:
+        return []
+    for path in paths:
+        try:
+            relative = path.relative_to(sessions_root)
+        except ValueError:
+            continue
+        if (path.is_symlink() or any((sessions_root / part).is_symlink() for part in relative.parts)
+                or not path.is_file() or not path.name.lower().endswith(f"-{thread_id.lower()}.jsonl")):
+            continue
+        try:
+            with path.open(encoding="utf-8") as stream:
+                header = json.loads(stream.readline())
+        except (OSError, UnicodeError, ValueError):
+            continue
+        payload = header.get("payload") if isinstance(header, dict) else None
+        if not isinstance(header, dict) or header.get("type") != "session_meta" or not isinstance(payload, dict):
+            continue
+        if str(payload.get("id", "")) != thread_id:
+            continue
+        if payload.get("session_id") and str(payload["session_id"]) != thread_id:
+            continue
+        if str(payload.get("originator", "")) != "codex-tui" or str(payload.get("source", "")) != "vscode":
+            continue
+        cwd = payload.get("cwd")
+        if not cwd:
+            continue
+        found.append({"host_id": "local", "thread_id": thread_id, "session_id": thread_id,
+                      "cwd": cwd, "source_kind": "vscode-rollout", "source": "vscode",
+                      "originator": "codex-tui", "metadata_path": str(path)})
+    return found if len(found) == 1 else []
+
+
+def native_thread_metadata(thread_id: str, db_path: str | os.PathLike | None = None,
+                           sessions_root: str | os.PathLike | None = None) -> list[dict[str, Any]]:
+    """Read host-local Codex thread metadata without opening a writer."""
     thread_id = str(thread_id or "").strip()
     if not thread_id:
         return []
     path = Path(db_path or (Path.home() / ".codex/sqlite/codex-dev.db"))
-    if not path.is_file():
-        return []
+    catalog: list[dict[str, Any]] = []
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
-            db.row_factory = sqlite3.Row
-            columns = {row[1] for row in db.execute("PRAGMA table_info(local_thread_catalog)")}
-            session_column = ",session_id" if "session_id" in columns else ""
-            rows = db.execute(
-                f"SELECT host_id,thread_id,cwd,source_kind,source_updated_at{session_column} FROM local_thread_catalog WHERE thread_id=?",
-                (thread_id,),
-            ).fetchall()
-        return [dict(row) for row in rows
-                if row["host_id"] in (None, "local") and row["cwd"]
-                and str(row["source_kind"] or "cli") == "cli"]
+        if path.is_file():
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+                db.row_factory = sqlite3.Row
+                columns = {row[1] for row in db.execute("PRAGMA table_info(local_thread_catalog)")}
+                session_column = ",session_id" if "session_id" in columns else ""
+                rows = db.execute(
+                    f"SELECT host_id,thread_id,cwd,source_kind,source_updated_at{session_column} FROM local_thread_catalog WHERE thread_id=?",
+                    (thread_id,),
+                ).fetchall()
+            catalog = [dict(row) for row in rows
+                       if row["host_id"] in (None, "local") and row["cwd"]
+                       and str(row["source_kind"] or "cli") == "cli"]
     except (OSError, sqlite3.Error):
-        return []
+        catalog = []
+    if catalog:
+        return catalog
+    root = Path(sessions_root) if sessions_root is not None else Path.home() / ".codex/sessions"
+    return _native_rollout_metadata(thread_id, root)
 
 
 def adopt_native_conversation(endpoints: Iterable[Mapping[str, Any]], context: Mapping[str, Any],
@@ -223,7 +272,7 @@ def adopt_native_conversation(endpoints: Iterable[Mapping[str, Any]], context: M
     if not thread:
         return endpoint_list
     records = list(metadata) if metadata is not None else native_thread_metadata(thread)
-    records = [row for row in records if str(row.get("source_kind") or "cli") == "cli"]
+    records = [row for row in records if str(row.get("source_kind") or "cli") in {"cli", "vscode-rollout"}]
     projects = {_canonical(row.get("cwd")) for row in records if row.get("cwd")}
     if len(projects) != 1:
         return endpoint_list

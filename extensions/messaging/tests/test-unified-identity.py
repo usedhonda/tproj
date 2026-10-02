@@ -198,6 +198,45 @@ class UnifiedIdentityTest(unittest.TestCase):
             conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)", ("local", "old", str(self.project), "cli", 1.0))
         self.assertEqual(identity.native_thread_metadata("old", db)[0]["thread_id"], "old")
 
+    def test_native_rollout_adopts_and_binds_when_catalog_is_missing(self):
+        thread = "019e9e25-a537-75c3-821e-8d057e86d19e"
+        sessions = Path(self.tmp.name) / "sessions" / "2026" / "10" / "02"
+        sessions.mkdir(parents=True)
+        rollout = sessions / f"rollout-2026-10-02T22-31-44-{thread}.jsonl"
+        rollout.write_text(json.dumps({"type": "session_meta", "payload": {
+            "id": thread, "cwd": str(self.project),
+            "originator": "codex-tui", "source": "vscode"}}) + "\n")
+        metadata = identity.native_thread_metadata(thread, db_path=Path(self.tmp.name) / "missing.db",
+                                                  sessions_root=Path(self.tmp.name) / "sessions")
+        endpoint = {"endpoint_id": "tmux", "participant_id": "demo:cdx", "project_id": "demo",
+                    "platform": "cdx", "project_path": str(self.project), "session": "shared",
+                    "pid": 101, "pid_start": 77}
+        context = {"thread_id": thread, "session_id": thread, "platform": "cdx"}
+        adopted = identity.adopt_native_conversation([endpoint], context, metadata)
+        self.assertEqual(adopted[0]["thread_id"], thread)
+        processes = {
+            101: {"ppid": 1, "pid_start": 77, "uid": 501, "command": "codex app-server --stdio"},
+            102: {"ppid": 101, "pid_start": 88, "uid": 501, "command": "tproj-msg"},
+        }
+        self.assertEqual(identity.bind_caller(102, 501, adopted, conversation=context,
+                                              inspect_process=processes.__getitem__), adopted[0])
+
+    def test_native_rollout_rejects_wrong_source_and_conflicting_catalog(self):
+        thread = "019e9e25-a537-75c3-821e-8d057e86d19e"
+        sessions = Path(self.tmp.name) / "sessions" / "2026" / "10" / "02"
+        sessions.mkdir(parents=True)
+        rollout = sessions / f"rollout-2026-10-02T22-31-44-{thread}.jsonl"
+        rollout.write_text(json.dumps({"type": "session_meta", "payload": {
+            "id": thread, "session_id": thread, "cwd": str(self.project),
+            "originator": "other-client", "source": "vscode"}}) + "\n")
+        self.assertEqual(identity.native_thread_metadata(thread, db_path=Path(self.tmp.name) / "missing.db",
+                                                         sessions_root=Path(self.tmp.name) / "sessions"), [])
+        endpoint = {"endpoint_id": "tmux", "platform": "cdx", "project_path": str(self.project)}
+        conflicting = [{"host_id": "local", "thread_id": thread, "session_id": "other-session",
+                        "cwd": str(self.project), "source_kind": "cli"}]
+        self.assertEqual(identity.adopt_native_conversation(
+            [endpoint], {"thread_id": thread, "session_id": "requested-session"}, conflicting), [endpoint])
+
     def test_tmux_fallback_requires_live_agent_descendant_and_deduplicates_registry(self):
         panes = lambda: [
             {"session": "sess", "pane": "%1", "pane_pid": "10", "project": str(self.project),
