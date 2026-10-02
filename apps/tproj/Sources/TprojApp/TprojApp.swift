@@ -3744,7 +3744,7 @@ final class AppViewModel: ObservableObject {
         }
         // This sheet never edits enabled; retain each draft row's value even when
         // another machine has a project with the same absolute path.
-        guard let error = persistWorkspaceProjects(projects, createIfMissing: false, expectedLocationSnapshot: expectedSnapshot) else {
+        guard let error = persistWorkspaceProjects(projects, createIfMissing: false, expectedLocationSnapshot: expectedSnapshot, preserveEnabled: true) else {
             loadWorkspaceProjects()
             let currentRemotes = workspaceProjects.filter { $0.type == "remote" }
             if fileManager.isExecutableFile(atPath: client) {
@@ -5077,7 +5077,7 @@ final class AppViewModel: ObservableObject {
         try? fileManager.removeItem(at: lockURL)
     }
 
-    private func persistWorkspaceProjects(_ projects: [WorkspaceProject], createIfMissing: Bool, expectedLocationSnapshot: WorkspaceProjectLocationSnapshot? = nil) -> String? {
+    private func persistWorkspaceProjects(_ projects: [WorkspaceProject], createIfMissing: Bool, expectedLocationSnapshot: WorkspaceProjectLocationSnapshot? = nil, preserveEnabled: Bool = false) -> String? {
         do {
             let parent = URL(fileURLWithPath: workspacePath).deletingLastPathComponent()
             try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -5086,12 +5086,12 @@ final class AppViewModel: ObservableObject {
             }
             defer { releaseWorkspaceLock(lockURL) }
 
-            let content = renderWorkspaceYAML(projects)
+            var projects = projects
             if !fileManager.fileExists(atPath: workspacePath) {
                 guard createIfMissing else {
                     return "workspace.yaml not found"
                 }
-                try content.write(toFile: workspacePath, atomically: true, encoding: .utf8)
+                try renderWorkspaceYAML(projects).write(toFile: workspacePath, atomically: true, encoding: .utf8)
                 return nil
             }
 
@@ -5100,15 +5100,51 @@ final class AppViewModel: ObservableObject {
                 return "Workspace locations changed on disk; refresh before saving"
             }
 
+            // Refresh volatile fields while holding the lock so a stale GUI
+            // model cannot erase a newer MRU timestamp or enabled flag.
+            let volatile = runCommand("/usr/bin/env", ["yq", "-r", ".projects[]? | [(.path // \"\"),(.host // \"\"),((.lastActiveAt // 0)|tostring),(.enabled|tostring)] | @tsv", workspacePath])
+            if volatile.exitCode == 0 {
+                var disk: [String: (Int64, Bool)] = [:]
+                for row in volatile.stdout.split(separator: "\n") {
+                    let parts = row.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                    if parts.count == 4, let stamp = Int64(parts[2]) {
+                        disk["\(normalizedProjectKey(parts[0]))|\(parts[1])"] = (stamp, parts[3] != "false")
+                    }
+                }
+                for index in projects.indices {
+                    let key = "\(normalizedProjectKey(projects[index].path))|\(projects[index].host)"
+                    if let fields = disk[key] {
+                        projects[index].lastActiveAt = max(projects[index].lastActiveAt, Int(fields.0))
+                        if preserveEnabled { projects[index].enabled = fields.1 }
+                    }
+                }
+            }
+            let content = renderWorkspaceYAML(projects)
+
             let tempURL = parent.appendingPathComponent(".tproj-projects-\(UUID().uuidString).yaml")
             try content.write(to: tempURL, atomically: true, encoding: .utf8)
             defer { try? fileManager.removeItem(at: tempURL) }
 
-            let expression = ".projects = load(strenv(TPROJ_PROJECTS_TMP)).projects"
+            // Merge each requested row onto its current disk row by stable
+            // project_id, falling back to host+path for legacy rows.  This
+            // preserves unknown/manual keys and fields written by MRU or
+            // another client since the model was loaded.  Location changes
+            // were already validated against the snapshot above.
+            let expression = """
+            . as $root |
+            (load(strenv(TPROJ_PROJECTS_TMP)).projects) as $desired |
+            ($root.projects // []) as $current |
+            $root | .projects = ($desired | map(. as $d |
+              (((($current[] | select((.project_id // \"\") == ($d.project_id // \"\")) | select(($d.project_id // \"\") != \"\")))
+                // ($current[] | select((.path // \"\") == ($d.path // \"\")) | select((.host // \"\") == ($d.host // \"\")))) // {}) * $d))
+            """
             let result = runCommand(
                 "/usr/bin/env",
                 ["yq", "eval", "-i", expression, workspacePath],
-                environment: ["TPROJ_PROJECTS_TMP": tempURL.path]
+                environment: [
+                    "TPROJ_PROJECTS_TMP": tempURL.path,
+                    "TPROJ_PRESERVE_ENABLED": preserveEnabled ? "true" : "false"
+                ]
             )
 
             guard result.exitCode == 0 else {
