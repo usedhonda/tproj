@@ -32,6 +32,8 @@ class KaiServiceBinding:
                              (participant_id, "participant identity"),
                              (token, "service credential")):
             _text(value, label)
+        if isinstance(allowed_addresses, (str, bytes)):
+            raise ConnectionBindingError("authorized participant scope is required")
         scope = tuple(allowed_addresses)
         if not scope or any(not isinstance(value, str) or not value for value in scope):
             raise ConnectionBindingError("authorized participant scope is required")
