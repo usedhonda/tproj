@@ -95,6 +95,18 @@ class MailboxToolsTest(unittest.TestCase):
         self.assertEqual(result["messages"], [])
         self.assertEqual(seen, ["service_inbox", "service_begin_present"])
 
+    def test_begin_present_unrelated_error_is_not_hidden(self):
+        def failing_host(req):
+            if req["op"] == "service_inbox":
+                return {"messages": [{"message_id": "x", "state": "queued"}], "next_cursor": 1}
+            if req["op"] == "service_begin_present":
+                raise module.MailboxToolError("unavailable", "host offline")
+            return self.host(req)
+        self.tools.host_call = failing_host
+        with self.assertRaises(module.MailboxToolError) as raised:
+            self.tools.dispatch("tproj_inbox", {})
+        self.assertEqual(raised.exception.code, "unavailable")
+
 
 if __name__ == "__main__":
     unittest.main()

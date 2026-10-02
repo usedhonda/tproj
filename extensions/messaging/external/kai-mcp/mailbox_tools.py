@@ -200,7 +200,7 @@ class MailboxTools:
         try:
             result = self._host("service_begin_present", message_id=mid) or {}
         except MailboxToolError as exc:
-            if exc.code in CANCELLED_STATES or exc.code in ("not_found", "unauthorized"):
+            if exc.code in CANCELLED_STATES or exc.code == "not_found":
                 return False
             raise
         return result.get("state", "dispatching") not in CANCELLED_STATES
