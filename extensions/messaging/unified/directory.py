@@ -39,6 +39,24 @@ def _payload(req: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _validate_project_id_locations(hub: Any, projects: list[dict[str, Any]], local_id: str) -> None:
+    """Keep project_id as the stable authority for one owner/location."""
+    seen: dict[str, tuple[str, str]] = {}
+    for project in projects:
+        project_id = str(project.get("project_id") or "")
+        path = str(project.get("path") or "")
+        prior = seen.get(project_id)
+        if prior is not None and prior != (local_id, path):
+            raise HubError("identity_rejected", "project ID maps to multiple host/path locations")
+        seen[project_id] = (local_id, path)
+        existing = hub._row("SELECT host_id,path FROM projects WHERE project_id=?", (project_id,))
+        if existing and (existing["host_id"], existing["path"]) != (local_id, path):
+            raise HubError("identity_rejected", "project ID belongs to a different host/path")
+        by_location = hub._row("SELECT project_id FROM projects WHERE host_id=? AND path=?", (local_id, path))
+        if by_location and str(by_location["project_id"]) != project_id:
+            raise HubError("identity_rejected", "host/path already belongs to another project ID")
+
+
 def prepare(hub: Any, req: dict[str, Any]) -> dict[str, Any]:
     """Stage an owner-local payload without changing authoritative rows."""
     ensure_schema(hub.db)
@@ -58,6 +76,7 @@ def prepare(hub: Any, req: dict[str, Any]) -> dict[str, Any]:
     local_id = hub.local_id if hasattr(hub, "local_id") else hub.config.get("host_id")
     if any(not isinstance(p, dict) or not all(p.get(k) for k in ("project_id", "alias", "host_id", "path")) or p.get("host_id") != local_id for p in projects):
         raise HubError("identity_rejected", "owner may stage only local projects")
+    _validate_project_id_locations(hub, projects, local_id)
     expected = payload.get("expected_revision")
     current = int(hub._row("SELECT value FROM metadata WHERE key='directory_revision'")[0])
     if expected is not None and int(expected) != current:
@@ -81,6 +100,7 @@ def commit(hub: Any, req: dict[str, Any]) -> dict[str, Any]:
     projects = payload.get("projects", [])
     if any(p.get("host_id") != local_id for p in projects):
         raise HubError("identity_rejected", "owner may commit only local projects")
+    _validate_project_id_locations(hub, projects, local_id)
     hub._tx()
     try:
         for p in projects:

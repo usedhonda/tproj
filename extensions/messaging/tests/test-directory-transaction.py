@@ -22,6 +22,26 @@ class DirectoryTransactionTests(unittest.TestCase):
             self.assertEqual(hub.db.execute("SELECT alias FROM projects WHERE project_id='p'").fetchone()[0], "new")
             hub.close()
 
+    def test_rejects_project_id_repointing(self):
+        with tempfile.TemporaryDirectory() as d:
+            hub = Hub(os.path.join(d, "hub.db"), {"host_id": "local", "hosts": {}})
+            hub.local_id = "local"
+            hub.db.execute("INSERT INTO projects(project_id,alias,host_id,path) VALUES(?,?,?,?)", ("p", "old", "local", "/p"))
+            payload = {"expected_revision": 0, "projects": [{"project_id": "p", "alias": "new", "host_id": "local", "path": "/other"}]}
+            with self.assertRaisesRegex(Exception, "different host/path"):
+                prepare(hub, {"change_id": "repoint", "payload": payload})
+            hub.close()
+
+    def test_rejects_duplicate_owner_location_with_new_id(self):
+        with tempfile.TemporaryDirectory() as d:
+            hub = Hub(os.path.join(d, "hub.db"), {"host_id": "local", "hosts": {}})
+            hub.local_id = "local"
+            hub.db.execute("INSERT INTO projects(project_id,alias,host_id,path) VALUES(?,?,?,?)", ("p", "old", "local", "/p"))
+            payload = {"expected_revision": 0, "projects": [{"project_id": "new", "alias": "new", "host_id": "local", "path": "/p"}]}
+            with self.assertRaisesRegex(Exception, "already belongs"):
+                prepare(hub, {"change_id": "duplicate-location", "payload": payload})
+            hub.close()
+
 
 if __name__ == "__main__":
     unittest.main()
