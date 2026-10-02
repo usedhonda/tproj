@@ -206,11 +206,11 @@ class MailboxTools:
 
     @staticmethod
     def _view(item: Mapping[str, Any]) -> dict[str, Any]:
+        if item.get("state") in CANCELLED_STATES:
+            raise MailboxToolError("not_found", "message is no longer available")
         required = ("message_id", "thread_id", "target_address", "body", "state")
         if any(key not in item for key in required):
             raise MailboxToolError("unavailable", "host returned incomplete message")
-        if item.get("state") in CANCELLED_STATES:
-            raise MailboxToolError("not_found", "message is no longer available")
         out = {"message_id": item["message_id"], "thread_id": item["thread_id"], "target": item["target_address"],
                "body": item["body"], "state": item["state"]}
         for source, dest in (("in_reply_to", "in_reply_to"), ("sender_address", "sender_address")):
