@@ -237,6 +237,21 @@ class UnifiedIdentityTest(unittest.TestCase):
         self.assertEqual(identity.adopt_native_conversation(
             [endpoint], {"thread_id": thread, "session_id": "requested-session"}, conflicting), [endpoint])
 
+    def test_native_catalog_conflict_blocks_rollout_fallback(self):
+        thread = "019e9e25-a537-75c3-821e-8d057e86d19e"
+        sessions = Path(self.tmp.name) / "sessions" / "2026" / "10" / "02"
+        sessions.mkdir(parents=True)
+        (sessions / f"rollout-2026-10-02T22-31-44-{thread}.jsonl").write_text(
+            json.dumps({"type": "session_meta", "payload": {
+                "id": thread, "cwd": str(self.project), "originator": "codex-tui", "source": "vscode"}})
+            + "\n")
+        db = Path(self.tmp.name) / "codex.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE local_thread_catalog(host_id TEXT, thread_id TEXT, cwd TEXT, source_kind TEXT, source_updated_at REAL)")
+            conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)",
+                         ("remote", thread, str(self.project), "cli", 1.0))
+        self.assertEqual(identity.native_thread_metadata(thread, db, Path(self.tmp.name) / "sessions"), [])
+
     def test_tmux_fallback_requires_live_agent_descendant_and_deduplicates_registry(self):
         panes = lambda: [
             {"session": "sess", "pane": "%1", "pane_pid": "10", "project": str(self.project),

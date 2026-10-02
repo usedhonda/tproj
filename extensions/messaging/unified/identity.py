@@ -196,7 +196,8 @@ _NATIVE_THREAD_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4
 
 def _native_rollout_metadata(thread_id: str, sessions_root: Path) -> list[dict[str, Any]]:
     """Read one exact Codex TUI session header as bounded local evidence."""
-    if not _NATIVE_THREAD_ID.fullmatch(thread_id) or not sessions_root.is_dir():
+    if (not _NATIVE_THREAD_ID.fullmatch(thread_id) or sessions_root.is_symlink()
+            or not sessions_root.is_dir()):
         return []
     pattern = f"rollout-*-{thread_id}.jsonl"
     found: list[dict[str, Any]] = []
@@ -209,8 +210,13 @@ def _native_rollout_metadata(thread_id: str, sessions_root: Path) -> list[dict[s
             relative = path.relative_to(sessions_root)
         except ValueError:
             continue
-        if (path.is_symlink() or any((sessions_root / part).is_symlink() for part in relative.parts)
-                or not path.is_file() or not path.name.lower().endswith(f"-{thread_id.lower()}.jsonl")):
+        current = sessions_root
+        ancestor_symlink = False
+        for part in relative.parts[:-1]:
+            current /= part
+            ancestor_symlink = ancestor_symlink or current.is_symlink()
+        if (path.is_symlink() or ancestor_symlink or not path.is_file()
+                or not path.name.lower().endswith(f"-{thread_id.lower()}.jsonl")):
             continue
         try:
             with path.open(encoding="utf-8") as stream:
@@ -243,6 +249,7 @@ def native_thread_metadata(thread_id: str, db_path: str | os.PathLike | None = N
         return []
     path = Path(db_path or (Path.home() / ".codex/sqlite/codex-dev.db"))
     catalog: list[dict[str, Any]] = []
+    catalog_rows_seen = False
     try:
         if path.is_file():
             with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
@@ -253,12 +260,13 @@ def native_thread_metadata(thread_id: str, db_path: str | os.PathLike | None = N
                     f"SELECT host_id,thread_id,cwd,source_kind,source_updated_at{session_column} FROM local_thread_catalog WHERE thread_id=?",
                     (thread_id,),
                 ).fetchall()
+            catalog_rows_seen = bool(rows)
             catalog = [dict(row) for row in rows
                        if row["host_id"] in (None, "local") and row["cwd"]
                        and str(row["source_kind"] or "cli") == "cli"]
     except (OSError, sqlite3.Error):
         catalog = []
-    if catalog:
+    if catalog_rows_seen:
         return catalog
     root = Path(sessions_root) if sessions_root is not None else Path.home() / ".codex/sessions"
     return _native_rollout_metadata(thread_id, root)
