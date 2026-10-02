@@ -1,6 +1,9 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import os
+import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("kai_mailbox_tools", ROOT / "mailbox_tools.py")
@@ -106,6 +109,43 @@ class MailboxToolsTest(unittest.TestCase):
         with self.assertRaises(module.MailboxToolError) as raised:
             self.tools.dispatch("tproj_inbox", {})
         self.assertEqual(raised.exception.code, "unavailable")
+
+    def test_real_host_cancellation_race_reread_and_sent_query(self):
+        sys.path.insert(0, str(ROOT.parents[1] / "unified"))
+        from hub import Hub
+        from host import Host
+        from protocol import HubError
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = Hub(Path(tmp) / "hub.db", {"admin_token": "admin", "hosts": {"h": "token"}})
+            host = Host({"journal": str(Path(tmp) / "journal.db"), "host_id": "h"}, recover=False)
+            self.addCleanup(hub.close); self.addCleanup(host.db.close)
+            hub.dispatch(dict(op="directory_import", admin_token="admin",
+                              projects=[dict(project_id="p", alias="voyager", host_id="h", path="/p")],
+                              services=[dict(participant_id="kai", address="kai", host_id="h", kind="kai")]))
+            for eid, participant in (("sender", "p:cc"), ("receiver", "kai")):
+                hub.dispatch(dict(op="endpoint_register", host_id="h", host_token="token", endpoint_id=eid,
+                                  participant_id=participant, session=eid, pane="", pid=1, pid_start=1,
+                                  runtime_id=eid, platform="test"))
+            host.service = lambda *_: dict(endpoint_id="receiver", runtime_id="receiver")
+            host.hub = lambda op, **kw: hub.dispatch(dict(op=op, host_id="h", host_token="token", **kw))
+            def send(mid, sender="sender", target="kai"):
+                hub.dispatch(dict(op="submit", host_id="h", host_token="token",
+                                  message=dict(message_id=mid, thread_id=mid, sender_endpoint=sender,
+                                               target=target, body="payload")))
+            send("race")
+            def call(req):
+                if req["op"] == "service_begin_present" and req["message_id"] == "race":
+                    hub.cancel(dict(host_id="h", host_token="token", endpoint_id="sender", message_id="race"))
+                return host.dispatch(req, os.getpid(), os.getuid())
+            self.tools.host_call = call
+            self.assertEqual(self.tools.dispatch("tproj_inbox", {})["messages"], [])
+            send("live")
+            self.assertEqual(self.tools.dispatch("tproj_inbox", {})["messages"][0]["message_id"], "live")
+            with self.assertRaisesRegex(HubError, "execution is not cancelled"):
+                hub.cancel(dict(host_id="h", host_token="token", endpoint_id="sender", message_id="live"))
+            self.assertEqual(self.tools.dispatch("tproj_message", {"message_id": "live"})["body"], "payload")
+            send("outbound", "receiver", "voyager.cc")
+            self.assertEqual(self.tools.dispatch("tproj_message", {"message_id": "outbound"})["state"], "accepted")
 
 
 if __name__ == "__main__":

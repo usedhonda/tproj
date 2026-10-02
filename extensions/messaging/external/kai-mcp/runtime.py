@@ -182,6 +182,8 @@ def bridge(config: Mapping[str, Any]) -> int:
                     else:
                         raise RuntimeConfigError("invalid bridge request")
                     response = {"ok": True, "result": result}
+                except MailboxToolError as exc:
+                    response = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
                 except Exception:
                     response = {"ok": False, "error": {"code": "identity_rejected", "message": "bridge request rejected"}}
                 conn.sendall((json.dumps(response, separators=(",", ":")) + "\n").encode())

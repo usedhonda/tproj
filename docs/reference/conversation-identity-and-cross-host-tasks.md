@@ -1,58 +1,27 @@
 # Conversation identity and cross-host tasks (design agreement)
 
-Status: design agreed between the tproj CC and Cdx panes, 2026-09-29.
-Nothing here is implemented yet. This note records the contract that an
-implementation must satisfy; it does not approve implementation, deployment,
-or restarting any session.
+Status: P4 superseded by the approved single-owner contract (2026-10-02).
+P5 below is a future distributed-task design, not an implementation prerequisite
+for ordinary messaging. Ordinary messages can carry user-authorized requests;
+they do not create task ownership or change roles.
 
-## Problem
+## P4: current conversation identity
 
-1. **Shared Codex app-server identity.** One `codex app-server --managed-daemon`
-   process can serve several conversations (observed: one daemon launched from
-   the Artist pane also served Chi). Identity derived from process ancestry then
-   names the launcher, not the calling conversation, and a message was sent as
-   the wrong project. The unified transport currently rejects any caller whose
-   ancestry reaches an app-server (`unified-messaging.md`, "Caller ancestry").
-   That is containment only: such conversations cannot use messaging.
-   `model-role-router` (sibling `general` checkout) relies on the same ancestry
-   assumption.
-2. **Tasks and role handoff do not cross hosts or sessions.** `--new-task` and
-   `--role-handoff` still run on the legacy path, which works only inside one
-   tmux session. The unified federation carries ordinary chat only.
+The authoritative current contract is [unified conversation identity](unified-conversation-identity.md).
+The host trusts enrolled same-owner processes and correlates native conversation
+IDs with its live project/platform/endpoint registry. The daemon launcher is not
+the sender. Missing, ambiguous, or mismatched bindings are rejected. Native IDs
+are correlation, not provider-signed identity or isolation against malicious
+code already running as the same OS user. No session migration/restart is required.
 
-## P4: conversation identity
-
-- Keep rejecting app-server ancestry. The daemon's launcher PID, cwd, `--as`,
-  and a self-reported thread ID are not proof of a conversation.
-- Bind identity to an execution context guaranteed by a **trusted host-side
-  conversation adapter**: it registers the native thread/tool invocation against
-  an immutable endpoint ID plus incarnation. MSG and `model-role-router` consult
-  the same authentication result. Role and epoch authority remain a separate,
-  current-source decision.
-- If capabilities are used, the adapter issues and applies them from the
-  genuine conversation context, bound to host, endpoint incarnation, thread,
-  operation, expiry, and nonce, and passes them over authenticated IPC/FD.
-  Never place bearer tokens in shared daemon environment, prompts, argv, or
-  logs. Expiry, restart, and replay are rejected. This does not claim isolation
-  from arbitrary code running as the same UID.
-- Whether Codex exposes a trusted hook/API for this is **unverified**. Do not
-  state that the app-server can issue tokens. A precondition for implementation
-  is proving that the native thread -> tool execution mapping can be obtained
-  untampered.
-- Fallback if that fails: an independent runtime per conversation, only when it
-  is provable that the shared daemon is not reused and that another root
-  conversation or subagent cannot borrow the parent's identity. A unique
-  launcher or `CODEX_HOME` alone is not enough. Migration must never terminate
-  existing sessions, and no unverified launch flag is promised.
-- P4 is complete only when `model-role-router` uses the same contract; fixing MSG
-  while Role still injects an ancestry-derived identity is not completion. The
-  router change belongs to the `general` owner as a separate scope.
+MSG consumes the canonical model-role registry, including native session/thread
+IDs; role/epoch remain independent. The earlier proposal requiring provider-issued
+short-lived capabilities is not the current deployment gate.
 
 ## P5: cross-host tasks and role handoff
 
 Precondition: the sender authenticates genuinely (not full P4). Panes that
-already authenticate (Claude, standalone Codex CLI) can adopt it first; shared
-app-server conversations stay excluded until P4 holds.
+already authenticate using the current conversation contract can adopt it.
 
 1. **Task envelope.** Add a versioned task envelope on the existing unified
    transport/outbox: task ID, sender/recipient endpoint + incarnation, owner,
@@ -81,7 +50,7 @@ bypass for an identity rejection.
 
 ## Open questions (must be resolved before implementation)
 
-- (a) Whether a trusted native conversation adapter can be obtained.
+- (a) Distributed task authorization protocol (ordinary messaging already has its own identity contract).
 - (b) The concrete authority source of truth and fencing mechanism.
 
 Agreeing on this contract is separate from proving (a) and (b) feasible.

@@ -70,6 +70,24 @@ class UnifiedHostServicesTest(unittest.TestCase):
                     host.service(os.getpid(), os.getuid(), req)
             host.db.close()
 
+    def test_kai_enrollment_retains_mailbox_across_verified_process_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self.host(tmp)
+            host.config['services']['kai']['binding_generation'] = 'enrollment-one'
+            host.hub = lambda op, **args: {'endpoints': []} if op == 'endpoints_list' else {}
+            req={'service_id':'kai','service_token':'kai-token','address':'kai'}
+            endpoints=[]
+            for pid,start in ((100,42),(200,55)):
+                with patch.object(host_mod.subprocess,'run',return_value=self.launchd(pid)), \
+                     patch('identity._process_info',return_value={'pid_start':start}):
+                    endpoints.append(host.service(pid,os.getuid(),req))
+            self.assertEqual(endpoints[0]['endpoint_id'],endpoints[1]['endpoint_id'])
+            self.assertEqual(endpoints[0]['runtime_id'],endpoints[1]['runtime_id'])
+            with patch.object(host_mod.subprocess,'run',return_value=self.launchd(200)):
+                with self.assertRaisesRegex(HubError,'registered main'):
+                    host.service(100,os.getuid(),req)
+            host.db.close()
+
     def test_kai_cannot_be_declared_as_openclaw_platform(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)

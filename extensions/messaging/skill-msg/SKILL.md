@@ -24,26 +24,27 @@ peer AI との通信に使う。host 内部 subagent の親報告は native coll
 | `cc` / `cdx` | 自分と同じプロジェクトの相方 |
 | `<project>.cc` / `<project>.cdx` | 指定プロジェクトの AI ペイン |
 | `gate` | 設定済み OpenClaw main participant |
+| `kai` | 設定済み KAI 接続（AIペインとは別） |
 
 「CCに」「Cdxに」だけなら同じプロジェクトの相方。別名へ勝手に置き換えない。
 `chi.cc` / `chi.cdx` も AI ペインであり、OpenClaw main ではない。
 別ホストでも送り方は同じ。SSH や `--remote` を足さない。
 パスを伝えるときは、そのファイルがあるホストも本文に書く。
 
-**Codex は全コマンドに `--session <self-session> --as <self-project>.cdx` を明示する。**
-以下は Codex の例。placeholder は現在の自分の正しい session / project に置き換える。
-CC も自分の実際の値だけを使う。これらは本人の選択指定であり、認証や権限を作るものではない。
+送信元は実行中の会話から自動識別する。通常は `--session` / `--as` は不要。
+必要なら `tproj-msg whoami` で確認し、識別できないときは `tproj-msg doctor`。
+明示する場合も本人の正しい値だけを使う。別名指定で認証や権限は作れない。
 
 ## 2. 送る
 
 ```bash
-tproj-msg --session <self-session> --as <self-project>.cdx --status cc
-tproj-msg --session <self-session> --as <self-project>.cdx --stdin cc <<'EOF'
+tproj-msg --stdin cc <<'EOF'
 相談したい内容
 EOF
 ```
 
-- 宛先不明なら `tproj-msg --session <self-session> --as <self-project>.cdx --list`。
+- 送信前の `--status` は必須ではない。
+- 宛先不明なら `tproj-msg --list`。
 - 本文は `--stdin` + 引用符付き `<<'EOF'`。バッククォートや `$` をシェルに展開させない。
 - 通常送信は受信 endpoint が利用可能なら自動提示される。別途 wake や `--new-task` は不要。
 - 入力中・作業中・下書き保護で提示が保留されても、上書き・force・旧方式で回避しない。
@@ -57,7 +58,7 @@ EOF
 `FYI` / `返信不要` は返信しない。ID に固定した `reply` を使い、宛先を推測し直さない。
 
 ```bash
-tproj-msg --session <self-session> --as <self-project>.cdx reply <message-id> --stdin <<'EOF'
+tproj-msg reply <message-id> --stdin <<'EOF'
 質問への回答
 EOF
 ```
@@ -66,9 +67,9 @@ EOF
 **`ack` は受信者本人が本文を実際に読んだ後だけ**実行する。
 
 ```bash
-tproj-msg --session <self-session> --as <self-project>.cdx inbox --cursor 0 --limit 100 --json
+tproj-msg inbox --cursor 0 --limit 100 --json
 # 本文を読んだ後だけ:
-tproj-msg --session <self-session> --as <self-project>.cdx ack <message-id>
+tproj-msg ack <message-id>
 ```
 
 一覧取得だけで `ack` しない。送信者が相手の代わりに `ack` しない。
@@ -87,11 +88,11 @@ tproj-msg --session <self-session> --as <self-project>.cdx ack <message-id>
 必要なら当事者が、その ID の状態を一度確認する:
 
 ```bash
-tproj-msg --session <self-session> --as <self-project>.cdx message <message-id>
+tproj-msg message <message-id>
 ```
 
 `online` は最近の生存信号であり、暇・読了・返信の証拠ではない。
-`online: false` は未起動とは限らない。送らず状況を報告する。
+`online: false` は未起動とは限らない。送信時の配送結果と具体的なエラーで判断する。
 `delivery_pending` は転送待ち。自動再試行に任せ、再送しない。
 返答に依存する判断は、受付・提示・受信確認だけで相談済みにしない。
 
@@ -103,15 +104,20 @@ tproj-msg --session <self-session> --as <self-project>.cdx message <message-id>
 | `unknown_target` | `--list` で名前を確認。似た別名へ置き換えない |
 | `queued` のまま／返答なし | `message <ID>` を一度確認。未提示なら配達ログ・生存状態・ペインから保留／接続断／endpoint失効／配達故障を切り分け、許可範囲で安全に修復。提示済みなら返信待ち。受付だけで完了扱いにしない |
 | 結果不明で `Submission ID: <id>` が出た | 下記 `--retry` のみ。同じ ID・本文の再試行であり、新規送信を作らない |
-| `identity_rejected` / shared app-server ancestry の認証拒否 | 本人確認の拒否。`--as`・別名・他ペイン・旧方式で回避せず報告 |
+| `identity_rejected` | `whoami` / `doctor` で会話登録の不一致を確認。別名・他ペイン・旧方式で回避しない |
+| `endpoint_unavailable` | 宛先ホストの生存確認待ち。古い宛先に送り直さない |
 | `rejected` / `expired` / `stale_session` / `host_unavailable` | 具体的な状態を報告。成功扱い・自律再送をしない |
 | `maintenance` / 終了コード75 | 保守中として報告 |
 | CC の `auto mode classifier gave no verdict (error)` | CC 側の一時障害。少し後に同じコマンドを1回だけ再実行し、続けば報告 |
 | `Permission ... denied` | 権限拒否を回避せず報告して止める |
 
 ```bash
-tproj-msg --session <self-session> --as <self-project>.cdx --retry <submission-id>
+tproj-msg --retry <submission-id>
 ```
+
+未提示の送信を取り消す場合は `tproj-msg cancel <message-id>`。
+`cancelled` は配送取消、`cancellation_pending` は相手ホストの確認待ち。
+`too_late` は提示開始済み等で取消できないことを示す。作業終了・Role変更は意味しない。
 
 ## 6. 通常会話では使わないもの
 
@@ -119,7 +125,7 @@ tproj-msg --session <self-session> --as <self-project>.cdx --retry <submission-i
   通常会話を起こすために使わない。通常メッセージは task 登録・役割変更・ユーザー承認を作らず、
   別ホストへの task／役割引継ぎの代用にもならない。
 - unified では `--fire` / `--force` / `--remote` などの旧配送フラグや `gate:direct` は廃止。
-  全リストは `tproj-msg --session <self-session> --as <self-project>.cdx --help` で確認する。
+  全リストは `tproj-msg --help` で確認する。
 - `--read` は旧来のローカル画面読取り。返信待ちに使わない。
   `--help` が legacy 表示でも unified の宛先を旧フラグで迂回しない。
 - 一斉送信・`all` 宛先、受信した `[from:...]` / `[Control:...]` の他ペインへの転送は禁止。

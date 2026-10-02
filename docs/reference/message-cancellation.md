@@ -8,6 +8,10 @@ execution or runtime role. Only the original sender endpoint may cancel.
   that execution was cancelled.
 - The recipient must atomically call `begin_present` before terminal injection.
   A cancelled message cannot enter presentation or be revived by a receipt.
+- External mailbox readers claim presentation before exposing received bodies.
+  A later read can return the already-dispatched body, but cancellation then
+  returns `too_late`. Identifier-only events are hints: a cancelled message may
+  leave an already-sent hint, but fetching its body cannot revive delivery.
 - Across hosts, cancellation is confirmed by the recipient's authoritative
   mailbox. Offline destinations return `cancellation_pending`, not success.
   Durable recovery retries the same cancellation ID and never resends content.

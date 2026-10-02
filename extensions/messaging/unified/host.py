@@ -15,7 +15,7 @@ import subprocess
 import time
 import uuid
 
-from identity import (IdentityError, bind_caller, discover_endpoints, discover_tmux_endpoints,
+from identity import (IdentityError, adopt_native_conversation, bind_caller, discover_endpoints, discover_tmux_endpoints,
                       peer_credentials, same_live_process_family)
 from protocol import HubError, success, failure
 from receipt import normalize_prompt
@@ -143,7 +143,8 @@ class Host:
         if not self.endpoints or time.monotonic() - self.refreshed >= 10:
             self.refresh()
         try:
-            return bind_caller(pid, uid, self.endpoints, session=req.get('session'),
+            endpoints = adopt_native_conversation(self.endpoints, req.get('conversation') or {})
+            return bind_caller(pid, uid, endpoints, session=req.get('session'),
                                claimed_alias=req.get('as'), conversation=req.get('conversation'))
         except IdentityError as exc:
             raise HubError('identity_rejected', str(exc)) from exc
@@ -226,6 +227,15 @@ class Host:
                   session=cfg['address'], pane='', pid=pid, pid_start=start,
                   runtime_id=f'{pid}:{start}', platform=platform, address=cfg['address'],
                   service_id=service_id)
+        # KAI is an enrolled service principal, not a process/conversation
+        # persona. Authenticate the current launchd process above on every call,
+        # then retain its mailbox across process restarts within one enrollment.
+        # Rotating the operator-owned generation revokes this continuity.
+        generation = cfg.get('binding_generation') if service_id == 'kai' else None
+        if generation:
+            ep.update(endpoint_id=str(uuid.uuid5(uuid.NAMESPACE_URL,
+                      f"{self.config['host_id']}:{service_id}:{cfg['participant_id']}:{generation}")),
+                      pid=0, pid_start=0, runtime_id=f'kai:{generation}')
         for old in self.hub('endpoints_list')['endpoints']:
             if old['participant_id'] == ep['participant_id'] and old['endpoint_id'] != ep['endpoint_id'] and not old['retired']:
                 self.hub('endpoint_retire', endpoint_id=old['endpoint_id'])

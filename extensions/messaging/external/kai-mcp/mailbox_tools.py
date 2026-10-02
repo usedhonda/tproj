@@ -192,14 +192,21 @@ class MailboxTools:
 
     def _message(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, {"message_id"}); mid = self._id(args["message_id"])
-        if not self._begin_present(mid):
+        item = self._host("service_message", message_id=mid) or {}
+        # Query permits either party; inspecting our own outbound record must
+        # not claim presentation on behalf of its recipient.
+        if item.get("target_address") == self.service_address and not self._begin_present(mid):
             raise MailboxToolError("not_found", "message is no longer available")
-        return self._view(self._host("service_message", message_id=mid) or {})
+        return self._view(item)
 
     def _begin_present(self, mid: str) -> bool:
         try:
             result = self._host("service_begin_present", message_id=mid) or {}
         except MailboxToolError as exc:
+            if exc.code == "presentation_unavailable":
+                item = self._host("service_message", message_id=mid) or {}
+                return (item.get("target_address") == self.service_address
+                        and item.get("state") in ("dispatching", "presented", "uncertain"))
             if exc.code in CANCELLED_STATES or exc.code == "not_found":
                 return False
             raise

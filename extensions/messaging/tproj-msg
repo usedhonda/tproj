@@ -100,7 +100,7 @@ fi
 # During migration only explicit mailbox verbs use the new path for inactive clients.
 if [[ -f "$UNIFIED_CONFIG" ]]; then
   case "$_UNIFIED_TARGET" in
-    reply|inbox|message|ack|directory|directory-sync) exec "$HOME/bin/tproj-msg-unified" "$@" ;;
+    reply|inbox|message|ack|cancel|whoami|doctor|directory|directory-sync) exec "$HOME/bin/tproj-msg-unified" "$@" ;;
   esac
   for _msg_arg in "$@"; do
     case "$_msg_arg" in --retry|--retry=*) exec "$HOME/bin/tproj-msg-unified" "$@" ;; esac
@@ -173,6 +173,9 @@ Usage:
   tproj-msg reply <message-id> --stdin Reply to a message (body from stdin)
   tproj-msg inbox --cursor <n> --limit <n> [--json]
                                        List inbox messages
+  tproj-msg whoami                     Show the bound current conversation
+  tproj-msg doctor                     Diagnose current conversation binding
+  tproj-msg cancel <id>                Cancel delivery before presentation starts
   tproj-msg message <id>               Show one message
   tproj-msg ack <id>                   Acknowledge presentation of a message
   tproj-msg --retry <submission-id>    Retry a submission (same ID and content)

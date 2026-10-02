@@ -26,7 +26,7 @@ EVENT_NAME = "kai.mailbox.message"
 MAX_ATTEMPTS = 3
 MAX_BATCH = 100
 DEFAULT_TTL_MS = 86400000
-CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal"))
+CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "rejected", "stale_session"))
 
 
 @dataclass(frozen=True)
