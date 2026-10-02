@@ -221,6 +221,69 @@ class UnifiedIdentityTest(unittest.TestCase):
         self.assertEqual(identity.bind_caller(102, 501, adopted, conversation=context,
                                               inspect_process=processes.__getitem__), adopted[0])
 
+    def test_native_vscode_catalog_transition_requires_matching_rollout_and_binds(self):
+        thread = "019e9e25-a537-75c3-821e-8d057e86d19e"
+        sessions = Path(self.tmp.name) / "sessions" / "2026" / "10" / "02"
+        sessions.mkdir(parents=True)
+        (sessions / f"rollout-2026-10-02T22-31-44-{thread}.jsonl").write_text(
+            json.dumps({"type": "session_meta", "payload": {
+                "id": thread, "session_id": thread, "cwd": str(self.project),
+                "originator": "codex-tui", "source": "vscode"}}) + "\n")
+        db = Path(self.tmp.name) / "codex.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE local_thread_catalog(host_id TEXT, thread_id TEXT, cwd TEXT, source_kind TEXT, source_updated_at REAL)")
+            conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)",
+                         ("local", thread, str(self.project), "vscode", 1.0))
+        metadata = identity.native_thread_metadata(thread, db, Path(self.tmp.name) / "sessions")
+        self.assertEqual(metadata[0]["source_kind"], "vscode-rollout")
+        endpoint = {"endpoint_id": "tmux", "participant_id": "demo:cdx", "project_id": "demo",
+                    "platform": "cdx", "project_path": str(self.project), "session": "shared",
+                    "pid": 101, "pid_start": 77}
+        context = {"thread_id": thread, "session_id": thread, "platform": "cdx"}
+        adopted = identity.adopt_native_conversation([endpoint], context, metadata)
+        processes = {
+            101: {"ppid": 1, "pid_start": 77, "uid": 501, "command": "codex app-server --stdio"},
+            102: {"ppid": 101, "pid_start": 88, "uid": 501, "command": "tproj-msg"},
+        }
+        self.assertEqual(identity.bind_caller(102, 501, adopted, conversation=context,
+                                              inspect_process=processes.__getitem__), adopted[0])
+
+    def test_native_vscode_catalog_transition_rejects_conflicts(self):
+        thread = "019e9e25-a537-75c3-821e-8d057e86d19e"
+        sessions = Path(self.tmp.name) / "sessions" / "2026" / "10" / "02"
+        sessions.mkdir(parents=True)
+        (sessions / f"rollout-2026-10-02T22-31-44-{thread}.jsonl").write_text(
+            json.dumps({"type": "session_meta", "payload": {
+                "id": thread, "session_id": thread, "cwd": str(self.project),
+                "originator": "codex-tui", "source": "vscode"}}) + "\n")
+        db = Path(self.tmp.name) / "codex.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE local_thread_catalog(host_id TEXT, thread_id TEXT, cwd TEXT, source_kind TEXT, source_updated_at REAL)")
+            conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)",
+                         ("local", thread, str(self.project / "elsewhere"), "vscode", 1.0))
+        self.assertEqual(identity.native_thread_metadata(thread, db, Path(self.tmp.name) / "sessions"), [])
+        with sqlite3.connect(db) as conn:
+            conn.execute("DELETE FROM local_thread_catalog")
+            conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)",
+                         ("local", thread, str(self.project), "vscode", 1.0))
+            conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)",
+                         ("local", thread, str(self.project), "vscode", 2.0))
+        self.assertEqual(identity.native_thread_metadata(thread, db, Path(self.tmp.name) / "sessions"), [])
+        with sqlite3.connect(db) as conn:
+            conn.execute("DELETE FROM local_thread_catalog")
+            conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)",
+                         ("local", thread, str(self.project), "vscode", 1.0))
+            conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)",
+                         ("local", thread, str(self.project), "other", 2.0))
+        self.assertEqual(identity.native_thread_metadata(thread, db, Path(self.tmp.name) / "sessions"), [])
+        with sqlite3.connect(db) as conn:
+            conn.execute("DELETE FROM local_thread_catalog")
+            conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)",
+                         ("local", thread, str(self.project), "vscode", 1.0))
+            conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)",
+                         ("remote", thread, str(self.project), "vscode", 2.0))
+        self.assertEqual(identity.native_thread_metadata(thread, db, Path(self.tmp.name) / "sessions"), [])
+
     def test_native_rollout_rejects_wrong_source_and_conflicting_catalog(self):
         thread = "019e9e25-a537-75c3-821e-8d057e86d19e"
         sessions = Path(self.tmp.name) / "sessions" / "2026" / "10" / "02"

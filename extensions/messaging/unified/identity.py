@@ -261,13 +261,38 @@ def native_thread_metadata(thread_id: str, db_path: str | os.PathLike | None = N
                     (thread_id,),
                 ).fetchall()
             catalog_rows_seen = bool(rows)
-            catalog = [dict(row) for row in rows
+            catalog_rows = [dict(row) for row in rows]
+            catalog = [row for row in catalog_rows
                        if row["host_id"] in (None, "local") and row["cwd"]
                        and str(row["source_kind"] or "cli") == "cli"]
     except (OSError, sqlite3.Error):
         catalog = []
     if catalog_rows_seen:
-        return catalog
+        if catalog:
+            return catalog
+        # A native rollout can be indexed after the Codex TUI has started.
+        # The catalog's vscode marker is only admissible when one exact,
+        # host-local rollout header independently proves the same thread,
+        # project, and (when present) session ID.  Never let a bare catalog
+        # source impersonate a CLI record.
+        vscode_rows = [row for row in catalog_rows
+                       if row["host_id"] in (None, "local") and row["cwd"]
+                       and str(row["source_kind"] or "") == "vscode"]
+        if (len(catalog_rows) != 1 or len(vscode_rows) != 1
+                or any(row["host_id"] not in (None, "local") for row in catalog_rows)):
+            return []
+        root = Path(sessions_root) if sessions_root is not None else Path.home() / ".codex/sessions"
+        rollout = _native_rollout_metadata(thread_id, root)
+        if len(rollout) != 1:
+            return []
+        indexed = vscode_rows[0]
+        observed = rollout[0]
+        if _canonical(indexed["cwd"]) != _canonical(observed["cwd"]):
+            return []
+        indexed_session = indexed.get("session_id")
+        if indexed_session and str(indexed_session) != str(observed["session_id"]):
+            return []
+        return [observed]
     root = Path(sessions_root) if sessions_root is not None else Path.home() / ".codex/sessions"
     return _native_rollout_metadata(thread_id, root)
 
