@@ -130,6 +130,18 @@ class UnifiedIdentityTest(unittest.TestCase):
                                  claimed_alias="other.cdx", conversation=context,
                                  inspect_process=processes.__getitem__)
 
+    def test_shared_daemon_adopts_unrelated_tool_process_by_native_id(self):
+        endpoint = {"endpoint_id": "adopt", "participant_id": "demo:cdx", "project_id": "demo",
+                    "address": "demo.cdx", "platform": "cdx", "session": "shared",
+                    "pid": 101, "pid_start": 77, "thread_id": "thread-adopt", "session_id": "session-adopt"}
+        processes = {
+            101: {"ppid": 1, "pid_start": 77, "uid": 501, "command": "codex app-server --stdio"},
+            201: {"ppid": 1, "pid_start": 88, "uid": 501, "command": "codex app-server --stdio"},
+            202: {"ppid": 201, "pid_start": 99, "uid": 501, "command": "tproj-msg"},
+        }
+        self.assertEqual(identity.bind_caller(202, 501, [endpoint], conversation={"thread_id": "thread-adopt"},
+                                              inspect_process=processes.__getitem__), endpoint)
+
     def test_native_context_accepts_one_id_but_rejects_empty(self):
         self.assertEqual(identity.native_conversation_context({"CODEX_THREAD_ID": "t"}), {"thread_id": "t"})
         self.assertEqual(identity.native_conversation_context({"CODEX_SESSION_ID": "s"}), {"session_id": "s"})

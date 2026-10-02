@@ -224,6 +224,10 @@ class Host:
             if old['participant_id'] == ep['participant_id'] and old['endpoint_id'] != ep['endpoint_id'] and not old['retired']:
                 self.hub('endpoint_retire', endpoint_id=old['endpoint_id'])
         self.hub('endpoint_register', **ep)
+        for row in self.hub('endpoints_list')['endpoints']:
+            if row.get('endpoint_id') == ep['endpoint_id']:
+                ep['incarnation'] = row.get('incarnation')
+                break
         return ep
 
     def submit(self, ep, req, reply=False):
@@ -269,6 +273,13 @@ class Host:
             return self.hub('directory_update', projects=req['projects'], expected_revision=req['expected_revision'])
         is_service = isinstance(op, str) and op.startswith('service_')
         ep = self.service(pid, uid, req) if is_service else self.caller(pid, uid, req)
+        if op == 'service_whoami':
+            return {key: ep.get(key) for key in ('endpoint_id', 'participant_id', 'host_id', 'address',
+                                                  'session', 'runtime_id', 'platform', 'incarnation')}
+        if op == 'service_begin_present':
+            if not isinstance(req.get('message_id'), str) or not req['message_id']:
+                raise HubError('invalid_message', 'message ID required')
+            return self.hub('begin_present', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
         if op == 'whoami':
             return {key: ep.get(key) for key in ('endpoint_id', 'participant_id', 'project_id', 'host_id',
                                                   'address', 'session', 'runtime_id', 'platform', 'thread_id', 'session_id')}

@@ -170,11 +170,14 @@ def _conversation_matches(endpoint: Mapping[str, Any], context: Mapping[str, Any
     """Match native IDs, requiring every supplied native field to agree."""
     if not context or not (context.get("thread_id") or context.get("session_id")):
         return False
-    thread_values = {str(endpoint.get(key, "")) for key in ("thread_id", "conversation_id", "runtime_id") if endpoint.get(key)}
+    thread_values = {str(endpoint.get(key, "")) for key in ("thread_id", "conversation_id") if endpoint.get(key)}
     session_values = {str(endpoint.get(key, "")) for key in ("session_id", "session", "runtime_id") if endpoint.get(key)}
-    if context.get("thread_id") and str(context["thread_id"]) not in thread_values:
+    if context.get("thread_id") and thread_values and str(context["thread_id"]) not in thread_values:
         return False
-    if context.get("session_id") and str(context["session_id"]) not in session_values:
+    if context.get("session_id") and session_values and str(context["session_id"]) not in session_values:
+        return False
+    if not ((context.get("thread_id") and str(context["thread_id"]) in thread_values)
+            or (context.get("session_id") and str(context["session_id"]) in session_values)):
         return False
     project = context.get("project_id") or context.get("project")
     if project and str(endpoint.get("project_id", "")) != str(project) and str(endpoint.get("participant_id", "")).split(":", 1)[0] != str(project):
@@ -407,10 +410,20 @@ def bind_caller(pid: int, uid: int, endpoints: Iterable[Mapping[str, Any]], *, s
             raise IdentityError("shared Codex app-server ancestry cannot authenticate caller without native conversation context")
         # Native IDs select among endpoint records, but cannot bypass the
         # same live process ancestry proof established above.
-        live_ids = {item["endpoint_id"] for item in matches}
-        matches = [item for item in candidates if item.get("endpoint_id") in live_ids
-                   and item.get("pid") in app_server_pids
-                   and _conversation_matches(item, conversation)]
+        matches = []
+        for item in candidates:
+            if not _conversation_matches(item, conversation):
+                continue
+            try:
+                live = dict(inspect_process(int(item["pid"])))
+            except (IdentityError, OSError, ValueError, KeyError, TypeError):
+                continue
+            if live.get("pid_start") != item.get("pid_start") or live.get("uid") != uid:
+                continue
+            command = str(live.get("command", "")).lower()
+            if item.get("pid") not in app_server_pids and not any(token in command for token in ("codex", "openai")):
+                continue
+            matches.append(item)
     unique = {item["endpoint_id"]: item for item in matches}
     if len(unique) != 1:
         raise IdentityError("endpoint binding is ambiguous" if len(unique) > 1 else "agent ancestor absent")
