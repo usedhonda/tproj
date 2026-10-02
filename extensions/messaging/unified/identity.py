@@ -363,6 +363,7 @@ def bind_caller(pid: int, uid: int, endpoints: Iterable[Mapping[str, Any]], *, s
     current = pid
     matches: list[dict[str, Any]] = []
     app_server_seen = False
+    app_server_pids: set[int] = set()
     for _ in range(64):
         if current <= 1 or current in seen:
             break
@@ -389,6 +390,7 @@ def bind_caller(pid: int, uid: int, endpoints: Iterable[Mapping[str, Any]], *, s
         if (len(argv) >= 2 and any(Path(token).name in {"codex", "codex.exe", "codex.js"} for token in argv[:2])
                 and "app-server" in argv[1:]):
             app_server_seen = True
+            app_server_pids.add(current)
         for endpoint in candidates:
             if endpoint.get("pid") == current and endpoint.get("pid_start") == info.get("pid_start"):
                 platform = endpoint.get("platform")
@@ -407,6 +409,7 @@ def bind_caller(pid: int, uid: int, endpoints: Iterable[Mapping[str, Any]], *, s
         # same live process ancestry proof established above.
         live_ids = {item["endpoint_id"] for item in matches}
         matches = [item for item in candidates if item.get("endpoint_id") in live_ids
+                   and item.get("pid") in app_server_pids
                    and _conversation_matches(item, conversation)]
     unique = {item["endpoint_id"]: item for item in matches}
     if len(unique) != 1:
