@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Prefer homebrew python3 (has google-genai) over system python3
-[[ -d /opt/homebrew/bin ]] && export PATH="/opt/homebrew/bin:$PATH"
+[[ -d /opt/homebrew/bin && "${TPROJ_PANE_BG_NO_PATH_PREPEND:-}" != 1 ]] && export PATH="/opt/homebrew/bin:$PATH"
 
 PROGRAM_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,7 +60,7 @@ TARGET_WIDTH="1024"
 TARGET_HEIGHT="1536"
 MAX_GENERATION_ATTEMPTS="${TPROJ_PANE_BG_MAX_ATTEMPTS:-1}"
 REQUEST_TIMEOUT_SECONDS="${TPROJ_PANE_BG_REQUEST_TIMEOUT_SECONDS:-60}"
-WORK_ROOT="/tmp/tproj-pane-bg"
+WORK_ROOT="${TPROJ_PANE_BG_WORK_ROOT:-/tmp/tproj-pane-bg}"
 CURRENT_MANIFEST="${WORK_ROOT}/current.json"
 MODEL_ROLE_ROUTER="${TPROJ_MODEL_ROLE_ROUTER:-$HOME/bin/model-role-router}"
 DEFAULT_OPACITY="0.94"
@@ -3654,6 +3654,8 @@ sync_session() {
   local generated_meta_path=""
   local lock_mtime=""
   local now_epoch=""
+  local pending_mode=""
+  local pending_claim=""
 
   require_cmd tmux
   require_cmd jq
@@ -3679,7 +3681,13 @@ sync_session() {
     fi
   fi
   if ! mkdir "$lock_dir" 2>/dev/null; then
-    : > "$pending_file"
+    if [[ "$sync_mode" != "fast" ]]; then
+      # A full request is sticky: a concurrent fast request may not downgrade it.
+      printf '%s\n' full > "$pending_file"
+    elif [[ ! -e "$pending_file" ]]; then
+      # Avoid clobbering a full marker if both callers arrive together.
+      (set -o noclobber; printf '%s\n' fast > "$pending_file") 2>/dev/null || true
+    fi
     printf '%s\n' "${WORK_ROOT}/$(safe_name "$session").json"
     return 0
   fi
@@ -3693,7 +3701,18 @@ sync_session() {
     install_sync_hooks "$session"
   fi
   while true; do
-    rm -f "$pending_file"
+    pending_mode=""
+    pending_claim="${pending_file}.claim.$$"
+    if mv "$pending_file" "$pending_claim" 2>/dev/null; then
+      pending_mode="$(head -n 1 "$pending_claim" 2>/dev/null || true)"
+      rm -f "$pending_claim"
+    fi
+    if [[ "$sync_mode" == "fast" && "$pending_mode" == "full" ]]; then
+      sync_mode="full"
+      prime_session_api_env "$session"
+      hydrate_api_env_from_session "$session"
+      ensure_all_runtime_placeholders
+    fi
 
     tmp_dir="$(mktemp -d)"
     panes_jsonl="${tmp_dir}/panes.jsonl"
