@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
@@ -189,6 +190,13 @@ class UnifiedIdentityTest(unittest.TestCase):
         bound = identity.bind_caller(202, 501, adopted, conversation=context,
                                      inspect_process=processes.__getitem__)
         self.assertEqual(bound["endpoint_id"], "tmux-cdx")
+
+    def test_native_catalog_keeps_long_lived_cli_thread(self):
+        db = Path(self.tmp.name) / "codex.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE local_thread_catalog(host_id TEXT, thread_id TEXT, cwd TEXT, source_kind TEXT, source_updated_at REAL)")
+            conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)", ("local", "old", str(self.project), "cli", 1.0))
+        self.assertEqual(identity.native_thread_metadata("old", db)[0]["thread_id"], "old")
 
     def test_tmux_fallback_requires_live_agent_descendant_and_deduplicates_registry(self):
         panes = lambda: [

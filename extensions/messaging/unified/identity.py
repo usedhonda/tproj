@@ -32,7 +32,6 @@ _PLATFORMS = {"cc", "cdx"}
 # registration freshness window, not a process lifetime limit: long-lived
 # sessions must renew their registry record to remain discoverable.
 _MAX_RECORD_AGE = 172800
-_MAX_NATIVE_METADATA_AGE = 172800
 _ENDPOINT_NAMESPACE = uuid.UUID("2e529d9e-6ab4-4f8a-b94d-b54f6123b5ac")
 
 
@@ -209,11 +208,9 @@ def native_thread_metadata(thread_id: str, db_path: str | os.PathLike | None = N
                 f"SELECT host_id,thread_id,cwd,source_kind,source_updated_at{session_column} FROM local_thread_catalog WHERE thread_id=?",
                 (thread_id,),
             ).fetchall()
-        now = time.time()
         return [dict(row) for row in rows
                 if row["host_id"] in (None, "local") and row["cwd"]
-                and str(row["source_kind"] or "cli") == "cli"
-                and (not row["source_updated_at"] or now - float(row["source_updated_at"]) <= _MAX_NATIVE_METADATA_AGE)]
+                and str(row["source_kind"] or "cli") == "cli"]
     except (OSError, sqlite3.Error):
         return []
 

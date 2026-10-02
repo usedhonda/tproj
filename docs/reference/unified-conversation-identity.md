@@ -6,8 +6,8 @@ context (`CODEX_THREAD_ID` and/or `CODEX_SESSION_ID`). Selectors (`--as` and
 `--session`) narrow a match but never create identity. Missing, ambiguous, or
 mismatched native context is rejected.
 
-Native Codex context is platform-scoped to `cdx`, and catalog evidence is
-freshness-bounded. An endpoint carrying a different native thread or session
+Native Codex context is platform-scoped to `cdx`. Catalog rows are evidence,
+not liveness; an endpoint carrying a different native thread or session
 binding is never overwritten; stale or conflicting records remain unusable
 until a live, unique endpoint observation proves the same binding.
 
