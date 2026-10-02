@@ -23,14 +23,15 @@ def _text(value: Any, label: str) -> str:
 class KaiServiceBinding:
     """Static enrollment selected by the runtime, never by tool input."""
 
-    __slots__ = ("service_id", "address", "participant_id", "token", "allowed_addresses")
+    __slots__ = ("service_id", "address", "participant_id", "token", "allowed_addresses", "binding_generation")
 
     def __init__(self, service_id: str, address: str, participant_id: str,
-                 token: str, allowed_addresses: tuple[str, ...]):
+                 token: str, allowed_addresses: tuple[str, ...], binding_generation: str):
         for value, label in ((service_id, "service identity"),
                              (address, "service address"),
                              (participant_id, "participant identity"),
-                             (token, "service credential")):
+                             (token, "service credential"),
+                             (binding_generation, "binding generation")):
             _text(value, label)
         if isinstance(allowed_addresses, (str, bytes)):
             raise ConnectionBindingError("authorized participant scope is required")
@@ -44,6 +45,7 @@ class KaiServiceBinding:
         self.participant_id = participant_id
         self.token = token
         self.allowed_addresses = scope
+        self.binding_generation = binding_generation
 
 
 class FixedConnectionAuthorizer:
@@ -84,6 +86,7 @@ class FixedConnectionAuthorizer:
             "service_id": self.binding.service_id,
             "address": self.binding.address,
             "participant_id": self.binding.participant_id,
+            "binding_generation": self.binding.binding_generation,
             "binding_id": observed["binding_id"],
             "incarnation": observed["incarnation"],
             "allowed_addresses": list(self.binding.allowed_addresses),
@@ -115,4 +118,5 @@ class _EventAuthorizer:
             sys.modules[spec.name] = events
             spec.loader.exec_module(events)
         context = self.connection.authorize()
-        return events.TrustedBinding(context["binding_id"], context["incarnation"], self.reader)
+        stable_id = f"{context['participant_id']}:{context['binding_generation']}"
+        return events.TrustedBinding(stable_id, context["incarnation"], self.reader)

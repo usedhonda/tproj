@@ -115,7 +115,10 @@ class KAIEventDelivery:
 
     @staticmethod
     def _owned(sub, binding):
-        return sub.get("binding") == binding.binding_id and sub.get("incarnation") == binding.incarnation
+        # Enrollment generation is the durable owner. Endpoint incarnation is
+        # refreshed after a verified service restart, never used to bind a
+        # second callback or principal.
+        return sub.get("binding") == binding.binding_id
 
     @classmethod
     def _active(cls, sub, binding, now):
@@ -143,7 +146,7 @@ class KAIEventDelivery:
             if not ok or not isinstance(echoed.get("challenge"), str) or not hmac.compare_digest(echoed["challenge"], challenge):
                 raise RuntimeError("callback verification failed")
             current = self._binding()
-            if (current.binding_id, current.incarnation) != (binding.binding_id, binding.incarnation):
+            if current.binding_id != binding.binding_id:
                 raise RuntimeError("binding changed during verification")
             expiry = None if ttl_ms is None else time.time() + ttl_ms / 1000
             state["subscriptions"][sid] = {
@@ -181,6 +184,12 @@ class KAIEventDelivery:
             for sid, sub in state["subscriptions"].items():
                 if queued >= limit or not self._active(sub, binding, now):
                     continue
+                if sub.get("incarnation") != binding.incarnation:
+                    sub["incarnation"] = binding.incarnation
+                    for item in state["outbox"].values():
+                        if item["subscription"] == sid and item.get("status") not in ("sent", "terminal", "revoked"):
+                            item["status"] = "revoked"
+                    self._save(state)
                 cursor = state["cursor"].get(sid, 0)
                 page = binding.reader(cursor)
                 if not isinstance(page, dict) or not isinstance(page.get("messages"), list):

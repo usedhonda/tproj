@@ -95,8 +95,8 @@ class EventTests(unittest.TestCase):
                         delivery._save(state)
                 elif operation == "incarnation":
                     auth.incarnation = "incarnation-two"
-                    with self.assertRaises(RuntimeError):
-                        delivery.unsubscribe(sid)
+                    delivery.pump_once()
+                    self.assertEqual(delivery._load()["subscriptions"][sid]["incarnation"], "incarnation-two")
                 else:
                     delivery.unsubscribe(sid)
                 delivery._post = lambda *args: self.fail("revoked, expired, or stale event posted")

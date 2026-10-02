@@ -14,6 +14,7 @@ class RuntimeTest(unittest.TestCase):
         return {
             "service_id": "kai", "address": "kai", "participant_id": "kai.service",
             "service_token": "secret", "allowed_addresses": ["voyager.cc"],
+            "binding_generation": "gen-1",
             "host_socket": str(Path(directory) / "host.sock"),
             "event_state": str(Path(directory) / "events.json"),
         }

@@ -1,7 +1,7 @@
 # KAI mailbox events
 
 `KAIEventDelivery` is an isolated, fail-closed mailbox event adapter. A trusted
-authorizer must return a fixed binding/incarnation and a scoped reader; no
+authorizer must return a fixed enrollment binding/incarnation and a scoped reader; no
 metadata or request arguments are treated as identity. The production KAI
 route uses `FixedConnectionAuthorizer.event_authorizer()` so event delivery
 shares the enrolled service principal and exact participant scope used by
@@ -34,8 +34,10 @@ times, with persisted backoff. Exhausted uncertain events remain `terminal`
 for explicit reconciliation, not automatic resubmission. Before each post,
 the authorizer and subscription binding/incarnation/expiry are checked again.
 Unsubscribe validates ownership and fences pending delivery; expiry or an
-incarnation change also fences pending events. HTTP success never acknowledges
-mailbox consumption.
+incarnation change also fences pending events. A verified restart may refresh
+the stored incarnation when the participant and persistent binding generation
+remain identical; the cursor and subscription continue. HTTP success never
+acknowledges mailbox consumption.
 
 Subscriptions default to one day; explicit `ttlMs: null` means no expiry.
 This is separate from the control-plane credential's lifetime. The adapter

@@ -38,7 +38,8 @@ service or a PID bypass. `binding_id` is the stable enrolled participant ID;
 the endpoint `incarnation` fences stale subscriptions after restart.
 
 The private config contains `service_id`, `address`, `participant_id`,
-`service_token`, `allowed_addresses`, `host_socket`, and `event_state`; it is
+`service_token`, `allowed_addresses`, persistent `binding_generation`,
+`host_socket`, and `event_state`; it is
 local-only and must be owner-readable. A launchd manifest should execute:
 
 ```text
@@ -86,9 +87,12 @@ of enrollment, cloud conversation identity, delivery, or presentation.
 ## Connection-principal boundary
 
 `KaiServiceBinding` fixes the service ID, address, participant ID, credential,
-and participant allowlist at enrollment. The host attestor must return the
-matching binding and live incarnation; an address or token never selects a
-different service. The unified host remains responsible for the exact
+and participant allowlist at enrollment. It also requires a persistent
+`binding_generation` UUID. A verified service restart may change endpoint
+incarnation while retaining that generation and its one callback subscription;
+explicit reenrollment or revocation must rotate the generation. The host
+attestor must return the matching binding and live incarnation; an address or
+token never selects a different service. The unified host remains responsible for the exact
 launchd PID and kernel process-start check. The adapter does not infer KAI
 conversation identity from `_meta`, display names, or model-supplied values.
 

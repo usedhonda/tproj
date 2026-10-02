@@ -51,6 +51,7 @@ class ServiceRuntime:
             _required(config.get("participant_id"), "participant_id"),
             _required(config.get("service_token"), "service_token"),
             tuple(config.get("allowed_addresses", ())),
+            _required(config.get("binding_generation"), "binding_generation"),
         )
         self.binding = binding
         self.host_socket = Path(_required(config.get("host_socket"), "host_socket")).expanduser()
@@ -81,6 +82,7 @@ class ServiceRuntime:
         # Subscriptions belong to the enrolled service principal; an endpoint
         # incarnation fences stale delivery but does not create a new service.
         observed["binding_id"] = observed.get("participant_id", self.binding.participant_id)
+        observed["binding_generation"] = self.binding.binding_generation
         return observed
 
     def server(self) -> MCPServer:

@@ -15,7 +15,7 @@ class ConnectionAuthorizerTest(unittest.TestCase):
             "service_id": "kai", "address": "kai",
             "participant_id": "kai.service", "allowed_addresses": ["voyager.cc"],
         }
-        binding = module.KaiServiceBinding("kai", "kai", "kai.service", "secret", ("voyager.cc",))
+        binding = module.KaiServiceBinding("kai", "kai", "kai.service", "secret", ("voyager.cc",), "gen-1")
         self.authorizer = module.FixedConnectionAuthorizer(binding, lambda: dict(self.observed))
 
     def test_fixed_scope_and_host_incarnation_are_returned(self):
@@ -36,8 +36,18 @@ class ConnectionAuthorizerTest(unittest.TestCase):
     def test_event_view_uses_same_binding(self):
         event_auth = self.authorizer.event_authorizer(lambda cursor: {"messages": [], "next_cursor": cursor})
         value = event_auth.authorize()
-        self.assertEqual((value.binding_id, value.incarnation), ("endpoint-1", "inc-1"))
+        self.assertEqual((value.binding_id, value.incarnation), ("kai.service:gen-1", "inc-1"))
         self.assertTrue(callable(value.reader))
+
+    def test_restart_keeps_generation_but_rotation_changes_event_owner(self):
+        event_auth = self.authorizer.event_authorizer(lambda cursor: {"messages": [], "next_cursor": cursor})
+        first = event_auth.authorize()
+        self.observed["incarnation"] = "inc-2"
+        resumed = event_auth.authorize()
+        self.assertEqual(first.binding_id, resumed.binding_id)
+        self.authorizer.binding.binding_generation = "gen-2"
+        rotated = event_auth.authorize()
+        self.assertNotEqual(first.binding_id, rotated.binding_id)
 
 
 if __name__ == "__main__":
