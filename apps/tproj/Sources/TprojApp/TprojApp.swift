@@ -5046,10 +5046,45 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    // Shared with bin/lib/tproj-workspace-lock.sh and tproj-mru-tracker.
+    // macOS does not ship flock(1), so the lock is an atomic mkdir directory
+    // beside workspace.yaml.  The snapshot check remains inside the lock so a
+    // concurrent writer cannot pass validation and then overwrite its update.
+    private func acquireWorkspaceLock(timeout: TimeInterval = 5) -> URL? {
+        let lockURL = URL(fileURLWithPath: "\(workspacePath).lock")
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            do {
+                try fileManager.createDirectory(at: lockURL, withIntermediateDirectories: false)
+                let pid = "\(ProcessInfo.processInfo.processIdentifier)\n"
+                try? pid.write(to: lockURL.appendingPathComponent("pid"), atomically: true, encoding: .utf8)
+                return lockURL
+            } catch {
+                let pidURL = lockURL.appendingPathComponent("pid")
+                if let text = try? String(contentsOf: pidURL, encoding: .utf8),
+                   let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+                   kill(pid, 0) != 0 && errno == ESRCH {
+                    try? fileManager.removeItem(at: lockURL)
+                    continue
+                }
+                guard Date() < deadline else { return nil }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+    }
+
+    private func releaseWorkspaceLock(_ lockURL: URL) {
+        try? fileManager.removeItem(at: lockURL)
+    }
+
     private func persistWorkspaceProjects(_ projects: [WorkspaceProject], createIfMissing: Bool, expectedLocationSnapshot: WorkspaceProjectLocationSnapshot? = nil) -> String? {
         do {
             let parent = URL(fileURLWithPath: workspacePath).deletingLastPathComponent()
             try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+            guard let lockURL = acquireWorkspaceLock() else {
+                return "workspace.yaml is busy; try again"
+            }
+            defer { releaseWorkspaceLock(lockURL) }
 
             let content = renderWorkspaceYAML(projects)
             if !fileManager.fileExists(atPath: workspacePath) {

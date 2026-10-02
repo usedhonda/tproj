@@ -6,6 +6,14 @@ PANE_ID="${2:-}"
 WORKSPACE="${TPROJ_WORKSPACE_YAML:-$HOME/.config/tproj/workspace.yaml}"
 STATE_DIR="${TPROJ_STATE_DIR:-$HOME/.config/tproj}"
 THROTTLE_DIR="$STATE_DIR/mru-throttle"
+LOCK_HELPER="$(dirname "$0")/lib/tproj-workspace-lock.sh"
+
+# Keep this writer on the same advisory lock as the GUI writer.  The helper is
+# optional for older installed copies; fail open rather than breaking MRU.
+if [ -f "$LOCK_HELPER" ]; then
+  # shellcheck source=/dev/null
+  . "$LOCK_HELPER"
+fi
 
 [ -n "$SESSION" ] || exit 0
 [ -n "$PANE_ID" ] || exit 0
@@ -30,14 +38,24 @@ if [ -f "$STAMP_FILE" ]; then
 fi
 
 TMP="$(mktemp "${WORKSPACE}.mru.XXXXXX")"
+LOCK_DIR=""
 cleanup() {
   rm -f "$TMP"
+  [ -z "$LOCK_DIR" ] || tproj_workspace_lock_release "$LOCK_DIR"
 }
 trap cleanup EXIT
+
+if command -v tproj_workspace_lock_acquire >/dev/null 2>&1; then
+  if ! tproj_workspace_lock_acquire "$WORKSPACE" "${TPROJ_WORKSPACE_LOCK_TIMEOUT:-5}" >/dev/null; then
+    exit 0
+  fi
+  LOCK_DIR="$(tproj_workspace_lock_path "$WORKSPACE")"
+fi
 
 if TPROJ_MRU_PROJECT="$PROJECT" TPROJ_MRU_NOW="$NOW" \
   yq eval '(.projects[] | select(.path == strenv(TPROJ_MRU_PROJECT)).lastActiveAt) = (strenv(TPROJ_MRU_NOW) | tonumber)' "$WORKSPACE" > "$TMP"; then
   mv "$TMP" "$WORKSPACE"
   trap - EXIT
+  [ -z "$LOCK_DIR" ] || tproj_workspace_lock_release "$LOCK_DIR"
   printf '%s\n' "$NOW" > "$STAMP_FILE" 2>/dev/null || true
 fi
