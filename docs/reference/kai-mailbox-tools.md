@@ -22,6 +22,32 @@ negotiates protocol `2026-07-28`; mailbox-only initialization remains
 compatible with `2024-11-05`. Subscription and unsubscription preserve the
 MCP event name, empty arguments, webhook mode, and delivery URL shape.
 
+## Production runtime wiring
+
+`extensions/messaging/external/kai-mcp/runtime.py --config CONFIG` is the
+service entrypoint. The launchd-owned process calls the unified host's
+`service_whoami` with the configured service ID, address, and credential, then
+constructs the seven tools and mailbox event dispatcher from that live endpoint
+incarnation. The host's exact launchd-PID check remains authoritative.
+
+When a Secure MCP Tunnel starts a child stdio process, set `bridge_socket` in
+the child config and run the launchd-owned process with `--bridge`; the child
+can only forward requests over that owner-only UNIX socket and cannot present
+its own credential or identity. The bridge is a transport boundary, not a new
+service or a PID bypass. `binding_id` is the stable enrolled participant ID;
+the endpoint `incarnation` fences stale subscriptions after restart.
+
+The private config contains `service_id`, `address`, `participant_id`,
+`service_token`, `allowed_addresses`, `host_socket`, and `event_state`; it is
+local-only and must be owner-readable. A launchd manifest should execute:
+
+```text
+python3 /path/to/extensions/messaging/external/kai-mcp/runtime.py --config /private/kai.json --bridge
+```
+
+The tunnel child uses the same config with `bridge_socket` and omits
+`--bridge`, so no credential is copied into the child command line.
+
 The sibling `external-assistant-tools.json` is a distributed copy of the
 reviewed catalog, so a standalone deployment does not depend on the repository
 `docs/` tree. The server validates that all seven expected names are present;
