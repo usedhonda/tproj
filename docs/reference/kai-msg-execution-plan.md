@@ -18,6 +18,10 @@ tool listing, callback acceptance, or synthetic event alone is not completion.
   recipient ledger. Keep message identity and reply routing in that mailbox.
 - Keep KAI service enrollment, credentials, and scopes separate from Observation
   and OpenClaw. Do not expose observation data, shell access, or model APIs.
+- The approved local boundary is a dedicated KAI **connection principal**:
+  authenticate the enrolled service process and fixed participant scope. This
+  does not claim cryptographic KAI-persona or conversation authentication;
+  provider conversation provenance remains a separate acceptance item.
 - Do not add cross-host task/role-handoff features in this scope.
 - No public push is authorized by this plan.
 
@@ -30,7 +34,7 @@ tool listing, callback acceptance, or synthetic event alone is not completion.
 | Independent service registry | `66cf80a`, corrected in `a7fab6d`; reflected on both hosts without session termination | Authenticated KAI enrollment |
 | Remote wrapper | `c4f94b8` | Shared-app-server conversation authentication remains rejected |
 | Native identity investigation | Installed version source hardcodes native background-terminal OS PID as absent; `--no-daemon` selects embedded runtime | Authentication of existing caller; endpoint and subagent isolation |
-| Mailbox MCP tools/events | Seven tool dispatcher, durable outbox and bounded retries implemented; `03a0c9d`; Python 15/15 and required shell 11/11 passed | Trusted cloud binding, activation and six live acceptance cases |
+| Mailbox MCP tools/events | Seven tool dispatcher, durable outbox and bounded retries implemented; fixed KAI connection authorizer now enforces service enrollment, endpoint incarnation and scope | Host enrollment reflection, activation and six live acceptance cases |
 
 Do not repeat the initial KAI capability question or rebuild these completed
 slices. Native background-terminal logical process IDs are not OS PIDs. The supported

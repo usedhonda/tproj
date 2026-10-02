@@ -1,7 +1,7 @@
 # KAI mailbox tool adapter
 
-`extensions/messaging/external/kai-mcp/mailbox_tools.py` contains the inert,
-local adapter for the seven reviewed tool shapes: `tproj_list`,
+`extensions/messaging/external/kai-mcp/mailbox_tools.py` contains the local
+adapter for the seven reviewed tool shapes: `tproj_list`,
 `tproj_status`, `tproj_send`, `tproj_inbox`, `tproj_message`, `tproj_reply`,
 and `tproj_ack`.
 
@@ -28,12 +28,14 @@ reviewed catalog, so a standalone deployment does not depend on the repository
 it never logs catalog contents, credentials, or callback secrets.
 
 The adapter is not an MCP server, does not register cloud tools, and does not
-start a daemon.  A host integration must inject both a host-socket call and a
-trusted conversation authorizer.  The authorizer is mandatory on every call;
-missing, rejected, or incomplete authorization fails with `identity_rejected`
-before any host request.  It must provide a host-derived `allowed_addresses`
-scope.  Caller arguments cannot provide identity selectors (`role`, `as`,
-`session`, conversation, PID, host, or endpoint fields).
+start a daemon. A host integration injects a host-socket call and a
+`FixedConnectionAuthorizer` from `connection.py`. That authorizer represents
+the enrolled KAI **service principal** (not a cryptographically asserted
+model persona): every call revalidates the host-derived service identity,
+endpoint incarnation, and exact fixed `allowed_addresses` scope. Missing,
+rejected, stale, or mismatched authorization fails with `identity_rejected`
+before any host request. Caller arguments cannot provide identity selectors
+(`role`, `as`, `session`, conversation, PID, host, or endpoint fields).
 
 Service identity, address, and credential are constructor-local configuration,
 never tool arguments.  Message operations map directly to the authenticated
@@ -50,10 +52,20 @@ filter and sanitize results to the contract.  They fail closed when the
 authorizer supplies no participant scope.  Directory visibility is not proof
 of enrollment, cloud conversation identity, delivery, or presentation.
 
+## Connection-principal boundary
+
+`KaiServiceBinding` fixes the service ID, address, participant ID, credential,
+and participant allowlist at enrollment. The host attestor must return the
+matching binding and live incarnation; an address or token never selects a
+different service. The unified host remains responsible for the exact
+launchd PID and kernel process-start check. The adapter does not infer KAI
+conversation identity from `_meta`, display names, or model-supplied values.
+
 ## Evidence boundary
 
-The implementation is intentionally inert/unexposed until a trusted host-side
-authorizer proves the KAI conversation binding.  Original Dots event delivery,
+The implementation remains unexposed until trusted host-side service
+enrollment and the KAI route are enabled. The fixed connection principal does
+not prove original Dots conversation identity. Original Dots event delivery,
 shared app-server conversation authentication, cloud registration, live KAI
 enrollment, and end-to-end mailbox receipts remain unproven and are not
 claimed by this module.

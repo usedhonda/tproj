@@ -2,8 +2,11 @@
 
 `KAIEventDelivery` is an isolated, fail-closed mailbox event adapter. A trusted
 authorizer must return a fixed binding/incarnation and a scoped reader; no
-metadata or request arguments are treated as identity. Without that authorizer,
-subscription and pump operations fail before mailbox access.
+metadata or request arguments are treated as identity. The production KAI
+route uses `FixedConnectionAuthorizer.event_authorizer()` so event delivery
+shares the enrolled service principal and exact participant scope used by
+mailbox tools. Without that authorizer, subscription and pump operations fail
+before mailbox access.
 
 Subscriptions verify an HTTPS callback challenge and persist private state with
 owner-only permissions. `pump_once()` reads message IDs only, creates stable
