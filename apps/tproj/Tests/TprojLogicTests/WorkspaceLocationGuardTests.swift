@@ -14,9 +14,15 @@ final class WorkspaceLocationGuardTests: XCTestCase {
         XCTAssertTrue(WorkspaceLocationGuard.matches(before, after))
     }
 
-    func testLocationSnapshotExcludesMruFields() {
-        let before = [["id", "/work", "local", "", "/work", ""]]
-        let after = [["id", "/work", "local", "", "/work", ""]]
-        XCTAssertTrue(WorkspaceLocationGuard.matches(before, after))
+    func testLegacyLocationFieldsDefaultFromActivePath() {
+        XCTAssertEqual(
+            WorkspaceLocationGuard.record(projectID: "id", path: "/local", type: "", host: "", localPath: "", remotePath: ""),
+            ["id", "/local", "local", "", "/local", ""]
+        )
+        XCTAssertEqual(
+            WorkspaceLocationGuard.record(projectID: "id", path: "/remote", type: "remote", host: "h", localPath: "", remotePath: ""),
+            ["id", "/remote", "remote", "h", "", "/remote"]
+        )
+        XCTAssertNil(WorkspaceLocationGuard.record(projectID: "id", path: "", type: "local", host: "", localPath: "", remotePath: ""))
     }
 }

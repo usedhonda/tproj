@@ -1203,10 +1203,9 @@ struct WorkspaceProjectLocationSnapshot: Equatable {
 
     static func from(_ projects: [WorkspaceProject]) -> WorkspaceProjectLocationSnapshot {
         let entries = projects.map { project in
-            [project.projectID, project.path, project.type, project.host,
-             project.localPath.isEmpty && project.type != "remote" ? project.path : project.localPath,
-             project.remotePath.isEmpty && project.type == "remote" ? project.path : project.remotePath]
-        }
+            WorkspaceLocationGuard.record(projectID: project.projectID, path: project.path, type: project.type,
+                                          host: project.host, localPath: project.localPath, remotePath: project.remotePath)
+        }.compactMap { $0 }
         return WorkspaceProjectLocationSnapshot(entries: WorkspaceLocationGuard.canonical(entries))
     }
 }
@@ -4203,11 +4202,9 @@ final class AppViewModel: ObservableObject {
             let parts = row.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
             guard parts.count == 6 else { return [String]() }
             // Match WorkspaceProjectLocationSnapshot's field order.
-            let type = parts[1]
-            let localPath = parts[3].isEmpty && type != "remote" ? parts[0] : parts[3]
-            let remotePath = parts[4].isEmpty && type == "remote" ? parts[0] : parts[4]
-            return [parts[5], parts[0], type, parts[2], localPath, remotePath]
-        }.filter { !$0.isEmpty }
+            return WorkspaceLocationGuard.record(projectID: parts[5], path: parts[0], type: parts[1], host: parts[2],
+                                                 localPath: parts[3], remotePath: parts[4])
+        }.compactMap { $0 }
         return WorkspaceProjectLocationSnapshot(entries: WorkspaceLocationGuard.canonical(entries))
     }
 
