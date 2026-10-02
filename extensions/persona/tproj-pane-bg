@@ -205,6 +205,10 @@ project_prompt_override_path() {
   printf '%s/prompt.local.json' "$(project_cache_dir "$project")"
 }
 
+face_reference_sidecar_path() {
+  printf '%s/%s.face-reference.json' "$(project_cache_dir "$1")" "$2"
+}
+
 runtime_placeholder_path() {
   local role="$1"
   printf '%s/fallback-%s.png' "$WORK_ROOT" "$role"
@@ -1761,9 +1765,65 @@ gpt_image_available() {
 reference_image_for_persona() {
   if [[ -n "${TPROJ_PANE_BG_REFERENCE_IMAGE:-}" ]]; then
     printf '%s' "$TPROJ_PANE_BG_REFERENCE_IMAGE"
+  elif [[ -n "${FACE_STOCK_REFERENCE_PATH:-}" ]]; then
+    printf '%s' "$FACE_STOCK_REFERENCE_PATH"
   elif [[ "${PERSONA_GENDER_RAW:-}" == "女" ]]; then
     printf '%s' "${TPROJ_PANE_BG_REFERENCE_IMAGE_FEMALE:-}"
   fi
+}
+
+select_face_stock_reference() {
+  local project="$1" role="$2" sidecar="" pinned="" requested="" candidate="" stock_dir="${TPROJ_PANE_BG_FACE_STOCK_DIR:-}"
+  local candidates="" index="" count=0 hash=""
+  FACE_STOCK_REFERENCE_PATH=""
+  FACE_STOCK_REFERENCE_ID=""
+  [[ -z "${TPROJ_PANE_BG_REFERENCE_IMAGE:-}" && "${PERSONA_GENDER_RAW:-}" == "女" ]] || return 0
+  [[ -n "$stock_dir" && -d "$stock_dir" ]] || return 0
+  sidecar="$(face_reference_sidecar_path "$project" "$role")"
+  requested="$(json_string_or_empty "$(project_prompt_override_path "$project")" "face_reference_$role")"
+  if [[ -n "$requested" ]]; then
+    [[ "$requested" =~ ^[A-Za-z0-9_-]+(\.png)?$ ]] || { warn "invalid face stock selection for $role: $requested"; return 1; }
+    candidate="$stock_dir/$requested"
+    [[ "$candidate" == *.png ]] || candidate="${candidate}.png"
+    [[ -r "$candidate" ]] || { warn "invalid face stock selection for $role: $requested"; return 1; }
+  fi
+  if [[ -s "$sidecar" ]]; then
+    pinned="$(jq -r '.path // empty' "$sidecar" 2>/dev/null || true)"
+    if [[ -z "$candidate" && -n "$pinned" && -r "$pinned" ]]; then
+      FACE_STOCK_REFERENCE_PATH="$pinned"
+      FACE_STOCK_REFERENCE_ID="$(jq -r '.id // empty' "$sidecar" 2>/dev/null || basename "$pinned" .png)"
+      return 0
+    fi
+    if [[ -z "$candidate" && -n "$pinned" ]]; then
+      warn "pinned face stock reference is unreadable for $role: $pinned"
+      return 1
+    fi
+  fi
+  if [[ -z "$candidate" ]]; then
+    candidates="$(find "$stock_dir" -maxdepth 1 -type f -name '*.png' -print 2>/dev/null | LC_ALL=C sort)"
+    count="$(printf '%s\n' "$candidates" | awk 'NF {n++} END {print n+0}')"
+    (( count > 0 )) || return 0
+    hash="$(hash_string "$project|$role")"
+    index=$((16#${hash:0:8} % count))
+    candidate="$(printf '%s\n' "$candidates" | awk -v n="$index" 'NF {a[++i]=$0} END {if (n+1 <= i) print a[n+1]}')"
+    [[ -n "$candidate" && -r "$candidate" ]] || return 0
+  fi
+  FACE_STOCK_REFERENCE_PATH="$candidate"
+  FACE_STOCK_REFERENCE_ID="$(basename "$candidate" .png)"
+}
+
+write_face_stock_pin() {
+  local project="$1" role="$2" path="$3" id="$4" target="" tmp=""
+  target="$(face_reference_sidecar_path "$project" "$role")"
+  tmp="${target}.tmp"
+  jq -n --arg id "$id" --arg path "$path" '{version: 1, id: $id, path: $path}' > "$tmp"
+  mv "$tmp" "$target"
+}
+
+face_stock_selection_needed() {
+  local project="$1" role="$2" has_image="$3"
+  [[ "$has_image" != "true" || -s "$(face_reference_sidecar_path "$project" "$role")" \
+        || -n "$(json_string_or_empty "$(project_prompt_override_path "$project")" "face_reference_$role")" ]]
 }
 
 request_gpt_image() {
@@ -1773,7 +1833,8 @@ request_gpt_image() {
   local error_file="${4:-${response_file}.error.json}"
   python3 - "$prompt" "$negative_prompt" "$response_file" "$error_file" \
     "$GPT_IMAGE_AUTH_FILE" "$GPT_IMAGE_MODEL_NAME" "$REQUEST_TIMEOUT_SECONDS" \
-    "$(reference_image_for_persona)" "$GPT_IMAGE_SIZE" <<'PY'
+    "$(reference_image_for_persona)" "$GPT_IMAGE_SIZE" \
+    "$([[ -n "${FACE_STOCK_REFERENCE_PATH:-}" ]] && printf 1 || printf 0)" <<'PY'
 import base64
 import json
 import os
@@ -1781,7 +1842,7 @@ import sys
 import urllib.error
 import urllib.request
 
-prompt, negative_prompt, response_path, error_path, auth_path, model_name, request_timeout, reference_path, image_size = sys.argv[1:10]
+prompt, negative_prompt, response_path, error_path, auth_path, model_name, request_timeout, reference_path, image_size, stock_reference = sys.argv[1:11]
 request_timeout = int(request_timeout)
 
 # gpt-image takes no separate negative prompt, so the avoid-list is folded into the
@@ -1812,7 +1873,7 @@ if not access_token:
 # cannot hold a look steady across models: gpt-image drifts to glossy modern anime
 # and even changes hair colour, which reads as a different person. Showing it the
 # previous portrait keeps the same woman in the same world.
-content = [{"type": "input_text", "text": text}]
+content = [{"type": "input_text", "text": text + ("\n\nUse the reference image for face proportions and identity only. Do not copy its clothing, background, pose, or composition." if reference_path and stock_reference == "1" else "")}]
 if reference_path and os.path.isfile(reference_path):
     try:
         with open(reference_path, "rb") as handle:
@@ -3047,6 +3108,8 @@ generate_background() {
   local seed_main=""
   local manifest_mtime=""
   local mode_mtime=""
+  FACE_STOCK_REFERENCE_PATH=""
+  FACE_STOCK_REFERENCE_ID=""
 
   # Trust the explicit --project path; do NOT resolve to git root
   # (a non-git subdir inside a git repo would resolve to the wrong parent)
@@ -3099,6 +3162,13 @@ generate_background() {
   fi
   gender_desc="$(translate_gender "$PERSONA_GENDER_RAW")"
   age_desc="$(translate_age "$PERSONA_AGE_RAW")"
+
+  if face_stock_selection_needed "$project" "$role" "$has_image"; then
+    select_face_stock_reference "$project" "$role" || {
+      rm -rf "$generation_lock"
+      die "invalid face stock selection for $role"
+    }
+  fi
 
   if [[ "$refresh_flag" != "true" ]] && cache_is_fresh "$meta_path" "$image_path" "$project" "$role" "$persona_line"; then
     printf '%s\n' "$image_path"
@@ -3209,6 +3279,10 @@ generate_background() {
     write_sidecar "$meta_path" "$project" "$role" "$style_mode" "$named_prompt" "$negative_prompt" "$persona_line" "$image_path" "$response_file" "$gender_desc" "$age_desc" "$generation_model" "$generation_prompt_version" "$generation_prompt_schema" "$selection_reason"
   else
     write_sidecar "$meta_path" "$project" "$role" "$style_mode" "$fallback_prompt" "$negative_prompt" "$persona_line" "$image_path" "$response_file" "$gender_desc" "$age_desc" "$generation_model" "$generation_prompt_version" "$generation_prompt_schema" "$selection_reason"
+  fi
+
+  if [[ -n "${FACE_STOCK_REFERENCE_PATH:-}" ]]; then
+    write_face_stock_pin "$project" "$role" "$FACE_STOCK_REFERENCE_PATH" "$FACE_STOCK_REFERENCE_ID"
   fi
 
   rm -f "$(generation_status_path "$project" "$role")"
