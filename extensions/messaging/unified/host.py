@@ -250,6 +250,13 @@ class Host:
         self.db.commit()
         return self.hub('submit', message=envelope)
 
+    def delivery_status(self, endpoint_id, message_id, reason):
+        """Record a nonterminal delivery diagnostic without changing state."""
+        try:
+            return self.hub('delivery_status', endpoint_id=endpoint_id, message_id=message_id, reason=reason)
+        except HubError:
+            return None
+
     def dispatch(self, req, pid, uid):
         op = req.get('op')
         if uid != os.getuid():
@@ -365,6 +372,7 @@ class Host:
                     self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid, state=row['state'], evidence='durable local journal')
                     continue
                 if row['state'] == 'dispatching':
+                    self.delivery_status(ep['endpoint_id'], mid, 'waiting_input')
                     if time.time() - row['updated'] > 30:
                         self.db.execute("UPDATE deliveries SET state='uncertain' WHERE message_id=?", (mid,)); self.db.commit()
                     continue
@@ -373,8 +381,10 @@ class Host:
                 try:
                     current = _process_info(ep['pid'])
                     if current['pid_start'] != ep['pid_start']:
+                        self.delivery_status(ep['endpoint_id'], mid, 'endpoint_unavailable')
                         continue
                 except (IdentityError, OSError):
+                    self.delivery_status(ep['endpoint_id'], mid, 'endpoint_unavailable')
                     continue
                 cache_kind = 'cc-cache' if ep['platform'] == 'cc' else 'codex-cache'
                 observed_runtime = ep.get('observed_runtime_id') or ep['runtime_id']
@@ -382,10 +392,12 @@ class Host:
                 try:
                     observed = json.loads(cache_path.read_text())
                     if observed.get('pane_id') == ep['pane'] and (observed.get('turn_state') == 'running' or observed.get('event') == 'prompt'):
+                        self.delivery_status(ep['endpoint_id'], mid, 'busy')
                         continue
                 except (OSError, ValueError): pass
                 guard = subprocess.run(['bash', str(Path(__file__).with_name('terminal-guard.sh')), ep['pane']], capture_output=True, timeout=5)
                 if guard.returncode:
+                    self.delivery_status(ep['endpoint_id'], mid, 'draft_protected')
                     continue
                 # The hub owns the atomic cancellation gate.  Claiming here
                 # immediately before terminal access prevents a cancel racing
@@ -393,6 +405,7 @@ class Host:
                 try:
                     gate = self.hub('begin_present', endpoint_id=ep['endpoint_id'], message_id=mid)
                 except HubError:
+                    self.delivery_status(ep['endpoint_id'], mid, 'adapter_error')
                     continue
                 if isinstance(gate, dict) and gate.get('ok') is False:
                     continue
