@@ -3690,8 +3690,27 @@ final class AppViewModel: ObservableObject {
                 let existingByID = project.projectID.isEmpty ? nil : canonical.first {
                     ($0["project_id"] as? String) == project.projectID
                 }
-                if !project.projectID.isEmpty && existingByID == nil && existingByLocation == nil {
-                    statusText = "Project ID is no longer registered; refresh before saving"
+                var existingIdentity: WorkspaceLocationGuard.ProjectIdentity?
+                if let existingByID,
+                   let id = existingByID["project_id"] as? String,
+                   let existingHost = existingByID["host_id"] as? String,
+                   let existingPath = existingByID["path"] as? String {
+                    existingIdentity = WorkspaceLocationGuard.ProjectIdentity(
+                        projectID: id, hostID: existingHost, path: existingPath
+                    )
+                }
+                var existingLocationIdentity: WorkspaceLocationGuard.ProjectIdentity?
+                if let existingByLocation,
+                   let id = existingByLocation["project_id"] as? String {
+                    existingLocationIdentity = WorkspaceLocationGuard.ProjectIdentity(
+                        projectID: id, hostID: host, path: path
+                    )
+                }
+                if let identityError = WorkspaceLocationGuard.projectIDError(
+                    project.projectID, intendedHostID: host, intendedPath: path,
+                    existingByID: existingIdentity, existingByLocation: existingLocationIdentity
+                ) {
+                    statusText = identityError
                     return false
                 }
                 let id = existingByID?["project_id"] as? String
