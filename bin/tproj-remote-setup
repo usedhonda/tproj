@@ -15,6 +15,10 @@ ssh=['ssh','-o','BatchMode=yes','-o','ConnectTimeout=5','-T','--',alias]
 # skill directories, so Claude and Codex there read the same text as they do here.
 if (root/'extensions').is_dir():
     wrapper=root/'extensions/messaging/tproj-msg'
+    task_artifacts={
+        'tproj_task':root/'extensions/messaging/tproj-task',
+        'tproj_task_cache':root/'extensions/messaging/tproj-task-cache.sh',
+    }
     skills={'msg':root/'extensions/messaging/skill-msg/SKILL.md'}
     for source in sorted((root/'extensions/skills').glob('*/SKILL.md')):
         skills[source.parent.name]=source
@@ -22,6 +26,10 @@ else:
     # Run from the installed ~/bin copy: the messaging installer keeps these
     # skill copies byte-equal to the repo (its --check reports otherwise).
     wrapper=root/'bin/tproj-msg'
+    task_artifacts={
+        'tproj_task':root/'bin/tproj-task',
+        'tproj_task_cache':root/'bin/tproj-task-cache.sh',
+    }
     skills={name:root/'.claude/skills'/name/'SKILL.md' for name in ('msg','role')}
 # Without these a Claude session in auto mode sends every message through the safety
 # classifier, and a classifier outage then stops it from messaging at all.
@@ -35,6 +43,9 @@ wrapper=home/'bin/tproj-msg'
 out={'skills':{},'allow':[],
      'tproj_msg':hashlib.sha256(wrapper.read_bytes()).hexdigest() if wrapper.is_file() else None,
      'tproj_msg_executable':os.access(wrapper,os.X_OK)}
+for name,path in (('tproj_task',home/'bin/tproj-task'),('tproj_task_cache',home/'bin/tproj-task-cache.sh')):
+    out[name]=hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+    out[name+'_executable']=os.access(path,os.X_OK)
 for name in sys.argv[1].split(','):
     for agent in ('.claude','.codex'):
         path=home/agent/'skills'/name/'SKILL.md'
@@ -61,6 +72,14 @@ print(json.dumps(out))
         drift.append('~/bin/tproj-msg: '+('missing' if got_wrapper is None else 'differs (CLI drift)'))
     if got_wrapper is not None and not remote.get('tproj_msg_executable',False):
         drift.append('~/bin/tproj-msg: not executable')
+    for name,path in task_artifacts.items():
+        want=hashlib.sha256(path.read_bytes()).hexdigest()
+        got=remote.get(name)
+        label='~/bin/'+('tproj-task' if name=='tproj_task' else 'tproj-task-cache.sh')
+        if got != want:
+            drift.append(label+': '+('missing' if got is None else 'differs (CLI drift)'))
+        if got is not None and not remote.get(name+'_executable',False):
+            drift.append(label+': not executable')
     for line in drift:
         print(line)
     print(f'{alias}: '+('no drift' if not drift else f'{len(drift)} drift item(s); run tproj-remote-setup add {alias}'))
@@ -70,6 +89,8 @@ files={}
 for name in ('tproj','tproj-cli-update','tproj-topology','tproj-remote-host','tproj-remote-cache','tproj-msg-runtime'):
     files['bin/'+name]=root/'bin'/name
 files['bin/tproj-msg']=wrapper
+files['bin/tproj-task']=task_artifacts['tproj_task']
+files['bin/tproj-task-cache.sh']=task_artifacts['tproj_task_cache']
 for name in ('tproj_topology.py','tproj-common.sh','tproj-model-role.sh'):
     files['bin/lib/'+name]=root/'bin/lib'/name
 library=root/'extensions/messaging/unified'
@@ -91,7 +112,7 @@ subprocess.run(ssh+[check],check=True,timeout=12)
 subprocess.run(ssh+['umask 077; tar -xf - -C "$HOME"'],input=buf.getvalue(),check=True,timeout=30)
 command='''set -e
 export PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-chmod 755 "$HOME/bin/tproj" "$HOME/bin/tproj-topology" "$HOME/bin/tproj-remote-host" "$HOME/bin/tproj-msg-runtime"
+chmod 755 "$HOME/bin/tproj" "$HOME/bin/tproj-topology" "$HOME/bin/tproj-remote-host" "$HOME/bin/tproj-msg-runtime" "$HOME/bin/tproj-task" "$HOME/bin/tproj-task-cache.sh"
 uid=$(id -u)
 if ! launchctl print "gui/$uid/com.tproj.remote-host" >/dev/null 2>&1; then
  launchctl bootstrap "gui/$uid" "$HOME/Library/LaunchAgents/com.tproj.remote-host.plist"
