@@ -1196,6 +1196,21 @@ struct WorkspaceProject: Identifiable {
     }
 }
 
+/// The location-only portion of workspace configuration used to detect stale saves.
+/// MRU and keep-warm changes intentionally do not participate in this snapshot.
+struct WorkspaceProjectLocationSnapshot: Equatable {
+    let entries: [[String]]
+
+    static func from(_ projects: [WorkspaceProject]) -> WorkspaceProjectLocationSnapshot {
+        let entries = projects.map { project in
+            [project.projectID, project.path, project.type, project.host,
+             project.localPath.isEmpty && project.type != "remote" ? project.path : project.localPath,
+             project.remotePath.isEmpty && project.type == "remote" ? project.path : project.remotePath]
+        }
+        return WorkspaceProjectLocationSnapshot(entries: entries)
+    }
+}
+
 enum WorkspaceProjectOrder: String, CaseIterable, Identifiable {
     case recent
     case yaml
@@ -1793,6 +1808,7 @@ private final class MIDIPaneActivator {
 @MainActor
 final class AppViewModel: ObservableObject {
     @Published var workspaceProjects: [WorkspaceProject] = []
+    private var loadedLocationSnapshot = WorkspaceProjectLocationSnapshot(entries: [])
     @Published private(set) var centralDirectoryAvailable = true
     private var centralDirectoryRevision: Int?
     @Published var remoteProjectStates: [String: String] = [:]
@@ -3599,7 +3615,11 @@ final class AppViewModel: ObservableObject {
             : "Remote start incomplete: \(trimmedError(cc.exitCode == 0 ? cdx : cc))"
     }
 
-    func saveConfiguredProjects(_ projects: [WorkspaceProject]) async -> Bool {
+    func workspaceLocationSnapshot() -> WorkspaceProjectLocationSnapshot {
+        loadedLocationSnapshot
+    }
+
+    func saveConfiguredProjects(_ projects: [WorkspaceProject], expectedLocationSnapshot: WorkspaceProjectLocationSnapshot? = nil) async -> Bool {
         var projects = projects
         let aliases = projects.map { $0.effectiveAlias.lowercased() }
         guard Set(aliases).count == aliases.count else {
@@ -3621,6 +3641,11 @@ final class AppViewModel: ObservableObject {
                 statusText = "Close the live column before changing its location"
                 return false
             }
+        }
+        let expectedSnapshot = expectedLocationSnapshot ?? loadedLocationSnapshot
+        guard let current = currentWorkspaceLocationSnapshot(), current == expectedSnapshot else {
+            statusText = "Workspace locations changed on disk; refresh before saving"
+            return false
         }
         let clientConfig = NSHomeDirectory() + "/.config/tproj/msg-client.json"
         if fileManager.fileExists(atPath: clientConfig) {
@@ -3701,7 +3726,7 @@ final class AppViewModel: ObservableObject {
         }
         // This sheet never edits enabled; retain each draft row's value even when
         // another machine has a project with the same absolute path.
-        guard let error = persistWorkspaceProjects(projects, createIfMissing: false) else {
+        guard let error = persistWorkspaceProjects(projects, createIfMissing: false, expectedLocationSnapshot: expectedSnapshot) else {
             loadWorkspaceProjects()
             let currentRemotes = workspaceProjects.filter { $0.type == "remote" }
             if fileManager.isExecutableFile(atPath: client) {
@@ -4164,6 +4189,26 @@ final class AppViewModel: ObservableObject {
             }
             return lhs.effectiveAlias.localizedCaseInsensitiveCompare(rhs.effectiveAlias) == .orderedAscending
         }
+        loadedLocationSnapshot = .from(parsed)
+    }
+
+    private func currentWorkspaceLocationSnapshot() -> WorkspaceProjectLocationSnapshot? {
+        guard fileManager.fileExists(atPath: workspacePath) else {
+            return nil
+        }
+        let query = ".projects[]? | [(.path // \"\"),(.type // \"local\"),(.host // \"\"),(.local_path // \"\"),(.remote_path // \"\"),(.project_id // \"\")] | @tsv"
+        let result = runCommand("/usr/bin/env", ["yq", "-r", query, workspacePath])
+        guard result.exitCode == 0 else { return nil }
+        let entries = result.stdout.split(separator: "\n", omittingEmptySubsequences: true).map { row in
+            let parts = row.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 6 else { return [String]() }
+            // Match WorkspaceProjectLocationSnapshot's field order.
+            let type = parts[1]
+            let localPath = parts[3].isEmpty && type != "remote" ? parts[0] : parts[3]
+            let remotePath = parts[4].isEmpty && type == "remote" ? parts[0] : parts[4]
+            return [parts[5], parts[0], type, parts[2], localPath, remotePath]
+        }.filter { !$0.isEmpty }
+        return WorkspaceProjectLocationSnapshot(entries: WorkspaceLocationGuard.canonical(entries))
     }
 
     func keepWarmHours(forProjectPath path: String) -> Int {
@@ -4985,7 +5030,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func persistWorkspaceProjects(_ projects: [WorkspaceProject], createIfMissing: Bool) -> String? {
+    private func persistWorkspaceProjects(_ projects: [WorkspaceProject], createIfMissing: Bool, expectedLocationSnapshot: WorkspaceProjectLocationSnapshot? = nil) -> String? {
         do {
             let parent = URL(fileURLWithPath: workspacePath).deletingLastPathComponent()
             try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -4997,6 +5042,11 @@ final class AppViewModel: ObservableObject {
                 }
                 try content.write(toFile: workspacePath, atomically: true, encoding: .utf8)
                 return nil
+            }
+
+            let expectedLocationSnapshot = expectedLocationSnapshot ?? loadedLocationSnapshot
+            guard let current = currentWorkspaceLocationSnapshot(), current == expectedLocationSnapshot else {
+                return "Workspace locations changed on disk; refresh before saving"
             }
 
             let tempURL = parent.appendingPathComponent(".tproj-projects-\(UUID().uuidString).yaml")
@@ -5017,6 +5067,8 @@ final class AppViewModel: ObservableObject {
                 }
                 return "Save failed: \(errText)"
             }
+
+            loadedLocationSnapshot = .from(projects)
 
             return nil
         } catch {
@@ -5292,6 +5344,7 @@ struct ContentView: View {
     @State private var showProjectLocations = false
     @State private var showTopology = false
     @State private var locationDraft: [WorkspaceProject] = []
+    @State private var locationDraftBaseline = WorkspaceProjectLocationSnapshot(entries: [])
 
     private func setDragLock(_ locked: Bool) {
         ghosttyTracker.isDragSuspended = locked
@@ -5350,7 +5403,7 @@ struct ContentView: View {
                     guard column.hostLabel != "local" else { return nil }
                     return "\(column.hostLabel)|\(column.projectPath)"
                 }),
-                save: { await vm.saveConfiguredProjects(locationDraft) }
+                save: { await vm.saveConfiguredProjects(locationDraft, expectedLocationSnapshot: locationDraftBaseline) }
             )
         }
         .sheet(isPresented: $showTopology) {
@@ -5639,6 +5692,7 @@ struct ContentView: View {
             HStack(spacing: 6) {
                 ActionButton("Projects", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
                     locationDraft = vm.workspaceProjects
+                    locationDraftBaseline = vm.workspaceLocationSnapshot()
                     showProjectLocations = true
                 }
                 .fixedSize()
