@@ -92,6 +92,10 @@ class Hub:
     def _endpoint_for_send(self, participant):
         rows = self.db.execute("SELECT * FROM endpoints WHERE participant_id=? AND retired=0 ORDER BY endpoint_id", (participant["participant_id"],)).fetchall()
         if len(rows) != 1: raise HubError("ambiguous_target" if rows else "no_recipient", "ambiguous target" if rows else "target has no current endpoint")
+        if self._now() - rows[0]["last_heartbeat"] > 30:
+            # A missed heartbeat is not proof of death. Refuse new delivery until
+            # the owner refreshes evidence; do not retire an otherwise live agent.
+            raise HubError("endpoint_unavailable", "target liveness needs owner refresh")
         return rows[0]
     def _host_endpoint(self, host, endpoint_id):
         e = self._row("SELECT * FROM endpoints WHERE endpoint_id=?", (endpoint_id,))
@@ -248,12 +252,69 @@ class Hub:
         state=req.get("state");
         if state not in ("presented","uncertain","stale_session","rejected"): raise HubError("invalid_receipt","invalid receipt state")
         current = msg["state"]
+        if current in ("cancelled", "expired", "stale_session", "rejected"):
+            if state == current: return {"message_id": msg["message_id"], "state": current}
+            raise HubError("terminal_message", "terminal message cannot be presented")
         if current == "presented" and state != "presented": raise HubError("invalid_receipt", "receipt state cannot move backwards")
         self._tx()
         try:
             self.db.execute("INSERT OR REPLACE INTO receipts(message_id,state,evidence,at) VALUES(?,?,?,?)",(msg["message_id"],state,req.get("evidence"),self._now())); self.db.execute("UPDATE messages SET state=? WHERE message_id=?",(state,msg["message_id"])); self._commit()
         except Exception: self._rollback(); raise
         return {"message_id":msg["message_id"],"state":state}
+
+    def begin_present(self, req):
+        """Serialize irreversible adapter presentation against sender cancellation."""
+        host = self._auth(req)
+        ep = self._host_endpoint(host, req.get("endpoint_id"))
+        self._tx()
+        try:
+            msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
+            if not msg: raise HubError("not_found", "message not found")
+            if msg["recipient_endpoint"] != ep["endpoint_id"]:
+                raise HubError("unauthorized", "only recipient may begin presentation")
+            if msg["state"] not in ("accepted", "queued", "adapter_received"):
+                raise HubError("presentation_unavailable", "message is terminal or presentation has already begun")
+            if msg["expires_at"] <= self._now():
+                raise HubError("expired", "message expired before presentation")
+            self.db.execute("UPDATE messages SET state='dispatching' WHERE message_id=?", (msg["message_id"],))
+            self._commit()
+            return {"message_id": msg["message_id"], "state": "dispatching"}
+        except Exception:
+            self._rollback(); raise
+
+    def cancel(self, req):
+        """Cancel only before presentation starts; cancellation never stops a task."""
+        host = self._auth(req)
+        ep = self._host_endpoint(host, req.get("endpoint_id"))
+        self._tx()
+        try:
+            msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
+            if not msg: raise HubError("not_found", "message not found")
+            if msg["sender_endpoint"] != ep["endpoint_id"]:
+                raise HubError("unauthorized", "only original sender may cancel")
+            if msg["state"] not in ("accepted", "queued", "adapter_received", "cancelled"):
+                raise HubError("too_late", "presentation started or message is terminal; execution is not cancelled")
+            self.db.execute("UPDATE messages SET state='cancelled' WHERE message_id=?", (msg["message_id"],))
+            self._commit()
+            return {"message_id": msg["message_id"], "state": "cancelled"}
+        except Exception:
+            self._rollback(); raise
+
+    def delivery_status(self, req):
+        host = self._auth(req)
+        ep = self._host_endpoint(host, req.get("endpoint_id"))
+        msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
+        if not msg: raise HubError("not_found", "message not found")
+        if msg["recipient_endpoint"] != ep["endpoint_id"]:
+            raise HubError("unauthorized", "only recipient may report delivery status")
+        reason = req.get("reason")
+        if reason not in ("waiting_input", "busy", "draft_protected", "endpoint_unavailable", "adapter_error", "auth_required"):
+            raise HubError("invalid_status", "invalid delivery reason")
+        if msg["state"] not in ("accepted", "queued", "adapter_received"):
+            return {"message_id": msg["message_id"], "state": msg["state"]}
+        self.db.execute("INSERT OR REPLACE INTO receipts(message_id,state,evidence,at) VALUES(?,?,?,?)",
+                        (msg["message_id"], msg["state"], json.dumps({"delivery_reason": reason}), self._now()))
+        return {"message_id": msg["message_id"], "state": msg["state"], "delivery_reason": reason}
 
     def dispatch(self, req):
         op=req.get("op")
@@ -274,6 +335,9 @@ class Hub:
         if op=="inbox": return self.inbox(req)
         if op=="claim": return self.claim(req)
         if op=="receipt": return self.receipt(req)
+        if op=="begin_present": return self.begin_present(req)
+        if op=="cancel": return self.cancel(req)
+        if op=="delivery_status": return self.delivery_status(req)
         if op=="query":
             host=self._auth(req); m=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),));
             if not m: raise HubError("not_found","message not found")
@@ -281,7 +345,13 @@ class Hub:
                 self.db.execute("UPDATE messages SET state='expired' WHERE message_id=?", (m["message_id"],)); m=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),))
             ep=self._host_endpoint(host,req.get("endpoint_id"));
             if ep["endpoint_id"] not in (m["sender_endpoint"],m["recipient_endpoint"]): raise HubError("unauthorized","not party to message")
-            return dict(m)
+            result = dict(m)
+            receipt = self._row("SELECT evidence,at FROM receipts WHERE message_id=?", (m["message_id"],))
+            if receipt and m["state"] in ("accepted", "queued", "adapter_received"):
+                try: reason = json.loads(receipt["evidence"]).get("delivery_reason")
+                except (ValueError, TypeError, AttributeError): reason = None
+                if reason: result.update(delivery_reason=reason, delivery_checked_at=receipt["at"])
+            return result
         if op=="maintenance":
             self._auth(req,True); mode=req.get("mode");
             if mode not in ("stopped","probe","open"): raise HubError("invalid_maintenance","invalid mode")

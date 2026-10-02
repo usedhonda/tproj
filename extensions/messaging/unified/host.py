@@ -120,7 +120,8 @@ class Host:
             if (ep['endpoint_id'] not in live_ids and ep['participant_id'] in live_participants
                     and ep['participant_id'] not in ambiguous_participants and not ep['retired']):
                 self.hub('endpoint_retire', endpoint_id=ep['endpoint_id'])
-            elif ep['endpoint_id'] not in live_ids and ep['participant_id'] not in live_participants and not ep['retired']:
+            elif (ep['endpoint_id'] not in live_ids and ep['participant_id'] not in live_participants
+                  and not ep['retired'] and ep.get('platform') in ('cc', 'cdx')):
                 # A vanished participant is retired only with direct PID/start
                 # evidence; an absent registry row alone is not enough.
                 from identity import _process_info
@@ -128,7 +129,12 @@ class Host:
                     current = _process_info(int(ep['pid']))
                 except (IdentityError, OSError, ValueError, KeyError, TypeError):
                     current = None
-                if not current or current.get('pid_start') != ep.get('pid_start'):
+                absent = False
+                if current is None:
+                    try: os.kill(int(ep['pid']), 0)
+                    except ProcessLookupError: absent = True
+                    except (OSError, ValueError, TypeError): pass
+                if absent or (current and str(current.get('pid_start')) != str(ep.get('pid_start'))):
                     self.hub('endpoint_retire', endpoint_id=ep['endpoint_id'])
         self.endpoints = discovered
         self.refreshed = time.monotonic()
@@ -340,7 +346,7 @@ class Host:
         for ep in self.endpoints:
             claims = self.hub('claim', endpoint_id=ep['endpoint_id'], limit=1)['messages']
             claimed_ids = {m['message_id'] for m in claims}
-            for pending in self.db.execute("SELECT envelope,message_id FROM deliveries WHERE endpoint_id=? AND state='uncertain'", (ep['endpoint_id'],)):
+            for pending in self.db.execute("SELECT envelope,message_id FROM deliveries WHERE endpoint_id=? AND state IN ('dispatching','uncertain')", (ep['endpoint_id'],)):
                 if pending['message_id'] not in claimed_ids:
                     claims.append(json.loads(pending['envelope']))
             for msg in claims:

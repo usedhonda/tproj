@@ -56,4 +56,18 @@ class FederationTests(unittest.TestCase):
     def test_unknown_peer_cannot_inject(self):
         with self.assertRaises(HubError):self.hubs['b'].dispatch(dict(op='peer_directory',host_id='a',host_token='bad',protocol=1))
 
+    def test_remote_cancel_reconnect_keeps_id_and_prevents_delivery(self):
+        self.send('a','cancel-me','b.cc')
+        self.down={'b'}
+        req=dict(host_id='a',host_token='a-token',endpoint_id='acc',message_id='cancel-me')
+        self.assertEqual(self.hubs['a'].cancel(req)['state'],'cancellation_pending')
+        self.down.clear();self.hubs['a'].tick()
+        self.assertEqual(self.hubs['b']._row('SELECT state FROM messages WHERE message_id=?',('cancel-me',))[0],'cancelled')
+        self.assertEqual(self.send('a','cancel-me','b.cc')['state'],'cancelled')
+        self.assertEqual(self.hubs['b'].claim(dict(host_id='b',host_token='b-token',endpoint_id='bcc'))['messages'],[])
+        self.send('a','too-late','b.cc')
+        self.hubs['b'].begin_present(dict(host_id='b',host_token='b-token',endpoint_id='bcc',message_id='too-late'))
+        with self.assertRaisesRegex(HubError,'execution is not cancelled'):
+            self.hubs['a'].cancel(dict(req,message_id='too-late'))
+
 if __name__=='__main__':unittest.main()

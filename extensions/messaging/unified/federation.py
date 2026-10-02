@@ -227,6 +227,10 @@ class FederatedHub(Hub):
         return self.flush_one(self._row('SELECT * FROM federated_outbox WHERE message_id=?', (mid,)))
 
     def flush_one(self, row):
+        if row['state'] == 'cancel_pending':
+            return self._cancel_remote(row)
+        if row['state'] in ('cancelled', 'expired', 'rejected'):
+            return {'message_id': row['message_id'], 'state': row['state'], 'duplicate': True}
         if row['state'] == 'delivered':
             return {'message_id': row['message_id'], 'state': 'queued', 'duplicate': True}
         record = self._row('SELECT * FROM messages WHERE message_id=?', (row['message_id'],))
@@ -245,8 +249,38 @@ class FederatedHub(Hub):
         return {'message_id': row['message_id'], 'state': 'queued'}
 
     def tick(self):
-        for row in self.db.execute("SELECT * FROM federated_outbox WHERE state='pending' LIMIT 8").fetchall():
+        for row in self.db.execute("SELECT * FROM federated_outbox WHERE state IN ('pending','cancel_pending') LIMIT 8").fetchall():
             self.flush_one(row)
+
+    def cancel(self, req):
+        host = self._auth(req)
+        ep = self._host_endpoint(host, req.get('endpoint_id'))
+        msg = self._row('SELECT * FROM messages WHERE message_id=?', (req.get('message_id'),))
+        if not msg: raise HubError('not_found', 'message not found')
+        if msg['sender_endpoint'] != ep['endpoint_id']:
+            raise HubError('unauthorized', 'only original sender may cancel')
+        row = self._row('SELECT * FROM federated_outbox WHERE message_id=?', (msg['message_id'],))
+        if not row: return super().cancel(req)
+        if msg['state'] == 'cancelled': return {'message_id': msg['message_id'], 'state': 'cancelled'}
+        # Until the destination confirms cancellation, never claim success or
+        # send again. A lost response is retried using the same immutable ID.
+        self.db.execute("UPDATE federated_outbox SET state='cancel_pending' WHERE message_id=?", (msg['message_id'],))
+        return self._cancel_remote(row)
+
+    def _cancel_remote(self, row):
+        try:
+            result = self.remote(row['host_id'], 'cancel', payload=json.loads(row['payload']))
+        except HubError as exc:
+            if exc.code == 'too_late':
+                self.db.execute("UPDATE federated_outbox SET state='delivered' WHERE message_id=?", (row['message_id'],))
+                raise
+            if exc.code in ('identity_rejected', 'unauthorized', 'id_conflict', 'invalid_message', 'expired'):
+                self.db.execute("UPDATE federated_outbox SET state='rejected' WHERE message_id=?", (row['message_id'],))
+                raise
+            return {'message_id': row['message_id'], 'state': 'cancellation_pending', 'delivery_pending': True}
+        self.db.execute("UPDATE federated_outbox SET state='cancelled' WHERE message_id=?", (row['message_id'],))
+        self.db.execute("UPDATE messages SET state='cancelled' WHERE message_id=?", (row['message_id'],))
+        return result
 
     def accept(self, req):
         owner = self._auth(req)
@@ -317,13 +351,20 @@ class FederatedHub(Hub):
             if op == 'peer_directory': return self.local_directory()
             if op == 'peer_resolve': return self.local_resolve(req.get('address'), req.get('endpoint_id'))
             if op == 'peer_accept': return self.accept(req)
+            if op == 'peer_cancel':
+                # Accept the original immutable envelope if ingress raced the
+                # cancellation. The serialized hub dispatch makes the resulting
+                # tombstone visible before any adapter can claim this message.
+                self.accept(req)
+                return super().cancel(dict(req, endpoint_id=req['payload']['record']['sender_endpoint'],
+                                            message_id=req['payload']['record']['message_id']))
             if op == 'peer_query':
                 message = self._row('SELECT * FROM messages WHERE message_id=?', (req['message_id'],))
                 if not message: raise HubError('not_found', 'message not found')
                 ep = self._host_endpoint(owner, req['endpoint_id'])
                 if ep['endpoint_id'] not in (message['sender_endpoint'], message['recipient_endpoint']):
                     raise HubError('unauthorized', 'not party to message')
-                return dict(message)
+                return super().dispatch(dict(req, op='query'))
             raise HubError('unknown_op', 'unsupported peer operation')
         if op == 'directory_all':
             self._auth(req); return self.combined_directory()

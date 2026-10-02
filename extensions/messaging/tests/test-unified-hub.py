@@ -48,4 +48,23 @@ class HubTest(unittest.TestCase):
         self.reg("b","tb","eb2","p:cdx",3)
         with self.assertRaisesRegex(HubError,"ambiguous"): self.send("amb")
 
+    def test_sender_cancel_fences_presentation_and_is_not_task_cancellation(self):
+        self.send('cancel')
+        owner=dict(host_id='a',host_token='ta',endpoint_id='ea',message_id='cancel')
+        receiver=dict(host_id='b',host_token='tb',endpoint_id='eb',message_id='cancel')
+        self.h.claim(receiver)
+        with self.assertRaisesRegex(HubError,'original sender'): self.h.cancel(receiver)
+        self.assertEqual(self.h.cancel(owner)['state'],'cancelled')
+        with self.assertRaises(HubError): self.h.begin_present(receiver)
+        with self.assertRaises(HubError): self.h.receipt(dict(receiver,state='presented'))
+        self.assertEqual(self.h.claim(receiver)['messages'],[])
+        self.send('started'); receiver['message_id']='started';owner['message_id']='started'
+        self.h.begin_present(receiver)
+        with self.assertRaisesRegex(HubError,'execution is not cancelled'): self.h.cancel(owner)
+
+    def test_missing_heartbeat_rejects_send_without_retirement(self):
+        self.h.db.execute("UPDATE endpoints SET last_heartbeat=0 WHERE endpoint_id='eb'")
+        with self.assertRaisesRegex(HubError,'liveness'): self.send('old')
+        self.assertEqual(self.h._row("SELECT retired FROM endpoints WHERE endpoint_id='eb'")[0],0)
+
 if __name__ == "__main__": unittest.main()
