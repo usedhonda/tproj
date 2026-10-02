@@ -30,6 +30,7 @@ class RuntimeTest(unittest.TestCase):
             self.assertEqual(observed["binding_id"], "kai.service")
             self.assertEqual(observed["allowed_addresses"], ["voyager.cc"])
             self.assertEqual(runtime.server().tools.authorizer("tproj_list", {})["incarnation"], "inc-1")
+            self.assertEqual(runtime.events()._binding().binding_id, "kai.service:gen-1")
 
     def test_runtime_server_tool_call_uses_mocked_authenticated_host(self):
         with tempfile.TemporaryDirectory() as directory:

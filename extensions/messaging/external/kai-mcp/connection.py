@@ -108,15 +108,7 @@ class _EventAuthorizer:
         try:
             from . import events  # package import
         except ImportError:  # direct module loading in the focused tests
-            import importlib.util
-            from pathlib import Path
-            import sys
-            path = Path(__file__).with_name("events.py")
-            spec = importlib.util.spec_from_file_location("kai_mcp_events", path)
-            events = importlib.util.module_from_spec(spec)
-            assert spec.loader is not None
-            sys.modules[spec.name] = events
-            spec.loader.exec_module(events)
+            import events
         context = self.connection.authorize()
         stable_id = f"{context['participant_id']}:{context['binding_generation']}"
         return events.TrustedBinding(stable_id, context["incarnation"], self.reader)
