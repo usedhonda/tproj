@@ -120,6 +120,16 @@ class Host:
             if (ep['endpoint_id'] not in live_ids and ep['participant_id'] in live_participants
                     and ep['participant_id'] not in ambiguous_participants and not ep['retired']):
                 self.hub('endpoint_retire', endpoint_id=ep['endpoint_id'])
+            elif ep['endpoint_id'] not in live_ids and ep['participant_id'] not in live_participants and not ep['retired']:
+                # A vanished participant is retired only with direct PID/start
+                # evidence; an absent registry row alone is not enough.
+                from identity import _process_info
+                try:
+                    current = _process_info(int(ep['pid']))
+                except (IdentityError, OSError, ValueError, KeyError, TypeError):
+                    current = None
+                if not current or current.get('pid_start') != ep.get('pid_start'):
+                    self.hub('endpoint_retire', endpoint_id=ep['endpoint_id'])
         self.endpoints = discovered
         self.refreshed = time.monotonic()
 
@@ -127,7 +137,8 @@ class Host:
         if not self.endpoints or time.monotonic() - self.refreshed >= 10:
             self.refresh()
         try:
-            return bind_caller(pid, uid, self.endpoints, session=req.get('session'), claimed_alias=req.get('as'))
+            return bind_caller(pid, uid, self.endpoints, session=req.get('session'),
+                               claimed_alias=req.get('as'), conversation=req.get('conversation'))
         except IdentityError as exc:
             raise HubError('identity_rejected', str(exc)) from exc
 
@@ -258,6 +269,16 @@ class Host:
             return self.hub('directory_update', projects=req['projects'], expected_revision=req['expected_revision'])
         is_service = isinstance(op, str) and op.startswith('service_')
         ep = self.service(pid, uid, req) if is_service else self.caller(pid, uid, req)
+        if op == 'whoami':
+            return {key: ep.get(key) for key in ('endpoint_id', 'participant_id', 'project_id', 'host_id',
+                                                  'address', 'session', 'runtime_id', 'platform', 'thread_id', 'session_id')}
+        if op == 'doctor':
+            return {'ok': True, 'endpoint': ep, 'conversation': req.get('conversation') or {},
+                    'selectors': {'session': req.get('session'), 'as': req.get('as')}}
+        if op == 'cancel':
+            if not isinstance(req.get('message_id'), str) or not req['message_id']:
+                raise HubError('invalid_message', 'message ID required')
+            return self.hub('cancel', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
         if op in ('send', 'reply', 'service_send', 'service_reply'):
             return self.submit(ep, req, reply=op.endswith('reply'))
         if op == 'service_claim':
@@ -354,6 +375,15 @@ class Host:
                 except (OSError, ValueError): pass
                 guard = subprocess.run(['bash', str(Path(__file__).with_name('terminal-guard.sh')), ep['pane']], capture_output=True, timeout=5)
                 if guard.returncode:
+                    continue
+                # The hub owns the atomic cancellation gate.  Claiming here
+                # immediately before terminal access prevents a cancel racing
+                # with paste from being reported as successful.
+                try:
+                    gate = self.hub('begin_present', endpoint_id=ep['endpoint_id'], message_id=mid)
+                except HubError:
+                    continue
+                if isinstance(gate, dict) and gate.get('ok') is False:
                     continue
                 # Resolve displayed sender from the hub, never from a stale local alias copy.
                 sender = msg.get('sender_address') or msg['sender_endpoint']

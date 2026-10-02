@@ -140,6 +140,49 @@ def _runtime(record: Mapping[str, Any], session: str) -> str:
     return str(record.get("runtime_id") or record.get("conversation_id") or record.get("session_id") or session)
 
 
+def native_conversation_context(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return the native Codex conversation binding supplied to a tool caller.
+
+    Shared app-servers multiplex conversations, so process ancestry alone is
+    insufficient.  At least one native ID is required; when both are present
+    they must agree with the same host-owned record.  Callers cannot invent a
+    selector-only identity.  The values are deliberately opaque strings and
+    are cross-checked against the host-owned registry by ``bind_caller``.
+    """
+    env = os.environ if env is None else env
+    thread = str(env.get("CODEX_THREAD_ID", "")).strip()
+    session = str(env.get("CODEX_SESSION_ID", "")).strip()
+    if not thread and not session:
+        return {}
+    result = {}
+    if thread:
+        result["thread_id"] = thread
+    if session:
+        result["session_id"] = session
+    for key in ("CODEX_PROJECT_ID", "CODEX_PROJECT", "CODEX_PLATFORM"):
+        value = str(env.get(key, "")).strip()
+        if value:
+            result[key.removeprefix("CODEX_").lower()] = value
+    return result
+
+
+def _conversation_matches(endpoint: Mapping[str, Any], context: Mapping[str, Any]) -> bool:
+    """Match native IDs, requiring every supplied native field to agree."""
+    if not context or not (context.get("thread_id") or context.get("session_id")):
+        return False
+    thread_values = {str(endpoint.get(key, "")) for key in ("thread_id", "conversation_id", "runtime_id") if endpoint.get(key)}
+    session_values = {str(endpoint.get(key, "")) for key in ("session_id", "session", "runtime_id") if endpoint.get(key)}
+    if context.get("thread_id") and str(context["thread_id"]) not in thread_values:
+        return False
+    if context.get("session_id") and str(context["session_id"]) not in session_values:
+        return False
+    project = context.get("project_id") or context.get("project")
+    if project and str(endpoint.get("project_id", "")) != str(project) and str(endpoint.get("participant_id", "")).split(":", 1)[0] != str(project):
+        return False
+    platform = context.get("platform")
+    return not platform or str(endpoint.get("platform", "")) == str(platform)
+
+
 def _endpoint_id(host: str, runtime: str, session: str, pid_start: int) -> str:
     return str(uuid.uuid5(_ENDPOINT_NAMESPACE, "\x1f".join((host, runtime, session, str(pid_start)))))
 
@@ -190,6 +233,8 @@ def discover_endpoints(registry_root: str | os.PathLike[str], host_id: str,
             "address": f"{project.get('alias')}.{platform}", "session": session,
             "pane": record.get("pane") or record.get("pane_id") or record.get("tmux_pane"),
             "pid": pid, "pid_start": start, "runtime_id": runtime, "platform": platform,
+            "thread_id": record.get("thread_id") or record.get("conversation_id"),
+            "session_id": record.get("session_id") or record.get("codex_session_id"),
         })
     return sorted(found, key=lambda item: item["endpoint_id"])
 
@@ -296,13 +341,16 @@ def discover_tmux_endpoints(host_id: str, projects: Iterable[Mapping[str, Any]],
                 "host_id": host_id, "address": f"{project.get('alias')}.{platform}",
                 "session": session, "pane": pane_id, "pid": int(pid), "pid_start": start,
                 "runtime_id": runtime, "platform": platform,
+                "thread_id": pane.get("thread_id") or pane.get("conversation_id"),
+                "session_id": pane.get("session_id") or pane.get("codex_session_id"),
             })
             break
     return sorted(found, key=lambda item: item["endpoint_id"])
 
 
 def bind_caller(pid: int, uid: int, endpoints: Iterable[Mapping[str, Any]], *, session: str | None = None,
-                claimed_alias: str | None = None, inspect_process: Callable[[int], Mapping[str, Any]] = _process_info) -> dict[str, Any]:
+                claimed_alias: str | None = None, conversation: Mapping[str, Any] | None = None,
+                inspect_process: Callable[[int], Mapping[str, Any]] = _process_info) -> dict[str, Any]:
     """Bind a socket peer to exactly one endpoint through live PID ancestry."""
     if pid <= 1 or uid < 0:
         raise IdentityError("invalid caller credentials")
@@ -314,6 +362,7 @@ def bind_caller(pid: int, uid: int, endpoints: Iterable[Mapping[str, Any]], *, s
     seen: set[int] = set()
     current = pid
     matches: list[dict[str, Any]] = []
+    app_server_seen = False
     for _ in range(64):
         if current <= 1 or current in seen:
             break
@@ -337,9 +386,9 @@ def bind_caller(pid: int, uid: int, endpoints: Iterable[Mapping[str, Any]], *, s
             argv = command.split()
         if argv and Path(argv[0]).name in {"node", "node.exe"}:
             argv = argv[1:]
-        if (len(argv) >= 2 and Path(argv[0]).name in {"codex", "codex.exe", "codex.js"}
-                and argv[1] == "app-server"):
-            raise IdentityError("shared Codex app-server ancestry cannot authenticate caller")
+        if (len(argv) >= 2 and any(Path(token).name in {"codex", "codex.exe", "codex.js"} for token in argv[:2])
+                and "app-server" in argv[1:]):
+            app_server_seen = True
         for endpoint in candidates:
             if endpoint.get("pid") == current and endpoint.get("pid_start") == info.get("pid_start"):
                 platform = endpoint.get("platform")
@@ -351,6 +400,14 @@ def bind_caller(pid: int, uid: int, endpoints: Iterable[Mapping[str, Any]], *, s
         if not isinstance(parent, int) or parent == current:
             break
         current = parent
+    if app_server_seen:
+        if not conversation:
+            raise IdentityError("shared Codex app-server ancestry cannot authenticate caller without native conversation context")
+        # Native IDs select among endpoint records, but cannot bypass the
+        # same live process ancestry proof established above.
+        live_ids = {item["endpoint_id"] for item in matches}
+        matches = [item for item in candidates if item.get("endpoint_id") in live_ids
+                   and _conversation_matches(item, conversation)]
     unique = {item["endpoint_id"]: item for item in matches}
     if len(unique) != 1:
         raise IdentityError("endpoint binding is ambiguous" if len(unique) > 1 else "agent ancestor absent")

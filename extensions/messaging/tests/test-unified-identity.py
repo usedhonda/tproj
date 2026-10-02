@@ -110,6 +110,31 @@ class UnifiedIdentityTest(unittest.TestCase):
                                                       claimed_alias="demo.cdx",
                                                       inspect_process=processes.__getitem__), endpoint)
 
+    def test_shared_app_server_binds_native_conversation_and_rejects_cross_project(self):
+        base = {"address": "demo.cdx", "platform": "cdx", "session": "shared",
+                "pid": 101, "pid_start": 77}
+        first = dict(base, endpoint_id="one", participant_id="demo:cdx", project_id="demo",
+                     thread_id="thread-one", session_id="session-one")
+        second = dict(base, endpoint_id="two", participant_id="other:cdx", project_id="other",
+                      address="other.cdx", thread_id="thread-two", session_id="session-two")
+        processes = {
+            101: {"ppid": 1, "pid_start": 77, "uid": 501, "command": "codex app-server --stdio"},
+            102: {"ppid": 101, "pid_start": 88, "uid": 501, "command": "tproj-msg"},
+        }
+        context = {"thread_id": "thread-one", "session_id": "session-one", "project_id": "demo", "platform": "cdx"}
+        self.assertEqual(identity.bind_caller(102, 501, [first, second], session="shared",
+                                              claimed_alias="demo.cdx", conversation=context,
+                                              inspect_process=processes.__getitem__), first)
+        with self.assertRaises(identity.IdentityError):
+            identity.bind_caller(102, 501, [first, second], session="shared",
+                                 claimed_alias="other.cdx", conversation=context,
+                                 inspect_process=processes.__getitem__)
+
+    def test_native_context_accepts_one_id_but_rejects_empty(self):
+        self.assertEqual(identity.native_conversation_context({"CODEX_THREAD_ID": "t"}), {"thread_id": "t"})
+        self.assertEqual(identity.native_conversation_context({"CODEX_SESSION_ID": "s"}), {"session_id": "s"})
+        self.assertEqual(identity.native_conversation_context({}), {})
+
     def test_tmux_fallback_requires_live_agent_descendant_and_deduplicates_registry(self):
         panes = lambda: [
             {"session": "sess", "pane": "%1", "pane_pid": "10", "project": str(self.project),

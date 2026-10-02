@@ -12,6 +12,11 @@ import sys
 import tempfile
 import uuid
 
+try:
+    from .identity import native_conversation_context
+except ImportError:
+    from identity import native_conversation_context
+
 WIRE_LIMIT = 262144
 DEFAULT_CONFIG = Path.home() / ".config/tproj/msg-client.json"
 DEFAULT_SPOOL = Path.home() / ".local/state/tproj-msg-unified/submissions.json"
@@ -98,7 +103,12 @@ def submission(request: dict, *, spool: Path | None = None, retry: str | None = 
             prior = saved.get(retry)
             if not isinstance(prior, dict):
                 raise ClientError(f"unknown submission ID: {retry}")
-            request = prior
+            # Keep the durable message ID and body, but rebind the caller to
+            # the currently active native conversation after a restart.
+            request = dict(prior)
+            context = native_conversation_context()
+            if context:
+                request["conversation"] = context
         else:
             mid = str(request.get("submission_id") or uuid.uuid4())
             request = dict(request, submission_id=mid)
@@ -125,6 +135,14 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
+def _caller_request(op: str, **kwargs) -> dict:
+    request = dict(kwargs, op=op)
+    context = native_conversation_context()
+    if context:
+        request["conversation"] = context
+    return request
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
@@ -136,7 +154,15 @@ def main(argv: list[str] | None = None) -> int:
             request = {"op": "list" if args.list else "status"}
             if args.status:
                 request.update(target=args.target, session=args.session, **{"as": args.claimed_alias})
+                context = native_conversation_context()
+                if context:
+                    request["conversation"] = context
             result = rpc(cfg["socket"], request)
+        elif args.target in ("whoami", "doctor"):
+            result = rpc(cfg["socket"], _caller_request(args.target, session=args.session, **{"as": args.claimed_alias}))
+        elif args.target == "cancel":
+            if not args.body: raise ClientError("cancel requires message ID")
+            result = rpc(cfg["socket"], _caller_request("cancel", message_id=args.body, session=args.session, **{"as": args.claimed_alias}))
         elif args.target == "directory":
             result = rpc(cfg["socket"], {"op": "directory"})
         elif args.target == "directory-sync":
@@ -147,22 +173,24 @@ def main(argv: list[str] | None = None) -> int:
             if not args.body: raise ClientError("reply requires message ID")
             body = sys.stdin.read() if args.stdin else ""
             if not args.stdin: raise ClientError("reply requires --stdin")
-            req = {"op": "reply", "message_id": args.body, "body": body, "session": args.session, "as": args.claimed_alias}
+            req = _caller_request("reply", message_id=args.body, body=body, session=args.session, **{"as": args.claimed_alias})
             req, _ = submission(req, retry=args.retry)
             result = rpc(cfg["socket"], req)
         elif args.target == "inbox":
             if args.cursor < 0 or args.limit <= 0:
                 raise ClientError("inbox cursor must be non-negative and limit must be positive", "invalid_argument")
-            result = rpc(cfg["socket"], {"op": "inbox", "session": args.session, "as": args.claimed_alias,
-                                          "cursor": args.cursor, "limit": args.limit})
+            result = rpc(cfg["socket"], _caller_request("inbox", session=args.session, **{"as": args.claimed_alias},
+                                                        cursor=args.cursor, limit=args.limit))
         elif args.target in ("message", "ack"):
             if not args.body: raise ClientError("message requires message ID")
-            result = rpc(cfg["socket"], {"op": args.target, "message_id": args.body, "session": args.session, "as": args.claimed_alias})
+            result = rpc(cfg["socket"], _caller_request(args.target, message_id=args.body, session=args.session,
+                                                        **{"as": args.claimed_alias}))
         else:
             if not args.target: raise ClientError("target is required")
             body = sys.stdin.read() if args.stdin else (args.body or "")
             if not body: raise ClientError("message body is required")
-            req = {"op": "send", "target": args.target, "body": body, "session": args.session, "as": args.claimed_alias}
+            req = _caller_request("send", target=args.target, body=body, session=args.session,
+                                  **{"as": args.claimed_alias})
             req, _ = submission(req, retry=args.retry)
             result = rpc(cfg["socket"], req)
         if args.json or args.target in ("inbox", "message", "directory"):
