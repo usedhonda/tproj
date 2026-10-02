@@ -203,13 +203,16 @@ def native_thread_metadata(thread_id: str, db_path: str | os.PathLike | None = N
     try:
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
             db.row_factory = sqlite3.Row
+            columns = {row[1] for row in db.execute("PRAGMA table_info(local_thread_catalog)")}
+            session_column = ",session_id" if "session_id" in columns else ""
             rows = db.execute(
-                "SELECT host_id,thread_id,cwd,source_kind,source_updated_at FROM local_thread_catalog WHERE thread_id=?",
+                f"SELECT host_id,thread_id,cwd,source_kind,source_updated_at{session_column} FROM local_thread_catalog WHERE thread_id=?",
                 (thread_id,),
             ).fetchall()
         now = time.time()
         return [dict(row) for row in rows
                 if row["host_id"] in (None, "local") and row["cwd"]
+                and str(row["source_kind"] or "cli") == "cli"
                 and (not row["source_updated_at"] or now - float(row["source_updated_at"]) <= _MAX_NATIVE_METADATA_AGE)]
     except (OSError, sqlite3.Error):
         return []
@@ -218,15 +221,18 @@ def native_thread_metadata(thread_id: str, db_path: str | os.PathLike | None = N
 def adopt_native_conversation(endpoints: Iterable[Mapping[str, Any]], context: Mapping[str, Any],
                               metadata: Iterable[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Annotate a unique live tmux endpoint from native thread catalog evidence."""
+    endpoint_list = [dict(endpoint) for endpoint in endpoints]
     thread = str(context.get("thread_id", "")).strip()
     if not thread:
-        return [dict(endpoint) for endpoint in endpoints]
+        return endpoint_list
     records = list(metadata) if metadata is not None else native_thread_metadata(thread)
+    records = [row for row in records if str(row.get("source_kind") or "cli") == "cli"]
     projects = {_canonical(row.get("cwd")) for row in records if row.get("cwd")}
     if len(projects) != 1:
-        return [dict(endpoint) for endpoint in endpoints]
+        return endpoint_list
+    proven_sessions = {str(row.get("session_id")) for row in records if row.get("session_id")}
     candidates = []
-    for endpoint in endpoints:
+    for endpoint in endpoint_list:
         platform = str(endpoint.get("platform", ""))
         if platform != str(context.get("platform") or "cdx"):
             continue
@@ -235,16 +241,18 @@ def adopt_native_conversation(endpoints: Iterable[Mapping[str, Any]], context: M
             continue
         if context.get("session_id") and endpoint.get("session_id") and str(endpoint.get("session_id")) != str(context["session_id"]):
             continue
+        if context.get("session_id") and proven_sessions and str(context["session_id"]) not in proven_sessions:
+            continue
         if project_path and _canonical(project_path) == next(iter(projects)):
             candidates.append(endpoint)
     if len(candidates) != 1:
-        return [dict(endpoint) for endpoint in endpoints]
-    adopted = [dict(endpoint) for endpoint in endpoints]
+        return endpoint_list
+    adopted = endpoint_list
     selected = candidates[0]
     for endpoint in adopted:
         if endpoint.get("endpoint_id") == selected.get("endpoint_id"):
             endpoint["thread_id"] = thread
-            if context.get("session_id"):
+            if context.get("session_id") and proven_sessions:
                 endpoint["session_id"] = str(context["session_id"])
             break
     return adopted

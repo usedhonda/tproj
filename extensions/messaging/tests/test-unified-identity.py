@@ -155,7 +155,7 @@ class UnifiedIdentityTest(unittest.TestCase):
             [{"host_id": "local", "thread_id": "thread-native", "cwd": str(self.project)}])
         self.assertEqual(adopted[0]["endpoint_id"], "stable")
         self.assertEqual(adopted[0]["thread_id"], "thread-native")
-        self.assertEqual(adopted[0]["session_id"], "session-native")
+        self.assertNotIn("session_id", adopted[0])
 
     def test_native_adoption_scopes_codex_and_preserves_conflicting_binding(self):
         cdx = {"endpoint_id": "cdx", "platform": "cdx", "project_path": str(self.project),
