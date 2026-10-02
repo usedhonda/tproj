@@ -231,6 +231,11 @@ def adopt_native_conversation(endpoints: Iterable[Mapping[str, Any]], context: M
     if len(projects) != 1:
         return endpoint_list
     proven_sessions = {str(row.get("session_id")) for row in records if row.get("session_id")}
+    # The current catalog schema has no session column.  In that case a pair
+    # of distinct caller IDs cannot be correlated safely; only the observed
+    # equal-ID form is admissible without an explicit catalog mapping.
+    if context.get("session_id") and not proven_sessions and str(context["session_id"]) != thread:
+        return endpoint_list
     candidates = []
     for endpoint in endpoint_list:
         platform = str(endpoint.get("platform", ""))

@@ -151,7 +151,7 @@ class UnifiedIdentityTest(unittest.TestCase):
         endpoint = {"endpoint_id": "stable", "platform": "cdx", "project_path": str(self.project),
                     "runtime_id": "tmux:sess:%1:77"}
         adopted = identity.adopt_native_conversation(
-            [endpoint], {"thread_id": "thread-native", "session_id": "session-native"},
+            [endpoint], {"thread_id": "thread-native", "session_id": "thread-native"},
             [{"host_id": "local", "thread_id": "thread-native", "cwd": str(self.project)}])
         self.assertEqual(adopted[0]["endpoint_id"], "stable")
         self.assertEqual(adopted[0]["thread_id"], "thread-native")
@@ -163,7 +163,7 @@ class UnifiedIdentityTest(unittest.TestCase):
         cc = {"endpoint_id": "cc", "platform": "cc", "project_path": str(self.project),
               "runtime_id": "tmux:cc"}
         adopted = identity.adopt_native_conversation(
-            [cdx, cc], {"thread_id": "thread-native", "session_id": "session-native"},
+            [cdx, cc], {"thread_id": "thread-native", "session_id": "thread-native"},
             [{"host_id": "local", "thread_id": "thread-native", "cwd": str(self.project)}])
         self.assertEqual(adopted[0]["thread_id"], "thread-native")
         self.assertNotIn("thread_id", adopted[1])
