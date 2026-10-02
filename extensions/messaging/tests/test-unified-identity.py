@@ -143,8 +143,8 @@ class UnifiedIdentityTest(unittest.TestCase):
                                               inspect_process=processes.__getitem__), endpoint)
 
     def test_native_context_accepts_one_id_but_rejects_empty(self):
-        self.assertEqual(identity.native_conversation_context({"CODEX_THREAD_ID": "t"}), {"thread_id": "t"})
-        self.assertEqual(identity.native_conversation_context({"CODEX_SESSION_ID": "s"}), {"session_id": "s"})
+        self.assertEqual(identity.native_conversation_context({"CODEX_THREAD_ID": "t"}), {"thread_id": "t", "platform": "cdx"})
+        self.assertEqual(identity.native_conversation_context({"CODEX_SESSION_ID": "s"}), {"session_id": "s", "platform": "cdx"})
         self.assertEqual(identity.native_conversation_context({}), {})
 
     def test_native_catalog_adopts_unique_tmux_endpoint_without_replacing_id(self):
@@ -156,6 +156,22 @@ class UnifiedIdentityTest(unittest.TestCase):
         self.assertEqual(adopted[0]["endpoint_id"], "stable")
         self.assertEqual(adopted[0]["thread_id"], "thread-native")
         self.assertEqual(adopted[0]["session_id"], "session-native")
+
+    def test_native_adoption_scopes_codex_and_preserves_conflicting_binding(self):
+        cdx = {"endpoint_id": "cdx", "platform": "cdx", "project_path": str(self.project),
+               "runtime_id": "tmux:cdx"}
+        cc = {"endpoint_id": "cc", "platform": "cc", "project_path": str(self.project),
+              "runtime_id": "tmux:cc"}
+        adopted = identity.adopt_native_conversation(
+            [cdx, cc], {"thread_id": "thread-native", "session_id": "session-native"},
+            [{"host_id": "local", "thread_id": "thread-native", "cwd": str(self.project)}])
+        self.assertEqual(adopted[0]["thread_id"], "thread-native")
+        self.assertNotIn("thread_id", adopted[1])
+        bound = dict(cdx, thread_id="other-thread", session_id="other-session")
+        preserved = identity.adopt_native_conversation(
+            [bound], {"thread_id": "thread-native", "session_id": "session-native"},
+            [{"host_id": "local", "thread_id": "thread-native", "cwd": str(self.project)}])
+        self.assertEqual(preserved[0]["thread_id"], "other-thread")
 
     def test_tmux_fallback_requires_live_agent_descendant_and_deduplicates_registry(self):
         panes = lambda: [

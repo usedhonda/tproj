@@ -32,6 +32,7 @@ _PLATFORMS = {"cc", "cdx"}
 # registration freshness window, not a process lifetime limit: long-lived
 # sessions must renew their registry record to remain discoverable.
 _MAX_RECORD_AGE = 172800
+_MAX_NATIVE_METADATA_AGE = 172800
 _ENDPOINT_NAMESPACE = uuid.UUID("2e529d9e-6ab4-4f8a-b94d-b54f6123b5ac")
 
 
@@ -160,6 +161,10 @@ def native_conversation_context(env: Mapping[str, str] | None = None) -> dict[st
         result["thread_id"] = thread
     if session:
         result["session_id"] = session
+    # CODEX_* native context is only emitted by Codex callers; make that
+    # platform binding explicit so a shared project with a live CC pane cannot
+    # become an ambiguous adoption candidate.
+    result["platform"] = "cdx"
     for key in ("CODEX_PROJECT_ID", "CODEX_PROJECT", "CODEX_PLATFORM"):
         value = str(env.get(key, "")).strip()
         if value:
@@ -202,7 +207,10 @@ def native_thread_metadata(thread_id: str, db_path: str | os.PathLike | None = N
                 "SELECT host_id,thread_id,cwd,source_kind,source_updated_at FROM local_thread_catalog WHERE thread_id=?",
                 (thread_id,),
             ).fetchall()
-        return [dict(row) for row in rows if row["host_id"] in (None, "local") and row["cwd"]]
+        now = time.time()
+        return [dict(row) for row in rows
+                if row["host_id"] in (None, "local") and row["cwd"]
+                and (not row["source_updated_at"] or now - float(row["source_updated_at"]) <= _MAX_NATIVE_METADATA_AGE)]
     except (OSError, sqlite3.Error):
         return []
 
@@ -220,9 +228,13 @@ def adopt_native_conversation(endpoints: Iterable[Mapping[str, Any]], context: M
     candidates = []
     for endpoint in endpoints:
         platform = str(endpoint.get("platform", ""))
-        if context.get("platform") and platform != str(context["platform"]):
+        if platform != str(context.get("platform") or "cdx"):
             continue
         project_path = endpoint.get("project_path") or endpoint.get("path")
+        if endpoint.get("thread_id") and str(endpoint.get("thread_id")) != thread:
+            continue
+        if context.get("session_id") and endpoint.get("session_id") and str(endpoint.get("session_id")) != str(context["session_id"]):
+            continue
         if project_path and _canonical(project_path) == next(iter(projects)):
             candidates.append(endpoint)
     if len(candidates) != 1:
