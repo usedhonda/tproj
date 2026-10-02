@@ -15,7 +15,7 @@ from typing import Any, Callable, Mapping
 MAX_BODY_BYTES = 64 * 1024
 MAX_LIMIT = 100
 WIRE_LIMIT = 262_144
-CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal"))
+CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "rejected", "stale_session"))
 ADDRESS_RE = re.compile(r"^[^./\s]+\.(?:cc|cdx)$")
 ID_RE = re.compile(r"^[^\s]+$")
 FORBIDDEN_SELECTORS = {"role", "as", "session", "conversation", "conversation_id", "endpoint_id", "pid", "host"}
@@ -180,13 +180,30 @@ class MailboxTools:
         if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0 or not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_LIMIT:
             raise MailboxToolError("invalid_request", "cursor and limit are out of bounds")
         result = self._host("service_inbox", cursor=cursor, limit=limit) or {}
-        messages = [item for item in result.get("messages", [])
-                    if isinstance(item, Mapping) and item.get("state") not in CANCELLED_STATES]
+        messages = []
+        for item in result.get("messages", []):
+            if not isinstance(item, Mapping) or item.get("state") in CANCELLED_STATES:
+                continue
+            mid = item.get("message_id")
+            if not isinstance(mid, str) or not self._begin_present(mid):
+                continue
+            messages.append(item)
         return {"messages": [self._view(item) for item in messages], "next_cursor": int(result.get("next_cursor", cursor))}
 
     def _message(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, {"message_id"}); mid = self._id(args["message_id"])
+        if not self._begin_present(mid):
+            raise MailboxToolError("not_found", "message is no longer available")
         return self._view(self._host("service_message", message_id=mid) or {})
+
+    def _begin_present(self, mid: str) -> bool:
+        try:
+            result = self._host("service_begin_present", message_id=mid) or {}
+        except MailboxToolError as exc:
+            if exc.code in CANCELLED_STATES or exc.code in ("not_found", "unauthorized"):
+                return False
+            raise
+        return result.get("state", "dispatching") not in CANCELLED_STATES
 
     def _reply(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, {"message_id", "body", "submission_id"})

@@ -85,9 +85,13 @@ authorizer supplies no participant scope.  Directory visibility is not proof
 of enrollment, cloud conversation identity, delivery, or presentation.
 
 Inbox projections and direct message views hide host envelopes whose durable
-state is `cancelled`, `canceled`, `expired`, or `terminal`; those states are
-never offered to KAI as new work. The host remains responsible for the atomic
-cancel-versus-present gate and for truthful presentation receipts.
+state is `cancelled`, `canceled`, `expired`, `terminal`, `rejected`, or
+`stale_session`; those states are
+never offered to KAI as new work. Before returning any message body, the
+adapter calls the host's atomic `service_begin_present` gate; cancellation,
+expiry, rejection, stale-session, or unauthorized results suppress that item,
+while unrelated host failures remain errors. The host remains responsible for
+truthful presentation receipts.
 
 ## Connection-principal boundary
 

@@ -32,7 +32,7 @@ class RuntimeConfigError(RuntimeError):
 
 BRIDGE_OPS = frozenset({
     "list", "status", "service_send", "service_reply", "service_inbox",
-    "service_message", "service_ack", "service_whoami",
+    "service_message", "service_ack", "service_begin_present", "service_whoami",
 })
 
 

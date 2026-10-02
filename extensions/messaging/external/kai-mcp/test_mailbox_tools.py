@@ -80,6 +80,21 @@ class MailboxToolsTest(unittest.TestCase):
         result = self.tools.dispatch("tproj_inbox", {})
         self.assertEqual([item["message_id"] for item in result["messages"]], ["live"])
 
+    def test_begin_present_race_suppresses_cancelled_before_body(self):
+        seen = []
+        def race_host(req):
+            seen.append(req["op"])
+            if req["op"] == "service_inbox":
+                return {"messages": [{"message_id": "race", "thread_id": "t", "target_address": "kai",
+                                       "body": "must not surface", "state": "queued"}], "next_cursor": 1}
+            if req["op"] == "service_begin_present":
+                raise module.MailboxToolError("cancelled", "cancelled before presentation")
+            return self.host(req)
+        self.tools.host_call = race_host
+        result = self.tools.dispatch("tproj_inbox", {})
+        self.assertEqual(result["messages"], [])
+        self.assertEqual(seen, ["service_inbox", "service_begin_present"])
+
 
 if __name__ == "__main__":
     unittest.main()
