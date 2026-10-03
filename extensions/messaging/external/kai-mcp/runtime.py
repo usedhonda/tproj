@@ -7,11 +7,13 @@ the bridge keeps the launchd PID boundary in the parent service process.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 from pathlib import Path
 import socket
 import threading
+import time
 from typing import Any, Mapping
 
 try:
@@ -34,6 +36,7 @@ BRIDGE_OPS = frozenset({
     "list", "status", "service_send", "service_reply", "service_inbox",
     "service_message", "service_ack", "service_begin_present", "service_whoami",
 })
+CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "rejected", "stale_session", "presented"))
 
 
 def _required(value: Any, name: str) -> str:
@@ -104,6 +107,36 @@ class ServiceRuntime:
             self._events = KAIEventDelivery(event_auth, self.state_path)
         return self._events
 
+    def retry_event(self, message_id: str, actor_endpoint: str) -> dict[str, Any]:
+        """Retry a single event after bridge and host party checks."""
+        if not isinstance(message_id, str) or not message_id or len(message_id) > 128:
+            raise MailboxToolError("invalid_request", "invalid message ID")
+        if not isinstance(actor_endpoint, str) or not actor_endpoint or len(actor_endpoint) > 256:
+            raise MailboxToolError("identity_rejected", "invalid actor endpoint")
+        observed = self._attest()
+        endpoint_id = observed.get("endpoint_id")
+        if not isinstance(endpoint_id, str) or not endpoint_id:
+            raise MailboxToolError("identity_rejected", "service endpoint unavailable")
+        original = self._request({"op": "service_message", "message_id": message_id})
+        if not isinstance(original, Mapping) or original.get("recipient_endpoint") != endpoint_id:
+            raise MailboxToolError("identity_rejected", "message is not addressed to current KAI")
+        if actor_endpoint not in (original.get("sender_endpoint"), original.get("recipient_endpoint")):
+            raise MailboxToolError("identity_rejected", "actor is not a message party")
+        expiry = original.get("expires_at")
+        if (original.get("state") not in ("accepted", "queued", "adapter_received") or
+                not isinstance(expiry, (int, float)) or isinstance(expiry, bool) or expiry <= time.time()):
+            raise MailboxToolError("ineligible", "message is not eligible for event retry")
+        try:
+            result = self.events().retry_once(message_id, actor_endpoint=actor_endpoint)
+        except MailboxToolError:
+            raise
+        except Exception as exc:
+            raise MailboxToolError("unavailable", "event retry unavailable") from exc
+        if not isinstance(result, Mapping):
+            raise MailboxToolError("unavailable", "event retry unavailable")
+        allowed = {"message_id", "event_id", "status", "attempts", "total_attempts", "status_code", "error_class"}
+        return {key: result[key] for key in allowed if key in result}
+
 
 def load_config(path: str | Path) -> dict[str, Any]:
     target = Path(path).expanduser()
@@ -138,6 +171,26 @@ def _bridge_rpc(path: Path, request: Mapping[str, Any]) -> Any:
     return response.get("result")
 
 
+def _bridge_request(runtime: ServiceRuntime, request: Mapping[str, Any]) -> Any:
+    """Handle one private bridge request; retry is a dedicated authenticated op."""
+    if not isinstance(request, Mapping):
+        raise RuntimeConfigError("invalid bridge request")
+    if request.get("op") == "whoami":
+        return runtime._attest()
+    if request.get("op") == "retry_event":
+        if set(request) != {"op", "message_id", "actor_endpoint", "service_token"}:
+            raise RuntimeConfigError("invalid retry request")
+        if not hmac.compare_digest(str(request.get("service_token", "")), runtime.binding.token):
+            raise RuntimeConfigError("invalid service credential")
+        return runtime.retry_event(request["message_id"], request["actor_endpoint"])
+    if request.get("op") == "call" and isinstance(request.get("request"), dict):
+        forwarded = request["request"]
+        if forwarded.get("op") not in BRIDGE_OPS:
+            raise RuntimeConfigError("bridge operation is not allowlisted")
+        return runtime._request(forwarded)
+    raise RuntimeConfigError("invalid bridge request")
+
+
 def bridge(config: Mapping[str, Any]) -> int:
     path = Path(_required(config.get("bridge_socket"), "bridge_socket")).expanduser()
     if path.is_symlink():
@@ -170,17 +223,7 @@ def bridge(config: Mapping[str, Any]) -> int:
                 raw = conn.makefile("rb").readline(262145)
                 try:
                     request = json.loads(raw)
-                    if request.get("op") == "whoami":
-                        result = runtime._attest()
-                    elif request.get("op") == "call" and isinstance(request.get("request"), dict):
-                        forwarded = request["request"]
-                        if forwarded.get("op") not in BRIDGE_OPS:
-                            raise RuntimeConfigError("bridge operation is not allowlisted")
-                        # _request overwrites service identity and credential;
-                        # tunnel children cannot select another enrollment.
-                        result = runtime._request(forwarded)
-                    else:
-                        raise RuntimeConfigError("invalid bridge request")
+                    result = _bridge_request(runtime, request)
                     response = {"ok": True, "result": result}
                 except MailboxToolError as exc:
                     response = {"ok": False, "error": {"code": exc.code, "message": exc.message}}

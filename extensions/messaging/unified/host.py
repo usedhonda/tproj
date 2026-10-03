@@ -273,6 +273,46 @@ class Host:
         except HubError:
             return None
 
+    def _retry_event(self, caller, message_id):
+        """Retry one live KAI event through the enrolled local bridge only."""
+        services = self.config.get('services') or {}
+        cfg = services.get('kai') if isinstance(services, dict) else None
+        if not isinstance(cfg, dict) or not cfg.get('event_bridge_socket'):
+            raise HubError('unavailable', 'KAI event bridge unavailable')
+        endpoints = self.hub('endpoints_list')['endpoints']
+        directory = self.hub('directory_list')['participants']
+        if not any(p.get('participant_id') == cfg.get('participant_id')
+                   and p.get('address') == cfg.get('address')
+                   and p.get('host_id') == self.config['host_id'] for p in directory):
+            raise HubError('identity_rejected', 'KAI participant is not locally configured')
+        matches = [ep for ep in endpoints
+                   if not ep.get('retired') and ep.get('host_id') == self.config['host_id']
+                   and ep.get('participant_id') == cfg.get('participant_id')]
+        if len(matches) != 1:
+            raise HubError('identity_rejected', 'KAI endpoint is not uniquely enrolled')
+        message = self.hub('query', endpoint_id=caller['endpoint_id'], message_id=message_id)
+        if message.get('recipient_endpoint') != matches[0].get('endpoint_id'):
+            raise HubError('identity_rejected', 'message is not addressed to current KAI')
+        if message.get('state') not in ('accepted', 'queued', 'adapter_received'):
+            raise HubError('ineligible', 'message is not eligible for event retry')
+        request = {'op': 'retry_event', 'message_id': message_id,
+                   'actor_endpoint': caller['endpoint_id'],
+                   'service_token': cfg.get('token')}
+        try:
+            result = rpc(cfg['event_bridge_socket'], request)
+        except OSError:
+            raise HubError('unknown', 'KAI event retry outcome unknown')
+        except ValueError:
+            raise HubError('unavailable', 'KAI event retry unavailable')
+        except HubError as exc:
+            if exc.code == 'unavailable':
+                raise HubError('unknown', 'KAI event retry outcome unknown')
+            raise HubError(exc.code, 'KAI event retry rejected')
+        if not isinstance(result, dict):
+            raise HubError('unavailable', 'KAI event retry unavailable')
+        allowed = {'message_id', 'event_id', 'status', 'attempts', 'total_attempts', 'status_code', 'error_class'}
+        return {key: result[key] for key in allowed if key in result}
+
     def dispatch(self, req, pid, uid):
         op = req.get('op')
         if uid != os.getuid():
@@ -313,6 +353,10 @@ class Host:
             if not isinstance(req.get('message_id'), str) or not req['message_id']:
                 raise HubError('invalid_message', 'message ID required')
             return self.hub('cancel', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
+        if op == 'retry_event':
+            if not isinstance(req.get('message_id'), str) or not req['message_id']:
+                raise HubError('invalid_message', 'message ID required')
+            return self._retry_event(ep, req['message_id'])
         if op in ('send', 'reply', 'service_send', 'service_reply'):
             return self.submit(ep, req, reply=op.endswith('reply'))
         if op == 'service_claim':

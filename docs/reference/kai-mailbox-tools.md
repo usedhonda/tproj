@@ -114,6 +114,25 @@ shared app-server conversation authentication, cloud registration, live KAI
 enrollment, and end-to-end mailbox receipts remain unproven and are not
 claimed by this module.
 
+## Single event retry (local party route)
+
+An authenticated local mailbox party may run `tproj-msg retry-event MESSAGE_ID`.
+The ordinary wrapper routes this command to the unified host; it is not a legacy
+or cross-host operation. The host binds the caller with the normal native
+identity, queries the message as that party, and requires the current local
+`services.kai` endpoint to be the exact recipient. Canceled, expired, presented,
+retired, foreign, or otherwise ineligible messages fail closed.
+
+The host then calls the already configured KAI bridge through
+`services.kai.event_bridge_socket`, sending only the message ID, authenticated
+actor endpoint, and the existing KAI service token. The private bridge verifies
+that token in constant time, re-attests the launchd-owned service, rechecks the
+current recipient and original message parties, and invokes the durable
+`retry_once` event operation. Retry responses contain only stable IDs, status,
+bounded attempt counts, HTTP status code, and a fixed error class; message
+bodies and arbitrary bridge arguments are never forwarded. A bridge disconnect
+is reported as unknown and is not automatically repeated.
+
 Focused verification:
 
 ```bash

@@ -163,6 +163,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.target == "cancel":
             if not args.body: raise ClientError("cancel requires message ID")
             result = rpc(cfg["socket"], _caller_request("cancel", message_id=args.body, session=args.session, **{"as": args.claimed_alias}))
+        elif args.target == "retry-event":
+            if not args.body: raise ClientError("retry-event requires message ID")
+            result = rpc(cfg["socket"], _caller_request("retry_event", message_id=args.body,
+                                                        session=args.session, **{"as": args.claimed_alias}))
         elif args.target == "directory":
             result = rpc(cfg["socket"], {"op": "directory"})
         elif args.target == "directory-sync":
