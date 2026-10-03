@@ -40,6 +40,8 @@ make_trust_response() {
   local codex_hooks="$home_root/.codex/hooks.json"
   cat > "$TMP/hooks-list.json" <<EOF
 {"result":{"data":[{"hooks":[
+  {"key":"task-formal","sourcePath":"$codex_hooks","command":"$home_root/bin/tproj-formal-task-guard --platform codex --event pretool","currentHash":"sha256:abc004"},
+  {"key":"task-formal-post","sourcePath":"$codex_hooks","command":"$home_root/bin/tproj-formal-task-guard --platform codex --event posttool","currentHash":"sha256:abc005"},
   {"key":"task-mutation","sourcePath":"$codex_hooks","command":"$home_root/bin/tproj-mutation-guard --platform codex","currentHash":"sha256:abc000"},
   {"key":"task-record","sourcePath":"$codex_hooks","command":"$home_root/bin/tproj-inbox-record","currentHash":"sha256:abc001"},
   {"key":"task-check","sourcePath":"$codex_hooks","command":"$home_root/bin/tproj-inbox-check --platform codex","currentHash":"sha256:abc002"},

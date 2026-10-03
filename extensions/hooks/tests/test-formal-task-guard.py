@@ -63,6 +63,15 @@ class FormalGuardTest(unittest.TestCase):
             _, result = self.run_hook({"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "rm file"}})
         self.assertEqual(result["decision"], "block")
 
+    def test_failed_tool_completion_closes_the_same_operation(self):
+        self._bound()
+        seen=[]
+        with patch.object(guard.cli,'config',return_value={'socket':'x'}), patch.object(guard.cli,'_caller_request',side_effect=lambda op,**kw:dict(kw,op=op)), patch.object(guard.cli,'rpc',side_effect=lambda socket,req:seen.append(req) or {'closed':True}):
+            for event in ('PostToolUseFailure','PostToolUse'):
+                _,result=self.run_hook({'hook_event_name':event,'tool_name':'Bash','tool_use_id':'original','tool_input':{'command':'touch file'},'tool_response':{'exit_code':17}})
+                self.assertEqual(result['decision'],'allow')
+        self.assertEqual([(r['op'],r['tool_use_id']) for r in seen],[('task_guard_end','original')]*2)
+
     def test_bound_semicolon_and_unknown_exec_are_guarded(self):
         self._bound()
         with patch.object(guard.cli, "config", return_value={"socket": "x"}), patch.object(guard.cli, "rpc", side_effect=guard.cli.ClientError("epoch", "epoch_conflict")):

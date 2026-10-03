@@ -59,6 +59,7 @@ def hook_command_strings(home: Path) -> tuple[set[str], set[str]]:
         "$HOME/bin/tproj-mutation-guard",
         "$HOME/bin/tproj-formal-task-guard --event pretool",
         "$HOME/bin/tproj-formal-task-guard --event posttool",
+        "$HOME/bin/tproj-formal-task-guard --event failure",
         "$HOME/bin/tproj-inbox-record",
         "$HOME/bin/tproj-inbox-check",
         "$HOME/bin/tproj-completion-guard",

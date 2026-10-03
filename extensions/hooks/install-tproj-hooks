@@ -87,6 +87,7 @@ def merge(document: dict[str, Any], platform: str) -> dict[str, Any]:
         ensure_entry(hooks, "PreToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|apply_patch|functions.apply_patch", f"{home}/tproj-mutation-guard")
         ensure_entry(hooks, "PreToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|NotebookEdit|apply_patch|functions.apply_patch", f"{home}/tproj-formal-task-guard --event pretool")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|NotebookEdit|apply_patch|functions.apply_patch", f"{home}/tproj-formal-task-guard --event posttool")
+        ensure_entry(hooks, "PostToolUseFailure", "Bash|functions.exec|functions.exec_command|Edit|Write|MultiEdit|NotebookEdit|apply_patch|functions.apply_patch", f"{home}/tproj-formal-task-guard --event failure")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec|functions.exec_command", f"{home}/tproj-inbox-record")
         ensure_entry(hooks, "PostToolUse", "Bash|functions.exec|functions.exec_command", f"{home}/tproj-completion-guard --event posttool")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check")
@@ -157,10 +158,11 @@ def live_hooks(cwd: Path) -> dict[str, Any]:
 def hook_metadata(response: dict[str, Any], source: Path) -> list[dict[str, str]]:
     result = response.get("result", response)
     found: list[dict[str, str]] = []
-    required = {"tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard", "tproj-mutation-guard"}
+    required = {"tproj-inbox-record", "tproj-inbox-check", "tproj-completion-guard", "tproj-mutation-guard", "tproj-formal-task-guard"}
     optional = {"tproj-codex-cache-observer"}
     accepted = required | optional
     seen: set[str] = set()
+    formal_events: set[str] = set()
     for group in result.get("data", []):
         for hook in group.get("hooks", []):
             command = str(hook.get("command") or "")
@@ -174,9 +176,14 @@ def hook_metadata(response: dict[str, Any], source: Path) -> list[dict[str, str]
             if key and current_hash.startswith("sha256:"):
                 found.append({"key": key, "trusted_hash": current_hash})
                 seen.add(matched)
+                if matched == 'tproj-formal-task-guard':
+                    for event in ('pretool','posttool'):
+                        if command.endswith('--event ' + event):formal_events.add(event)
     if not required <= seen:
         missing = ", ".join(sorted(required - seen))
         raise RuntimeError(f"Codex hooks/list omitted required tproj hooks: {missing}")
+    if formal_events != {'pretool','posttool'}:
+        raise RuntimeError('Codex hooks/list omitted formal pretool/posttool trust metadata')
     return found
 
 

@@ -250,6 +250,8 @@ install_rc=0
   >/dev/null 2>&1 || install_rc=$?
 cat > "$TMP/hooks-list.json" <<EOF
 {"result":{"data":[{"hooks":[
+  {"key":"task-formal","sourcePath":"$codex_hooks","command":"$HOME/bin/tproj-formal-task-guard --platform codex --event pretool","currentHash":"sha256:abc004"},
+  {"key":"task-formal-post","sourcePath":"$codex_hooks","command":"$HOME/bin/tproj-formal-task-guard --platform codex --event posttool","currentHash":"sha256:abc005"},
   {"key":"task-mutation","sourcePath":"$codex_hooks","command":"$HOME/bin/tproj-mutation-guard --platform codex","currentHash":"sha256:abc000"},
   {"key":"task-record","sourcePath":"$codex_hooks","command":"$HOME/bin/tproj-inbox-record","currentHash":"sha256:abc001"},
   {"key":"task-check","sourcePath":"$codex_hooks","command":"$HOME/bin/tproj-inbox-check --platform codex","currentHash":"sha256:abc002"},
@@ -262,6 +264,8 @@ cp "$REPO/extensions/hooks/tproj-inbox-record" "$TMP/installed-hooks/"
 cp "$REPO/extensions/hooks/tproj-inbox-check" "$TMP/installed-hooks/"
 cp "$REPO/extensions/hooks/tproj-completion-guard" "$TMP/installed-hooks/"
 cp "$REPO/extensions/hooks/tproj-mutation-guard" "$TMP/installed-hooks/"
+cp "$REPO/extensions/hooks/tproj-formal-task-guard" "$TMP/installed-hooks/"
+cp "$REPO/extensions/hooks/tproj-codex-cache-observer" "$TMP/installed-hooks/"
 cp "$REPO/extensions/hooks/tproj-cc-cache-observer" "$TMP/installed-hooks/"
 cp "$REPO/extensions/hooks/tproj-cc-poke" "$TMP/installed-hooks/"
 "$REPO/extensions/hooks/install-tproj-hooks" --claude-settings "$claude_hooks" --codex-hooks "$codex_hooks" \
