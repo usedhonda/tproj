@@ -114,6 +114,10 @@ When authority is unavailable, the native role helper reports only fixed
 identity, transport, assignment, or helper failure categories). It never emits
 exception text, native IDs, payloads, paths, or host configuration. These
 diagnostics explain a read-only fence; they do not grant or infer authority.
+When a hook supplies only `session_id`, the helper adds a `thread_id` only from
+exactly one host-verified Codex catalog/session record; absent, ambiguous, or
+mismatched provenance leaves the context unnormalized and the authenticated
+host checks remain authoritative.
 
 An explicit schema-valid `write_stdin` hook payload with a numeric
 `session_id`, no `chars` field or `chars` equal to the empty string, and only

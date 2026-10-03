@@ -5,6 +5,7 @@ import os
 import sys
 from task_host import binding_marker
 import cli
+from identity import native_thread_metadata
 
 def _blocked(error, phase):
     return {'assigned':True, 'can_mutate':False, 'task_status':'authority_unavailable',
@@ -46,6 +47,14 @@ def native_context(payload):
             if values.get('thread_id') and values['thread_id'] != value:
                 raise ValueError('native conversation context conflict')
             values['thread_id'] = value
+    if values.get('session_id') and not values.get('thread_id'):
+        proven = native_thread_metadata(values['session_id'])
+        if (len(proven) == 1
+                and str(proven[0].get('session_id', '')) == values['session_id']
+                and str(proven[0].get('source_kind', '')) in {'cli', 'vscode-rollout'}
+                and isinstance(proven[0].get('thread_id'), str)
+                and proven[0]['thread_id'].strip()):
+            values['thread_id'] = proven[0]['thread_id'].strip()
     return values
 
 
