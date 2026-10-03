@@ -234,6 +234,55 @@ class EventTests(unittest.TestCase):
                 self.delivery.pump_once()
         return sid, next(iter(self.delivery._load()["outbox"]))
 
+    def test_wire_cursor_is_null_and_internal_cursor_remains_durable(self):
+        sid = self.subscribe()
+        self.authorizer.reader = lambda cursor: {
+            "messages": [{"message_id": "one"}, {"message_id": "two"}] if cursor == 0 else [],
+            "next_cursor": 2}
+        posted = []
+        self.delivery._post = lambda *args: (posted.append(args[3]) or (False, {}, 400, "http_error"))
+        self.delivery.pump_once()
+        self.assertEqual(len(posted), 2)
+        self.assertTrue(all(p["cursor"] is None for p in posted))
+        self.assertEqual(self.delivery._load()["cursor"][sid], 2)
+
+    def test_permanent_status_is_terminal_without_automatic_retry(self):
+        sid = self.subscribe()
+        self.authorizer.reader = lambda cursor: {
+            "messages": [{"message_id": "gone"}, {"message_id": "large"}] if cursor == 0 else [],
+            "next_cursor": 2}
+        posted = []
+        def post(*args):
+            posted.append(args[1])
+            code = 410 if args[3]["data"]["messageId"] == "gone" else 413
+            return False, {}, code, "http_error"
+        self.delivery._post = post
+        self.delivery.pump_once()
+        with patch.object(events.time, "time", return_value=time.time() + 100):
+            self.delivery.pump_once()
+        before = self.path.read_bytes()
+        for mid in ("gone", "large"):
+            with self.assertRaisesRegex(RuntimeError, "not retryable"):
+                self.delivery.retry_once(mid, actor_endpoint="party-one")
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(len(posted), 2)
+        self.assertTrue(all(x["status"] == "terminal" and x["attempts"] == 1
+                            for x in self.delivery._load()["outbox"].values()))
+
+    def test_legacy_integer_cursor_rejected_without_mutating_history(self):
+        sid, eid = self._terminal_event()
+        state = self.delivery._load()
+        state["outbox"][eid]["payload"]["cursor"] = 1
+        state["outbox"][eid]["payload_hash"] = events._payload_hash(state["outbox"][eid]["payload"])
+        self.delivery._save(state)
+        before = self.path.read_bytes()
+        self.delivery._post = lambda *args: self.fail("legacy event posted")
+        with self.assertRaisesRegex(RuntimeError, "invalid stored event payload"):
+            self.delivery.retry_once("message-one", actor_endpoint="party-one")
+        self.assertEqual(self.path.read_bytes(), before)
+        self.delivery.pump_once()
+        self.assertEqual(self.delivery._load()["outbox"][eid], state["outbox"][eid])
+
     def test_retry_once_claims_one_terminal_event_and_never_requeues(self):
         sid, eid = self._terminal_event()
         posted = []

@@ -107,6 +107,11 @@ class MCPServer:
                         return {"jsonrpc": "2.0", "id": req_id, "result": {"events": [], "nextCursor": None}}
                     result = {"events": [self.events.definition()], "nextCursor": None}
                 elif method == "events/subscribe" and hasattr(self.events, "subscribe"):
+                    if "cursor" in params and params.get("cursor") is not None:
+                        return _error(req_id, -32014, "Unsupported data", {
+                            "feature": "cursor",
+                            "reason": "replay_not_supported",
+                        })
                     if params.get("name") != getattr(self.events, "definition")().get("name") or params.get("arguments", {}) != {}:
                         return _error(req_id, -32602, "Invalid event arguments")
                     delivery = params.get("delivery") if isinstance(params.get("delivery"), dict) else params

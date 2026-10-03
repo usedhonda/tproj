@@ -41,6 +41,42 @@ class MCPServerTest(unittest.TestCase):
         listed = instance.handle({"jsonrpc": "2.0", "id": 7, "method": "events/list", "params": {}})
         self.assertEqual(listed["result"]["events"][0]["name"], "kai.mailbox.message")
 
+    def test_event_subscribe_rejects_resume_cursor_without_adapter_side_effect(self):
+        class Events:
+            def __init__(self):
+                self.calls = 0
+
+            def definition(self):
+                return {"name": "kai.mailbox.message"}
+
+            def subscribe(self, url, secret, ttl_ms=None):
+                self.calls += 1
+                return {"id": "sub-1"}
+
+        events = Events()
+        instance = server.MCPServer(events=events)
+        base = {
+            "jsonrpc": "2.0", "method": "events/subscribe",
+            "params": {
+                "name": "kai.mailbox.message", "arguments": {},
+                "delivery": {"mode": "webhook", "url": "https://example.test/hook", "secret": "hidden"},
+            },
+        }
+        for request_id, cursor in ((10, ""), (11, 7)):
+            request = dict(base, id=request_id, params=dict(base["params"], cursor=cursor))
+            response = instance.handle(request)
+            self.assertEqual(response["error"], {
+                "code": -32014,
+                "message": "Unsupported data",
+                "data": {"feature": "cursor", "reason": "replay_not_supported"},
+            })
+        self.assertEqual(events.calls, 0)
+
+        null_cursor = dict(base, id=12, params=dict(base["params"], cursor=None))
+        response = instance.handle(null_cursor)
+        self.assertEqual(response["result"], {"id": "sub-1"})
+        self.assertEqual(events.calls, 1)
+
     def test_event_protocol_negotiates_2026_and_rejects_old_clients(self):
         instance = server.MCPServer(events=object())
         ok = instance.handle({"jsonrpc": "2.0", "id": 8, "method": "initialize",

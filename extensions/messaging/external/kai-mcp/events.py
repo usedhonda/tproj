@@ -221,7 +221,7 @@ class KAIEventDelivery:
                         continue
                     eid = "evt_" + hashlib.sha256((sid + "\0" + mid).encode()).hexdigest()[:32]
                     if eid not in state["outbox"]:
-                        payload = {"eventId": eid, "name": EVENT_NAME, "timestamp": _iso(now), "data": {"messageId": mid}, "cursor": next_cursor}
+                        payload = {"eventId": eid, "name": EVENT_NAME, "timestamp": _iso(now), "data": {"messageId": mid}, "cursor": None}
                         state["outbox"][eid] = {
                             "subscription": sid,
                             "payload": payload,
@@ -264,7 +264,7 @@ class KAIEventDelivery:
                 item["last_http_status"] = status
                 item["last_error_class"] = error_class
                 posts += 1
-                item["status"] = "sent" if ok else ("terminal" if item["attempts"] >= MAX_ATTEMPTS else "unknown")
+                item["status"] = "sent" if ok else ("terminal" if status in (410, 413) or item["attempts"] >= MAX_ATTEMPTS else "unknown")
                 self._save(state)
         return queued
 
@@ -309,14 +309,15 @@ class KAIEventDelivery:
             claim = item.get("manual_retry")
             if isinstance(claim, dict):
                 return self._retry_result(message_id, eid, item, claim)
+            if item.get("last_http_status") in (410, 413):
+                raise RuntimeError("event delivery is not retryable")
             payload = item.get("payload")
             data = payload.get("data") if isinstance(payload, dict) else None
             if (not isinstance(payload, dict) or set(payload) != {"eventId", "name", "timestamp", "data", "cursor"}
                     or payload.get("eventId") != eid or payload.get("name") != EVENT_NAME
                     or not isinstance(payload.get("timestamp"), str) or not isinstance(data, dict)
                     or set(data) != {"messageId"} or data.get("messageId") != message_id
-                    or isinstance(payload.get("cursor"), bool) or not isinstance(payload.get("cursor"), int)
-                    or payload.get("cursor") < 0):
+                    or payload.get("cursor") is not None):
                 raise RuntimeError("invalid stored event payload")
             expected_eid = "evt_" + hashlib.sha256((sid + "\0" + message_id).encode()).hexdigest()[:32]
             if eid != expected_eid:

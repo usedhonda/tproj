@@ -16,11 +16,22 @@ does not run an unbounded daemon, and distinguishes unknown delivery from a
 successful HTTP response.
 
 The reader has the actual mailbox shape: `reader(cursor)` returns
-`{"messages": [{"message_id": "..."}], "next_cursor": 1}`. Cursors are
+`{"messages": [{"message_id": "..."}], "next_cursor": 1}`. These internal scan cursors are
 non-negative integers; an invalid or oversized page is rejected without sending.
 The event definition's `payloadSchema` describes only `data.messageId`.
 The full MCP event envelope includes a stable `eventId`, event name,
-RFC 3339 timestamp, data, and cursor. No message body or binding ID is exposed.
+RFC 3339 timestamp, data, and `cursor: null`. Protocol replay is not supported:
+subscription responses also return `cursor: null`, and non-null subscription
+resume cursors are rejected with `-32014` (Unsupported, feature `cursor`, reason
+`replay_not_supported`) before callback verification or state changes. Internal
+scan progress is never exported as a delivery watermark, including when later
+batch events remain undelivered. No message body or binding ID is exposed.
+
+This follows [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events)
+and its linked EventOccurrence draft (`cursor` is string or null). Legacy stored
+integer-cursor events are not rewritten: unclaimed manual retries reject them
+without changing payload, hash, claim, or history. Previously claimed retries
+still return their recorded result without another POST.
 
 An exclusive private file lock covers each read/modify/write transaction.
 Unique owner-only temporary files, file and directory fsync, and atomic rename
@@ -42,7 +53,8 @@ a crash before the callback returns cannot leave an older result attributed to
 the current attempt.
 
 Each pump posts at most its bounded batch and attempts an event at most three
-times, with persisted backoff. Exhausted uncertain events remain `terminal`
+times, with persisted backoff. HTTP 410 and 413 terminate immediately and are
+not eligible for an unclaimed manual retry. Exhausted uncertain events remain `terminal`
 for explicit reconciliation, not automatic resubmission. Before each post,
 the authorizer and subscription binding/incarnation/expiry are checked again.
 Unsubscribe validates ownership and fences pending delivery; expiry or an
