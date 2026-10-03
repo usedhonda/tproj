@@ -2241,7 +2241,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func refreshWorkspaceStateFromWatcher() async {
-        loadWorkspaceProjects()
+        await loadWorkspaceProjects()
         await refreshCentralDirectory()
         await loadLiveColumnsAsync()
         normalizeSelection()
@@ -2262,7 +2262,7 @@ final class AppViewModel: ObservableObject {
         isBusy = true
         defer { isBusy = false }
 
-        loadWorkspaceProjects()
+        await loadWorkspaceProjects()
         await refreshCentralDirectory()
         await loadLiveColumnsAsync()
         startKeepWarmPolling()
@@ -2334,7 +2334,7 @@ final class AppViewModel: ObservableObject {
 
         let result = await runCommandAsync(launch.launchPath, launch.arguments)
 
-        loadWorkspaceProjects()
+        await loadWorkspaceProjects()
         await loadLiveColumnsAsync()
         normalizeSelection()
         await loadRoleModes()
@@ -3370,7 +3370,7 @@ final class AppViewModel: ObservableObject {
             statusText = message
         } else {
             statusText = "Saved workspace.yaml"
-            loadWorkspaceProjects()
+            await loadWorkspaceProjects()
             normalizeSelection()
         }
     }
@@ -3706,7 +3706,7 @@ final class AppViewModel: ObservableObject {
         // This sheet never edits enabled; retain each draft row's value even when
         // another machine has a project with the same absolute path.
         guard let error = persistWorkspaceProjects(projects, createIfMissing: false, expectedLocationSnapshot: expectedSnapshot, preserveEnabled: true) else {
-            loadWorkspaceProjects()
+            await loadWorkspaceProjects()
             let currentRemotes = workspaceProjects.filter { $0.type == "remote" }
             if fileManager.isExecutableFile(atPath: client) {
                 for old in previousRemotes where !currentRemotes.contains(where: { $0.host == old.host && $0.path == old.path }) {
@@ -3970,7 +3970,7 @@ final class AppViewModel: ObservableObject {
             statusText = "Session stopped (\(message))"
         } else {
             workspaceProjects = updatedProjects
-            loadWorkspaceProjects()
+            await loadWorkspaceProjects()
             normalizeSelection()
             statusText = "Session stopped (saved startup set)"
         }
@@ -4105,7 +4105,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func loadWorkspaceProjects() {
+    private func loadWorkspaceProjects() async {
         let url = URL(fileURLWithPath: workspacePath)
         guard fileManager.fileExists(atPath: workspacePath) else {
             workspaceProjects = []
@@ -4113,7 +4113,7 @@ final class AppViewModel: ObservableObject {
         }
 
         let query = ".projects[]? | [(.path // \"\"),(.type // \"local\"),(.host // \"\"),(.alias // \"\"),(.enabled|tostring),((.lastActiveAt // 0)|tostring),((.keep_warm_hours // 0)|tostring),((.cdx_keep_warm_hours // 0)|tostring),(.local_path // \"\"),(.remote_path // \"\"),(.project_id // \"\")] | @tsv"
-        let result = runCommand("/usr/bin/env", ["yq", "-r", query, url.path])
+        let result = await runCommandAsync("/usr/bin/env", ["yq", "-r", query, url.path])
 
         guard result.exitCode == 0 else {
             let errText = trimmedError(result)
@@ -4210,7 +4210,7 @@ final class AppViewModel: ObservableObject {
             statusText = error
             return
         }
-        loadWorkspaceProjects()
+        await loadWorkspaceProjects()
         for column in liveColumns where normalizedProjectKey(column.projectPath) == key {
             keepWarmOutcomesByColumn[column.column] = nil
         }
@@ -5182,12 +5182,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func runCommandAsync(_ launchPath: String, _ arguments: [String], environment: [String: String] = [:]) async -> CommandResult {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let result = Self.executeCommand(launchPath, arguments, environment: environment)
-                continuation.resume(returning: result)
-            }
-        }
+        await Self.processRunner.runAsync(launchPath, arguments, env: environment)
     }
 
     nonisolated private static func executeCommand(
