@@ -29,6 +29,17 @@ is also recorded before posting. A crash after remote acceptance can therefore
 repeat the same ID and exact payload, not generate a second event. The receiver
 must deduplicate by event ID; this is not an exactly-once delivery claim.
 
+After each actual webhook attempt, the outbox record stores only safe delivery
+diagnostics: numeric-or-null `last_http_status` and an allowlisted
+`last_error_class` (`http_error`, `timeout`, `tls`, `network`,
+`target_unavailable`, `oversized_request`, `oversized_response`, or
+`invalid_response`). Response bodies, exception text, headers, callback URLs,
+and query strings are never persisted. A status observed before a response
+read failure is retained; historical terminal records are not annotated until
+they are attempted again. Diagnostics are cleared before each new attempt, so
+a crash before the callback returns cannot leave an older result attributed to
+the current attempt.
+
 Each pump posts at most its bounded batch and attempts an event at most three
 times, with persisted backoff. Exhausted uncertain events remain `terminal`
 for explicit reconciliation, not automatic resubmission. Before each post,

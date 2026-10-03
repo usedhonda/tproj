@@ -60,6 +60,8 @@ class EventTests(unittest.TestCase):
             self.assertEqual(persisted["outbox"][eid]["payload"], payload)
             self.assertEqual(persisted["cursor"][sid], 1)
             self.assertEqual(persisted["outbox"][eid]["attempts"], 1)
+            self.assertIsNone(persisted["outbox"][eid]["last_http_status"])
+            self.assertIsNone(persisted["outbox"][eid]["last_error_class"])
             sent.append((eid, copy.deepcopy(payload), subscription))
             raise RuntimeError("process crashed after callback accepted")
 
@@ -129,6 +131,69 @@ class EventTests(unittest.TestCase):
         self.delivery._post = lambda *args: self.fail("cancelled entry was posted")
         self.assertEqual(self.delivery.pump_once(), 0)
         self.assertEqual(self.delivery._load()["outbox"], {})
+
+    def test_http_error_status_is_persisted_without_response_secrets(self):
+        sid = self.subscribe()
+
+        class Response:
+            status = 400
+
+            def read(self, _limit):
+                return b'{"error":"secret-body"}'
+
+        class Connection:
+            def __init__(self, *args):
+                pass
+
+            def request(self, *args):
+                self.request_args = args
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        with patch.object(events._secure, "validated_address", return_value=(type("Parsed", (), {"hostname": "callback.example", "netloc": "callback.example", "port": 443, "path": "/event", "query": ""})(), "203.0.113.10")), patch.object(events._secure, "PinnedHTTPSConnection", Connection):
+            self.delivery._post = events.KAIEventDelivery._post.__get__(self.delivery)
+            self.delivery.pump_once()
+
+        item = next(iter(self.delivery._load()["outbox"].values()))
+        self.assertEqual(item["last_http_status"], 400)
+        self.assertEqual(item["last_error_class"], "http_error")
+        self.assertNotIn("secret-body", str(item))
+        self.assertNotIn(self.secret, str(item))
+        self.assertEqual(item["subscription"], sid)
+
+    def test_post_exception_is_classified_without_exception_text(self):
+        self.delivery._post = events.KAIEventDelivery._post.__get__(self.delivery)
+
+        class Connection:
+            def __init__(self, *args):
+                pass
+
+            def request(self, *args):
+                raise TimeoutError("secret timeout details")
+
+            def close(self):
+                pass
+
+        parsed = type("Parsed", (), {"hostname": "callback.example", "netloc": "callback.example", "port": 443, "path": "/event", "query": ""})()
+        with patch.object(events._secure, "validated_address", return_value=(parsed, "203.0.113.10")), patch.object(events._secure, "PinnedHTTPSConnection", Connection):
+            result = self.delivery._post("https://callback.example/event", "evt_one", b"x" * 24, {"message": "secret"})
+        self.assertEqual(result, (False, {}, None, "timeout"))
+        self.assertNotIn("secret timeout details", str(result))
+
+    def test_historical_terminal_record_is_not_annotated(self):
+        sid = self.subscribe()
+        state = self.delivery._load()
+        state["outbox"]["evt_old"] = {"subscription": sid, "payload": {}, "attempts": 3, "nextAt": 0, "status": "terminal"}
+        with self.delivery._lock():
+            self.delivery._save(state)
+        self.delivery.pump_once()
+        item = self.delivery._load()["outbox"]["evt_old"]
+        self.assertNotIn("last_http_status", item)
+        self.assertNotIn("last_error_class", item)
 
 
 if __name__ == "__main__":

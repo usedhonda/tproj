@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import fcntl
 import hashlib
+import http.client
 import hmac
 import importlib.util
 import json
@@ -27,6 +28,10 @@ MAX_ATTEMPTS = 3
 MAX_BATCH = 100
 DEFAULT_TTL_MS = 86400000
 CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "rejected", "stale_session"))
+POST_ERROR_CLASSES = frozenset((
+    "http_error", "timeout", "tls", "network", "target_unavailable",
+    "oversized_request", "oversized_response", "invalid_response",
+))
 
 
 @dataclass(frozen=True)
@@ -143,7 +148,8 @@ class KAIEventDelivery:
             for other_sid, other in state["subscriptions"].items():
                 if other_sid != sid and self._active(other, binding, time.time()):
                     raise RuntimeError("subscription already bound to another callback")
-            ok, echoed = self._post(url, sid, raw, {"type": "verification", "challenge": challenge}, sid)
+            result = self._post(url, sid, raw, {"type": "verification", "challenge": challenge}, sid)
+            ok, echoed = result[0], result[1]
             if not ok or not isinstance(echoed.get("challenge"), str) or not hmac.compare_digest(echoed["challenge"], challenge):
                 raise RuntimeError("callback verification failed")
             current = self._binding()
@@ -236,8 +242,17 @@ class KAIEventDelivery:
                 item["attempts"] += 1
                 item["status"] = "unknown"
                 item["nextAt"] = time.time() + min(300, 2 ** item["attempts"])
+                # Clear diagnostics before the side effect so a crash cannot
+                # leave a prior attempt looking like the current one.
+                item["last_http_status"] = None
+                item["last_error_class"] = None
                 self._save(state)
-                ok, _ = self._post(sub["url"], eid, raw, item["payload"], item["subscription"])
+                result = self._post(sub["url"], eid, raw, item["payload"], item["subscription"])
+                ok = result[0]
+                status = result[2] if len(result) > 2 and isinstance(result[2], int) and not isinstance(result[2], bool) else None
+                error_class = result[3] if len(result) > 3 and result[3] in POST_ERROR_CLASSES else None
+                item["last_http_status"] = status
+                item["last_error_class"] = error_class
                 posts += 1
                 item["status"] = "sent" if ok else ("terminal" if item["attempts"] >= MAX_ATTEMPTS else "unknown")
                 self._save(state)
@@ -246,11 +261,11 @@ class KAIEventDelivery:
     def _post(self, url, webhook_id, secret, payload, subscription_id=None):
         target = _secure.validated_address(url)
         if target is None:
-            return False, {}
+            return False, {}, None, "target_unavailable"
         parsed, ip = target
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
         if len(body) > _secure.MAX_BODY:
-            return False, {}
+            return False, {}, None, "oversized_request"
         stamp = int(time.time())
         headers = {
             "Content-Type": "application/json", "Host": parsed.netloc,
@@ -265,15 +280,37 @@ class KAIEventDelivery:
                 path += "?" + parsed.query
             connection.request("POST", path, body, headers)
             response = connection.getresponse()
-            raw = response.read(_secure.MAX_BODY + 1)
-            if not 200 <= response.status < 300 or len(raw) > _secure.MAX_BODY:
-                return False, {}
+            status = response.status if isinstance(response.status, int) and not isinstance(response.status, bool) else None
+            try:
+                raw = response.read(_secure.MAX_BODY + 1)
+            except TimeoutError:
+                return False, {}, status, "timeout"
+            except ssl.SSLError:
+                return False, {}, status, "tls"
+            except http.client.HTTPException:
+                return False, {}, status, "network"
+            except OSError:
+                return False, {}, status, "network"
+            if status is None:
+                return False, {}, None, "network"
+            if len(raw) > _secure.MAX_BODY:
+                return False, {}, status, "oversized_response"
+            if not 200 <= status < 300:
+                return False, {}, status, "http_error"
             try:
                 value = json.loads(raw) if raw else {}
             except ValueError:
-                value = {}
-            return True, value if isinstance(value, dict) else {}
-        except (OSError, TimeoutError, ssl.SSLError):
-            return False, {}
+                return False, {}, status, "invalid_response"
+            if not isinstance(value, dict):
+                return False, {}, status, "invalid_response"
+            return True, value, status, None
+        except TimeoutError:
+            return False, {}, None, "timeout"
+        except ssl.SSLError:
+            return False, {}, None, "tls"
+        except http.client.HTTPException:
+            return False, {}, None, "network"
+        except OSError:
+            return False, {}, None, "network"
         finally:
             connection.close()
