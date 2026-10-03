@@ -36,4 +36,9 @@ class TestTasks(unittest.TestCase):
     t.dispatch({"op":"cancel","task_id":tid,"expected_epoch":0},A)
     with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"begin_operation","task_id":tid,"expected_epoch":0,"tool_use_id":"u2"},A)
 
+ def test_foreign_approval_and_visibility(self):
+    t=authority(); make_task(t)
+    with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"submit","idempotency_key":"k2","intent_hash":"ih","scope_hash":"sh","approval_id":"a"},B)
+    with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"list"},B)
+
 if __name__ == '__main__': unittest.main()
