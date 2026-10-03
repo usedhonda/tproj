@@ -13,6 +13,7 @@ try:
     sys.path.insert(0, str(_unified))
     import cli  # type: ignore
     from task_host import binding_marker
+    from task_role import native_context
 except ImportError:
     cli = None
 _guard_path = ROOT / "extensions/hooks/tproj-mutation-guard"
@@ -70,22 +71,6 @@ def native_ids(data):
             for key in ("session_id", "conversation_id", "thread_id"):
                 if root.get(key): found.add(str(root[key]))
     return {item for item in found if item}
-
-def native_context(data):
-    values = {}
-    roots = (data, data.get('hook_input'), data.get('raw_event'))
-    for root in roots:
-        if not isinstance(root, dict):
-            continue
-        for key in ('thread_id', 'session_id'):
-            value = root.get(key)
-            if isinstance(value, str) and value.strip():
-                values[key] = value.strip()
-        value = root.get('conversation_id')
-        if (not values.get('thread_id') and not values.get('session_id')
-                and isinstance(value, str) and value.strip()):
-            values['thread_id'] = value.strip()
-    return values
 
 def caller_request(op, data, **kwargs):
     native = native_context(data)

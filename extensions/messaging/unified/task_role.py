@@ -7,7 +7,7 @@ from task_host import binding_marker
 import cli
 
 
-def _native_context(payload):
+def native_context(payload):
     """Extract hook-supplied native IDs without inventing an identity."""
     values = {}
     roots = (payload, payload.get('hook_input'), payload.get('raw_event'))
@@ -17,7 +17,10 @@ def _native_context(payload):
         for key in ('thread_id', 'session_id'):
             value = root.get(key)
             if isinstance(value, str) and value.strip():
-                values[key] = value.strip()
+                value = value.strip()
+                if values.get(key) and values[key] != value:
+                    raise ValueError('native conversation context conflict')
+                values[key] = value
         value = root.get('conversation_id')
         if (not values.get('thread_id') and not values.get('session_id')
                 and isinstance(value, str) and value.strip()):
@@ -26,7 +29,7 @@ def _native_context(payload):
 
 
 def _caller_request(payload):
-    native = _native_context(payload)
+    native = native_context(payload)
     env = cli.native_conversation_context()
     for key in ('thread_id', 'session_id'):
         if native.get(key) and env.get(key) and native[key] != env[key]:
@@ -40,9 +43,12 @@ def _caller_request(payload):
 
 
 def context(payload):
-    ids={os.environ.get('CODEX_THREAD_ID',''),os.environ.get('CODEX_SESSION_ID','')}
-    for key in ('session_id','thread_id','conversation_id'):
-        if isinstance(payload.get(key),str):ids.add(payload[key])
+    try:
+        native = native_context(payload)
+    except ValueError:
+        return {'assigned':True,'can_mutate':False,'task_status':'authority_unavailable'}
+    ids={os.environ.get('CODEX_THREAD_ID',''),os.environ.get('CODEX_SESSION_ID',''),
+         native.get('thread_id',''),native.get('session_id','')}
     ids.discard('')
     if not any(binding_marker(native).exists() for native in ids):return {'assigned':False}
     try:
