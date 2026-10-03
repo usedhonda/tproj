@@ -33,69 +33,12 @@ struct ProcessCommandRunner: CommandRunning, Sendable {
     let resolvePATH: @Sendable () -> String
 
     func run(_ launchPath: String, _ args: [String], env extraEnvironment: [String: String]) -> CommandResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: launchPath)
-        process.arguments = args
-
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = resolvePATH()
-        for (key, value) in extraEnvironment {
-            env[key] = value
-        }
-        process.environment = env
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-
-        do {
-            try process.run()
-
-            // Read both pipes concurrently to avoid deadlock when pipe buffer (64KB) fills.
-            // If we read sequentially or after waitUntilExit, the child can block on write.
-            let maxBuffer = 65536
-            var outData = Data()
-            var errData = Data()
-
-            let group = DispatchGroup()
-
-            group.enter()
-            // Use dedicated reader threads: this runner is also invoked from
-            // bounded global queues, and scheduling nested readers there can
-            // exhaust the pool while callers wait for EOF.
-            Thread.detachNewThread {
-                let d = outPipe.fileHandleForReading.readDataToEndOfFile()
-                outData = d.count > maxBuffer ? d.prefix(maxBuffer) : d
-                group.leave()
-            }
-
-            group.enter()
-            Thread.detachNewThread {
-                let d = errPipe.fileHandleForReading.readDataToEndOfFile()
-                errData = d.count > maxBuffer ? d.prefix(maxBuffer) : d
-                group.leave()
-            }
-
-            process.waitUntilExit()
-            group.wait()
-
-            let out = String(data: outData, encoding: .utf8) ?? ""
-            let err = String(data: errData, encoding: .utf8) ?? ""
-
-            return CommandResult(exitCode: process.terminationStatus, stdout: out, stderr: err)
-        } catch {
-            return CommandResult(exitCode: 1, stdout: "", stderr: error.localizedDescription)
-        }
+        var env = extraEnvironment; env["PATH"] = resolvePATH()
+        return BoundedCommandRunner().run(launchPath, args, env: env)
     }
 
     func runAsync(_ launchPath: String, _ args: [String], env: [String: String]) async -> CommandResult {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let result = run(launchPath, args, env: env)
-                continuation.resume(returning: result)
-            }
-        }
+        await Task.detached(priority: .userInitiated) { run(launchPath, args, env: env) }.value
     }
 }
 
@@ -1880,6 +1823,8 @@ final class AppViewModel: ObservableObject {
     private var keepWarmPollTask: Task<Void, Never>?
     private var keepWarmAttemptedExpiryByTTY: [String: Date] = [:]
     private var workspaceWatcher: WorkspaceYamlWatcher?
+    private var workspaceRefreshInFlight = false
+    private var workspaceRefreshDirty = false
 
     private enum FableCacheKey {
         static let capturedAt = "weeklyPace.fable.capturedAt"
@@ -2274,12 +2219,23 @@ final class AppViewModel: ObservableObject {
     private func startWorkspaceWatcher() {
         guard workspaceWatcher == nil else { return }
         let watcher = WorkspaceYamlWatcher(paths: [workspacePath, tmuxStateSentinelPath]) { [weak self] in
-            Task { @MainActor in
-                await self?.refreshWorkspaceStateFromWatcher()
-            }
+            Task { @MainActor in self?.scheduleWorkspaceRefreshFromWatcher() }
         }
         workspaceWatcher = watcher
         watcher.start()
+    }
+
+    private func scheduleWorkspaceRefreshFromWatcher() {
+        if workspaceRefreshInFlight { workspaceRefreshDirty = true; return }
+        workspaceRefreshInFlight = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            repeat {
+                self.workspaceRefreshDirty = false
+                await self.refreshWorkspaceStateFromWatcher()
+            } while self.workspaceRefreshDirty
+            self.workspaceRefreshInFlight = false
+        }
     }
 
     private func refreshWorkspaceStateFromWatcher() async {
