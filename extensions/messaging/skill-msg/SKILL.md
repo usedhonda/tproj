@@ -46,7 +46,7 @@ EOF
 - 送信前の `--status` は必須ではない。
 - 宛先不明なら `tproj-msg --list`。
 - 本文は `--stdin` + 引用符付き `<<'EOF'`。バッククォートや `$` をシェルに展開させない。
-- 通常送信は受信 endpoint が利用可能なら自動提示される。別途 wake や `--new-task` は不要。
+- 通常送信は受信 endpoint が利用可能なら自動提示される。wake や `--new-task` は送信経路に存在しない。
 - 入力中・作業中・下書き保護で提示が保留されても、上書き・force・旧方式で回避しない。
 - 送信結果の `message_id` を保持する。送ったら返信の自動配信を待ち、依存しない作業は続ける。
   `--read` / `sleep` のポーリングや再送はしない。
@@ -121,9 +121,8 @@ tproj-msg --retry <submission-id>
 
 ## 6. 通常会話では使わないもの
 
-- `--new-task` / `--user-authorized` / `--role-handoff` は特別な legacy 経路。
-  通常会話を起こすために使わない。通常メッセージは task 登録・役割変更・ユーザー承認を作らず、
-  別ホストへの task／役割引継ぎの代用にもならない。
+- 通常メッセージは task 登録・役割変更・ユーザー承認を作らない。正式な task／handoff は
+  unified task authority の専用 API を使い、メッセージ送信へフォールバックしない。
 - unified では `--fire` / `--force` / `--remote` などの旧配送フラグや `gate:direct` は廃止。
   全リストは `tproj-msg --help` で確認する。
 - `--read` は旧来のローカル画面読取り。返信待ちに使わない。

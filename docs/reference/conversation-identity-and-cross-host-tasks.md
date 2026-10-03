@@ -1,9 +1,7 @@
 # Conversation identity and cross-host tasks (design agreement)
 
-Status: P4 superseded by the approved single-owner contract (2026-10-02).
-P5 below is a future distributed-task design, not an implementation prerequisite
-for ordinary messaging. Ordinary messages can carry user-authorized requests;
-they do not create task ownership or change roles.
+Status: current identity contract; formal task rollout remains pending live
+host acceptance. Ordinary messages do not create task ownership or change roles.
 
 ## P4: current conversation identity
 
@@ -18,7 +16,7 @@ MSG consumes the canonical model-role registry, including native session/thread
 IDs; role/epoch remain independent. The earlier proposal requiring provider-issued
 short-lived capabilities is not the current deployment gate.
 
-## P5: cross-host tasks and role handoff
+## Formal cross-host tasks and role handoff
 
 Precondition: the sender authenticates genuinely (not full P4). Panes that
 already authenticate using the current conversation contract can adopt it.
@@ -48,7 +46,10 @@ All stages require protocol capability negotiation. An unsupported peer is not
 silently downgraded to legacy or chat, and the legacy path must never become a
 bypass for an identity rejection.
 
-## Open questions (must be resolved before implementation)
+The implementation source is `extensions/messaging/unified/tasks.py`; live
+rollout and acceptance remain pending until integrated deployment verification.
+
+## Open questions (must be resolved before live rollout)
 
 - (a) Distributed task authorization protocol (ordinary messaging already has its own identity contract).
 - (b) The concrete authority source of truth and fencing mechanism.

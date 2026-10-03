@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Admission hook for mutations while a unified formal task is assigned."""
+from __future__ import annotations
+import json, os, sys
+from pathlib import Path
+from importlib.machinery import SourceFileLoader
+
+ROOT = Path(__file__).resolve().parents[2]
+try:
+    from extensions.messaging.unified import cli
+except ImportError:
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "extensions/messaging/unified"))
+    import cli  # type: ignore
+guard = SourceFileLoader("tproj_mutation_guard", str(ROOT / "extensions/hooks/tproj-mutation-guard")).load_module()
+
+def payload() -> dict:
+    try: value = json.load(sys.stdin)
+    except (ValueError, OSError): return {}
+    return value if isinstance(value, dict) else {}
+
+def tool_name(data):
+    return str(data.get("tool_name") or data.get("hook_input", {}).get("tool_name") or "")
+
+def tool_id(data):
+    for key in ("tool_use_id", "tool_call_id", "id"):
+        value = data.get(key)
+        if isinstance(value, str) and value: return value
+    for root in (data.get("hook_input"), data.get("raw_event")):
+        if isinstance(root, dict):
+            for key in ("tool_use_id", "tool_call_id", "id"):
+                value = root.get(key)
+                if isinstance(value, str) and value: return value
+    return ""
+
+def command(data):
+    _name, value = guard.parse_command(data)
+    return value
+
+def lifecycle(value):
+    text = value.strip()
+    return text.startswith(("tproj-msg ", "tproj-task "))
+
+def main() -> int:
+    data = payload(); event = str(data.get("hook_event_name") or data.get("event") or os.environ.get("TPROJ_HOOK_EVENT", "pretool")).lower()
+    name, cmd = tool_name(data), command(data)
+    if name in getattr(guard, "READONLY_TOOL_NAMES", set()) or guard.is_readonly_shell(cmd) or lifecycle(cmd):
+        print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
+    if event in ("posttooluse", "posttool", "failure", "post_tool_use"):
+        op = "task_guard_end"
+    else:
+        if name not in getattr(guard, "MUTATING_TOOL_NAMES", set()) and not cmd:
+            print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
+        op = "task_guard_begin"
+    ident = tool_id(data)
+    try:
+        cfg = cli.config(); req = cli._caller_request(op, tool_use_id=ident)
+        result = cli.rpc(cfg["socket"], req)
+        if isinstance(result, dict) and result.get("assigned") is False:
+            print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
+        print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
+    except Exception as exc:
+        print(json.dumps({"decision": "block", "reason": f"formal task guard: {exc}"}, separators=(",", ":"))); return 0
+
+if __name__ == "__main__": raise SystemExit(main())
