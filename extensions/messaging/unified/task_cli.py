@@ -105,8 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "list":
             result = request("list")
         elif args.command == "handoff":
-            op = {"prepare": "prepare_handoff", "release": "release_handoff",
-                  "accept": "accept_handoff", "commit": "commit_handoff"}[args.action]
+            op = "handoff_" + args.action
             fields: dict[str, Any] = {"task_id": args.task_id}
             if args.expected_epoch is not None: fields["expected_epoch"] = args.expected_epoch
             if args.target: fields["target"] = json.loads(args.target)

@@ -38,7 +38,7 @@ class UnifiedTaskCliTest(unittest.TestCase):
         seen = []
         with patch.object(task_cli, "request", side_effect=lambda op, **fields: seen.append((op, fields)) or {}):
             self.assertEqual(task_cli.main(["handoff", "prepare", "t1", "--epoch", "2", "--target", '{"endpoint_id":"e","incarnation":"i","host_id":"h"}']), 0)
-        self.assertEqual(seen, [("prepare_handoff", {"task_id": "t1", "expected_epoch": 2, "target": {"endpoint_id": "e", "incarnation": "i", "host_id": "h"}})])
+        self.assertEqual(seen, [("handoff_prepare", {"task_id": "t1", "expected_epoch": 2, "target": {"endpoint_id": "e", "incarnation": "i", "host_id": "h"}})])
 
 
 if __name__ == "__main__":
