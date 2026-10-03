@@ -43,6 +43,8 @@ grep -Fq 'Retired under unified messaging' <<<"$enrolled_out" || fail "enrolled 
 grep -Fq 'tproj-msg --fire' <<<"$enrolled_out" && fail "enrolled help still advertises --fire as usable"
 grep -Fq -- '--fire' <<<"$enrolled_out" || fail "enrolled help dropped --fire from the retired list"
 echo "ok: enrolled --help shows unified usage and demotes --fire to retired"
+grep -Fq 'tproj-msg --new-task' <<<"$enrolled_out" && fail "enrolled help advertises legacy task mutation"
+grep -Fq 'Formal tasks and handoff: tproj-task --help' <<<"$enrolled_out" || fail "formal task command missing"
 
 # -h is the same code path as --help.
 HOME="$enrolled_home" "$msg" -h | grep -Fq 'unified transport active' || fail "-h did not use unified usage"

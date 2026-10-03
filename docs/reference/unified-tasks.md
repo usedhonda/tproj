@@ -57,6 +57,10 @@ Federated task requests and responses confirm task protocol version 1. Missing
 or incompatible versions fail without routing into legacy task controls. The
 public client also refuses legacy fallback when an enrolled installation's
 configuration is missing, malformed, or inactive.
+Enrolled mutation commands never fall through to the historical cache, including
+on `not_found` or an unknown command. Only historical non-UUID `status` retains
+read-only fallback. The enrolled MSG wrapper rejects legacy `--new-task` and
+`--role-handoff` controls; formal operations use `tproj-task` instead.
 
 ## Model-role integration
 

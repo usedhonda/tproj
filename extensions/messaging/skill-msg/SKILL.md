@@ -127,6 +127,21 @@ tproj-msg --retry <submission-id>
 
 ## 6. 通常会話では使わないもの
 
+正式タスクを受け取った場合のみ、通知の task ID を `tproj-task status <ID>` で読む。
+内容・scope・executor・epoch を確認し、`ack <ID> --epoch <N>` →
+`progress <ID> --epoch <N>` → 作業 → `done <ID> --epoch <N>` の順で記録する。
+`ack` だけでは作業完了にならず、通常MSGへの返信も task の `done` を代替しない。
+進められなければ `block <ID> --epoch <N>` と具体理由を記録する。
+owner が成果を確認して `verify` → ユーザーへの報告後に `report`、executor は
+`detach` する。いずれも正しい task ID と通知後に確認した epoch を使う。
+epoch の競合は status で現状を確認し、古い承認や役割を推測して続行しない。
+
+新規委任は `tproj-task approval` / `submit`、引継ぎは `tproj-task handoff`。
+既存の直接ユーザー承認と正確な scope が必要で、MSG本文から承認を新造しない。
+具体的な引数は `tproj-task --help` と checkout の
+`docs/reference/unified-tasks.md` を参照。enrolled 環境では旧
+`--new-task` / `--role-handoff` への切替はできない。
+
 - 通常メッセージは task 登録・役割変更・ユーザー承認を作らない。正式な task／handoff は
   unified task authority の専用 API を使い、メッセージ送信へフォールバックしない。
 - unified では `--fire` / `--force` / `--remote` などの旧配送フラグや `gate:direct` は廃止。

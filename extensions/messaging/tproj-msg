@@ -64,7 +64,8 @@ if $UNIFIED_ACTIVE; then
     case "$_arg" in
       --session|--as|--retry|--remote-session|--allow-relay|--allow-fanout|--allow-chi-retry|--ttl|--role-epoch|--orchestrator) _scan_skip=1; continue ;;
       --session=*|--as=*|--retry=*|--remote-session=*|--allow-relay=*|--allow-fanout=*|--allow-chi-retry=*|--ttl=*|--role-epoch=*|--orchestrator=*) continue ;;
-      --new-task|--role-handoff|--desktop) _ordinary=false ;;
+      --new-task|--role-handoff) echo "tproj-msg: $_arg is retired under unified enrollment; use tproj-task --help" >&2; exit 64 ;;
+      --desktop) _ordinary=false ;;
       --allow-*) : ;; # validation flags still use the unified mailbox
       --remote|--remote-client) echo "tproj-msg: retired remote ordinary transport; use unified host endpoint" >&2; exit 64 ;;
       --remote=*|--remote-client=*) echo "tproj-msg: retired remote ordinary transport; use unified host endpoint" >&2; exit 64 ;;
@@ -181,17 +182,18 @@ Usage:
   tproj-msg --retry <submission-id>    Retry a submission (same ID and content)
 
 Legacy paths still available:
-  tproj-msg --new-task [--user-authorized] <target> <message>
-  tproj-msg --role-handoff --new-task [--role-epoch <n>] [--orchestrator <id>] ...
   tproj-msg --desktop ...
   tproj-msg gate:line <message>
   tproj-msg gate:<id> <message>        (configured external bridge)
   tproj-msg --read <target> [lines]    Local panes only
 
 Retired under unified messaging:
+  --new-task --user-authorized --role-handoff --role-epoch --orchestrator
   --fire --force --allow-relay --allow-fanout --allow-chi-retry
   --remote --remote-client --remote-session --flush --drain
   gate:direct gate:session gate:default
+
+Formal tasks and handoff: tproj-task --help (single unified authority).
 EOF
 }
 

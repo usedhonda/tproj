@@ -19,6 +19,12 @@ Formal tasks are separate from ordinary message delivery and use the unified
 task authority. `--new-task` is not a wake mechanism and message arrival never
 grants task authority. A direct role binding is distinct from the GUI main
 conversation.
+Enrolled clients reject `tproj-msg --new-task` and `--role-handoff`; use
+`tproj-task submit` and `tproj-task handoff` instead. All enrolled task mutations,
+including unknown commands and `not_found` results, stay on the unified authority
+or fail explicitly. Only `tproj-task status` for a historical non-UUID task ID
+may read the legacy cache after an authoritative `not_found`. Never-enrolled
+standalone deployments retain their existing task commands.
 The exact `<alias>.role` key is used in task rows and reply message evidence,
 even when the sender typed the bare role.
 Unverified external `--as`, other-project aliases, role handoffs, and

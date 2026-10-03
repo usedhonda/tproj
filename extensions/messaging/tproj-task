@@ -4,8 +4,8 @@ set -euo pipefail
 SELF_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 
 # Enrolled installations use the authenticated unified authority for the new
-# public task API.  Legacy IDs remain readable: a durable ``not_found`` from
-# the authority falls through to the historical cache implementation below.
+# public task API. Only status of a historical non-UUID ID may fall through
+# after not_found; mutations must never select a second authority.
 _unified_config="${TPROJ_UNIFIED_CONFIG:-$HOME/.config/tproj/msg-client.json}"
 _unified_default="$HOME/lib/tproj-msg-unified/task_cli.py"
 [[ ! -f "$SELF_DIR/unified/task_cli.py" ]] || _unified_default="$SELF_DIR/unified/task_cli.py"
@@ -29,15 +29,20 @@ case "${1:-}" in
       _unified_rc=0
       _unified_out="$(python3 "$_unified_cli" "$@" 2>&1)" || _unified_rc=$?
       _legacy_candidate=0
-      if [[ "${2:-}" =~ ^[A-Za-z0-9._:-]+$ && ! "${2:-}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+      if [[ "${1:-}" == status && "${2:-}" =~ ^[A-Za-z0-9._:-]+$ && ! "${2:-}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
         _legacy_candidate=1
       fi
       if [[ $_unified_rc -eq 0 || "$_unified_out" != not_found:* || $_legacy_candidate -ne 1 ]]; then
         printf '%s\n' "$_unified_out"
         exit "$_unified_rc"
       fi
-      # not_found is the one compatibility case: allow legacy task IDs to
-      # retain their existing cache semantics without resending anything.
+      # Historical read-only status is the sole compatibility case.
+    fi
+    ;;
+  *)
+    if [[ -f "$_unified_latch" || -f "$_unified_config" ]]; then
+      echo 'unsupported: enrolled tasks use tproj-task --help; legacy mutation is retired' >&2
+      exit 2
     fi
     ;;
 esac

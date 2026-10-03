@@ -19,6 +19,13 @@ out=$(HOME="$tmp" "$root/tproj-msg" cdx gate:line)
 [[ "$out" == "unified:cdx gate:line" ]]
 out=$(HOME="$tmp" "$root/tproj-msg" cdx reply)
 [[ "$out" == "unified:cdx reply" ]]
+out=$(HOME="$tmp" "$root/tproj-msg" cdx --new-task)
+[[ "$out" == "unified:cdx --new-task" ]]
+for flag in --new-task --role-handoff; do
+  rc=0
+  out=$(HOME="$tmp" "$root/tproj-msg" "$flag" cdx x 2>&1) || rc=$?
+  [[ $rc -eq 64 && "$out" == *'use tproj-task --help'* ]]
+done
 touch "$tmp/.config/tproj/msg-maintenance"
 if HOME="$tmp" "$root/tproj-msg" cdx hello >/dev/null 2>&1; then exit 1; fi
 out=$(HOME="$tmp" "$root/tproj-msg" --read cdx || true)

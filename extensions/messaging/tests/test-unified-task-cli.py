@@ -68,6 +68,29 @@ class UnifiedTaskCliTest(unittest.TestCase):
             self.assertEqual(task_cli.main(["handoff", "prepare", "t1", "--epoch", "2", "--target", "proj.cdx"]), 0)
         self.assertEqual(seen, [("prepare_handoff", {"task_id": "t1", "expected_epoch": 2, "target": "proj.cdx"})])
 
+    def test_enrolled_legacy_fallback_is_status_only(self):
+        import os, shutil, subprocess
+        source = Path(__file__).resolve().parents[1] / 'tproj-task'
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            wrapper = root / 'tproj-task'
+            shutil.copy2(source, wrapper)
+            (root / 'tproj-task-cache.sh').write_text('echo legacy-cache-entered\nexit 0\n')
+            cfg = root / 'client.json'; cfg.write_text('{"active":true}')
+            cli = root / 'task_cli.py'
+            cli.write_text('import sys\nprint("not_found: missing",file=sys.stderr)\nsys.exit(2)\n')
+            env = dict(os.environ, TPROJ_UNIFIED_CONFIG=str(cfg),
+                       TPROJ_UNIFIED_LATCH=str(root/'latch'), TPROJ_UNIFIED_TASK_CLI=str(cli))
+            for op in ('ack','progress','done','block','verify','report','cancel','freeze','unfreeze','handoff','detach','gc','unknown'):
+                result = subprocess.run(['bash',str(wrapper),op,'legacy-id'],env=env,capture_output=True,text=True)
+                self.assertEqual(result.returncode,2,op)
+                self.assertNotIn('legacy-cache-entered',result.stdout,op)
+            result = subprocess.run(['bash',str(wrapper),'status','legacy-id'],env=env,capture_output=True,text=True)
+            self.assertEqual(result.stdout.strip(),'legacy-cache-entered')
+            cfg.unlink()
+            result = subprocess.run(['bash',str(wrapper),'list'],env=env,capture_output=True,text=True)
+            self.assertEqual(result.stdout.strip(),'legacy-cache-entered')
+
 
 if __name__ == "__main__":
     unittest.main()
