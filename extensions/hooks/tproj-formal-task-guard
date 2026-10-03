@@ -78,6 +78,9 @@ def assigned(data):
     if any(binding_marker(native_id).exists() for native_id in ids): return True
     try:
         host_cfg_path = Path(os.environ.get("TPROJ_MSG_HOST_CONFIG", str(Path.home()/".config/tproj/msg-host.json")))
+        if (not host_cfg_path.exists() and not cli.DEFAULT_CONFIG.exists()
+                and not (Path.home()/".config/tproj/msg-client.enrolled").exists()):
+            return False
         host_cfg = json.loads(host_cfg_path.read_text(encoding="utf-8")) if host_cfg_path.is_file() else {}
         journal = host_cfg.get("journal")
         if not journal:
@@ -92,20 +95,16 @@ def assigned(data):
     except (sqlite3.Error, OSError, ValueError, cli.ClientError):
         raise RuntimeError('formal task assignment cannot be verified') from None
 
-def main() -> int:
-    data = payload(); event = str(data.get("hook_event_name") or data.get("event") or os.environ.get("TPROJ_HOOK_EVENT", "pretool")).lower()
-    if "--event" in sys.argv:
-        try: event = sys.argv[sys.argv.index("--event") + 1].lower()
-        except IndexError: pass
+def evaluate(data: dict, event: str) -> dict:
     name, cmd = tool_name(data), command(data)
     if name in getattr(guard, "READONLY_TOOL_NAMES", set()) or guard.is_readonly_shell(cmd) or lifecycle(cmd):
-        print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
+        return {"decision": "allow"}
     try:
         is_assigned = assigned(data)
     except Exception:
-        print(json.dumps({"decision": "block", "reason": "formal task assignment cannot be verified"})); return 0
+        return {"decision": "block", "reason": "formal task assignment cannot be verified"}
     if not is_assigned:
-        print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
+        return {"decision": "allow"}
     if event in ("posttooluse", "posttool", "failure", "post_tool_use") or event.startswith("posttool"):
         op = "task_guard_end"
     else:
@@ -117,9 +116,18 @@ def main() -> int:
         cfg = cli.config(); req = cli._caller_request(op, tool_use_id=ident)
         result = cli.rpc(cfg["socket"], req)
         if isinstance(result, dict) and result.get("assigned") is False:
-            print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
-        print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
+            return {"decision": "allow"}
+        return {"decision": "allow"}
     except Exception as exc:
-        print(json.dumps({"decision": "block", "reason": f"formal task guard: {exc}"}, separators=(",", ":"))); return 0
+        return {"decision": "block", "reason": f"formal task guard: {exc}"}
+
+
+def main() -> int:
+    data = payload(); event = str(data.get("hook_event_name") or data.get("event") or os.environ.get("TPROJ_HOOK_EVENT", "pretool")).lower()
+    if "--event" in sys.argv:
+        try: event = sys.argv[sys.argv.index("--event") + 1].lower()
+        except IndexError: pass
+    print(json.dumps(evaluate(data, event), separators=(",", ":")))
+    return 0
 
 if __name__ == "__main__": raise SystemExit(main())

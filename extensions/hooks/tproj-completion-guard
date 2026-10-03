@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from importlib.machinery import SourceFileLoader
 import hashlib
 import json
 import os
@@ -515,6 +516,17 @@ def main() -> int:
         return 0
     if not isinstance(payload, dict):
         return 0
+    if args.event == "posttool":
+        formal_path = Path(__file__).with_name("tproj-formal-task-guard")
+        if formal_path.is_file():
+            try:
+                formal = SourceFileLoader("tproj_formal_task_evaluator", str(formal_path)).load_module()
+                decision = formal.evaluate(payload, "posttool")
+            except Exception:
+                decision = {"decision": "block", "reason": "formal task evaluator unavailable"}
+            if decision.get("decision") == "block":
+                print(json.dumps(decision, separators=(",", ":")))
+                return 0
     raw_event = payload.get("raw_event")
     if not isinstance(raw_event, dict):
         raw_event = {}

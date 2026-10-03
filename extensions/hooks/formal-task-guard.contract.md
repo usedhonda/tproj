@@ -37,3 +37,12 @@ operation that would deadlock its own completion, without treating arbitrary
 JavaScript containing a task command as read-only.
 Installer migration removes only obsolete exact installer-owned single-command
 matcher entries; grouped and customized hooks remain untouched.
+
+The established mutation/pretool and completion/posttool entry points also invoke
+the same formal evaluator. This covers tool paths whose hooks an already-running
+session loaded before the dedicated formal hook registration was installed.
+Dedicated and established callbacks share the original tool_use_id, so admission
+and completion are idempotent. A legacy mutation denial runs before admission.
+This does not add matcher coverage to an old session: paths absent from its
+loaded posttool matchers cannot be reported as having confirmed completion.
+Never clear an open operation by timeout or by assuming a tool completed.

@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
+from importlib.machinery import SourceFileLoader
 import json
 import os
 import re
@@ -477,6 +480,32 @@ def main() -> int:
         return 0
     if not isinstance(payload, dict):
         return 0
+    # Existing sessions retain their registered hooks; execute the current
+    # formal evaluator through this established entry point as well.
+    with contextlib.redirect_stdout(io.StringIO()) as legacy_output:
+        result = legacy_guard(payload)
+    if legacy_output.getvalue():
+        print(legacy_output.getvalue(), end="")
+        return result
+    decision = formal_task_decision(payload, "pretool")
+    if decision and decision.get("decision") == "block":
+        print(json.dumps(decision, separators=(",", ":")))
+    return 0
+
+
+def formal_task_decision(payload: dict, event: str) -> dict | None:
+    path = Path(__file__).with_name("tproj-formal-task-guard")
+    if not path.is_file():
+        # Older standalone distributions do not include formal tasks.
+        return None
+    try:
+        module = SourceFileLoader("tproj_formal_task_evaluator", str(path)).load_module()
+        return module.evaluate(payload, event)
+    except Exception:
+        return {"decision": "block", "reason": "formal task evaluator unavailable"}
+
+
+def legacy_guard(payload: dict) -> int:
     identity = owner_identity()
     if identity is None:
         return 0

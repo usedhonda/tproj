@@ -2,6 +2,8 @@ import io
 import json
 import sqlite3
 import os
+import subprocess
+import tempfile
 from importlib.machinery import SourceFileLoader
 import unittest
 from pathlib import Path
@@ -11,6 +13,21 @@ ROOT = Path(__file__).resolve().parents[2]
 guard = SourceFileLoader("formal_guard", str(ROOT / "hooks/tproj-formal-task-guard")).load_module()
 
 class FormalGuardTest(unittest.TestCase):
+    def test_existing_hook_entrypoints_call_formal_evaluator(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root/'tproj-formal-task-guard').write_text(
+                'def evaluate(data,event):\n'
+                ' return {"decision":"block","reason":event+":"+data["tool_use_id"]}\n')
+            for name,event in (('tproj-mutation-guard','pretool'),('tproj-completion-guard','posttool')):
+                script=root/name; script.write_bytes((ROOT/'hooks'/name).read_bytes())
+                args=['python3',str(script),'--platform','codex']
+                if event=='posttool': args.extend(['--event',event])
+                env=dict(os.environ,HOME=str(root),TMUX_PANE='',TT_CACHE_OWNER='')
+                result=subprocess.run(args,input=json.dumps({'tool_name':'Bash','tool_use_id':'native-id','tool_input':{'command':'touch note'}}),text=True,capture_output=True,env=env)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual(json.loads(result.stdout),{'decision':'block','reason':event+':native-id'})
+
     def setUp(self):
         import tempfile
         self.home = tempfile.TemporaryDirectory()
