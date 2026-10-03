@@ -6,13 +6,18 @@ from pathlib import Path
 from importlib.machinery import SourceFileLoader
 
 ROOT = Path(__file__).resolve().parents[2]
+_unified = ROOT / "extensions/messaging/unified"
+if not _unified.is_dir():
+    _unified = Path.home() / "lib/tproj-msg-unified"
 try:
-    from extensions.messaging.unified import cli
-except ImportError:
-    import sys as _sys
-    _sys.path.insert(0, str(ROOT / "extensions/messaging/unified"))
+    sys.path.insert(0, str(_unified))
     import cli  # type: ignore
-guard = SourceFileLoader("tproj_mutation_guard", str(ROOT / "extensions/hooks/tproj-mutation-guard")).load_module()
+except ImportError:
+    cli = None
+_guard_path = ROOT / "extensions/hooks/tproj-mutation-guard"
+if not _guard_path.is_file():
+    _guard_path = Path(__file__).with_name("tproj-mutation-guard")
+guard = SourceFileLoader("tproj_mutation_guard", str(_guard_path)).load_module()
 
 def payload() -> dict:
     try: value = json.load(sys.stdin)
@@ -54,6 +59,8 @@ def main() -> int:
         op = "task_guard_begin"
     ident = tool_id(data)
     try:
+        if cli is None:
+            raise RuntimeError("unified task client unavailable")
         cfg = cli.config(); req = cli._caller_request(op, tool_use_id=ident)
         result = cli.rpc(cfg["socket"], req)
         if isinstance(result, dict) and result.get("assigned") is False:
