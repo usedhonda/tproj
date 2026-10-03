@@ -65,14 +65,20 @@ class FederatedHub(Hub):
                                    'python3 "$HOME/lib/tproj-msg-unified/federation.py" --rpc'],
                                   input=json.dumps(request), capture_output=True, text=True, timeout=8)
             if proc.returncode:
-                raise HubError('host_unavailable', 'remote messaging service is unavailable')
+                raise HubError('host_unavailable', 'remote transport command failed')
             response = json.loads(proc.stdout)
+            if not isinstance(response, dict):
+                raise ValueError('invalid response envelope')
             if not response.get('ok'):
                 e = response.get('error', {})
                 raise HubError(e.get('code', 'host_unavailable'), e.get('message', 'remote request failed'))
             return response['result']
-        except (OSError, subprocess.SubprocessError, ValueError):
-            raise HubError('host_unavailable', 'remote messaging service is unavailable') from None
+        except subprocess.TimeoutExpired:
+            raise HubError('host_unavailable', 'remote messaging request timed out') from None
+        except (OSError, subprocess.SubprocessError):
+            raise HubError('host_unavailable', 'remote transport could not run') from None
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise HubError('host_unavailable', 'remote messaging response is invalid') from None
 
     def local_directory(self):
         d = super().directory_list()
@@ -167,7 +173,17 @@ class FederatedHub(Hub):
         if len(matches) > 1:
             raise HubError('ambiguous_target', 'address has multiple owners')
         if unavailable and not matches:
-            raise HubError('host_unavailable', 'cannot establish a unique remote destination')
+            # With one failing authority, preserve its specific rejection. A
+            # stale heartbeat or ambiguous endpoint is not a host outage.
+            if len(unavailable) == 1:
+                raise unavailable[0]
+            # Fixed code allowlist only: never surface transport output or
+            # arbitrary peer text when summarizing multiple authorities.
+            known = {'host_unavailable', 'endpoint_unavailable', 'no_recipient',
+                     'ambiguous_target', 'identity_rejected', 'unauthorized',
+                     'configuration_error', 'maintenance', 'unavailable'}
+            causes = sorted({e.code if e.code in known else 'remote_error' for e in unavailable})
+            raise HubError('host_unavailable', 'remote destination unresolved: ' + ', '.join(causes))
         if not matches:
             raise HubError('unknown_target', 'unknown target')
         return matches[0]

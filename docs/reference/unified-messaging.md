@@ -200,3 +200,11 @@ app-server is shared. The host still verifies the caller and exact pinned prompt
 hash; a bound native thread/session ID may identify the prompt even when the
 immutable endpoint retains its earlier bootstrap runtime label. No alias-based
 identity adoption or synthetic acknowledgement is introduced.
+
+Remote resolution preserves the sole authoritative failure (`endpoint_unavailable`,
+`no_recipient`, or another protocol rejection) rather than labeling every failure
+as a host outage. Multiple failing authorities report only fixed error classes.
+Transport timeout, command failure, and invalid protocol response have distinct
+fixed diagnostics; no SSH output or credentials are included. This does not
+change destination selection, authorize retry, or prove the original cause of a
+historical generic `host_unavailable` result.

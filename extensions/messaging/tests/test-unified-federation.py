@@ -53,6 +53,20 @@ class FederationTests(unittest.TestCase):
         self.down.clear();self.send('a','sent','b.cc')
         self.hubs['a'].dispatch(dict(op='endpoint_retire',host_id='a',host_token='a-token',endpoint_id='acc'))
         with self.assertRaises(HubError):self.send('b','reply',reply='sent',body='answer')
+    def test_resolver_preserves_owner_rejection_without_accepting_or_retargeting(self):
+        owner=self.hubs['b']
+        owner.db.execute("UPDATE endpoints SET last_heartbeat=0 WHERE endpoint_id='bcc'")
+        with self.assertRaises(HubError) as caught:self.send('a','stale','b.cc')
+        self.assertEqual(caught.exception.code,'endpoint_unavailable')
+        self.assertIsNone(self.hubs['a']._row('SELECT * FROM messages WHERE message_id="stale"'))
+        owner.db.execute("UPDATE endpoints SET retired=1 WHERE endpoint_id='bcc'")
+        with self.assertRaises(HubError) as caught:self.send('a','absent','b.cc')
+        self.assertEqual(caught.exception.code,'no_recipient')
+        self.down={'c'}
+        with self.assertRaises(HubError) as caught:self.send('a','mixed','b.cc')
+        self.assertEqual(caught.exception.code,'host_unavailable')
+        self.assertEqual(caught.exception.message,'remote destination unresolved: host_unavailable, no_recipient')
+
     def test_unknown_peer_cannot_inject(self):
         with self.assertRaises(HubError):self.hubs['b'].dispatch(dict(op='peer_directory',host_id='a',host_token='bad',protocol=1))
 
