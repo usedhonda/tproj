@@ -136,6 +136,8 @@ class TaskAuthority:
     def _op_submit(self, req, actor):
         aid = str(req.get("approval_id", "")); approval = self.db.execute("SELECT * FROM task_approvals WHERE approval_id=?", (aid,)).fetchone()
         if not approval: raise TaskAuthorityError("approval_missing", "approval reference is unknown")
+        if approval["source_endpoint"] != actor["endpoint_id"] or approval["source_incarnation"] != actor["incarnation"]:
+            raise TaskAuthorityError("approval_owner", "approval source is fenced to its registering endpoint")
         for k in ("intent_hash", "scope_hash"):
             if str(req.get(k, "")) != approval[k]: raise TaskAuthorityError("approval_mismatch", f"{k} does not match approval")
         if req.get("owner_endpoint") and str(req["owner_endpoint"]) != actor["endpoint_id"]: raise TaskAuthorityError("not_owner", "submitter must be owner")
@@ -145,20 +147,28 @@ class TaskAuthority:
         if old:
             if old["intent_hash"] != str(req["intent_hash"]) or old["scope_hash"] != str(req["scope_hash"]): raise TaskAuthorityError("id_conflict", "idempotency key conflicts")
             return {"task": self._view(old), "duplicate": True}
+        executor = req.get("executor") or {}; executor_endpoint = str(executor.get("endpoint_id") or req.get("executor_endpoint") or actor["endpoint_id"]); executor_inc = str(executor.get("incarnation") or req.get("executor_incarnation") or actor["incarnation"]); executor_host = str(executor.get("host_id") or req.get("executor_host_id") or actor["host_id"])
         now = time.time(); tid = str(req.get("task_id") or uuid.uuid4()); payload = req.get("payload") or {}
-        self.db.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (tid,key,str(req["intent_hash"]),str(req["scope_hash"]),aid,actor["endpoint_id"],actor["incarnation"],actor["host_id"],actor["project_id"],str(req.get("executor_endpoint") or actor["endpoint_id"]),str(req.get("executor_incarnation") or actor["incarnation"]),str(req.get("executor_host_id") or actor["host_id"]),"submitted",0,json.dumps(payload,sort_keys=True),now,now))
+        self.db.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (tid,key,str(req["intent_hash"]),str(req["scope_hash"]),aid,actor["endpoint_id"],actor["incarnation"],actor["host_id"],actor["project_id"],executor_endpoint,executor_inc,executor_host,"submitted",0,json.dumps(payload,sort_keys=True),now,now))
         self._event(tid, "submit", actor, 0); return {"task": self._view(self._task(tid))}
 
-    def _op_status(self, req, actor): return {"task": self._view(self._task(str(req.get("task_id"))))}
+    def _visible(self, row, actor):
+        return row["owner_endpoint"] == actor["endpoint_id"] or row["executor_endpoint"] == actor["endpoint_id"] or (row["executor_incarnation"] == actor["incarnation"] and row["executor_host_id"] == actor["host_id"])
+    def _op_status(self, req, actor):
+        row=self._task(str(req.get("task_id"))); 
+        if not self._visible(row,actor): raise TaskAuthorityError("not_visible","task is not assigned to actor")
+        return {"task": self._view(row)}
     def _op_list(self, req, actor):
-        rows = self.db.execute("SELECT * FROM tasks ORDER BY created_at").fetchall(); return {"tasks": [self._view(r) for r in rows]}
+        rows = self.db.execute("SELECT * FROM tasks WHERE owner_endpoint=? OR executor_endpoint=? ORDER BY created_at",(actor["endpoint_id"],actor["endpoint_id"])).fetchall(); return {"tasks": [self._view(r) for r in rows]}
 
     def _op_active(self, req, actor):
-        rows = self.db.execute("SELECT * FROM tasks WHERE status NOT IN ('reported','cancelled') ORDER BY created_at").fetchall(); return {"tasks": [self._view(r) for r in rows]}
+        rows = self.db.execute("SELECT * FROM tasks WHERE (owner_endpoint=? OR executor_endpoint=?) AND status NOT IN ('reported','cancelled') ORDER BY created_at",(actor["endpoint_id"],actor["endpoint_id"])).fetchall(); return {"tasks": [self._view(r) for r in rows]}
 
     def _transition(self, req, actor, target, kind):
         row = self._task(str(req.get("task_id"))); self._epoch(req, row); self._executor(row, actor)
-        if row["status"] in {"cancelled", "frozen", "reported", "verified"} and target not in {"verified", "reported"}:
+        if req.get("expected_epoch") is None: raise TaskAuthorityError("epoch_required", "expected_epoch is required")
+        allowed={"submitted":{"accepted","blocked"},"accepted":{"in_progress","blocked"},"in_progress":{"done","blocked"},"done":{"verified","blocked"},"blocked":{"in_progress","done","verified"},"verified":{"reported"},"reported":set(),"cancelled":set(),"frozen":set()}
+        if target not in allowed.get(row["status"], set()):
             raise TaskAuthorityError("stale_task", "task cannot be resurrected")
         self.db.execute("UPDATE tasks SET status=?,updated_at=? WHERE task_id=? AND epoch=?", (target,time.time(),row["task_id"],row["epoch"]))
         self._event(row["task_id"], kind, actor, row["epoch"], req.get("data")); return {"task": self._view(self._task(row["task_id"]))}
@@ -167,8 +177,13 @@ class TaskAuthority:
     def _op_progress(self, req, actor): return self._transition(req, actor, "in_progress", "progress")
     def _op_done(self, req, actor): return self._transition(req, actor, "done", "done")
     def _op_block(self, req, actor): return self._transition(req, actor, "blocked", "block")
-    def _op_verify(self, req, actor): return self._transition(req, actor, "verified", "verify")
-    def _op_report(self, req, actor): return self._transition(req, actor, "reported", "report")
+    def _op_verify(self, req, actor):
+        row=self._task(str(req.get("task_id"))); self._owner(row,actor); self._epoch(req,row); return self._owner_transition(row,actor,"verified","verify",req)
+    def _op_report(self, req, actor):
+        row=self._task(str(req.get("task_id"))); self._owner(row,actor); self._epoch(req,row); return self._owner_transition(row,actor,"reported","report",req)
+    def _owner_transition(self,row,actor,target,kind,req):
+        if target not in ({"verified"} if row["status"]=="done" else {"reported"} if row["status"]=="verified" else set()): raise TaskAuthorityError("invalid_transition","invalid task transition")
+        self.db.execute("UPDATE tasks SET status=?,updated_at=? WHERE task_id=? AND epoch=?",(target,time.time(),row["task_id"],row["epoch"])); self._event(row["task_id"],kind,actor,row["epoch"],req.get("data")); return {"task":self._view(self._task(row["task_id"]))}
 
     def _op_cancel(self, req, actor):
         row=self._task(str(req.get("task_id"))); self._owner(row,actor); self._epoch(req,row)
@@ -180,6 +195,9 @@ class TaskAuthority:
 
     def _op_begin_operation(self, req, actor):
         row=self._task(str(req.get("task_id"))); self._epoch(req,row); self._executor(row,actor)
+        if req.get("expected_epoch") is None: raise TaskAuthorityError("epoch_required","expected_epoch is required")
+        h=self.db.execute("SELECT state,target_endpoint,target_incarnation FROM task_handoffs WHERE task_id=?",(row["task_id"],)).fetchone()
+        if h and h["state"] in ("prepared","released","accepted") and (h["target_endpoint"] != actor["endpoint_id"] or h["target_incarnation"] != actor["incarnation"]): raise TaskAuthorityError("handoff_pending","task is quiescing for handoff")
         kind = str(req.get("tool_use_id") or req.get("kind","mutation"))
         existing=self.db.execute("SELECT * FROM task_operations WHERE task_id=? AND endpoint=? AND incarnation=? AND kind=? AND state='open'",(row["task_id"],actor["endpoint_id"],actor["incarnation"],kind)).fetchone()
         if existing: return {"token":existing["token"],"epoch":row["epoch"],"duplicate":True}
@@ -199,6 +217,8 @@ class TaskAuthority:
         if self.db.execute("SELECT 1 FROM task_operations WHERE task_id=? AND state='open'",(row["task_id"],)).fetchone(): raise TaskAuthorityError("operations_open","handoff requires quiescence")
         target=req.get("target") or {}; required=("endpoint_id","incarnation","host_id")
         if not all(target.get(k) for k in required): raise TaskAuthorityError("invalid_handoff","target identity required")
+        prior=self.db.execute("SELECT state FROM task_handoffs WHERE task_id=?",(row["task_id"],)).fetchone()
+        if prior and prior["state"] in ("released","accepted"): raise TaskAuthorityError("handoff_in_progress","handoff already advanced")
         self.db.execute("INSERT INTO task_handoffs VALUES(?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET expected_epoch=excluded.expected_epoch,target_endpoint=excluded.target_endpoint,target_incarnation=excluded.target_incarnation,target_host_id=excluded.target_host_id,state='prepared',created_at=excluded.created_at",(row["task_id"],row["epoch"],str(target["endpoint_id"]),str(target["incarnation"]),str(target["host_id"]),"prepared",time.time()))
         return {"handoff":{"task_id":row["task_id"],"from_endpoint":row["executor_endpoint"],"from_incarnation":row["executor_incarnation"],"target":dict(target),"expected_epoch":row["epoch"]}}
 
@@ -222,6 +242,6 @@ class TaskAuthority:
         target=req.get("target") or {}; required=("endpoint_id","incarnation","host_id")
         if not all(target.get(k) for k in required): raise TaskAuthorityError("invalid_handoff","target identity required")
         h=self.db.execute("SELECT * FROM task_handoffs WHERE task_id=?",(row["task_id"],)).fetchone()
-        if not h or h["state"] != "accepted" or h["target_endpoint"] != str(target["endpoint_id"]): raise TaskAuthorityError("handoff_not_accepted","target must accept before commit")
+        if not h or h["state"] != "accepted" or h["target_endpoint"] != str(target["endpoint_id"]) or h["target_incarnation"] != str(target["incarnation"]) or h["target_host_id"] != str(target["host_id"]): raise TaskAuthorityError("handoff_not_accepted","target must accept before commit")
         epoch=row["epoch"]+1; self.db.execute("UPDATE tasks SET executor_endpoint=?,executor_incarnation=?,executor_host_id=?,epoch=?,updated_at=? WHERE task_id=? AND epoch=?",(str(target["endpoint_id"]),str(target["incarnation"]),str(target["host_id"]),epoch,time.time(),row["task_id"],row["epoch"]))
         self.db.execute("UPDATE task_handoffs SET state='committed' WHERE task_id=?",(row["task_id"],)); self._event(row["task_id"],"handoff_commit",actor,epoch,{"target":target}); return {"task":self._view(self._task(row["task_id"]))}
