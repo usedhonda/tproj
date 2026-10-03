@@ -39,6 +39,6 @@ class TestTasks(unittest.TestCase):
  def test_foreign_approval_and_visibility(self):
     t=authority(); make_task(t)
     with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"submit","idempotency_key":"k2","intent_hash":"ih","scope_hash":"sh","approval_id":"a"},B)
-    with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"list"},B)
+    self.assertEqual(t.dispatch({"op":"list"},B)["tasks"], [])
 
 if __name__ == '__main__': unittest.main()
