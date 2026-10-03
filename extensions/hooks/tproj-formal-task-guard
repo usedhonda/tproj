@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Admission hook for mutations while a unified formal task is assigned."""
 from __future__ import annotations
-import json, os, sys
+import json, os, sys, sqlite3, shlex
 from pathlib import Path
 from importlib.machinery import SourceFileLoader
 
@@ -44,18 +44,48 @@ def command(data):
 
 def lifecycle(value):
     text = value.strip()
-    return text.startswith(("tproj-msg ", "tproj-task "))
+    if not text or guard.AMBIGUOUS_SHELL_RE.search(text): return False
+    try: argv = shlex.split(text)
+    except ValueError: return False
+    return len(argv) >= 2 and argv[0] in {"tproj-msg", "tproj-task"}
+
+def native_ids(data):
+    found = {os.environ.get("CODEX_THREAD_ID", ""), os.environ.get("CODEX_SESSION_ID", "")}
+    for root in (data, data.get("hook_input"), data.get("raw_event")):
+        if isinstance(root, dict):
+            for key in ("session_id", "conversation_id", "thread_id"):
+                if root.get(key): found.add(str(root[key]))
+    return {item for item in found if item}
+
+def assigned(data):
+    ids = native_ids(data)
+    if not ids: return False
+    try:
+        host_cfg_path = Path(os.environ.get("TPROJ_MSG_HOST_CONFIG", str(Path.home()/".config/tproj/msg-host.json")))
+        host_cfg = json.loads(host_cfg_path.read_text(encoding="utf-8")) if host_cfg_path.is_file() else {}
+        journal = host_cfg.get("journal")
+        if not journal:
+            journal = cli.config().get("journal")
+        if not journal: return False
+        with sqlite3.connect(f"file:{journal}?mode=ro", uri=True, timeout=0.2) as db:
+            marks = ",".join("?" for _ in ids)
+            return db.execute(f"SELECT 1 FROM formal_task_binding WHERE native_id IN ({marks}) LIMIT 1", tuple(ids)).fetchone() is not None
+    except (sqlite3.Error, OSError, cli.ClientError):
+        return False
 
 def main() -> int:
     data = payload(); event = str(data.get("hook_event_name") or data.get("event") or os.environ.get("TPROJ_HOOK_EVENT", "pretool")).lower()
+    if "--event" in sys.argv:
+        try: event = sys.argv[sys.argv.index("--event") + 1].lower()
+        except IndexError: pass
     name, cmd = tool_name(data), command(data)
     if name in getattr(guard, "READONLY_TOOL_NAMES", set()) or guard.is_readonly_shell(cmd) or lifecycle(cmd):
+        print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
+    if not assigned(data):
         print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
     if event in ("posttooluse", "posttool", "failure", "post_tool_use") or event.startswith("posttool"):
         op = "task_guard_end"
     else:
-        if name not in getattr(guard, "MUTATING_TOOL_NAMES", set()) and not cmd:
-            print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
         op = "task_guard_begin"
     ident = tool_id(data)
     try:
