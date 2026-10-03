@@ -61,14 +61,17 @@ struct ProcessCommandRunner: CommandRunning, Sendable {
             let group = DispatchGroup()
 
             group.enter()
-            DispatchQueue.global(qos: .utility).async {
+            // Use dedicated reader threads: this runner is also invoked from
+            // bounded global queues, and scheduling nested readers there can
+            // exhaust the pool while callers wait for EOF.
+            Thread.detachNewThread {
                 let d = outPipe.fileHandleForReading.readDataToEndOfFile()
                 outData = d.count > maxBuffer ? d.prefix(maxBuffer) : d
                 group.leave()
             }
 
             group.enter()
-            DispatchQueue.global(qos: .utility).async {
+            Thread.detachNewThread {
                 let d = errPipe.fileHandleForReading.readDataToEndOfFile()
                 errData = d.count > maxBuffer ? d.prefix(maxBuffer) : d
                 group.leave()
