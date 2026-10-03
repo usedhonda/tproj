@@ -24,3 +24,12 @@ Handoff is a durable four-step fence: owner prepares a target, the old executor
 releases after all operation tokens close, the target accepts, and the owner
 commits with an epoch compare-and-swap. Open operation tokens never expire;
 stale or terminal tasks cannot be resurrected.
+
+## Local assignment fence
+
+The native host records a restrictive presence marker before accepting an
+assignment. It contains no task state or authority; operations still query the
+single master. A missing or unreadable journal must not turn a known assignment
+into an unassigned session. The marker is removed only after a successful
+terminal-task detach with no open operations. Ordinary unassigned sessions do
+not require the task master. This integration is not yet production-activated.

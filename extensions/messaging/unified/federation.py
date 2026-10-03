@@ -348,6 +348,9 @@ class FederatedHub(Hub):
                 if op == 'peer_manage_update': return self.manage_update(req['request'], origin=owner)
                 return {'peer_directory_prepare': prepare, 'peer_directory_commit': commit,
                         'peer_directory_status': status, 'peer_directory_abort': abort}[op](self, req)
+            if op == 'peer_task':
+                from task_transport import dispatch
+                return dispatch(self, req, peer=True)
             if op == 'peer_directory': return self.local_directory()
             if op == 'peer_resolve': return self.local_resolve(req.get('address'), req.get('endpoint_id'))
             if op == 'peer_accept': return self.accept(req)
@@ -366,6 +369,9 @@ class FederatedHub(Hub):
                     raise HubError('unauthorized', 'not party to message')
                 return super().dispatch(dict(req, op='query'))
             raise HubError('unknown_op', 'unsupported peer operation')
+        if op.startswith('task_'):
+            from task_transport import dispatch
+            return dispatch(self, req)
         if op == 'directory_all':
             self._auth(req); return self.combined_directory()
         if op == 'directory_update':

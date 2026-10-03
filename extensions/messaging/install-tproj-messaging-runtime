@@ -31,6 +31,7 @@ RUNTIME_FILES = (
     ("extensions/hooks/tproj-inbox-check", "tproj-inbox-check"),
     ("extensions/hooks/tproj-completion-guard", "tproj-completion-guard"),
     ("extensions/hooks/tproj-mutation-guard", "tproj-mutation-guard"),
+    ("extensions/hooks/tproj-formal-task-guard", "tproj-formal-task-guard"),
     ("extensions/hooks/tproj-cc-cache-observer", "tproj-cc-cache-observer"),
     ("extensions/hooks/tproj-cc-poke", "tproj-cc-poke"),
     ("extensions/hooks/tproj-codex-cache-observer", "tproj-codex-cache-observer"),
@@ -56,6 +57,8 @@ def sha256(path: Path) -> str:
 def hook_command_strings(home: Path) -> tuple[set[str], set[str]]:
     claude = {
         "$HOME/bin/tproj-mutation-guard",
+        "$HOME/bin/tproj-formal-task-guard --event pretool",
+        "$HOME/bin/tproj-formal-task-guard --event posttool",
         "$HOME/bin/tproj-inbox-record",
         "$HOME/bin/tproj-inbox-check",
         "$HOME/bin/tproj-completion-guard",
@@ -65,6 +68,8 @@ def hook_command_strings(home: Path) -> tuple[set[str], set[str]]:
     }
     codex = {
         f"{home / 'bin' / 'tproj-mutation-guard'} --platform codex",
+        f"{home / 'bin' / 'tproj-formal-task-guard'} --platform codex --event pretool",
+        f"{home / 'bin' / 'tproj-formal-task-guard'} --platform codex --event posttool",
         str(home / "bin" / "tproj-inbox-record"),
         f"{home / 'bin' / 'tproj-inbox-check'} --platform codex",
         f"{home / 'bin' / 'tproj-completion-guard'} --platform codex",

@@ -336,6 +336,9 @@ class Host:
             return self.hub('directory_update', projects=req['projects'], expected_revision=req['expected_revision'])
         is_service = isinstance(op, str) and op.startswith('service_')
         ep = self.service(pid, uid, req) if is_service else self.caller(pid, uid, req)
+        if isinstance(op, str) and op.startswith('task_'):
+            from task_host import dispatch
+            return dispatch(self, ep, req)
         if op == 'service_whoami':
             return {key: ep.get(key) for key in ('endpoint_id', 'participant_id', 'host_id', 'address',
                                                   'session', 'runtime_id', 'platform', 'incarnation')}

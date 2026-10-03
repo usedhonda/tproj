@@ -11,6 +11,15 @@ ROOT = Path(__file__).resolve().parents[2]
 guard = SourceFileLoader("formal_guard", str(ROOT / "hooks/tproj-formal-task-guard")).load_module()
 
 class FormalGuardTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        cfg = Path(self.home.name)/'host.json'
+        cfg.write_text('{}')
+        env = patch.dict(os.environ, {'TPROJ_MSG_HOST_CONFIG':str(cfg), 'TPROJ_TASK_BINDING_DIR':str(Path(self.home.name)/'markers'), 'CODEX_THREAD_ID':'n1'})
+        env.start(); self.addCleanup(env.stop)
+
     def run_hook(self, value):
         with patch("sys.stdin", io.StringIO(json.dumps(value))), patch("sys.stdout", new_callable=io.StringIO) as out:
             rc = guard.main()
@@ -20,7 +29,7 @@ class FormalGuardTest(unittest.TestCase):
         import tempfile
         self.tmp = tempfile.TemporaryDirectory(); db = Path(self.tmp.name) / "host.db"
         con = sqlite3.connect(db); con.execute("CREATE TABLE formal_task_binding(endpoint_id TEXT, incarnation TEXT, task_id TEXT, epoch INTEGER, native_id TEXT)"); con.execute("INSERT INTO formal_task_binding VALUES('e','i','t',0,'n1')"); con.commit(); con.close()
-        cfg = Path(self.tmp.name) / "msg-host.json"; cfg.write_text(json.dumps({"journal": str(db)})); self.env = patch.dict(os.environ, {"TPROJ_MSG_HOST_CONFIG": str(cfg), "CODEX_THREAD_ID": "n1"}); self.env.start()
+        cfg = Path(self.tmp.name) / "msg-host.json"; cfg.write_text(json.dumps({"journal": str(db)})); self.env = patch.dict(os.environ, {"TPROJ_MSG_HOST_CONFIG": str(cfg), "CODEX_THREAD_ID": "n1"}); self.env.start(); self.addCleanup(self.env.stop); self.addCleanup(self.tmp.cleanup)
 
     def test_unassigned_is_fail_open(self):
         with patch.object(guard.cli, "config", return_value={"socket": "x"}), patch.object(guard.cli, "rpc", return_value={"assigned": False}):
@@ -32,6 +41,21 @@ class FormalGuardTest(unittest.TestCase):
         with patch.object(guard.cli, "config", side_effect=guard.cli.ClientError("offline")):
             _, result = self.run_hook({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "rm file"}})
         self.assertEqual(result["decision"], "block")
+
+    def test_durable_marker_blocks_when_journal_cannot_be_read(self):
+        marker=guard.binding_marker('n1')
+        marker.parent.mkdir(parents=True)
+        marker.touch()
+        with patch.object(guard.cli, "config", side_effect=guard.cli.ClientError("offline")):
+            _, result=self.run_hook({"tool_name":"Bash", "tool_use_id":"u1", "tool_input":{"command":"touch file"}})
+        self.assertEqual(result['decision'],'block')
+
+    def test_corrupt_journal_never_means_unassigned(self):
+        self._bound()
+        cfg=json.loads(Path(os.environ['TPROJ_MSG_HOST_CONFIG']).read_text())
+        Path(cfg['journal']).write_bytes(b'not a database')
+        _, result=self.run_hook({"tool_name":"Bash", "tool_use_id":"u1", "tool_input":{"command":"touch file"}})
+        self.assertEqual(result['decision'],'block')
 
     def test_old_epoch_rejection_denies_post(self):
         self._bound()

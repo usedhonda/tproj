@@ -9,7 +9,7 @@ def authority(): return TaskAuthority(sqlite3.connect(":memory:", isolation_leve
 
 def make_task(t):
     t.dispatch({"op":"approval","approval_id":"a","intent_hash":"ih","scope_hash":"sh","evidence_hash":"eh","source_endpoint":"e1","host_attested":True}, A)
-    return t.dispatch({"op":"submit","idempotency_key":"k","intent_hash":"ih","scope_hash":"sh","approval_id":"a","payload":{"x":1}}, A)["task"]
+    return t.dispatch({"op":"submit","idempotency_key":"k","intent_hash":"ih","scope_hash":"sh","approval_id":"a","payload":{"x":1},"executor":A}, A)["task"]
 
 class TestTasks(unittest.TestCase):
  def test_approval_submit_and_idempotency(self):
@@ -20,7 +20,8 @@ class TestTasks(unittest.TestCase):
  def test_incarnation_fence_and_handoff(self):
     t=authority(); task=make_task(t); tid=task["task_id"]
     with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"progress","task_id":tid,"expected_epoch":0}, {**A,"incarnation":"old"})
-    t.dispatch({"op":"prepare_handoff","task_id":tid,"target":B},A)
+    t.dispatch({"op":"ack","task_id":tid,"expected_epoch":0},A)
+    t.dispatch({"op":"prepare_handoff","task_id":tid,"expected_epoch":0,"target":B},A)
     with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"commit_handoff","task_id":tid,"expected_epoch":0,"target":B},A)
     t.dispatch({"op":"release_handoff","task_id":tid,"expected_epoch":0},A)
     t.dispatch({"op":"accept_handoff","task_id":tid,"expected_epoch":0},B)
@@ -30,6 +31,7 @@ class TestTasks(unittest.TestCase):
 
  def test_operation_quiescence_and_cancel(self):
     t=authority(); tid=make_task(t)["task_id"]
+    t.dispatch({"op":"ack","task_id":tid,"expected_epoch":0},A)
     op=t.dispatch({"op":"begin_operation","task_id":tid,"expected_epoch":0,"tool_use_id":"u1"},A)
     with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"prepare_handoff","task_id":tid,"expected_epoch":0,"target":B},A)
     t.dispatch({"op":"end_operation","token":op["token"]},A)

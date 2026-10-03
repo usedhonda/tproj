@@ -12,6 +12,7 @@ if not _unified.is_dir():
 try:
     sys.path.insert(0, str(_unified))
     import cli  # type: ignore
+    from task_host import binding_marker
 except ImportError:
     cli = None
 _guard_path = ROOT / "extensions/hooks/tproj-mutation-guard"
@@ -60,6 +61,8 @@ def native_ids(data):
 def assigned(data):
     ids = native_ids(data)
     if not ids: return False
+    if cli is None: raise RuntimeError('unified task client unavailable')
+    if any(binding_marker(native_id).exists() for native_id in ids): return True
     try:
         host_cfg_path = Path(os.environ.get("TPROJ_MSG_HOST_CONFIG", str(Path.home()/".config/tproj/msg-host.json")))
         host_cfg = json.loads(host_cfg_path.read_text(encoding="utf-8")) if host_cfg_path.is_file() else {}
@@ -70,8 +73,11 @@ def assigned(data):
         with sqlite3.connect(f"file:{journal}?mode=ro", uri=True, timeout=0.2) as db:
             marks = ",".join("?" for _ in ids)
             return db.execute(f"SELECT 1 FROM formal_task_binding WHERE native_id IN ({marks}) LIMIT 1", tuple(ids)).fetchone() is not None
-    except (sqlite3.Error, OSError, cli.ClientError):
-        return False
+    except sqlite3.OperationalError as exc:
+        if 'no such table: formal_task_binding' in str(exc): return False
+        raise RuntimeError('formal task assignment cannot be verified') from None
+    except (sqlite3.Error, OSError, ValueError, cli.ClientError):
+        raise RuntimeError('formal task assignment cannot be verified') from None
 
 def main() -> int:
     data = payload(); event = str(data.get("hook_event_name") or data.get("event") or os.environ.get("TPROJ_HOOK_EVENT", "pretool")).lower()
@@ -81,7 +87,11 @@ def main() -> int:
     name, cmd = tool_name(data), command(data)
     if name in getattr(guard, "READONLY_TOOL_NAMES", set()) or guard.is_readonly_shell(cmd) or lifecycle(cmd):
         print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
-    if not assigned(data):
+    try:
+        is_assigned = assigned(data)
+    except Exception:
+        print(json.dumps({"decision": "block", "reason": "formal task assignment cannot be verified"})); return 0
+    if not is_assigned:
         print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
     if event in ("posttooluse", "posttool", "failure", "post_tool_use") or event.startswith("posttool"):
         op = "task_guard_end"

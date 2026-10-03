@@ -7,11 +7,17 @@ SELF_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 # public task API.  Legacy IDs remain readable: a durable ``not_found`` from
 # the authority falls through to the historical cache implementation below.
 _unified_config="${TPROJ_UNIFIED_CONFIG:-$HOME/.config/tproj/msg-client.json}"
-_unified_cli="${TPROJ_UNIFIED_TASK_CLI:-$SELF_DIR/unified/task_cli.py}"
+_unified_default="$HOME/lib/tproj-msg-unified/task_cli.py"
+[[ ! -f "$SELF_DIR/unified/task_cli.py" ]] || _unified_default="$SELF_DIR/unified/task_cli.py"
+_unified_cli="${TPROJ_UNIFIED_TASK_CLI:-$_unified_default}"
 case "${1:-}" in
-  approval|submit|status|list|ack|progress|done|block|verify|report|cancel|freeze|handoff)
+  approval|submit|status|list|ack|progress|done|block|verify|report|cancel|freeze|handoff|detach|--help|-h)
     if [[ -f "$_unified_config" ]] && jq -e '.active == true or .enrolled == true' "$_unified_config" >/dev/null 2>&1 \
-       && [[ -f "$_unified_cli" ]]; then
+       ; then
+      if [[ ! -f "$_unified_cli" ]]; then
+        echo 'unsupported: unified task client is not installed' >&2
+        exit 2
+      fi
       _unified_out=""
       _unified_rc=0
       _unified_out="$(python3 "$_unified_cli" "$@" 2>&1)" || _unified_rc=$?

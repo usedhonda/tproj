@@ -49,12 +49,18 @@ bypass for an identity rejection.
 The implementation source is `extensions/messaging/unified/tasks.py`; live
 rollout and acceptance remain pending until integrated deployment verification.
 
-## Open questions (must be resolved before live rollout)
+## Selected authority and remaining rollout gates
 
-- (a) Distributed task authorization protocol (ordinary messaging already has its own identity contract).
-- (b) The concrete authority source of truth and fencing mechanism.
+Standalone installations use their local hub as the task master. Multi-host
+installations select exactly one enrolled `task_master_host_id`; no replicated
+ledger, automatic election, or local authority fallback is permitted.
+Host-authenticated native approval evidence, task epoch, executor incarnation,
+and durable operation boundaries fence mutations. A local assignment marker
+only restricts execution; it cannot grant authority while the master is offline.
 
-Agreeing on this contract is separate from proving (a) and (b) feasible.
+Before activation, finish native approval binding, role-router integration,
+capability negotiation, and live isolated host acceptance. Source and fixture
+success alone do not establish that these deployment gates are satisfied.
 
 ## Minimum acceptance evidence (future)
 

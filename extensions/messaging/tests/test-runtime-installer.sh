@@ -29,6 +29,7 @@ runtime_targets=(
   tproj-inbox-check
   tproj-completion-guard
   tproj-mutation-guard
+  tproj-formal-task-guard
   tproj-codex-cache-observer
   tproj-cc-poke
   tproj-codex-cache-state
