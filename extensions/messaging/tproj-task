@@ -2,6 +2,28 @@
 set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+
+# Enrolled installations use the authenticated unified authority for the new
+# public task API.  Legacy IDs remain readable: a durable ``not_found`` from
+# the authority falls through to the historical cache implementation below.
+_unified_config="${TPROJ_UNIFIED_CONFIG:-$HOME/.config/tproj/msg-client.json}"
+_unified_cli="${TPROJ_UNIFIED_TASK_CLI:-$SELF_DIR/unified/task_cli.py}"
+case "${1:-}" in
+  approval|submit|status|list|ack|progress|done|block|verify|report|cancel|freeze|handoff)
+    if [[ -f "$_unified_config" ]] && jq -e '.active == true or .enrolled == true' "$_unified_config" >/dev/null 2>&1 \
+       && [[ -f "$_unified_cli" ]]; then
+      _unified_out=""
+      _unified_rc=0
+      _unified_out="$(python3 "$_unified_cli" "$@" 2>&1)" || _unified_rc=$?
+      if [[ $_unified_rc -eq 0 || "$_unified_out" != not_found:* ]]; then
+        printf '%s\n' "$_unified_out"
+        exit "$_unified_rc"
+      fi
+      # not_found is the one compatibility case: allow legacy task IDs to
+      # retain their existing cache semantics without resending anything.
+    fi
+    ;;
+esac
 # shellcheck source=/dev/null
 source "$SELF_DIR/tproj-task-cache.sh"
 
