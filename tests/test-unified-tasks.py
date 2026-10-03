@@ -28,4 +28,12 @@ class TestTasks(unittest.TestCase):
     with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"progress","task_id":tid,"expected_epoch":0},A)
     assert t.dispatch({"op":"active"},A)["tasks"]
 
+ def test_operation_quiescence_and_cancel(self):
+    t=authority(); tid=make_task(t)["task_id"]
+    op=t.dispatch({"op":"begin_operation","task_id":tid,"expected_epoch":0,"tool_use_id":"u1"},A)
+    with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"prepare_handoff","task_id":tid,"expected_epoch":0,"target":B},A)
+    t.dispatch({"op":"end_operation","token":op["token"]},A)
+    t.dispatch({"op":"cancel","task_id":tid,"expected_epoch":0},A)
+    with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"begin_operation","task_id":tid,"expected_epoch":0,"tool_use_id":"u2"},A)
+
 if __name__ == '__main__': unittest.main()

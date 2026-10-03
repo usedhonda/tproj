@@ -116,7 +116,14 @@ class TaskAuthority:
         if op.startswith("handoff_"): op = op[8:]
         fn = getattr(self, f"_op_{op}", None)
         if not fn: raise TaskAuthorityError("unsupported", "unsupported task operation")
-        return fn(dict(req), actor)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            result = fn(dict(req), actor)
+            self.db.execute("COMMIT")
+            return result
+        except Exception:
+            if self.db.in_transaction: self.db.execute("ROLLBACK")
+            raise
 
     def _op_approval(self, req, actor):
         # Host integration must set this only after direct-user evidence was
