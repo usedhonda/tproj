@@ -22,9 +22,11 @@ def native_context(payload):
                     raise ValueError('native conversation context conflict')
                 values[key] = value
         value = root.get('conversation_id')
-        if (not values.get('thread_id') and not values.get('session_id')
-                and isinstance(value, str) and value.strip()):
-            values['thread_id'] = value.strip()
+        if isinstance(value, str) and value.strip():
+            value = value.strip()
+            if values.get('thread_id') and values['thread_id'] != value:
+                raise ValueError('native conversation context conflict')
+            values['thread_id'] = value
     return values
 
 

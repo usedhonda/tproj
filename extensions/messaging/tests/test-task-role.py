@@ -31,6 +31,7 @@ class TaskRoleContextTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw, patch.dict(task_role.os.environ, {
                 'TPROJ_TASK_BINDING_DIR': raw, 'CODEX_THREAD_ID': '', 'CODEX_SESSION_ID': ''}), \
              patch.object(task_role.cli, 'native_conversation_context', return_value={}), \
+             patch.object(task_role.cli, 'config', return_value={'socket':'fixture'}), \
              patch.object(task_role.cli, '_caller_request', return_value={'op':'task_context'}) as request, \
              patch.object(task_role.cli, 'rpc', return_value={'assigned':True, 'can_mutate':True}) as rpc:
             task_role.binding_marker('payload-session').parent.mkdir(parents=True, exist_ok=True)
@@ -43,6 +44,13 @@ class TaskRoleContextTest(unittest.TestCase):
     def test_conflicting_payload_roots_are_rejected(self):
         with self.assertRaisesRegex(ValueError, 'context conflict'):
             task_role.native_context({'session_id':'one', 'raw_event':{'session_id':'two'}})
+
+    def test_context_conflict_is_restrictive_and_skips_rpc(self):
+        with patch.dict(task_role.os.environ, {'CODEX_THREAD_ID':'', 'CODEX_SESSION_ID':''}), \
+             patch.object(task_role.cli, 'native_conversation_context', return_value={}), \
+             patch.object(task_role.cli, 'rpc', side_effect=AssertionError('must not call rpc')):
+            result = task_role.context({'thread_id':'one', 'raw_event':{'conversation_id':'two'}})
+        self.assertEqual(result, {'assigned':True, 'can_mutate':False, 'task_status':'authority_unavailable'})
 
 
 if __name__ == '__main__':
