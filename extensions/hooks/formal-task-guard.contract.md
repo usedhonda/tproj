@@ -26,3 +26,14 @@ an open operation fenced; timeout is not proof of operation completion.
 Primary Codex contract: https://learn.chatgpt.com/docs/hooks#posttooluse
 Unified exec can emit PostToolUse from a later write_stdin completion; the original
 tool_use_id, not the polling call's identity, owns that operation.
+
+Native code-mode envelopes may report `exec`, not `functions.exec`; both names,
+along with Bash and exec_command aliases, are matched. Lifecycle commands inside
+code mode are exempt only for one `text(await tools.exec_command({...}));` call
+whose argument is literal JSON with the documented benign execution fields.
+Computed arguments, custom shells, appended JavaScript, and shell chains are not
+lifecycle exemptions. This prevents the lifecycle command from creating an open
+operation that would deadlock its own completion, without treating arbitrary
+JavaScript containing a task command as read-only.
+Installer migration removes only obsolete exact installer-owned single-command
+matcher entries; grouped and customized hooks remain untouched.

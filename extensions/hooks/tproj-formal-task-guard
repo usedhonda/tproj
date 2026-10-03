@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Admission hook for mutations while a unified formal task is assigned."""
 from __future__ import annotations
-import json, os, sys, sqlite3, shlex
+import json, os, sys, sqlite3, shlex, re
 from pathlib import Path
 from importlib.machinery import SourceFileLoader
 
@@ -40,7 +40,20 @@ def tool_id(data):
     return ""
 
 def command(data):
-    _name, value = guard.parse_command(data)
+    name, value = guard.parse_command(data)
+    if name in ('exec','functions.exec'):
+        source = data.get('tool_input', {}).get('code') or data.get('tool_input', {}).get('source') or value
+        # Recognize only a single literal JSON call, not arbitrary JavaScript.
+        # This preserves lifecycle access through code mode without allowing
+        # appended statements, computed values, custom shells, or extra tools.
+        match = re.fullmatch(r'\s*text\(\s*await tools\.exec_command\((\{[\s\S]*\})\)\s*\)\s*;?\s*', source or '')
+        if match:
+            try: args=json.loads(match.group(1))
+            except (ValueError,TypeError): args={}
+            allowed={'cmd','workdir','yield_time_ms','max_output_tokens','login'}
+            if isinstance(args,dict) and set(args)<=allowed and isinstance(args.get('cmd'),str):
+                return args['cmd']
+        return source
     return value
 
 def lifecycle(value):

@@ -72,6 +72,16 @@ class FormalGuardTest(unittest.TestCase):
                 self.assertEqual(result['decision'],'allow')
         self.assertEqual([(r['op'],r['tool_use_id']) for r in seen],[('task_guard_end','original')]*2)
 
+    def test_native_exec_lifecycle_literal_does_not_open_an_operation(self):
+        self._bound()
+        with patch.object(guard.cli,'rpc',side_effect=AssertionError('lifecycle must not admit itself')):
+            _,result=self.run_hook({'tool_name':'exec','tool_input':{'code':'text(await tools.exec_command({"cmd":"tproj-task done task-id --epoch 0"}));'}})
+        self.assertEqual(result['decision'],'allow')
+        with patch.object(guard.cli,'config',return_value={'socket':'x'}),patch.object(guard.cli,'rpc',side_effect=guard.cli.ClientError('fenced')):
+            for code in ('text(await tools.exec_command({"cmd":"tproj-task done t --epoch 0"})); mutate();', 'text(await tools.exec_command({"cmd":"tproj-task done t --epoch 0","shell":"evil"}));', 'text(await tools.exec_command({"cmd":"touch file"}));'):
+                _,result=self.run_hook({'tool_name':'exec','tool_use_id':'native-call','tool_input':{'code':code}})
+                self.assertEqual(result['decision'],'block')
+
     def test_bound_semicolon_and_unknown_exec_are_guarded(self):
         self._bound()
         with patch.object(guard.cli, "config", return_value={"socket": "x"}), patch.object(guard.cli, "rpc", side_effect=guard.cli.ClientError("epoch", "epoch_conflict")):
