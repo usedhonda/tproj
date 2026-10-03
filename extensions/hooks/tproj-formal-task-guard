@@ -127,7 +127,11 @@ def main() -> int:
     if "--event" in sys.argv:
         try: event = sys.argv[sys.argv.index("--event") + 1].lower()
         except IndexError: pass
-    print(json.dumps(evaluate(data, event), separators=(",", ":")))
+    decision = evaluate(data, event)
+    # The evaluator's internal allow is not a native hook wire decision.
+    # Empty output leaves the platform's own permission policy in control.
+    if decision.get("decision") == "block":
+        print(json.dumps(decision, separators=(",", ":")))
     return 0
 
 if __name__ == "__main__": raise SystemExit(main())

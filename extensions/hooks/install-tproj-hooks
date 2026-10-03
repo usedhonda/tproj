@@ -66,9 +66,15 @@ def ensure_entry(hooks: dict[str, Any], event: str, matcher: str, command: str) 
     # Migrate only the exact single-command entries emitted by this installer.
     # Preserve grouped/user-customized hooks and unrelated matchers.
     old_matcher = matcher.replace("Bash|exec|exec_command|", "Bash|")
-    if old_matcher != matcher:
+    old_matchers = {old_matcher} if old_matcher != matcher else set()
+    if "tproj-completion-guard" in command and event == "PostToolUse":
+        old_matchers.update({
+            "Bash|functions.exec|functions.exec_command",
+            "Bash|exec|exec_command|functions.exec|functions.exec_command",
+        })
+    if old_matchers:
         entries[:] = [entry for entry in entries if not (
-            entry.get("matcher", "") == old_matcher
+            entry.get("matcher", "") in old_matchers
             and entry.get("hooks") == [{"type": "command", "command": command}]
             and set(entry) == {"matcher", "hooks"}
         )]
@@ -98,7 +104,7 @@ def merge(document: dict[str, Any], platform: str) -> dict[str, Any]:
         ensure_entry(hooks, "PostToolUse", "Bash|exec|exec_command|functions.exec|functions.exec_command|Edit|Write|MultiEdit|NotebookEdit|apply_patch|functions.apply_patch", f"{home}/tproj-formal-task-guard --event posttool")
         ensure_entry(hooks, "PostToolUseFailure", "Bash|exec|exec_command|functions.exec|functions.exec_command|Edit|Write|MultiEdit|NotebookEdit|apply_patch|functions.apply_patch", f"{home}/tproj-formal-task-guard --event failure")
         ensure_entry(hooks, "PostToolUse", "Bash|exec|exec_command|functions.exec|functions.exec_command", f"{home}/tproj-inbox-record")
-        ensure_entry(hooks, "PostToolUse", "Bash|exec|exec_command|functions.exec|functions.exec_command", f"{home}/tproj-completion-guard --event posttool")
+        ensure_entry(hooks, "PostToolUse", "Bash|exec|exec_command|functions.exec|functions.exec_command|Edit|Write|MultiEdit|NotebookEdit|apply_patch|functions.apply_patch", f"{home}/tproj-completion-guard --event posttool")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-cc-cache-observer prompt")
         ensure_entry(hooks, "Notification", "idle_prompt", f"{home}/tproj-cc-cache-observer notification")
@@ -111,7 +117,7 @@ def merge(document: dict[str, Any], platform: str) -> dict[str, Any]:
         ensure_entry(hooks, "PreToolUse", "Bash|exec|exec_command|functions.exec|functions.exec_command|Edit|Write|MultiEdit|NotebookEdit|apply_patch|functions.apply_patch", f"{home}/tproj-formal-task-guard --platform codex --event pretool")
         ensure_entry(hooks, "PostToolUse", "Bash|exec|exec_command|functions.exec|functions.exec_command|Edit|Write|MultiEdit|NotebookEdit|apply_patch|functions.apply_patch", f"{home}/tproj-formal-task-guard --platform codex --event posttool")
         ensure_entry(hooks, "PostToolUse", "Bash|exec|exec_command|functions.exec|functions.exec_command", f"{home}/tproj-inbox-record")
-        ensure_entry(hooks, "PostToolUse", "Bash|exec|exec_command|functions.exec|functions.exec_command", f"{home}/tproj-completion-guard --platform codex --event posttool")
+        ensure_entry(hooks, "PostToolUse", "Bash|exec|exec_command|functions.exec|functions.exec_command|Edit|Write|MultiEdit|NotebookEdit|apply_patch|functions.apply_patch", f"{home}/tproj-completion-guard --platform codex --event posttool")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-inbox-check --platform codex")
         ensure_entry(hooks, "UserPromptSubmit", "", f"{home}/tproj-codex-cache-observer prompt")
         ensure_entry(hooks, "Stop", "", f"{home}/tproj-completion-guard --platform codex")

@@ -30,6 +30,28 @@ class HookMetadataTest(unittest.TestCase):
             self.assertEqual(merged, original)
             self.assertEqual(installer['merge'](copy.deepcopy(merged), platform), original)
 
+    def test_completion_migration_covers_edits_without_clobbering_custom_entries(self):
+        for platform in ('claude', 'codex'):
+            expected = installer['merge']({}, platform)
+            completion = next(entry for entry in expected['hooks']['PostToolUse']
+                              if 'tproj-completion-guard' in installer['command_of'](entry))
+            for tool in ('Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch', 'functions.apply_patch'):
+                self.assertIn(tool, completion['matcher'].split('|'))
+            for matcher in ('Bash|functions.exec|functions.exec_command',
+                            'Bash|exec|exec_command|functions.exec|functions.exec_command'):
+                old = copy.deepcopy(expected)
+                entry = next(e for e in old['hooks']['PostToolUse']
+                             if 'tproj-completion-guard' in installer['command_of'](e))
+                entry['matcher'] = matcher
+                custom = copy.deepcopy(entry)
+                custom['hooks'].append({'type': 'command', 'command': 'custom-user-hook'})
+                old['hooks']['PostToolUse'].append(custom)
+                actual = installer['merge'](old, platform)
+                self.assertIn(custom, actual['hooks']['PostToolUse'])
+                actual['hooks']['PostToolUse'].remove(custom)
+                self.assertEqual(actual, expected)
+                self.assertEqual(installer['merge'](copy.deepcopy(actual), platform), expected)
+
     def test_failure_hook_is_platform_specific(self):
         cc=installer['merge']({},'claude')['hooks']
         cdx=installer['merge']({},'codex')['hooks']

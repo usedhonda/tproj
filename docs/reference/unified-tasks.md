@@ -39,6 +39,24 @@ operation on the master. A successful API lifecycle or notification receipt is
 not that evidence. An agent still running an older executable/configuration must
 not be reported as protected merely because the installed files are current.
 
+The established mutation/completion entrypoints also evaluate formal task
+operations. Completion matchers cover direct file edits as well as shell tools;
+shell-only acceptance does not prove edit completion. Installer migration removes
+only exact generated obsolete entries and preserves customized/grouped hooks.
+An already-running client must reload its hook configuration through a supported
+native mechanism before newly covered tools can be considered enforced; installing
+or trusting configuration on disk is not evidence of that live reload.
+The evaluator keeps its allow/block result internal: an allowed native hook emits
+no decision, preserving platform permission checks. Only a block is serialized;
+`decision: "allow"` is not a valid native pre/post hook wire response.
+
+For a live Codex client that exposes `/hooks`, a genuinely changed hook can be
+reviewed and trusted from that client's hook details without restarting its
+conversation. Review the exact command and matcher, trust only that entry, then
+verify a real operation in the same native conversation. Do not toggle safeguards
+off or remove trust records merely to provoke a reload. A separate installer or
+app-server process cannot prove that another running conversation reloaded.
+
 ## Approval and retry identity
 
 Approval binds the exact native user instruction (without prescribed wording),

@@ -38,9 +38,21 @@ class FormalGuardTest(unittest.TestCase):
         env.start(); self.addCleanup(env.stop)
 
     def run_hook(self, value):
-        with patch("sys.stdin", io.StringIO(json.dumps(value))), patch("sys.stdout", new_callable=io.StringIO) as out:
-            rc = guard.main()
-        return rc, json.loads(out.getvalue())
+        event = str(value.get('hook_event_name', 'pretool')).lower()
+        return 0, guard.evaluate(value, event)
+
+    def test_native_wire_has_no_internal_allow_decision(self):
+        for event in ('PreToolUse', 'PostToolUse'):
+            for decision in ({'decision': 'allow'}, {'decision': 'block', 'reason': 'fenced'}):
+                with patch.object(guard, 'evaluate', return_value=decision), \
+                     patch('sys.argv', ['guard']), \
+                     patch('sys.stdin', io.StringIO(json.dumps({'hook_event_name': event}))), \
+                     patch('sys.stdout', new_callable=io.StringIO) as out:
+                    self.assertEqual(guard.main(), 0)
+                if decision['decision'] == 'allow':
+                    self.assertEqual(out.getvalue(), '')
+                else:
+                    self.assertEqual(json.loads(out.getvalue()), decision)
 
     def _bound(self):
         import tempfile
