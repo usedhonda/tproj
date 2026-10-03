@@ -37,20 +37,22 @@ def validate_records(records, platform, intent, scope, evidence_hash):
             match = re.search(r'<proposed_plan>\s*(.*?)\s*</proposed_plan>', text, re.S)
             if match: plan = match.group(1)
             continue
+        # Every user record consumes the pending proposal, even a rejected
+        # candidate. Identical approval wording may approve a later proposal.
+        candidate_plan, plan = plan, None
         if digest(text) != evidence_hash:
-            plan = None
             continue
         # Transport/hook/tool-result injections are not a user approval source.
         if re.search(r'\[from:|\[tproj-message:|\[OpenClaw Agent|<tool_result|<system-reminder|<codex_internal_context',text,re.I):
-            break
+            continue
         # The native user's wording is authoritative; no magic approval phrase.
         # This binds the exact scope, not a paraphrase or an agent-authored expansion.
         direct = isinstance(scope, str) and bool(scope.strip()) and scope == text
         confirms_plan = text.strip().lower() in ('implement the plan.', 'implement the plan', '実行して', '実装して', 'すすめて', '進めて', 'つづけて')
-        if not direct and not (confirms_plan and plan is not None and scope.strip() == plan):
-            break
+        if not direct and not (confirms_plan and candidate_plan is not None and isinstance(scope, str) and scope.strip() == candidate_plan):
+            continue
         if not intent or intent not in scope:
-            break
+            continue
         return {'intent_hash':digest(intent),'scope_hash':digest(scope),'evidence_hash':evidence_hash}
     raise HubError('approval_unattested','scope must match a native direct instruction or its approved proposed_plan')
 

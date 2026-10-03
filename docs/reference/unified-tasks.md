@@ -63,6 +63,10 @@ Approval binds the exact native user instruction (without prescribed wording),
 or the exact proposed plan confirmed by the next direct user instruction. Native
 transcript conversation and project must match the authenticated endpoint.
 Transport-injected messages and internal continuation blocks are not approvals.
+Identical approval wording can occur more than once. A nonmatching earlier
+candidate does not stop the search for an exact scope/intent/evidence match.
+Every user record consumes the pending proposal, including rejected candidates;
+a later approval cannot reuse a proposal across an intervening user record.
 The host attests provenance and exact scope, not the semantic correctness of an
 agent's interpretation of user intent; agents must still follow the user's scope.
 
