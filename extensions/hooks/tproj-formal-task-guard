@@ -66,18 +66,29 @@ def lifecycle(value):
 
 def empty_write_stdin_observation(data):
     """Recognize only a schema-valid empty-input poll, never malformed input."""
-    if tool_name(data) != 'write_stdin':
-        return False
+    name = tool_name(data)
     inputs = data.get('tool_input')
     if not isinstance(inputs, dict):
         nested = data.get('hook_input')
         inputs = nested.get('tool_input') if isinstance(nested, dict) else None
-    if not isinstance(inputs, dict) or set(inputs) - {'session_id', 'chars', 'yield_time_ms'}:
+    if name in ('exec', 'functions.exec'):
+        source = (inputs.get('code') or inputs.get('source')) if isinstance(inputs, dict) else ''
+        match = re.fullmatch(r'\s*text\(\s*await tools\.write_stdin\((\{[\s\S]*\})\)\s*\)\s*;?\s*', source or '')
+        if not match:
+            return False
+        try:
+            inputs = json.loads(match.group(1))
+        except (ValueError, TypeError):
+            return False
+    elif name not in ('write_stdin', 'functions.write_stdin'):
+        return False
+    if not isinstance(inputs, dict) or set(inputs) - {'session_id', 'chars', 'yield_time_ms', 'max_output_tokens'}:
         return False
     if type(inputs.get('session_id')) is not int or inputs['session_id'] < 0:
         return False
-    if 'yield_time_ms' in inputs and (type(inputs['yield_time_ms']) is not int or inputs['yield_time_ms'] < 0):
-        return False
+    for key in ('yield_time_ms', 'max_output_tokens'):
+        if key in inputs and (type(inputs[key]) is not int or inputs[key] < 0):
+            return False
     return 'chars' not in inputs or (type(inputs['chars']) is str and inputs['chars'] == '')
 
 def native_ids(data):
@@ -127,9 +138,11 @@ def assigned(data):
 
 def evaluate(data: dict, event: str) -> dict:
     name, cmd = tool_name(data), command(data)
+    empty_poll = empty_write_stdin_observation(data)
     if (name in getattr(guard, "READONLY_TOOL_NAMES", set())
             or guard.is_readonly_shell(cmd) or lifecycle(cmd)
-            or empty_write_stdin_observation(data)):
+            or (empty_poll and event not in ("posttooluse", "posttool", "failure", "post_tool_use")
+                and not event.startswith("posttool"))):
         return {"decision": "allow"}
     try:
         is_assigned = assigned(data)
@@ -151,6 +164,8 @@ def evaluate(data: dict, event: str) -> dict:
             return {"decision": "allow"}
         return {"decision": "allow"}
     except Exception as exc:
+        if empty_poll and op == 'task_guard_end' and getattr(exc, 'code', None) == 'not_found':
+            return {"decision": "allow"}
         return {"decision": "block", "reason": f"formal task guard: {exc}"}
 
 

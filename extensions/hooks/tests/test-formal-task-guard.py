@@ -94,22 +94,50 @@ class FormalGuardTest(unittest.TestCase):
 
     def test_empty_write_stdin_poll_does_not_complete_formal_operation(self):
         self._bound()
-        with patch.object(guard.cli, 'rpc', side_effect=AssertionError('read-only poll must not close an operation')):
-            _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'write_stdin',
-                                       'tool_use_id':'poll-id', 'tool_input':{'session_id':89506,'chars':''}})
+        with patch.object(guard.cli, 'rpc', side_effect=AssertionError('pre poll must not open an operation')):
+            _, result = self.run_hook({'hook_event_name':'PreToolUse', 'tool_name':'write_stdin',
+                                       'tool_use_id':'poll-id', 'tool_input':{'session_id':42, 'chars':'', 'max_output_tokens':100}})
+        self.assertEqual(result['decision'], 'allow')
+
+    def test_empty_write_stdin_post_poll_closes_known_or_ignores_not_found(self):
+        self._bound()
+        seen=[]
+        with patch.object(guard.cli, 'config', return_value={'socket':'x'}), \
+             patch.object(guard.cli, '_caller_request', side_effect=lambda op, **kw: dict(kw, op=op)), \
+             patch.object(guard.cli, 'rpc', side_effect=lambda socket, req: seen.append(req) or {'closed':True}):
+            _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'functions.write_stdin',
+                                       'tool_use_id':'poll-id', 'tool_input':{'session_id':42, 'chars':'', 'yield_time_ms':100}})
+        self.assertEqual(result['decision'], 'allow')
+        self.assertEqual(seen[0]['op'], 'task_guard_end')
+        with patch.object(guard.cli, 'config', return_value={'socket':'x'}), \
+             patch.object(guard.cli, 'rpc', side_effect=guard.cli.ClientError('operation token unknown', 'not_found')):
+            _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'functions.exec',
+                                       'tool_use_id':'poll-id', 'tool_input':{'code':'text(await tools.write_stdin({"session_id":42,"chars":""}));'}})
         self.assertEqual(result['decision'], 'allow')
 
     def test_write_stdin_input_is_guarded_but_missing_chars_is_poll(self):
         self._bound()
         with patch.object(guard.cli, 'config', return_value={'socket':'x'}), \
              patch.object(guard.cli, 'rpc', side_effect=guard.cli.ClientError('operation token unknown')):
-            for chars, expected in ((' ', 'block'), (None, 'allow')):
-                inputs = {'session_id':89506}
+            for chars, expected in ((' ', 'block'), (None, 'block')):
+                inputs = {'session_id':42}
                 if chars is not None:
                     inputs['chars'] = chars
                 _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'write_stdin',
                                            'tool_use_id':'poll-id', 'tool_input':inputs})
                 self.assertEqual(result['decision'], expected)
+
+    def test_write_stdin_code_mode_extra_js_and_bad_limits_remain_guarded(self):
+        self._bound()
+        with patch.object(guard.cli, 'config', return_value={'socket':'x'}), \
+             patch.object(guard.cli, 'rpc', side_effect=guard.cli.ClientError('operation token unknown')):
+            for code in (
+                    'text(await tools.write_stdin({"session_id":42,"chars":""})); mutate();',
+                    'text(await tools.write_stdin({"session_id":42,"chars":"","max_output_tokens":-1}));',
+                    'text(await tools.write_stdin({"session_id":42,"chars":"x"}));'):
+                _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'functions.exec',
+                                           'tool_use_id':'poll-id', 'tool_input':{'code':code}})
+                self.assertEqual(result['decision'], 'block')
 
     def test_native_payload_context_is_forwarded_to_guard_request(self):
         self._bound()

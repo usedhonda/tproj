@@ -111,10 +111,11 @@ create assignments. The helper and formal tool guard must be installed together.
 
 An explicit schema-valid `write_stdin` hook payload with a numeric
 `session_id`, no `chars` field or `chars` equal to the empty string, and only
-the optional `yield_time_ms` field is a read-only poll; it does not attempt to
-close a formal operation. Whitespace, control characters, non-empty input, or
-malformed/missing identity remain guarded, and an unknown operation token is
-never cleared by inference.
+the optional numeric `yield_time_ms`/`max_output_tokens` fields is a read-only
+poll. A pre-tool poll does not begin an operation; a post-tool poll still tries
+to close its exact tool identity, tolerating only a host `not_found` result for
+that empty poll. Whitespace, control characters, non-empty input, malformed or
+missing identity, and other host errors remain guarded.
 
 ## Freeze release and former executors
 
