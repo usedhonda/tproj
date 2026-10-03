@@ -57,3 +57,12 @@ Federated task requests and responses confirm task protocol version 1. Missing
 or incompatible versions fail without routing into legacy task controls. The
 public client also refuses legacy fallback when an enrolled installation's
 configuration is missing, malformed, or inactive.
+
+## Model-role integration
+
+The optional role bridge reads `task_context` through native caller
+verification. Only a matching accepted executor at the authoritative epoch
+receives a transient worker role. Pending handoff, terminal state, or unavailable
+master stays read-only for the assigned task. Project role-mode files and peer
+registry entries are never rewritten by this overlay. Ordinary messages do not
+create assignments. The helper and formal tool guard must be installed together.

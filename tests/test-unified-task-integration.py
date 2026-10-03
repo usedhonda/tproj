@@ -111,6 +111,7 @@ class AssignedLifecycleTests(unittest.TestCase):
    tid=r['task']['task_id']
    host_dispatch(host,executor,{'op':'task_ack','task_id':tid,'expected_epoch':0})
    self.assertTrue(binding_marker('native-executor').exists())
+   self.assertTrue(host_dispatch(host,executor,{'op':'task_context'})['can_mutate'])
    host.offline=True
    with self.assertRaises(HubError):host_dispatch(host,executor,{'op':'task_guard_begin','tool_use_id':'u1'})
    host.offline=False
@@ -118,6 +119,7 @@ class AssignedLifecycleTests(unittest.TestCase):
    host_dispatch(host,executor,{'op':'task_guard_begin','tool_use_id':'u1'})
    host_dispatch(host,executor,{'op':'task_guard_end','tool_use_id':'u1'})
    host_dispatch(host,executor,{'op':'task_done','task_id':tid,'expected_epoch':0})
+   self.assertFalse(host_dispatch(host,executor,{'op':'task_context'})['can_mutate'])
    host_dispatch(host,owner,{'op':'task_verify','task_id':tid,'expected_epoch':0})
    host_dispatch(host,owner,{'op':'task_report','task_id':tid,'expected_epoch':0})
    host_dispatch(host,executor,{'op':'task_detach','task_id':tid})

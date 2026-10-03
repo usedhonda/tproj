@@ -29,6 +29,16 @@ def dispatch(host, ep, req):
             raise HubError('invalid_request','intent and approved scope text required')
         body['intent_hash']=digest(body.pop('intent'));body['scope_hash']=digest(body.pop('scope'))
     bound=host.db.execute('SELECT * FROM formal_task_binding WHERE endpoint_id=?',(ep['endpoint_id'],)).fetchone()
+    if op == 'task_context':
+        if not bound:return {'assigned':False}
+        snapshot=host.hub('task_status',endpoint_id=ep['endpoint_id'],task_id=bound['task_id'])
+        task=snapshot['task']; handoff=snapshot.get('handoff') or {}
+        active=(bound['incarnation']==ep['incarnation'] and task['executor_endpoint']==ep['endpoint_id']
+                and task['executor_incarnation']==ep['incarnation'] and task['epoch']==bound['epoch']
+                and task['status'] in ('accepted','in_progress')
+                and handoff.get('state') not in ('prepared','released','accepted'))
+        return {'assigned':True,'task_id':task['task_id'],'task_epoch':task['epoch'],
+                'task_status':task['status'],'can_mutate':active}
     if op in ('task_guard_begin','task_guard_end'):
         if not bound:return {'assigned':False}
         if bound['incarnation']!=ep['incarnation']:raise HubError('stale_executor','formal task conversation changed')
