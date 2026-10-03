@@ -32,7 +32,12 @@ assignment. It contains no task state or authority; operations still query the
 single master. A missing or unreadable journal must not turn a known assignment
 into an unassigned session. The marker is removed only after a successful
 terminal-task detach with no open operations. Ordinary unassigned sessions do
-not require the task master. This integration is not yet production-activated.
+not require the task master. Installation and hook trust alone do not prove
+native enforcement in an already-running agent. Before relying on formal task
+mutation fences, verify that an actual native mutation creates and closes its
+operation on the master. A successful API lifecycle or notification receipt is
+not that evidence. An agent still running an older executable/configuration must
+not be reported as protected merely because the installed files are current.
 
 ## Approval and retry identity
 
