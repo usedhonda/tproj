@@ -12,6 +12,7 @@ import hashlib
 import json
 import sqlite3
 import time
+import os
 import uuid
 from typing import Any, Mapping
 
@@ -68,8 +69,8 @@ def _hash(value: Any) -> str:
 class TaskAuthority:
     """SQLite-backed task authority.  ``db`` may be a path or sqlite connection."""
 
-    def __init__(self, db: str | sqlite3.Connection):
-        self.db = sqlite3.connect(db, isolation_level=None, check_same_thread=False) if isinstance(db, str) else db
+    def __init__(self, db: str | os.PathLike | sqlite3.Connection):
+        self.db = sqlite3.connect(str(db), isolation_level=None, check_same_thread=False) if isinstance(db, (str, os.PathLike)) else db
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
 
