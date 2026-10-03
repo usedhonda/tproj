@@ -10,4 +10,10 @@ final class BoundedCommandRunnerTests: XCTestCase {
         let start = Date(); let r = BoundedCommandRunner(timeout: 0.1, eofGrace: 0.1).run("/bin/sh", ["-c", "sleep 5"])
         XCTAssertLessThan(Date().timeIntervalSince(start), 2); XCTAssertNotEqual(r.exitCode, 0)
     }
+
+    func testIgnoresTermAndDoesNotWaitForInheritedPipe() {
+        let start = Date()
+        let r = BoundedCommandRunner(timeout: 0.1, eofGrace: 0.1).run("/bin/sh", ["-c", "trap '' TERM; (sleep 5) & exit 0"])
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2); XCTAssertEqual(r.exitCode, 0)
+    }
 }

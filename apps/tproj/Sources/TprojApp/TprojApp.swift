@@ -33,12 +33,14 @@ struct ProcessCommandRunner: CommandRunning, Sendable {
     let resolvePATH: @Sendable () -> String
 
     func run(_ launchPath: String, _ args: [String], env extraEnvironment: [String: String]) -> CommandResult {
-        var env = extraEnvironment; env["PATH"] = resolvePATH()
+        var env = extraEnvironment; if env["PATH"] == nil { env["PATH"] = resolvePATH() }
         return BoundedCommandRunner().run(launchPath, args, env: env)
     }
 
     func runAsync(_ launchPath: String, _ args: [String], env: [String: String]) async -> CommandResult {
-        await Task.detached(priority: .userInitiated) { run(launchPath, args, env: env) }.value
+        await withCheckedContinuation { continuation in
+            Thread.detachNewThread { continuation.resume(returning: run(launchPath, args, env: env)) }
+        }
     }
 }
 
