@@ -158,4 +158,6 @@ authenticated current binding plus an independently verified native Codex
 `FileChange` `item_completed` witness in the same thread and project, with
 valid timestamps after the master-recorded operation creation. Text mentions,
 other item types, wrong threads, and missing or ambiguous transcripts are
-rejected; the command has no bulk or force-close mode.
+rejected; the task must still be accepted/in-progress with no pending handoff,
+and the command has no bulk or force-close mode. A closed or absent operation
+is never treated as reconciled without an exact open-operation detail.

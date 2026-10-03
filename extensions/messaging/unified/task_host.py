@@ -35,7 +35,7 @@ def _file_change_witness(ep, tool_use_id, created_at, home=None):
                 started = payload.get('started_at_ms'); completed = payload.get('completed_at_ms')
                 if type(started) is int and type(completed) is int and completed >= started >= int(float(created_at) * 1000): matches.append(item)
             return len(matches) == 1
-    except (OSError, ValueError, TypeError): return False
+    except (OSError, ValueError, TypeError, AttributeError, StopIteration, OverflowError): return False
 
 
 def binding_marker(native_id):
