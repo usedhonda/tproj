@@ -203,6 +203,7 @@ class TaskAuthority:
     def _op_begin_operation(self, req, actor):
         row=self._task(str(req.get("task_id"))); self._epoch(req,row); self._executor(row,actor)
         if req.get("expected_epoch") is None: raise TaskAuthorityError("epoch_required","expected_epoch is required")
+        if row["status"] in ("cancelled", "frozen", "reported"): raise TaskAuthorityError("stale_task","terminal task cannot begin operation")
         h=self.db.execute("SELECT state,target_endpoint,target_incarnation FROM task_handoffs WHERE task_id=?",(row["task_id"],)).fetchone()
         if h and h["state"] in ("prepared","released","accepted") and (h["target_endpoint"] != actor["endpoint_id"] or h["target_incarnation"] != actor["incarnation"]): raise TaskAuthorityError("handoff_pending","task is quiescing for handoff")
         kind = str(req.get("tool_use_id") or req.get("kind","mutation"))
