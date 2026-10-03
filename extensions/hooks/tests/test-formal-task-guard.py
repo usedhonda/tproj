@@ -92,6 +92,30 @@ class FormalGuardTest(unittest.TestCase):
             _, result = self.run_hook({"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "rm file"}})
         self.assertEqual(result["decision"], "block")
 
+    def test_native_payload_context_is_forwarded_to_guard_request(self):
+        self._bound()
+        seen=[]
+        with patch.object(guard.cli, 'config', return_value={'socket':'x'}), \
+             patch.object(guard.cli, 'native_conversation_context', return_value={}), \
+             patch.object(guard.cli, '_caller_request', side_effect=lambda op, **kw: dict(kw, op=op)), \
+             patch.object(guard.cli, 'rpc', side_effect=lambda socket, req: seen.append(req) or {'closed':True}):
+            _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'Bash',
+                                       'tool_use_id':'u1', 'session_id':'payload-session',
+                                       'tool_input':{'command':'touch file'}})
+        self.assertEqual(result['decision'], 'allow')
+        self.assertEqual(seen[0]['conversation'], {'session_id':'payload-session'})
+
+    def test_conflicting_native_context_blocks_guard_request(self):
+        self._bound()
+        with patch.object(guard.cli, 'config', return_value={'socket':'x'}), \
+             patch.object(guard.cli, 'native_conversation_context', return_value={'session_id':'env-session'}), \
+             patch.object(guard.cli, '_caller_request', side_effect=AssertionError('must reject before request')):
+            _, result = self.run_hook({'hook_event_name':'PreToolUse', 'tool_name':'Bash',
+                                       'tool_use_id':'u1', 'session_id':'payload-session',
+                                       'tool_input':{'command':'touch file'}})
+        self.assertEqual(result['decision'], 'block')
+        self.assertIn('context conflict', result['reason'])
+
     def test_failed_tool_completion_closes_the_same_operation(self):
         self._bound()
         seen=[]

@@ -1,0 +1,31 @@
+import importlib.util
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'messaging/unified'))
+SPEC = importlib.util.spec_from_file_location('task_role_under_test', ROOT / 'messaging/unified/task_role.py')
+task_role = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(task_role)
+
+
+class TaskRoleContextTest(unittest.TestCase):
+    def test_payload_native_context_is_forwarded(self):
+        with patch.object(task_role.cli, 'native_conversation_context', return_value={}), \
+             patch.object(task_role.cli, '_caller_request', return_value={'op':'task_context'}) as request:
+            result = task_role._caller_request({'session_id':'payload-session'})
+        self.assertEqual(result['conversation'], {'session_id':'payload-session'})
+        request.assert_called_once_with('task_context')
+
+    def test_conflicting_environment_context_is_rejected(self):
+        with patch.object(task_role.cli, 'native_conversation_context', return_value={'session_id':'env-session'}), \
+             patch.object(task_role.cli, '_caller_request', side_effect=AssertionError('must reject before request')):
+            with self.assertRaisesRegex(ValueError, 'context conflict'):
+                task_role._caller_request({'session_id':'payload-session'})
+
+
+if __name__ == '__main__':
+    unittest.main()

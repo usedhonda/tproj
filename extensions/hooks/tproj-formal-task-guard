@@ -71,6 +71,35 @@ def native_ids(data):
                 if root.get(key): found.add(str(root[key]))
     return {item for item in found if item}
 
+def native_context(data):
+    values = {}
+    roots = (data, data.get('hook_input'), data.get('raw_event'))
+    for root in roots:
+        if not isinstance(root, dict):
+            continue
+        for key in ('thread_id', 'session_id'):
+            value = root.get(key)
+            if isinstance(value, str) and value.strip():
+                values[key] = value.strip()
+        value = root.get('conversation_id')
+        if (not values.get('thread_id') and not values.get('session_id')
+                and isinstance(value, str) and value.strip()):
+            values['thread_id'] = value.strip()
+    return values
+
+def caller_request(op, data, **kwargs):
+    native = native_context(data)
+    env = cli.native_conversation_context()
+    for key in ('thread_id', 'session_id'):
+        if native.get(key) and env.get(key) and native[key] != env[key]:
+            raise RuntimeError('native conversation context conflict')
+    request = cli._caller_request(op, **kwargs)
+    if native:
+        merged = dict(env)
+        merged.update(native)
+        request['conversation'] = merged
+    return request
+
 def assigned(data):
     ids = native_ids(data)
     if not ids: return False
@@ -113,7 +142,7 @@ def evaluate(data: dict, event: str) -> dict:
     try:
         if cli is None:
             raise RuntimeError("unified task client unavailable")
-        cfg = cli.config(); req = cli._caller_request(op, tool_use_id=ident)
+        cfg = cli.config(); req = caller_request(op, data, tool_use_id=ident)
         result = cli.rpc(cfg["socket"], req)
         if isinstance(result, dict) and result.get("assigned") is False:
             return {"decision": "allow"}
