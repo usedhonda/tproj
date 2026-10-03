@@ -67,6 +67,19 @@ class TaskRoleContextTest(unittest.TestCase):
         self.assertEqual(result['authority_phase'], 'config')
         self.assertNotIn('offline', str(result))
 
+    def test_unknown_protocol_error_is_not_transport_and_phase_is_fixed(self):
+        with tempfile.TemporaryDirectory() as raw, patch.dict(task_role.os.environ, {
+                'TPROJ_TASK_BINDING_DIR': raw, 'CODEX_THREAD_ID':'bound', 'CODEX_SESSION_ID':''}), \
+             patch.object(task_role.cli, 'native_conversation_context', return_value={}), \
+             patch.object(task_role.cli, 'config', return_value={'socket':'fixture'}), \
+             patch.object(task_role.cli, 'rpc', side_effect=task_role.cli.ClientError('rejected', 'not_visible')):
+            task_role.binding_marker('bound').parent.mkdir(parents=True, exist_ok=True)
+            task_role.binding_marker('bound').touch()
+            result = task_role.context({'session_id':'bound'})
+        self.assertEqual(result['authority_error'], 'protocol_rejected')
+        self.assertEqual(result['authority_phase'], 'rpc')
+        self.assertFalse(result['can_mutate'])
+
 
 if __name__ == '__main__':
     unittest.main()

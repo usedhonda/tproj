@@ -12,8 +12,10 @@ def _blocked(error, phase):
 
 def _failure_code(exc):
     code = getattr(exc, 'code', '')
+    if code == 'unavailable':
+        return 'transport_unavailable'
     if code != 'identity_rejected':
-        return ''
+        return 'protocol_rejected'
     message = str(exc)
     for phrase, category in (
             ('agent ancestor absent', 'ancestor_absent'),
@@ -82,7 +84,7 @@ def context(payload):
         try:
             result=cli.rpc(cfg['socket'],request)
         except cli.ClientError as exc:
-            return _blocked(_failure_code(exc) or 'transport_unavailable', 'rpc')
+            return _blocked(_failure_code(exc), 'rpc')
         if not isinstance(result,dict) or result.get('assigned') is not True:
             return _blocked('assignment_mismatch', 'assignment')
         return result
