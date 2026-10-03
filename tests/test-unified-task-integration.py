@@ -84,6 +84,9 @@ class HostDispatchTests(unittest.TestCase):
   self.assertNotIn('host_attested',host.calls[1][1])
   self.assertEqual(host.calls[1][1]['intent_hash'],digest('repair'))
   self.assertEqual(out['notification']['state'],'queued')
+  notice=host.calls[-1][1]['body']
+  self.assertIn('current status',notice)
+  self.assertNotIn('--epoch 0',notice)
 
 class DetachTests(unittest.TestCase):
  def test_old_executor_detaches_without_waiting_for_new_executor_operations(self):
@@ -151,5 +154,12 @@ class AssignedLifecycleTests(unittest.TestCase):
    host_dispatch(host,owner,{'op':'task_report','task_id':tid,'expected_epoch':0})
    host_dispatch(host,executor,{'op':'task_detach','task_id':tid,'expected_epoch':0})
    self.assertFalse(binding_marker('native-executor').exists())
+   # A delayed notification must not latch a completed task locally when its
+   # authoritative ACK is rejected, otherwise unrelated work becomes fenced.
+   from tasks import TaskAuthorityError
+   with self.assertRaises((HubError,TaskAuthorityError)):
+    host_dispatch(host,executor,{'op':'task_ack','task_id':tid,'expected_epoch':0})
+   self.assertFalse(binding_marker('native-executor').exists())
+   self.assertEqual(host.db.execute('SELECT COUNT(*) FROM formal_task_binding').fetchone()[0],0)
 
 if __name__=='__main__':unittest.main()

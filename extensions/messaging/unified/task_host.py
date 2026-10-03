@@ -76,6 +76,11 @@ def dispatch(host, ep, req):
         snapshot=host.hub('task_status',endpoint_id=ep['endpoint_id'],task_id=tid)
         task=snapshot['task']
         if task['epoch'] != epoch:raise HubError('epoch_conflict','task epoch changed')
+        # Reject a deterministically obsolete ACK before installing the local
+        # restrictive fence. The durable pre-effect marker is still required for
+        # an eligible ACK whose remote outcome can become uncertain.
+        if op=='task_ack' and task['status'] not in ('submitted','accepted'):
+            raise HubError('stale_task','task no longer awaits acceptance')
         if op=='task_ack' and (task['executor_endpoint'] != ep['endpoint_id'] or task['executor_incarnation'] != ep['incarnation']):
             raise HubError('stale_executor','task is not assigned to this conversation')
         if op=='task_accept_handoff':
@@ -97,7 +102,12 @@ def dispatch(host, ep, req):
         mid=str(uuid.uuid5(uuid.NAMESPACE_URL, 'tproj-task:'+task['task_id']))
         # Message is a notification, not authority. Recipient must read the
         # master and explicitly accept through its native authenticated host.
-        text='Formal task '+task['task_id']+' is assigned. Read it with tproj-task status '+task['task_id']+'. Accept with tproj-task ack '+task['task_id']+' --epoch '+str(task['epoch'])+'. Normal MSG does not change Role or grant authority.'
+        text=('Formal task notification: '+task['task_id']+'. Read current status with '
+              'tproj-task status '+task['task_id']+'. Only if status is submitted and the '
+              'executor matches this conversation, accept with tproj-task ack '+task['task_id']+
+              ' --epoch N, where N is the current status epoch. Already accepted, completed, '
+              'cancelled, frozen, or transferred tasks need no new ACK from this delayed notice. '
+              'Normal MSG does not change Role or grant authority.')
         try: result['notification']=host.submit(ep,{'submission_id':mid,'target':req['executor'],'body':text})
         except HubError as exc: result['notification']={'state':'pending','error':exc.code,'message_id':mid}
     return result

@@ -66,6 +66,14 @@ Transport-injected messages and internal continuation blocks are not approvals.
 The host attests provenance and exact scope, not the semantic correctness of an
 agent's interpretation of user intent; agents must still follow the user's scope.
 
+Task notifications are durable hints, not a current assignment snapshot. Read
+current status and executor identity before accepting; a delayed notification
+never instructs acceptance with a captured epoch. Completed, cancelled, frozen,
+transferred, or already accepted tasks are not re-ACKed because a notice arrived.
+The host rejects a known non-acceptable status before creating a local assignment
+marker. Eligible acceptance still records its restrictive marker before the
+remote mutation, preserving fail-closed behavior on an unknown result.
+
 Repeating `submit` with the same approval, scope, intent, target, and packet uses
 the same default idempotency key, including after an unknown transport result.
 A deliberately new identical task requires an explicit new `--idempotency-key`.

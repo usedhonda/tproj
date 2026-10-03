@@ -131,6 +131,8 @@ tproj-msg --retry <submission-id>
 内容・scope・executor・epoch を確認し、`ack <ID> --epoch <N>` →
 `progress <ID> --epoch <N>` → 作業 → `done <ID> --epoch <N>` の順で記録する。
 `ack` だけでは作業完了にならず、通常MSGへの返信も task の `done` を代替しない。
+通知は遅延することがある。完了・取消・凍結・移譲済み、または受入済みなら通知を理由に再ACKしない。
+通知に書かれた古いepochではなく、正規statusで確認した現在値を使う。
 進められなければ `block <ID> --epoch <N>` と具体理由を記録する。
 owner が成果を確認して `verify` → ユーザーへの報告後に `report`、executor は
 `detach` する。いずれも正しい task ID と通知後に確認した epoch を使う。
