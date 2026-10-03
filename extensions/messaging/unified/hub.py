@@ -372,7 +372,9 @@ class Hub:
                 self.db.execute("UPDATE messages SET state='expired' WHERE message_id=?", (m["message_id"],)); m=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),))
             ep=self._host_endpoint(host,req.get("endpoint_id"));
             if ep["endpoint_id"] not in (m["sender_endpoint"],m["recipient_endpoint"]): raise HubError("unauthorized","not party to message")
-            result = dict(m)
+            # Same resolved sender the inbox and claim views carry: a reader that fetches
+            # one message by ID must not have to trust the name written in its body.
+            result = self.message_views([m])[0]
             receipt = self._row("SELECT evidence,at FROM receipts WHERE message_id=?", (m["message_id"],))
             if receipt and m["state"] in ("accepted", "queued", "adapter_received", "uncertain"):
                 try: reason = json.loads(receipt["evidence"]).get("delivery_reason")

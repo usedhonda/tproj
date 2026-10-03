@@ -36,6 +36,12 @@ class HubTest(unittest.TestCase):
         with self.assertRaisesRegex(HubError,"different payload"): self.send(body="changed")
         inbox=self.h.dispatch({"op":"inbox","host_id":"b","host_token":"tb","endpoint_id":"eb"})
         self.assertEqual(inbox["messages"][0]["recipient_endpoint"],"eb")
+    def test_query_by_id_carries_the_resolved_sender_address(self):
+        self.send()
+        inbox=self.h.dispatch({"op":"inbox","host_id":"b","host_token":"tb","endpoint_id":"eb"})
+        one=self.h.dispatch({"op":"query","host_id":"b","host_token":"tb","endpoint_id":"eb","message_id":"m1"})
+        self.assertEqual(one["sender_address"],"proj.cc")
+        self.assertEqual(one["sender_address"],inbox["messages"][0]["sender_address"])
     def test_reverse_reply_is_pinned(self):
         self.send(); self.h.dispatch({"op":"claim","host_id":"b","host_token":"tb","endpoint_id":"eb"})
         out=self.h.dispatch({"op":"submit","host_id":"b","host_token":"tb","message":{"message_id":"reply","thread_id":"t","in_reply_to":"m1","sender_endpoint":"eb","target":"proj.cc","body":"back"}})
