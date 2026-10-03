@@ -81,3 +81,8 @@ central ledger, not a replicated local authority. The former executor may explic
 still assigns it. Another executor's open operation does not prevent this local
 release. A wrong task ID cannot clear the local fence, and current active executors
 cannot detach before report or cancel. Superseded epochs still cannot mutate tasks.
+
+Discovery preserves the incarnation returned by the hub's endpoint registration
+response in the authenticated caller record. Native registry evidence never
+mints this value. Missing or mismatched registration confirmation rejects task
+binding rather than fabricating an incarnation or degrading to an unbound task.

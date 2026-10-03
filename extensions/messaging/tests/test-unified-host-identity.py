@@ -31,7 +31,7 @@ class UnifiedHostIdentityTest(unittest.TestCase):
                                                            "host_id": "host-a", "path": tmp}]}
                                          if op == "directory_list" else
                                          {"endpoints": [old]} if op == "endpoints_list" else
-                                         (state["registered"].append(dict(args)) or {}) if op == "endpoint_register" else
+                                         (state["registered"].append(dict(args)) or {"endpoint_id":args["endpoint_id"],"incarnation":"hub-issued"}) if op == "endpoint_register" else
                                          (state["retired"].append(args["endpoint_id"]) or {}) if op == "endpoint_retire" else {})
             original_registry = host_mod.discover_endpoints
             original_tmux = host_mod.discover_tmux_endpoints
@@ -44,6 +44,7 @@ class UnifiedHostIdentityTest(unittest.TestCase):
             self.addCleanup(setattr, host_mod, "discover_tmux_endpoints", original_tmux)
             self.addCleanup(setattr, host_mod, "same_live_process_family", original_family)
             h.refresh()
+            self.assertEqual(h.endpoints[0]["incarnation"], "hub-issued")
             self.assertEqual(state["registered"][0]["endpoint_id"], "fallback")
             self.assertEqual(state["registered"][0]["address"], "demo.cdx")
             self.assertEqual(state["registered"][0]["observed_runtime_id"], "conversation-uuid")
