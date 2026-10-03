@@ -300,9 +300,9 @@ class KAIEventDelivery:
             try:
                 value = json.loads(raw) if raw else {}
             except ValueError:
-                return False, {}, status, "invalid_response"
+                return True, {}, status, "invalid_response"
             if not isinstance(value, dict):
-                return False, {}, status, "invalid_response"
+                return True, {}, status, "invalid_response"
             return True, value, status, None
         except TimeoutError:
             return False, {}, None, "timeout"
