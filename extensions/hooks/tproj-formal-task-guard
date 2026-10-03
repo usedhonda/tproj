@@ -64,6 +64,22 @@ def lifecycle(value):
     except ValueError: return False
     return len(argv) >= 2 and argv[0] in {"tproj-msg", "tproj-task"}
 
+def empty_write_stdin_observation(data):
+    """Recognize only a schema-valid empty-input poll, never malformed input."""
+    if tool_name(data) != 'write_stdin':
+        return False
+    inputs = data.get('tool_input')
+    if not isinstance(inputs, dict):
+        nested = data.get('hook_input')
+        inputs = nested.get('tool_input') if isinstance(nested, dict) else None
+    if not isinstance(inputs, dict) or set(inputs) - {'session_id', 'chars', 'yield_time_ms'}:
+        return False
+    if type(inputs.get('session_id')) is not int or inputs['session_id'] < 0:
+        return False
+    if 'yield_time_ms' in inputs and (type(inputs['yield_time_ms']) is not int or inputs['yield_time_ms'] < 0):
+        return False
+    return 'chars' not in inputs or (type(inputs['chars']) is str and inputs['chars'] == '')
+
 def native_ids(data):
     found = {os.environ.get("CODEX_THREAD_ID", ""), os.environ.get("CODEX_SESSION_ID", "")}
     for root in (data, data.get("hook_input"), data.get("raw_event")):
@@ -111,7 +127,9 @@ def assigned(data):
 
 def evaluate(data: dict, event: str) -> dict:
     name, cmd = tool_name(data), command(data)
-    if name in getattr(guard, "READONLY_TOOL_NAMES", set()) or guard.is_readonly_shell(cmd) or lifecycle(cmd):
+    if (name in getattr(guard, "READONLY_TOOL_NAMES", set())
+            or guard.is_readonly_shell(cmd) or lifecycle(cmd)
+            or empty_write_stdin_observation(data)):
         return {"decision": "allow"}
     try:
         is_assigned = assigned(data)

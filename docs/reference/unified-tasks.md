@@ -109,6 +109,13 @@ master stays read-only for the assigned task. Project role-mode files and peer
 registry entries are never rewritten by this overlay. Ordinary messages do not
 create assignments. The helper and formal tool guard must be installed together.
 
+An explicit schema-valid `write_stdin` hook payload with a numeric
+`session_id`, no `chars` field or `chars` equal to the empty string, and only
+the optional `yield_time_ms` field is a read-only poll; it does not attempt to
+close a formal operation. Whitespace, control characters, non-empty input, or
+malformed/missing identity remain guarded, and an unknown operation token is
+never cleared by inference.
+
 ## Freeze release and former executors
 
 Only the exact owner may `unfreeze TASK --epoch N`, after all admitted operations

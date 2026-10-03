@@ -92,6 +92,25 @@ class FormalGuardTest(unittest.TestCase):
             _, result = self.run_hook({"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "rm file"}})
         self.assertEqual(result["decision"], "block")
 
+    def test_empty_write_stdin_poll_does_not_complete_formal_operation(self):
+        self._bound()
+        with patch.object(guard.cli, 'rpc', side_effect=AssertionError('read-only poll must not close an operation')):
+            _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'write_stdin',
+                                       'tool_use_id':'poll-id', 'tool_input':{'session_id':89506,'chars':''}})
+        self.assertEqual(result['decision'], 'allow')
+
+    def test_write_stdin_input_is_guarded_but_missing_chars_is_poll(self):
+        self._bound()
+        with patch.object(guard.cli, 'config', return_value={'socket':'x'}), \
+             patch.object(guard.cli, 'rpc', side_effect=guard.cli.ClientError('operation token unknown')):
+            for chars, expected in ((' ', 'block'), (None, 'allow')):
+                inputs = {'session_id':89506}
+                if chars is not None:
+                    inputs['chars'] = chars
+                _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'write_stdin',
+                                           'tool_use_id':'poll-id', 'tool_input':inputs})
+                self.assertEqual(result['decision'], expected)
+
     def test_native_payload_context_is_forwarded_to_guard_request(self):
         self._bound()
         seen=[]
