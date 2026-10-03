@@ -54,11 +54,11 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser("submit", help="submit a task packet")
     s.add_argument("target", nargs="?")
     s.add_argument("--intent", required=True)
-    s.add_argument("--scope", required=True, help="approved scope text")
+    s.add_argument("--scope-file", required=True, help="file containing the approved scope text")
     s.add_argument("--approval", required=True, dest="approval_id")
     s.add_argument("--idempotency-key", default=None)
     s.add_argument("--stdin", action="store_true", help="read packet JSON from stdin")
-    for name in ("status", "ack", "progress", "done", "block", "verify", "report", "cancel", "freeze"):
+    for name in ("status", "ack", "progress", "done", "block", "verify", "report", "cancel", "freeze", "detach"):
         q = sub.add_parser(name)
         q.add_argument("task_id")
         q.add_argument("--epoch", type=int, dest="expected_epoch")
@@ -68,7 +68,7 @@ def parser() -> argparse.ArgumentParser:
     h.add_argument("action", choices=("prepare", "release", "accept", "commit"))
     h.add_argument("task_id")
     h.add_argument("--epoch", type=int, dest="expected_epoch")
-    h.add_argument("--target", help="target endpoint JSON object")
+    h.add_argument("--target", help="target project endpoint address")
     h.add_argument("--token")
     return p
 
@@ -95,24 +95,31 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "submit":
             if not args.target:
                 raise cli.ClientError("submit requires target", "invalid_argument")
+            try:
+                scope = Path(args.scope_file).read_text(encoding="utf-8")
+            except OSError as exc:
+                raise cli.ClientError(f"cannot read scope file: {exc}", "invalid_argument") from exc
             packet = json.load(sys.stdin) if args.stdin else {"target": args.target}
             if not isinstance(packet, dict):
                 raise cli.ClientError("submit packet must be a JSON object", "invalid_argument")
             packet.setdefault("target", args.target)
             result = request("submit", idempotency_key=args.idempotency_key or str(uuid.uuid4()),
-                             intent=args.intent, scope=args.scope, approval_id=args.approval_id,
-                             payload=packet)
+                             intent=args.intent, scope=scope, approval_id=args.approval_id,
+                             executor=args.target, payload=packet)
         elif args.command == "list":
             result = request("list")
         elif args.command == "handoff":
-            op = "handoff_" + args.action
+            op = {"prepare": "prepare_handoff", "release": "release_handoff",
+                  "accept": "accept_handoff", "commit": "commit_handoff"}[args.action]
             fields: dict[str, Any] = {"task_id": args.task_id}
             if args.expected_epoch is not None: fields["expected_epoch"] = args.expected_epoch
-            if args.target: fields["target"] = json.loads(args.target)
+            if args.target: fields["target"] = args.target
             if args.token: fields["token"] = args.token
             result = request(op, **fields)
         else:
             fields = {"task_id": args.task_id}
+            if args.command != "status" and args.expected_epoch is None:
+                raise cli.ClientError(f"{args.command} requires --epoch", "invalid_argument")
             if args.expected_epoch is not None: fields["expected_epoch"] = args.expected_epoch
             if args.data is not None: fields["data"] = _json_data(args.data)
             result = request(args.command, **fields)

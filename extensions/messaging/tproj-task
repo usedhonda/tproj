@@ -15,7 +15,11 @@ case "${1:-}" in
       _unified_out=""
       _unified_rc=0
       _unified_out="$(python3 "$_unified_cli" "$@" 2>&1)" || _unified_rc=$?
-      if [[ $_unified_rc -eq 0 || "$_unified_out" != not_found:* ]]; then
+      _legacy_candidate=0
+      if [[ "${2:-}" =~ ^[A-Za-z0-9._:-]+$ && ! "${2:-}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+        _legacy_candidate=1
+      fi
+      if [[ $_unified_rc -eq 0 || "$_unified_out" != not_found:* || $_legacy_candidate -ne 1 ]]; then
         printf '%s\n' "$_unified_out"
         exit "$_unified_rc"
       fi

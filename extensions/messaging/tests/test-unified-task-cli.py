@@ -13,12 +13,15 @@ class UnifiedTaskCliTest(unittest.TestCase):
         seen = []
         with patch.object(task_cli, "request", side_effect=lambda op, **fields: seen.append((op, fields)) or {"ok": True}), \
              patch("sys.stdin", io.StringIO('{"body":"packet"}\n')):
-            self.assertEqual(task_cli.main(["submit", "worker", "--intent", "Build X", "--scope", "Build X only", "--approval", "a1", "--stdin"]), 0)
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as scope:
+                scope.write("Build X only"); scope.flush()
+                self.assertEqual(task_cli.main(["submit", "worker", "--intent", "Build X", "--scope-file", scope.name, "--approval", "a1", "--stdin"]), 0)
         op, req = seen[0]
         self.assertEqual(op, "submit")
         self.assertEqual(req["intent"], "Build X")
         self.assertEqual(req["scope"], "Build X only")
         self.assertEqual(req["approval_id"], "a1")
+        self.assertEqual(req["executor"], "worker")
         self.assertEqual(req["payload"], {"body": "packet", "target": "worker"})
 
     def test_approval_reads_scope_file_and_never_accepts_selector(self):
@@ -37,8 +40,8 @@ class UnifiedTaskCliTest(unittest.TestCase):
     def test_handoff_maps_to_authenticated_task_operation(self):
         seen = []
         with patch.object(task_cli, "request", side_effect=lambda op, **fields: seen.append((op, fields)) or {}):
-            self.assertEqual(task_cli.main(["handoff", "prepare", "t1", "--epoch", "2", "--target", '{"endpoint_id":"e","incarnation":"i","host_id":"h"}']), 0)
-        self.assertEqual(seen, [("handoff_prepare", {"task_id": "t1", "expected_epoch": 2, "target": {"endpoint_id": "e", "incarnation": "i", "host_id": "h"}})])
+            self.assertEqual(task_cli.main(["handoff", "prepare", "t1", "--epoch", "2", "--target", "proj.cdx"]), 0)
+        self.assertEqual(seen, [("prepare_handoff", {"task_id": "t1", "expected_epoch": 2, "target": "proj.cdx"})])
 
 
 if __name__ == "__main__":
