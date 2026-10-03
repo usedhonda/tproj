@@ -41,6 +41,20 @@ class TestTasks(unittest.TestCase):
     t.dispatch({"op":"cancel","task_id":tid,"expected_epoch":0},A)
     with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"begin_operation","task_id":tid,"expected_epoch":0,"tool_use_id":"u2"},A)
 
+ def test_status_exposes_only_current_actor_operation_details(self):
+    t=authority(); tid=make_task(t)["task_id"]
+    t.dispatch({"op":"ack","task_id":tid,"expected_epoch":0},A)
+    t.dispatch({"op":"begin_operation","task_id":tid,"expected_epoch":0,"tool_use_id":"native-u1"},A)
+    t.db.execute("INSERT INTO task_operations VALUES(?,?,?,?,?,?,?,?)",("foreign-token",tid,"e2","i2",0,"foreign-u2","open",123.0))
+    snap=t.dispatch({"op":"status","task_id":tid},A)
+    details=snap["actor_open_operation_details"]
+    self.assertEqual(len(details),1)
+    self.assertEqual(details[0]["tool_use_id"],"native-u1")
+    self.assertEqual(details[0]["epoch"],0)
+    self.assertIsInstance(details[0]["created_at"],float)
+    self.assertNotIn("token", details[0])
+    with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"status","task_id":tid},B)
+
  def test_cancel_tombstone_survives_freeze_and_late_ack(self):
     t=authority();tid=make_task(t)['task_id']
     t.dispatch({'op':'cancel','task_id':tid,'expected_epoch':0},A)

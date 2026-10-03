@@ -146,3 +146,8 @@ Discovery preserves the incarnation returned by the hub's endpoint registration
 response in the authenticated caller record. Native registry evidence never
 mints this value. Missing or mismatched registration confirmation rejects task
 binding rather than fabricating an incarnation or degrading to an unbound task.
+Task status also exposes actor-scoped `actor_open_operation_details` for the
+authenticated endpoint incarnation: each item contains only `tool_use_id`,
+`epoch`, and `created_at`. Operation tokens, payloads, commands, and other
+actors' open operations remain hidden; this is evidence only and provides no
+reconcile or force-close capability.

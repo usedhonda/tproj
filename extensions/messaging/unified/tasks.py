@@ -192,6 +192,12 @@ class TaskAuthority:
         result["handoff"] = dict(h) if h else None
         result["open_operations"] = self.db.execute("SELECT COUNT(*) FROM task_operations WHERE task_id=? AND state='open'", (row["task_id"],)).fetchone()[0]
         result["actor_open_operations"] = self.db.execute("SELECT COUNT(*) FROM task_operations WHERE task_id=? AND endpoint=? AND incarnation=? AND state='open'", (row["task_id"],actor["endpoint_id"],actor["incarnation"])).fetchone()[0]
+        result["actor_open_operation_details"] = [
+            {"tool_use_id": op["kind"], "epoch": op["epoch"], "created_at": op["created_at"]}
+            for op in self.db.execute(
+                "SELECT kind,epoch,created_at FROM task_operations WHERE task_id=? AND endpoint=? AND incarnation=? AND state='open' ORDER BY created_at",
+                (row["task_id"], actor["endpoint_id"], actor["incarnation"])).fetchall()
+        ]
         return result
 
     def _op_list(self, req, actor):
