@@ -176,3 +176,27 @@ recorded PID start values verify and the two processes are proven to share a
 live ancestor/descendant chain with the same participant, host, session, pane,
 and platform.  Alias, runtime labels, and pane tags alone never authorize this
 continuity; a restart or ambiguous lineage remains a new or rejected identity.
+
+## Bounded delivery diagnostics
+
+`tproj-msg diagnose MESSAGE_ID` is a read-only metadata query. Message parties
+can use it. Nonparty maintenance access additionally requires the native caller's
+project in the local host's `diagnostic_projects` and the origin host in the
+receiving hub's `diagnostic_hosts`. Both lists default empty; a CLI flag cannot
+grant this permission. Ordinary `message` authorization remains unchanged.
+The response excludes body, payload hash, raw receipt evidence, process commands,
+paths, headers, and credentials. It distinguishes delivery state and presentation
+confirmation from recipient liveness; neither establishes a substantive answer.
+Cross-host diagnosis prefers the recipient host's record and labels unavailable
+remote evidence without claiming the sender-side copy is current.
+
+New uncertain deliveries retain a fixed cause: `receipt_timeout`,
+`dispatch_error`, or `adapter_interrupted`. Historical uncertain rows with no
+such evidence remain unclassified. Diagnosis never retries, acknowledges,
+rewrites, or cancels the message and never synthesizes a cause for old records.
+
+Codex prompt receipts carry native conversation context, including when the
+app-server is shared. The host still verifies the caller and exact pinned prompt
+hash; a bound native thread/session ID may identify the prompt even when the
+immutable endpoint retains its earlier bootstrap runtime label. No alias-based
+identity adoption or synthetic acknowledgement is introduced.

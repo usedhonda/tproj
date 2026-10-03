@@ -83,6 +83,7 @@ tproj-msg ack <message-id>
 | `queued` / `accepted` | 受付・永続化のみ。届いた／読まれた証拠ではない |
 | `adapter_received` | adapter が受け取った段階。提示の証拠ではない |
 | `presented` | 束縛された受信者への提示記録。回答の証拠ではない |
+| `uncertain` | 提示結果を確定できない。未配達や入力保護待ちと断定せず、自動再送しない |
 | 返信本文 | 実際に読んで、依頼した質問への回答か確認する |
 
 必要なら当事者が、その ID の状態を一度確認する:
@@ -90,6 +91,11 @@ tproj-msg ack <message-id>
 ```bash
 tproj-msg message <message-id>
 ```
+
+配送調査は `tproj-msg diagnose <ID>` で本文を含まない状態・保留理由を確認できる。
+当事者または設定済みの保守担当のみ利用可能。権限拒否を別名やDB直読で回避しない。
+`receipt_timeout` は提示確認の時間切れ、`dispatch_error` は配送操作失敗、
+`adapter_interrupted` は配送途中のプロセス中断。古い記録の理由は不明のまま扱う。
 
 `online` は最近の生存信号であり、暇・読了・返信の証拠ではない。
 `online: false` は未起動とは限らない。送信時の配送結果と具体的なエラーで判断する。

@@ -120,7 +120,7 @@ def submission(request: dict, *, spool: Path | None = None, retry: str | None = 
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="tproj-msg-unified")
+    p = argparse.ArgumentParser(prog="tproj-msg-unified", epilog="diagnose MESSAGE_ID: read-only delivery metadata for a party or configured maintenance operator; never resends")
     p.add_argument("target", nargs="?")
     p.add_argument("body", nargs="?")
     p.add_argument("--stdin", action="store_true")
@@ -185,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ClientError("inbox cursor must be non-negative and limit must be positive", "invalid_argument")
             result = rpc(cfg["socket"], _caller_request("inbox", session=args.session, **{"as": args.claimed_alias},
                                                         cursor=args.cursor, limit=args.limit))
-        elif args.target in ("message", "ack"):
+        elif args.target in ("message", "ack", "diagnose"):
             if not args.body: raise ClientError("message requires message ID")
             result = rpc(cfg["socket"], _caller_request(args.target, message_id=args.body, session=args.session,
                                                         **{"as": args.claimed_alias}))

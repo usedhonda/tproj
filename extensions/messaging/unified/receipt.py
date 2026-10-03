@@ -7,9 +7,9 @@ from pathlib import Path
 import re
 
 try:
-    from .cli import DEFAULT_CONFIG, ClientError, config, rpc
+    from .cli import DEFAULT_CONFIG, ClientError, config, rpc, _caller_request
 except ImportError:  # installed standalone module
-    from cli import DEFAULT_CONFIG, ClientError, config, rpc
+    from cli import DEFAULT_CONFIG, ClientError, config, rpc, _caller_request
 
 MESSAGE_RE = re.compile(r"\[tproj-message:([^\]\s]+)\]")
 
@@ -22,7 +22,7 @@ def normalize_prompt(prompt: str) -> str:
     return match.group(2) if match else prompt
 
 
-def submit_prompt_receipt(payload: dict, *, config_path: Path | None = None) -> bool:
+def submit_prompt_receipt(payload: dict, *, config_path: Path | None = None, platform: str | None = None) -> bool:
     """Send an exact prompt receipt; return False silently for unrelated/unsafe input."""
     try:
         if not isinstance(payload, dict): return False
@@ -35,13 +35,12 @@ def submit_prompt_receipt(payload: dict, *, config_path: Path | None = None) -> 
         session_id = payload.get("session_id") or payload.get("session")
         if not isinstance(session_id, str) or not session_id: return False
         cfg = config(config_path or DEFAULT_CONFIG)
-        rpc(cfg["socket"], {
-            "op": "prompt_receipt",
-            "message_id": match.group(1),
-            "prompt": prompt,
-            "runtime_id": session_id,
-            "as": payload.get("as"),
-        })
+        request = _caller_request("prompt_receipt", message_id=match.group(1),
+                                  prompt=prompt, runtime_id=session_id)
+        if platform == "cdx" and not request.get("conversation"):
+            request["conversation"] = {"platform":"cdx", "session_id":session_id,
+                                       "thread_id":payload.get("thread_id") or session_id}
+        rpc(cfg["socket"], request)
         return True
     except Exception:
         return False
@@ -52,7 +51,11 @@ def main() -> int:
     import json
     try: payload = json.load(__import__("sys").stdin)
     except Exception: return 0
-    submit_prompt_receipt(payload)
+    import argparse
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--platform',choices=('cc','cdx'))
+    args=parser.parse_args()
+    submit_prompt_receipt(payload,platform=args.platform)
     return 0
 
 

@@ -14,6 +14,22 @@ class HubTest(unittest.TestCase):
     def reg(self,h,t,e,p,pid): return self.h.dispatch({"op":"endpoint_register","host_id":h,"host_token":t,"endpoint_id":e,"participant_id":p,"host_id":h,"session":"s","pane":"0","pid":pid,"pid_start":"x","runtime_id":"r","platform":"test"})
     def send(self,mid="m1",body="hello",target="cdx"):
         return self.h.dispatch({"op":"submit","host_id":"a","host_token":"ta","message":{"message_id":mid,"thread_id":"t","sender_endpoint":"ea","target":target,"body":body,"kind":"chat"}})
+    def test_diagnosis_is_metadata_only_and_operator_permission_is_explicit(self):
+        self.send(body='private-body-sentinel')
+        self.h.dispatch({'op':'directory_import','admin_token':'adm','projects':[{'project_id':'support','alias':'support','host_id':'a','path':'/support'}]})
+        self.reg('a','ta','support-ep','support:cc',3)
+        request={'op':'diagnose','host_id':'a','host_token':'ta','endpoint_id':'support-ep','message_id':'m1','operator_diagnostic':True}
+        with self.assertRaises(HubError):self.h.dispatch(request)
+        self.h.config['diagnostic_hosts']=['a']
+        before=self.h.db.total_changes
+        result=self.h.dispatch(request)
+        self.assertEqual(self.h.db.total_changes,before)
+        self.assertNotIn('body',result)
+        self.assertNotIn('payload_hash',result)
+        self.assertNotIn('private-body-sentinel',str(result))
+        self.assertFalse(result['presentation_confirmed'])
+        self.assertIsNone(result['delivery_reason'])
+
     def test_durable_idempotency_and_relative_route(self):
         self.assertEqual(self.send(), {"message_id":"m1","state":"queued"})
         self.assertTrue(self.send()["duplicate"])

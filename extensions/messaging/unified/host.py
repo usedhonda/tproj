@@ -56,11 +56,20 @@ class Host:
         CREATE TABLE IF NOT EXISTS deliveries(message_id TEXT PRIMARY KEY, endpoint_id TEXT NOT NULL,
         envelope TEXT NOT NULL, state TEXT NOT NULL, prompt_hash TEXT, updated REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS submissions(message_id TEXT PRIMARY KEY, endpoint_id TEXT NOT NULL,
-        envelope TEXT NOT NULL);''')
+        envelope TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS delivery_diagnostics(message_id TEXT PRIMARY KEY, reason TEXT NOT NULL);''')
         # A process exit in the injection window must never trigger another injection.
         if recover:
+            self.db.execute("INSERT OR REPLACE INTO delivery_diagnostics SELECT message_id,'adapter_interrupted' FROM deliveries WHERE state='dispatching'")
             self.db.execute("UPDATE deliveries SET state='uncertain' WHERE state='dispatching'")
             self.db.commit()
+
+    def mark_uncertain(self, message_id, reason):
+        if reason not in ('receipt_timeout','dispatch_error'):
+            raise ValueError('invalid uncertainty classification')
+        self.db.execute("UPDATE deliveries SET state='uncertain' WHERE message_id=?", (message_id,))
+        self.db.execute('INSERT OR REPLACE INTO delivery_diagnostics VALUES(?,?)',(message_id,reason))
+        self.db.commit()
 
     def hub(self, op, **args):
         return rpc(self.config['hub_socket'], dict(args, op=op,
@@ -352,6 +361,11 @@ class Host:
         if op == 'doctor':
             return {'ok': True, 'endpoint': ep, 'conversation': req.get('conversation') or {},
                     'selectors': {'session': req.get('session'), 'as': req.get('as')}}
+        if op == 'diagnose':
+            if not isinstance(req.get('message_id'),str) or not req['message_id']:
+                raise HubError('invalid_message','message ID required')
+            operator = ep.get('project_id') in self.config.get('diagnostic_projects',[])
+            return self.hub('diagnose',endpoint_id=ep['endpoint_id'],message_id=req['message_id'],operator_diagnostic=operator)
         if op == 'cancel':
             if not isinstance(req.get('message_id'), str) or not req['message_id']:
                 raise HubError('invalid_message', 'message ID required')
@@ -388,7 +402,10 @@ class Host:
             if not row or row['endpoint_id'] != ep['endpoint_id'] or row['prompt_hash'] != digest:
                 raise HubError('identity_rejected', 'prompt does not match pinned delivery')
             observed_runtime = ep.get('observed_runtime_id') or ep['runtime_id']
-            if req.get('runtime_id') != observed_runtime:
+            native_ids={observed_runtime}
+            if ep.get('platform') == 'cdx':
+                native_ids.update(ep.get(key) for key in ('thread_id','session_id') if ep.get(key))
+            if req.get('runtime_id') not in native_ids:
                 raise HubError('identity_rejected', 'prompt runtime mismatch')
             self.db.execute("UPDATE deliveries SET state='presented',updated=? WHERE message_id=?", (time.time(), row['message_id']))
             self.db.commit()
@@ -432,12 +449,14 @@ class Host:
                         except OSError: pass
                     row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
                 if row['state'] in ('uncertain', 'presented'):
-                    self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid, state=row['state'], evidence='durable local journal')
+                    diagnostic=self.db.execute('SELECT reason FROM delivery_diagnostics WHERE message_id=?',(mid,)).fetchone()
+                    evidence=json.dumps({'delivery_reason':diagnostic['reason']}) if row['state']=='uncertain' and diagnostic else 'durable local journal'
+                    self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid, state=row['state'], evidence=evidence)
                     continue
                 if row['state'] == 'dispatching':
                     self.delivery_status(ep['endpoint_id'], mid, 'waiting_input')
                     if time.time() - row['updated'] > 30:
-                        self.db.execute("UPDATE deliveries SET state='uncertain' WHERE message_id=?", (mid,)); self.db.commit()
+                        self.mark_uncertain(mid, 'receipt_timeout')
                     continue
                 # Revalidate this exact process incarnation immediately before terminal access.
                 from identity import _process_info
@@ -494,7 +513,7 @@ class Host:
                     time.sleep(0.5)
                     subprocess.run(['tmux', 'send-keys', '-t', ep['pane'], 'Enter'], check=True, timeout=5, capture_output=True)
                 except (subprocess.SubprocessError, OSError):
-                    self.db.execute("UPDATE deliveries SET state='uncertain' WHERE message_id=?", (mid,)); self.db.commit()
+                    self.mark_uncertain(mid, 'dispatch_error')
 
 
 def main():

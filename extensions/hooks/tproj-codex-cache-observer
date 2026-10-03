@@ -212,7 +212,7 @@ def main():
                 receipt = Path.home() / "lib/tproj-msg-unified/receipt.py"
                 if receipt.is_file():
                     # Existing loaded hook gains the receipt path without an agent restart.
-                    subprocess.run([os.sys.executable, str(receipt)], input=json.dumps(payload),
+                    subprocess.run([os.sys.executable, str(receipt), "--platform", "cdx"], input=json.dumps(payload),
                                    text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                    timeout=5, check=False)
     except (OSError, ValueError, TypeError, OverflowError, subprocess.SubprocessError):

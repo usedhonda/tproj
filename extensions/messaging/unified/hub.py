@@ -316,6 +316,32 @@ class Hub:
                         (msg["message_id"], msg["state"], json.dumps({"delivery_reason": reason}), self._now()))
         return {"message_id": msg["message_id"], "state": msg["state"], "delivery_reason": reason}
 
+    def diagnose(self, req):
+        host=self._auth(req)
+        message=self._row('SELECT message_id,state,sender_endpoint,recipient_endpoint,created_at,expires_at,adapter_received_at FROM messages WHERE message_id=?',(req.get('message_id'),))
+        if not message:raise HubError('not_found','message not found')
+        operator=req.get('operator_diagnostic') is True and host in self.config.get('diagnostic_hosts',[])
+        if not operator:
+            ep=self._host_endpoint(host,req.get('endpoint_id'))
+            if ep['endpoint_id'] not in (message['sender_endpoint'],message['recipient_endpoint']):
+                raise HubError('unauthorized','delivery metadata requires party or configured operator permission')
+        result=dict(message)
+        result['diagnostic_host_id']=self.config.get('host_id',host)
+        receipt=self._row('SELECT state,evidence,at FROM receipts WHERE message_id=?',(message['message_id'],))
+        result['presentation_confirmed']=message['state']=='presented' or bool(receipt and receipt['state']=='presented')
+        result['receipt_at']=receipt['at'] if receipt else None
+        result['delivery_reason']=None
+        if receipt:
+            try:reason=json.loads(receipt['evidence']).get('delivery_reason')
+            except (ValueError,TypeError,AttributeError):reason=None
+            if reason in ('waiting_input','busy','draft_protected','endpoint_unavailable','adapter_error','auth_required','receipt_timeout','dispatch_error','adapter_interrupted'):
+                result['delivery_reason']=reason
+        endpoint=self._row('SELECT host_id,retired,last_heartbeat FROM endpoints WHERE endpoint_id=?',(message['recipient_endpoint'],))
+        result['recipient_host_id']=endpoint['host_id'] if endpoint else None
+        result['recipient_retired']=bool(endpoint['retired']) if endpoint else None
+        result['recipient_online']=bool(endpoint and not endpoint['retired'] and self._now()-endpoint['last_heartbeat']<=30)
+        return result
+
     def dispatch(self, req):
         op=req.get("op")
         if op == "directory_update":
@@ -338,6 +364,7 @@ class Hub:
         if op=="begin_present": return self.begin_present(req)
         if op=="cancel": return self.cancel(req)
         if op=="delivery_status": return self.delivery_status(req)
+        if op=="diagnose": return self.diagnose(req)
         if op=="query":
             host=self._auth(req); m=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),));
             if not m: raise HubError("not_found","message not found")
@@ -347,7 +374,7 @@ class Hub:
             if ep["endpoint_id"] not in (m["sender_endpoint"],m["recipient_endpoint"]): raise HubError("unauthorized","not party to message")
             result = dict(m)
             receipt = self._row("SELECT evidence,at FROM receipts WHERE message_id=?", (m["message_id"],))
-            if receipt and m["state"] in ("accepted", "queued", "adapter_received"):
+            if receipt and m["state"] in ("accepted", "queued", "adapter_received", "uncertain"):
                 try: reason = json.loads(receipt["evidence"]).get("delivery_reason")
                 except (ValueError, TypeError, AttributeError): reason = None
                 if reason: result.update(delivery_reason=reason, delivery_checked_at=receipt["at"])

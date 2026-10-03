@@ -348,6 +348,7 @@ class FederatedHub(Hub):
                 if op == 'peer_manage_update': return self.manage_update(req['request'], origin=owner)
                 return {'peer_directory_prepare': prepare, 'peer_directory_commit': commit,
                         'peer_directory_status': status, 'peer_directory_abort': abort}[op](self, req)
+            if op == 'peer_diagnose': return super().diagnose(req)
             if op == 'peer_task':
                 from task_transport import dispatch
                 return dispatch(self, req, peer=True)
@@ -369,6 +370,31 @@ class FederatedHub(Hub):
                     raise HubError('unauthorized', 'not party to message')
                 return super().dispatch(dict(req, op='query'))
             raise HubError('unknown_op', 'unsupported peer operation')
+        if op == 'diagnose':
+            origin=self._auth(req)
+            if origin != self.local_id:raise HubError('unauthorized','diagnosis requires local native host ingress')
+            fields={key:req.get(key) for key in ('endpoint_id','message_id','operator_diagnostic')}
+            try:
+                local=super().diagnose(req)
+            except HubError as exc:
+                if exc.code != 'not_found':raise
+                matches=[]
+                failures=[]
+                for peer_id in self.peers():
+                    try:matches.append(self.remote(peer_id,'diagnose',**fields))
+                    except HubError as error:
+                        if error.code != 'not_found':failures.append(error.code)
+                if not matches:
+                    raise HubError(failures[0] if failures else 'not_found','delivery metadata unavailable')
+                authoritative=[m for m in matches if m.get('recipient_host_id') == m.get('diagnostic_host_id')]
+                if len(authoritative)==1:return authoritative[0]
+                if len(matches)==1:return dict(matches[0],remote_state='unavailable')
+                raise HubError('ambiguous_diagnostic','multiple delivery owners responded')
+            destination=local.get('recipient_host_id')
+            if destination and destination != self.local_id:
+                try:return self.remote(destination,'diagnose',**fields)
+                except HubError as exc:return dict(local,remote_state='unavailable',remote_error=exc.code)
+            return local
         if op.startswith('task_'):
             from task_transport import dispatch
             return dispatch(self, req)
