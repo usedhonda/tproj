@@ -34,9 +34,10 @@ diagnostics: numeric-or-null `last_http_status` and an allowlisted
 `last_error_class` (`http_error`, `timeout`, `tls`, `network`,
 `target_unavailable`, `oversized_request`, `oversized_response`, or
 `invalid_response`). Response bodies, exception text, headers, callback URLs,
-and query strings are never persisted. A status observed before a response
-read failure is retained; historical terminal records are not annotated until
-they are attempted again. Diagnostics are cleared before each new attempt, so
+and query strings are never copied into delivery diagnostics or logs; the
+existing private subscription configuration is unchanged. A status observed
+before a response read failure is retained; historical terminal records are
+not annotated until they are attempted again. Diagnostics are cleared before each new attempt, so
 a crash before the callback returns cannot leave an older result attributed to
 the current attempt.
 

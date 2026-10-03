@@ -184,6 +184,36 @@ class EventTests(unittest.TestCase):
         self.assertEqual(result, (False, {}, None, "timeout"))
         self.assertNotIn("secret timeout details", str(result))
 
+    def test_successful_http_response_keeps_legacy_body_tolerance(self):
+        self.delivery._post = events.KAIEventDelivery._post.__get__(self.delivery)
+        parsed = type("Parsed", (), {"hostname": "callback.example", "netloc": "callback.example", "port": 443, "path": "/event", "query": ""})()
+        for status, body in ((204, b""), (200, b"not-json"), (200, b"[1, 2, 3]")):
+            with self.subTest(status=status, body=body):
+                class Response:
+                    def __init__(self):
+                        self.status = status
+
+                    def read(self, _limit):
+                        return body
+
+                class Connection:
+                    def __init__(self, *args):
+                        pass
+
+                    def request(self, *args):
+                        pass
+
+                    def getresponse(self):
+                        return Response()
+
+                    def close(self):
+                        pass
+
+                with patch.object(events._secure, "validated_address", return_value=(parsed, "203.0.113.10")), patch.object(events._secure, "PinnedHTTPSConnection", Connection):
+                    result = self.delivery._post("https://callback.example/event", "evt_one", b"x" * 24, {"message": "secret"})
+                self.assertTrue(result[0])
+                self.assertEqual(result[1], {})
+
     def test_historical_terminal_record_is_not_annotated(self):
         sid = self.subscribe()
         state = self.delivery._load()
