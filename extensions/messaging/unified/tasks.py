@@ -201,7 +201,7 @@ class TaskAuthority:
         kind = str(req.get("tool_use_id") or req.get("kind","mutation"))
         existing=self.db.execute("SELECT * FROM task_operations WHERE task_id=? AND endpoint=? AND incarnation=? AND kind=? AND state='open'",(row["task_id"],actor["endpoint_id"],actor["incarnation"],kind)).fetchone()
         if existing: return {"token":existing["token"],"epoch":row["epoch"],"duplicate":True}
-        token=str(uuid.uuid4()); self.db.execute("INSERT INTO task_operations VALUES(?,?,?,?,?,?,?)",(token,row["task_id"],actor["endpoint_id"],actor["incarnation"],row["epoch"],kind,"open",time.time())); return {"token":token,"epoch":row["epoch"]}
+        token=str(uuid.uuid4()); self.db.execute("INSERT INTO task_operations VALUES(?,?,?,?,?,?,?,?)",(token,row["task_id"],actor["endpoint_id"],actor["incarnation"],row["epoch"],kind,"open",time.time())); return {"token":token,"epoch":row["epoch"]}
 
     def _op_end_operation(self, req, actor):
         token=str(req.get("token","")); op=self.db.execute("SELECT * FROM task_operations WHERE token=?",(token,)).fetchone()
