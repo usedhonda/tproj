@@ -12,7 +12,8 @@ def _file_change_witness(ep, tool_use_id, created_at, home=None):
     """Verify one exact completed Codex FileChange in the bound transcript."""
     tid = str(ep.get('thread_id') or ep.get('session_id') or '')
     project = ep.get('project_path')
-    if ep.get('platform') != 'cdx' or not tid or not project or not isinstance(tool_use_id, str): return False
+    if (ep.get('platform') != 'cdx' or not re.fullmatch(r'[0-9a-fA-F-]{36}', tid)
+            or not project or not isinstance(tool_use_id, str)): return False
     root = Path(home or Path.home()) / '.codex/sessions'
     paths = list(root.glob('[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9]/rollout-*-' + tid + '.jsonl'))
     paths = [p for p in paths if p.is_file() and not any(x.is_symlink() for x in (p, *p.parents))]
@@ -21,16 +22,17 @@ def _file_change_witness(ep, tool_use_id, created_at, home=None):
         with paths[0].open(encoding='utf-8') as stream:
             header = json.loads(next(stream)); meta = header.get('payload') or {}
             if (header.get('type') != 'session_meta' or meta.get('id') != tid
-                    or Path(str(meta.get('cwd', ''))).resolve() != Path(str(project)).resolve()): return False
+                    or not meta.get('cwd') or Path(str(meta['cwd'])).resolve() != Path(str(project)).resolve()): return False
             matches = []
             for line in stream:
                 if not line.strip(): continue
-                payload = (json.loads(line).get('payload') or {})
-                item = payload.get('item') if payload.get('type') == 'item_completed' else None
+                row = json.loads(line)
+                payload = (row.get('payload') or {})
+                item = payload.get('item') if row.get('type') == 'event_msg' and payload.get('type') == 'item_completed' else None
                 if (payload.get('thread_id') != tid or not isinstance(item, dict)
                         or item.get('type') != 'FileChange' or item.get('id') != tool_use_id
                         or item.get('status') != 'completed'): continue
-                started = item.get('started_at_ms'); completed = item.get('completed_at_ms')
+                started = payload.get('started_at_ms'); completed = payload.get('completed_at_ms')
                 if type(started) is int and type(completed) is int and completed >= started >= int(float(created_at) * 1000): matches.append(item)
             return len(matches) == 1
     except (OSError, ValueError, TypeError): return False
@@ -74,8 +76,16 @@ def dispatch(host, ep, req):
         if not isinstance(epoch, int) or epoch != bound['epoch'] or not isinstance(ident, str) or not ident:
             raise HubError('epoch_conflict', 'task epoch or operation identity is stale')
         snapshot = host.hub('task_status', endpoint_id=ep['endpoint_id'], task_id=bound['task_id'])
+        task = snapshot.get('task') or {}
+        if (task.get('epoch') != bound['epoch'] or task.get('executor_endpoint') != ep['endpoint_id']
+                or task.get('executor_incarnation') != ep['incarnation']
+                or task.get('status') not in ('accepted', 'in_progress')
+                or (snapshot.get('handoff') or {}).get('state') in ('prepared', 'released', 'accepted')):
+            raise HubError('stale_executor', 'task authority no longer matches this binding')
         details = [item for item in snapshot.get('actor_open_operation_details', []) if item.get('tool_use_id') == ident]
-        if len(details) != 1 or not _file_change_witness(ep, ident, details[0].get('created_at')):
+        if (len(details) != 1 or type(details[0].get('epoch')) is not int
+                or details[0]['epoch'] != bound['epoch']
+                or not _file_change_witness(ep, ident, details[0].get('created_at'))):
             raise HubError('witness_unavailable', 'native FileChange completion witness is unavailable')
         result = host.hub('task_end_operation', endpoint_id=ep['endpoint_id'], task_id=bound['task_id'], expected_epoch=epoch, tool_use_id=ident)
         return dict(result, assigned=True, reconciled=True)
