@@ -18,7 +18,7 @@ if [[ -f "$_unified_latch" || -f "$_unified_config" ]]; then
   fi
 fi
 case "${1:-}" in
-  approval|submit|status|list|ack|progress|done|block|verify|report|cancel|freeze|unfreeze|handoff|detach|--help|-h)
+  approval|submit|status|list|ack|progress|done|block|verify|report|cancel|freeze|unfreeze|handoff|detach|reconcile-operation|--help|-h)
     if [[ -f "$_unified_config" ]] && jq -e '.active == true or .enrolled == true' "$_unified_config" >/dev/null 2>&1 \
        ; then
       if [[ ! -f "$_unified_cli" ]]; then

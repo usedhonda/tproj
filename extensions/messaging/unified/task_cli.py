@@ -63,6 +63,10 @@ def parser() -> argparse.ArgumentParser:
         q.add_argument("task_id")
         q.add_argument("--epoch", type=int, dest="expected_epoch")
         q.add_argument("--data", help="JSON event data")
+    r = sub.add_parser("reconcile-operation")
+    r.add_argument("task_id")
+    r.add_argument("--epoch", required=True, type=int, dest="expected_epoch")
+    r.add_argument("--tool-use-id", required=True)
     sub.add_parser("list")
     h = sub.add_parser("handoff", help="prepare, release, accept, or commit a handoff")
     h.add_argument("action", choices=("prepare", "release", "accept", "commit"))
@@ -124,6 +128,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.token: fields["token"] = args.token
             result = request(op, **fields)
         else:
+            if args.command == "reconcile-operation":
+                result = request("reconcile_operation", task_id=args.task_id,
+                                 expected_epoch=args.expected_epoch, tool_use_id=args.tool_use_id)
+                print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+                return 0
             fields = {"task_id": args.task_id}
             if args.command != "status" and args.expected_epoch is None:
                 raise cli.ClientError(f"{args.command} requires --epoch", "invalid_argument")

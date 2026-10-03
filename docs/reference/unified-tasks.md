@@ -151,3 +151,11 @@ authenticated endpoint incarnation: each item contains only `tool_use_id`,
 `epoch`, and `created_at`. Operation tokens, payloads, commands, and other
 actors' open operations remain hidden; this is evidence only and provides no
 reconcile or force-close capability.
+
+`tproj-task reconcile-operation TASK --epoch N --tool-use-id ID` is a bounded
+host-side recovery for one exact open operation. It accepts only an
+authenticated current binding plus an independently verified native Codex
+`FileChange` `item_completed` witness in the same thread and project, with
+valid timestamps after the master-recorded operation creation. Text mentions,
+other item types, wrong threads, and missing or ambiguous transcripts are
+rejected; the command has no bulk or force-close mode.
