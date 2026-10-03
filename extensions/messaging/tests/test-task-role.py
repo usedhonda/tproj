@@ -23,12 +23,14 @@ class TaskRoleContextTest(unittest.TestCase):
 
     def test_session_only_context_uses_exactly_one_proven_thread(self):
         with patch.object(task_role, 'native_thread_metadata', return_value=[
-                {'thread_id':'proven-thread', 'session_id':'native-session', 'source_kind':'cli'}]):
+                {'thread_id':'native-session', 'source_kind':'cli', 'cwd':'/project'}]):
             self.assertEqual(task_role.native_context({'session_id':'native-session'}),
-                             {'session_id':'native-session', 'thread_id':'proven-thread'})
+                             {'session_id':'native-session', 'thread_id':'native-session'})
 
     def test_session_only_context_keeps_session_only_without_proof(self):
-        for records in ([], [{'thread_id':'one'}, {'thread_id':'two'}], [{'thread_id':'other'}]):
+        for records in ([], [{'thread_id':'one'}, {'thread_id':'two'}],
+                        [{'thread_id':'other'}],
+                        [{'thread_id':'native-session', 'session_id':'other', 'source_kind':'cli'}]):
             with patch.object(task_role, 'native_thread_metadata', return_value=records):
                 self.assertEqual(task_role.native_context({'session_id':'native-session'}),
                                  {'session_id':'native-session'})

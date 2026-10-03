@@ -50,7 +50,8 @@ def native_context(payload):
     if values.get('session_id') and not values.get('thread_id'):
         proven = native_thread_metadata(values['session_id'])
         if (len(proven) == 1
-                and str(proven[0].get('session_id', '')) == values['session_id']
+                and str(proven[0].get('thread_id', '')) == values['session_id']
+                and (not proven[0].get('session_id') or str(proven[0]['session_id']) == values['session_id'])
                 and str(proven[0].get('source_kind', '')) in {'cli', 'vscode-rollout'}
                 and isinstance(proven[0].get('thread_id'), str)
                 and proven[0]['thread_id'].strip()):
