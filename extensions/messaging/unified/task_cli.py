@@ -23,7 +23,7 @@ except ImportError:  # installed launcher executes this file directly
 
 
 TASK_OPS = {"approval", "submit", "status", "list", "ack", "progress", "done",
-            "block", "verify", "report", "cancel", "freeze"}
+            "block", "verify", "report", "cancel", "freeze", "unfreeze"}
 HANDOFF_OPS = {"prepare_handoff", "release_handoff", "accept_handoff", "commit_handoff"}
 
 
@@ -58,7 +58,7 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--approval", required=True, dest="approval_id")
     s.add_argument("--idempotency-key", default=None)
     s.add_argument("--stdin", action="store_true", help="read packet JSON from stdin")
-    for name in ("status", "ack", "progress", "done", "block", "verify", "report", "cancel", "freeze", "detach"):
+    for name in ("status", "ack", "progress", "done", "block", "verify", "report", "cancel", "freeze", "unfreeze", "detach"):
         q = sub.add_parser(name)
         q.add_argument("task_id")
         q.add_argument("--epoch", type=int, dest="expected_epoch")

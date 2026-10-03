@@ -85,6 +85,33 @@ class HostDispatchTests(unittest.TestCase):
   self.assertEqual(host.calls[1][1]['intent_hash'],digest('repair'))
   self.assertEqual(out['notification']['state'],'queued')
 
+class DetachTests(unittest.TestCase):
+ def test_old_executor_detaches_without_waiting_for_new_executor_operations(self):
+  import tempfile,os
+  from unittest.mock import patch
+  from task_host import dispatch as host_dispatch,binding_marker
+  from tasks import TaskAuthority
+  owner=dict(A)
+  old=dict(A,endpoint_id='old',incarnation='old1',runtime_id='native-old')
+  new=dict(A,endpoint_id='new',incarnation='new1',runtime_id='native-new')
+  actors={a['endpoint_id']:a for a in (owner,old,new)}
+  authority=TaskAuthority(':memory:')
+  authority.dispatch({'op':'approval','approval_id':'a','source_endpoint':owner['endpoint_id'],'host_attested':True,'intent_hash':'i','scope_hash':'s','evidence_hash':'e'},owner)
+  tid=authority.dispatch({'op':'submit','approval_id':'a','idempotency_key':'one','intent_hash':'i','scope_hash':'s','executor':old},owner)['task']['task_id']
+  class Host:
+   db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
+   def hub(self,op,endpoint_id,**body):return authority.dispatch(dict(body,op=op),actors[endpoint_id])
+  host=Host()
+  with tempfile.TemporaryDirectory() as d,patch.dict(os.environ,{'TPROJ_TASK_BINDING_DIR':d}):
+   host_dispatch(host,old,{'op':'task_ack','task_id':tid,'expected_epoch':0})
+   for actor,op in ((owner,'prepare_handoff'),(old,'release_handoff'),(new,'accept_handoff'),(owner,'commit_handoff')):
+    authority.dispatch({'op':op,'task_id':tid,'expected_epoch':0,'target':new},actor)
+   authority.dispatch({'op':'begin_operation','task_id':tid,'expected_epoch':1,'tool_use_id':'new-work'},new)
+   self.assertFalse(host_dispatch(host,old,{'op':'task_context'})['can_mutate'])
+   with self.assertRaises(HubError):host_dispatch(host,old,{'op':'task_detach','task_id':'wrong','expected_epoch':0})
+   self.assertTrue(host_dispatch(host,old,{'op':'task_detach','task_id':tid,'expected_epoch':0})['detached'])
+   self.assertFalse(binding_marker('native-old').exists())
+
 class AssignedLifecycleTests(unittest.TestCase):
  def test_host_to_master_lifecycle_and_offline_fence(self):
   import tempfile, os
@@ -122,7 +149,7 @@ class AssignedLifecycleTests(unittest.TestCase):
    self.assertFalse(host_dispatch(host,executor,{'op':'task_context'})['can_mutate'])
    host_dispatch(host,owner,{'op':'task_verify','task_id':tid,'expected_epoch':0})
    host_dispatch(host,owner,{'op':'task_report','task_id':tid,'expected_epoch':0})
-   host_dispatch(host,executor,{'op':'task_detach','task_id':tid})
+   host_dispatch(host,executor,{'op':'task_detach','task_id':tid,'expected_epoch':0})
    self.assertFalse(binding_marker('native-executor').exists())
 
 if __name__=='__main__':unittest.main()

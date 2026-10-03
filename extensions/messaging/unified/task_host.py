@@ -49,11 +49,21 @@ def dispatch(host, ep, req):
         return dict(result,assigned=True)
     if op == 'task_detach':
         if not bound:return {'detached':True}
+        if req.get('expected_epoch') != bound['epoch']:
+            raise HubError('epoch_conflict','detach must name the bound assignment epoch')
+        if req.get('task_id') != bound['task_id']:
+            raise HubError('task_mismatch','detach must name the bound task')
         result=host.hub('task_status',endpoint_id=ep['endpoint_id'],task_id=bound['task_id'])
         task=result['task']
-        if result.get('open_operations'):
+        pending=result.get('handoff') or {}
+        pending_target=(pending.get('state') in ('prepared','released','accepted') and
+                        pending.get('target_endpoint')==ep['endpoint_id'])
+        transferred=(not pending_target and task['epoch'] >= bound['epoch'] and
+                     (task['executor_endpoint'],task['executor_incarnation'],task['executor_host_id']) !=
+                     (ep['endpoint_id'],ep['incarnation'],ep['host_id']))
+        if result.get('actor_open_operations',result.get('open_operations')):
             raise HubError('operations_open','operation completion is still unconfirmed')
-        if task['status'] not in ('reported','cancelled'):
+        if not transferred and task['status'] not in ('reported','cancelled'):
             raise HubError('task_active','finish/report or cancel task before detaching')
         host.db.execute('DELETE FROM formal_task_binding WHERE endpoint_id=?',(ep['endpoint_id'],));host.db.commit()
         binding_marker(bound['native_id']).unlink(missing_ok=True)

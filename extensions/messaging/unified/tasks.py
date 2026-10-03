@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS task_handoffs (
  task_id TEXT PRIMARY KEY, expected_epoch INTEGER NOT NULL, target_endpoint TEXT NOT NULL,
  target_incarnation TEXT NOT NULL, target_host_id TEXT NOT NULL, state TEXT NOT NULL, created_at REAL NOT NULL)
 ;
+CREATE TABLE IF NOT EXISTS task_assignments (
+ task_id TEXT NOT NULL, endpoint TEXT NOT NULL, incarnation TEXT NOT NULL,
+ host_id TEXT NOT NULL, epoch INTEGER NOT NULL,
+ PRIMARY KEY(task_id,endpoint,incarnation,host_id,epoch))
+;
 CREATE INDEX IF NOT EXISTS task_events_task ON task_events(task_id,event_id);
 CREATE INDEX IF NOT EXISTS task_ops_task ON task_operations(task_id,state);
 """
@@ -174,6 +179,8 @@ class TaskAuthority:
     def _visible(self, row, actor):
         if any(row[p+"_endpoint"] == actor["endpoint_id"] and row[p+"_incarnation"] == actor["incarnation"] and row[p+"_host_id"] == actor["host_id"] for p in ("owner","executor")):
             return True
+        previous = self.db.execute("SELECT 1 FROM task_assignments WHERE task_id=? AND endpoint=? AND incarnation=? AND host_id=?", (row["task_id"], actor["endpoint_id"], actor["incarnation"], actor["host_id"])).fetchone()
+        if previous: return True
         h = self.db.execute("SELECT * FROM task_handoffs WHERE task_id=?", (row["task_id"],)).fetchone()
         return bool(h and h["target_endpoint"] == actor["endpoint_id"] and h["target_incarnation"] == actor["incarnation"] and h["target_host_id"] == actor["host_id"])
 
@@ -184,6 +191,7 @@ class TaskAuthority:
         h = self.db.execute("SELECT * FROM task_handoffs WHERE task_id=?", (row["task_id"],)).fetchone()
         result["handoff"] = dict(h) if h else None
         result["open_operations"] = self.db.execute("SELECT COUNT(*) FROM task_operations WHERE task_id=? AND state='open'", (row["task_id"],)).fetchone()[0]
+        result["actor_open_operations"] = self.db.execute("SELECT COUNT(*) FROM task_operations WHERE task_id=? AND endpoint=? AND incarnation=? AND state='open'", (row["task_id"],actor["endpoint_id"],actor["incarnation"])).fetchone()[0]
         return result
 
     def _op_list(self, req, actor):
@@ -238,7 +246,27 @@ class TaskAuthority:
         if row["status"] == "frozen": return {"task":self._view(row),"duplicate":True}
         if row["status"] in ("reported","cancelled"):
             raise TaskAuthorityError("stale_task","terminal task state is immutable")
-        self.db.execute("UPDATE tasks SET status='frozen',updated_at=? WHERE task_id=? AND epoch=?",(time.time(),row["task_id"],row["epoch"])); self._event(row["task_id"],"freeze",actor,row["epoch"]); return {"task":self._view(self._task(row["task_id"]))}
+        self.db.execute("UPDATE tasks SET status='frozen',updated_at=? WHERE task_id=? AND epoch=?",(time.time(),row["task_id"],row["epoch"])); self._event(row["task_id"],"freeze",actor,row["epoch"],{"previous_status":row["status"]}); return {"task":self._view(self._task(row["task_id"]))}
+
+    def _op_unfreeze(self, req, actor):
+        row=self._task(str(req.get("task_id"))); self._owner(row,actor); self._epoch(req,row)
+        if row["status"] != "frozen":
+            raise TaskAuthorityError("stale_task","only a frozen task can be released")
+        self._quiescent(row)
+        event=self.db.execute("SELECT data FROM task_events WHERE task_id=? AND kind='freeze' AND epoch=? ORDER BY event_id DESC LIMIT 1",(row["task_id"],row["epoch"])).fetchone()
+        previous=json.loads(event["data"]).get("previous_status") if event else None
+        if previous not in ("submitted","accepted","in_progress","blocked","done","verified"):
+            raise TaskAuthorityError("freeze_evidence_missing","pre-freeze state is unavailable")
+        pending=self.db.execute("SELECT * FROM task_handoffs WHERE task_id=?",(row["task_id"],)).fetchone()
+        if pending and pending["state"] in ("prepared","released","accepted"):
+            self.db.execute("INSERT OR IGNORE INTO task_assignments VALUES(?,?,?,?,?)",(row["task_id"],pending["target_endpoint"],pending["target_incarnation"],pending["target_host_id"],row["epoch"]+1))
+            self.db.execute("UPDATE task_handoffs SET state='aborted' WHERE task_id=?",(row["task_id"],))
+        # Old queued tool calls remain fenced. Executor must bind the new epoch.
+        restored="accepted" if previous=="in_progress" else previous
+        epoch=row["epoch"]+1
+        self.db.execute("UPDATE tasks SET status=?,epoch=?,updated_at=? WHERE task_id=?",(restored,epoch,time.time(),row["task_id"]))
+        self._event(row["task_id"],"unfreeze",actor,epoch,{"previous_status":previous})
+        return {"task":self._view(self._task(row["task_id"]))}
 
     def _op_begin_operation(self, req, actor):
         row=self._task(str(req.get("task_id"))); self._epoch(req,row); self._executor(row,actor)
@@ -306,4 +334,5 @@ class TaskAuthority:
         h=self.db.execute("SELECT * FROM task_handoffs WHERE task_id=?",(row["task_id"],)).fetchone()
         if not h or h["state"] != "accepted" or h["target_endpoint"] != str(target["endpoint_id"]) or h["target_incarnation"] != str(target["incarnation"]) or h["target_host_id"] != str(target["host_id"]): raise TaskAuthorityError("handoff_not_accepted","target must accept before commit")
         epoch=row["epoch"]+1; self.db.execute("UPDATE tasks SET executor_endpoint=?,executor_incarnation=?,executor_host_id=?,epoch=?,status='accepted',updated_at=? WHERE task_id=? AND epoch=?",(str(target["endpoint_id"]),str(target["incarnation"]),str(target["host_id"]),epoch,time.time(),row["task_id"],row["epoch"]))
+        self.db.execute("INSERT OR IGNORE INTO task_assignments VALUES(?,?,?,?,?)",(row["task_id"],row["executor_endpoint"],row["executor_incarnation"],row["executor_host_id"],row["epoch"]))
         self.db.execute("UPDATE task_handoffs SET state='committed' WHERE task_id=?",(row["task_id"],)); self._event(row["task_id"],"handoff_commit",actor,epoch,{"target":target}); return {"task":self._view(self._task(row["task_id"]))}

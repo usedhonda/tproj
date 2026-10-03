@@ -48,6 +48,42 @@ class TestTasks(unittest.TestCase):
         with self.assertRaises(TaskAuthorityError):t.dispatch({'op':op,'task_id':tid,'expected_epoch':0},A)
     self.assertEqual(t.dispatch({'op':'status','task_id':tid},A)['task']['status'],'cancelled')
 
+ def test_unfreeze_is_owner_only_and_fences_old_epoch(self):
+    t=authority();tid=make_task(t)['task_id']
+    t.dispatch({'op':'ack','task_id':tid,'expected_epoch':0},A)
+    t.dispatch({'op':'progress','task_id':tid,'expected_epoch':0},A)
+    t.dispatch({'op':'freeze','task_id':tid,'expected_epoch':0},A)
+    with self.assertRaises(TaskAuthorityError):t.dispatch({'op':'unfreeze','task_id':tid,'expected_epoch':0},B)
+    out=t.dispatch({'op':'unfreeze','task_id':tid,'expected_epoch':0},A)['task']
+    self.assertEqual((out['status'],out['epoch']),('accepted',1))
+    with self.assertRaises(TaskAuthorityError):t.dispatch({'op':'progress','task_id':tid,'expected_epoch':0},A)
+    t.dispatch({'op':'progress','task_id':tid,'expected_epoch':1},A)
+    t.dispatch({'op':'cancel','task_id':tid,'expected_epoch':1},A)
+    with self.assertRaises(TaskAuthorityError):t.dispatch({'op':'unfreeze','task_id':tid,'expected_epoch':1},A)
+
+ def test_unfreeze_aborts_pending_handoff_without_enabling_target(self):
+    t=authority();tid=make_task(t)['task_id']
+    t.dispatch({'op':'ack','task_id':tid,'expected_epoch':0},A)
+    for actor,op in ((A,'prepare_handoff'),(A,'release_handoff'),(B,'accept_handoff')):
+        t.dispatch({'op':op,'task_id':tid,'expected_epoch':0,'target':B},actor)
+    t.dispatch({'op':'freeze','task_id':tid,'expected_epoch':0},A)
+    t.dispatch({'op':'unfreeze','task_id':tid,'expected_epoch':0},A)
+    snap=t.dispatch({'op':'status','task_id':tid},B)
+    self.assertEqual(snap['handoff']['state'],'aborted')
+    self.assertEqual(snap['task']['executor_endpoint'],A['endpoint_id'])
+    with self.assertRaises(TaskAuthorityError):t.dispatch({'op':'commit_handoff','task_id':tid,'expected_epoch':1,'target':B},A)
+
+ def test_former_executor_keeps_read_access_but_not_execution(self):
+    t=authority();tid=make_task(t)['task_id']
+    t.dispatch({'op':'ack','task_id':tid,'expected_epoch':0},A)
+    for actor,op in ((A,'prepare_handoff'),(A,'release_handoff'),(B,'accept_handoff'),(A,'commit_handoff')):
+        t.dispatch({'op':op,'task_id':tid,'expected_epoch':0,'target':B},actor)
+    c=dict(B,endpoint_id='e3',incarnation='i3')
+    for actor,op in ((A,'prepare_handoff'),(B,'release_handoff'),(c,'accept_handoff'),(A,'commit_handoff')):
+        t.dispatch({'op':op,'task_id':tid,'expected_epoch':1,'target':c},actor)
+    self.assertEqual(t.dispatch({'op':'status','task_id':tid},B)['task']['executor_endpoint'],'e3')
+    with self.assertRaises(TaskAuthorityError):t.dispatch({'op':'begin_operation','task_id':tid,'expected_epoch':2,'tool_use_id':'old'},B)
+
  def test_foreign_approval_and_visibility(self):
     t=authority(); make_task(t)
     with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"submit","idempotency_key":"k2","intent_hash":"ih","scope_hash":"sh","approval_id":"a"},B)

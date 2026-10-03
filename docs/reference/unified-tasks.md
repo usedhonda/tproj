@@ -66,3 +66,18 @@ receives a transient worker role. Pending handoff, terminal state, or unavailabl
 master stays read-only for the assigned task. Project role-mode files and peer
 registry entries are never rewritten by this overlay. Ordinary messages do not
 create assignments. The helper and formal tool guard must be installed together.
+
+## Freeze release and former executors
+
+Only the exact owner may `unfreeze TASK --epoch N`, after all admitted operations
+have closed. Release advances the epoch, restores the recorded pre-freeze state
+(in-progress becomes accepted), and invalidates pending handoffs. Missing historic
+freeze evidence is rejected, never guessed. A released executor must ACK the new
+epoch before mutation. Cancelled and reported tasks cannot be unfrozen.
+
+Committed handoff retains the former executor's authenticated read access in the
+central ledger, not a replicated local authority. The former executor may explicitly
+`detach TASK --epoch N` (N is its bound assignment epoch) once no operations of its own remain and no pending handoff
+still assigns it. Another executor's open operation does not prevent this local
+release. A wrong task ID cannot clear the local fence, and current active executors
+cannot detach before report or cancel. Superseded epochs still cannot mutate tasks.
