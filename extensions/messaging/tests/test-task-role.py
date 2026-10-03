@@ -50,7 +50,22 @@ class TaskRoleContextTest(unittest.TestCase):
              patch.object(task_role.cli, 'native_conversation_context', return_value={}), \
              patch.object(task_role.cli, 'rpc', side_effect=AssertionError('must not call rpc')):
             result = task_role.context({'thread_id':'one', 'raw_event':{'conversation_id':'two'}})
-        self.assertEqual(result, {'assigned':True, 'can_mutate':False, 'task_status':'authority_unavailable'})
+        self.assertEqual(result, {'assigned':True, 'can_mutate':False, 'task_status':'authority_unavailable',
+                                  'authority_error':'native_context_conflict', 'authority_phase':'context'})
+
+    def test_authority_failures_are_fixed_categories(self):
+        marker_root = tempfile.TemporaryDirectory()
+        self.addCleanup(marker_root.cleanup)
+        with patch.dict(task_role.os.environ, {'TPROJ_TASK_BINDING_DIR': marker_root.name,
+                                                'CODEX_THREAD_ID':'bound', 'CODEX_SESSION_ID':''}), \
+             patch.object(task_role.cli, 'native_conversation_context', return_value={}), \
+             patch.object(task_role.cli, 'config', side_effect=task_role.cli.ClientError('offline')):
+            task_role.binding_marker('bound').parent.mkdir(parents=True, exist_ok=True)
+            task_role.binding_marker('bound').touch()
+            result = task_role.context({'session_id':'bound'})
+        self.assertEqual(result['authority_error'], 'config_unavailable')
+        self.assertEqual(result['authority_phase'], 'config')
+        self.assertNotIn('offline', str(result))
 
 
 if __name__ == '__main__':

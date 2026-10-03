@@ -6,6 +6,23 @@ import sys
 from task_host import binding_marker
 import cli
 
+def _blocked(error, phase):
+    return {'assigned':True, 'can_mutate':False, 'task_status':'authority_unavailable',
+            'authority_error':error, 'authority_phase':phase}
+
+def _failure_code(exc):
+    code = getattr(exc, 'code', '')
+    if code != 'identity_rejected':
+        return ''
+    message = str(exc)
+    for phrase, category in (
+            ('agent ancestor absent', 'ancestor_absent'),
+            ('endpoint binding is ambiguous', 'endpoint_ambiguous'),
+            ('shared Codex app-server ancestry cannot authenticate caller without native conversation context', 'native_context_missing')):
+        if phrase in message:
+            return category
+    return 'identity_rejected'
+
 
 def native_context(payload):
     """Extract hook-supplied native IDs without inventing an identity."""
@@ -48,19 +65,29 @@ def context(payload):
     try:
         native = native_context(payload)
     except ValueError:
-        return {'assigned':True,'can_mutate':False,'task_status':'authority_unavailable'}
+        return _blocked('native_context_conflict', 'context')
     ids={os.environ.get('CODEX_THREAD_ID',''),os.environ.get('CODEX_SESSION_ID',''),
          native.get('thread_id',''),native.get('session_id','')}
     ids.discard('')
     if not any(binding_marker(native).exists() for native in ids):return {'assigned':False}
     try:
         request=_caller_request(payload)
-        result=cli.rpc(cli.config()['socket'],request)
+    except ValueError:
+        return _blocked('native_context_conflict', 'context')
+    try:
+        try:
+            cfg = cli.config()
+        except cli.ClientError:
+            return _blocked('config_unavailable', 'config')
+        try:
+            result=cli.rpc(cfg['socket'],request)
+        except cli.ClientError as exc:
+            return _blocked(_failure_code(exc) or 'transport_unavailable', 'rpc')
         if not isinstance(result,dict) or result.get('assigned') is not True:
-            raise ValueError('assignment mismatch')
+            return _blocked('assignment_mismatch', 'assignment')
         return result
     except Exception:
-        return {'assigned':True,'can_mutate':False,'task_status':'authority_unavailable'}
+        return _blocked('helper_failure', 'helper')
 
 
 def main():
@@ -69,6 +96,6 @@ def main():
         if not isinstance(payload,dict):payload={}
         print(json.dumps(context(payload)))
     except Exception:
-        print(json.dumps({'assigned':True,'can_mutate':False,'task_status':'binding_unavailable'}))
+        print(json.dumps(_blocked('helper_failure', 'helper')))
 
 if __name__=='__main__':main()

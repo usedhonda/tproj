@@ -109,6 +109,12 @@ master stays read-only for the assigned task. Project role-mode files and peer
 registry entries are never rewritten by this overlay. Ordinary messages do not
 create assignments. The helper and formal tool guard must be installed together.
 
+When authority is unavailable, the native role helper reports only fixed
+`authority_error` and `authority_phase` fields (for example, configuration,
+identity, transport, assignment, or helper failure categories). It never emits
+exception text, native IDs, payloads, paths, or host configuration. These
+diagnostics explain a read-only fence; they do not grant or infer authority.
+
 An explicit schema-valid `write_stdin` hook payload with a numeric
 `session_id`, no `chars` field or `chars` equal to the empty string, and only
 the optional numeric `yield_time_ms`/`max_output_tokens` fields is a read-only
