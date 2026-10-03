@@ -19,7 +19,7 @@ class UnifiedTaskCliTest(unittest.TestCase):
         self.assertEqual(req["intent"], "Build X")
         self.assertEqual(req["scope"], "Build X only")
         self.assertEqual(req["approval_id"], "a1")
-        self.assertEqual(req["payload"], {"body": "packet"})
+        self.assertEqual(req["payload"], {"body": "packet", "target": "worker"})
 
     def test_approval_reads_scope_file_and_never_accepts_selector(self):
         with tempfile.TemporaryDirectory() as raw:
