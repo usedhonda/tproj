@@ -14,7 +14,7 @@ def make_task(t):
 class TestTasks(unittest.TestCase):
  def test_approval_submit_and_idempotency(self):
     t=authority(); first=make_task(t); second=make_task(t)
-    assert second["task"]["task_id"] == first["task_id"]
+    assert second["task_id"] == first["task_id"]
     with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"approval","approval_id":"bad","intent_hash":"i","scope_hash":"s","evidence_hash":"e","source_endpoint":"e1"},A)
 
  def test_incarnation_fence_and_handoff(self):
