@@ -103,7 +103,14 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(packet, dict):
                 raise cli.ClientError("submit packet must be a JSON object", "invalid_argument")
             packet.setdefault("target", args.target)
-            result = request("submit", idempotency_key=args.idempotency_key or str(uuid.uuid4()),
+            if packet["target"] != args.target:
+                raise cli.ClientError("packet target must match the resolved target", "invalid_argument")
+            # Same approved packet is the same submission after a lost response.
+            # An intentional second task must supply a distinct explicit key.
+            key = args.idempotency_key or str(uuid.uuid5(uuid.NAMESPACE_URL, _hash({
+                "approval": args.approval_id, "intent": args.intent, "scope": scope,
+                "target": args.target, "packet": packet})))
+            result = request("submit", idempotency_key=key,
                              intent=args.intent, scope=scope, approval_id=args.approval_id,
                              executor=args.target, payload=packet)
         elif args.command == "list":

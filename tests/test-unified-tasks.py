@@ -25,7 +25,10 @@ class TestTasks(unittest.TestCase):
     with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"commit_handoff","task_id":tid,"expected_epoch":0,"target":B},A)
     t.dispatch({"op":"release_handoff","task_id":tid,"expected_epoch":0},A)
     t.dispatch({"op":"accept_handoff","task_id":tid,"expected_epoch":0},B)
+    t.dispatch({"op":"release_handoff","task_id":tid,"expected_epoch":0},A)
+    t.dispatch({"op":"accept_handoff","task_id":tid,"expected_epoch":0},B)
     t.dispatch({"op":"commit_handoff","task_id":tid,"expected_epoch":0,"target":B},A)
+    self.assertTrue(t.dispatch({"op":"commit_handoff","task_id":tid,"expected_epoch":0,"target":B},A)['duplicate'])
     with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"progress","task_id":tid,"expected_epoch":0},A)
     assert t.dispatch({"op":"active"},A)["tasks"]
 
@@ -37,6 +40,13 @@ class TestTasks(unittest.TestCase):
     t.dispatch({"op":"end_operation","token":op["token"]},A)
     t.dispatch({"op":"cancel","task_id":tid,"expected_epoch":0},A)
     with self.assertRaises(TaskAuthorityError): t.dispatch({"op":"begin_operation","task_id":tid,"expected_epoch":0,"tool_use_id":"u2"},A)
+
+ def test_cancel_tombstone_survives_freeze_and_late_ack(self):
+    t=authority();tid=make_task(t)['task_id']
+    t.dispatch({'op':'cancel','task_id':tid,'expected_epoch':0},A)
+    for op in ('freeze','ack','progress'):
+        with self.assertRaises(TaskAuthorityError):t.dispatch({'op':op,'task_id':tid,'expected_epoch':0},A)
+    self.assertEqual(t.dispatch({'op':'status','task_id':tid},A)['task']['status'],'cancelled')
 
  def test_foreign_approval_and_visibility(self):
     t=authority(); make_task(t)

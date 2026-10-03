@@ -2,6 +2,8 @@
 from __future__ import annotations
 from protocol import HubError
 
+TASK_PROTOCOL = 1
+
 
 def actor(evidence):
     ep = evidence['endpoint']
@@ -24,6 +26,8 @@ def dispatch(hub, req, peer=False):
     origin = hub._auth(req)
     selected = master(hub)
     if peer:
+        if req.get('task_protocol') != TASK_PROTOCOL:
+            raise HubError('incompatible_peer','formal task protocol is unsupported')
         if selected != hub.local_id:
             raise HubError('task_master_mismatch', 'this host is not the task master')
         evidence=req.get('actor_evidence') or {}
@@ -47,8 +51,12 @@ def dispatch(hub, req, peer=False):
             if value in ('cc','cdx'):value=evidence['participant']['address'].rsplit('.',1)[0]+'.'+value
             body[field]=actor(hub.resolve_destination(value))
         if selected != hub.local_id:
-            return hub.remote(selected,'task',actor_evidence=evidence,request=body)
+            response = hub.remote(selected,'task',actor_evidence=evidence,request=body,task_protocol=TASK_PROTOCOL)
+            if not isinstance(response,dict) or response.get('task_protocol') != TASK_PROTOCOL or 'result' not in response:
+                raise HubError('incompatible_peer','task master did not confirm formal task protocol')
+            return response['result']
     try:
-        return TaskAuthority(hub.db).dispatch(body,actor(evidence))
+        result = TaskAuthority(hub.db).dispatch(body,actor(evidence))
+        return {'task_protocol':TASK_PROTOCOL,'result':result} if peer else result
     except TaskAuthorityError as exc:
         raise HubError(exc.code,str(exc)) from None

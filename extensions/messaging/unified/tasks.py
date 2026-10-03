@@ -96,11 +96,11 @@ class TaskAuthority:
                          json.dumps(data or {}, sort_keys=True), time.time()))
 
     def _owner(self, row, actor):
-        if row["owner_endpoint"] != actor["endpoint_id"] or row["owner_incarnation"] != actor["incarnation"]:
+        if row["owner_endpoint"] != actor["endpoint_id"] or row["owner_incarnation"] != actor["incarnation"] or row["owner_host_id"] != actor["host_id"]:
             raise TaskAuthorityError("not_owner", "only current owner may perform this operation")
 
     def _executor(self, row, actor):
-        if row["executor_endpoint"] != actor["endpoint_id"] or row["executor_incarnation"] != actor["incarnation"]:
+        if row["executor_endpoint"] != actor["endpoint_id"] or row["executor_incarnation"] != actor["incarnation"] or row["executor_host_id"] != actor["host_id"]:
             raise TaskAuthorityError("stale_executor", "executor incarnation is fenced")
 
     def _epoch(self, req, row):
@@ -228,10 +228,16 @@ class TaskAuthority:
 
     def _op_cancel(self, req, actor):
         row=self._task(str(req.get("task_id"))); self._owner(row,actor); self._epoch(req,row)
+        if row["status"] == "cancelled": return {"task":self._view(row),"duplicate":True}
+        if row["status"] in ("reported","cancelled"):
+            raise TaskAuthorityError("stale_task","terminal task state is immutable")
         self.db.execute("UPDATE tasks SET status='cancelled',updated_at=? WHERE task_id=? AND epoch=?",(time.time(),row["task_id"],row["epoch"])); self._event(row["task_id"],"cancel",actor,row["epoch"]); return {"task":self._view(self._task(row["task_id"]))}
 
     def _op_freeze(self, req, actor):
         row=self._task(str(req.get("task_id"))); self._owner(row,actor); self._epoch(req,row)
+        if row["status"] == "frozen": return {"task":self._view(row),"duplicate":True}
+        if row["status"] in ("reported","cancelled"):
+            raise TaskAuthorityError("stale_task","terminal task state is immutable")
         self.db.execute("UPDATE tasks SET status='frozen',updated_at=? WHERE task_id=? AND epoch=?",(time.time(),row["task_id"],row["epoch"])); self._event(row["task_id"],"freeze",actor,row["epoch"]); return {"task":self._view(self._task(row["task_id"]))}
 
     def _op_begin_operation(self, req, actor):
@@ -274,22 +280,28 @@ class TaskAuthority:
         self._handoff_allowed(row)
         if self.db.execute("SELECT 1 FROM task_operations WHERE task_id=? AND state='open'",(row["task_id"],)).fetchone(): raise TaskAuthorityError("operations_open","release requires quiescence")
         h=self.db.execute("SELECT * FROM task_handoffs WHERE task_id=? AND expected_epoch=?",(row["task_id"],row["epoch"])).fetchone()
-        if not h or h["state"] not in ("prepared","released"): raise TaskAuthorityError("handoff_missing","handoff is not prepared")
+        if not h or h["state"] not in ("prepared","released","accepted"): raise TaskAuthorityError("handoff_missing","handoff is not prepared")
+        if h["state"] == "accepted": return {"task_id":row["task_id"],"released":True,"duplicate":True}
         self.db.execute("UPDATE task_handoffs SET state='released' WHERE task_id=?",(row["task_id"],)); return {"task_id":row["task_id"],"released":True}
 
     def _op_accept_handoff(self, req, actor):
         row=self._task(str(req.get("task_id"))); self._epoch(req,row)
         self._handoff_allowed(row)
         h=self.db.execute("SELECT * FROM task_handoffs WHERE task_id=?",(row["task_id"],)).fetchone()
-        if not h or h["state"] != "released": raise TaskAuthorityError("handoff_not_released","old executor must release first")
-        if h["target_endpoint"] != actor["endpoint_id"] or h["target_incarnation"] != actor["incarnation"]: raise TaskAuthorityError("stale_executor","handoff target identity mismatch")
+        if not h or h["state"] not in ("released","accepted"): raise TaskAuthorityError("handoff_not_released","old executor must release first")
+        if h["target_endpoint"] != actor["endpoint_id"] or h["target_incarnation"] != actor["incarnation"] or h["target_host_id"] != actor["host_id"]: raise TaskAuthorityError("stale_executor","handoff target identity mismatch")
         self.db.execute("UPDATE task_handoffs SET state='accepted' WHERE task_id=?",(row["task_id"],)); return {"task_id":row["task_id"],"accepted":True}
 
     def _op_commit_handoff(self, req, actor):
-        row=self._task(str(req.get("task_id"))); self._owner(row,actor); self._epoch(req,row)
+        row=self._task(str(req.get("task_id"))); self._owner(row,actor)
+        target=req.get("target") or {}
+        prior=self.db.execute("SELECT * FROM task_handoffs WHERE task_id=?",(row["task_id"],)).fetchone()
+        if prior and prior["state"] == "committed" and prior["expected_epoch"] == req.get("expected_epoch") and row["epoch"] == prior["expected_epoch"] + 1 and all(prior[column] == target.get(field) for column,field in (("target_endpoint","endpoint_id"),("target_incarnation","incarnation"),("target_host_id","host_id"))):
+            return {"task":self._view(row),"duplicate":True}
+        self._epoch(req,row)
         self._handoff_allowed(row)
         if self.db.execute("SELECT 1 FROM task_operations WHERE task_id=? AND state='open'",(row["task_id"],)).fetchone(): raise TaskAuthorityError("operations_open","handoff requires quiescence")
-        target=req.get("target") or {}; required=("endpoint_id","incarnation","host_id")
+        required=("endpoint_id","incarnation","host_id")
         if not all(target.get(k) for k in required): raise TaskAuthorityError("invalid_handoff","target identity required")
         h=self.db.execute("SELECT * FROM task_handoffs WHERE task_id=?",(row["task_id"],)).fetchone()
         if not h or h["state"] != "accepted" or h["target_endpoint"] != str(target["endpoint_id"]) or h["target_incarnation"] != str(target["incarnation"]) or h["target_host_id"] != str(target["host_id"]): raise TaskAuthorityError("handoff_not_accepted","target must accept before commit")

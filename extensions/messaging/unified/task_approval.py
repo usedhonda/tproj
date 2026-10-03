@@ -41,9 +41,11 @@ def validate_records(records, platform, intent, scope, evidence_hash):
             plan = None
             continue
         # Transport/hook/tool-result injections are not a user approval source.
-        if re.search(r'\[from:|\[tproj-message:|\[OpenClaw Agent|<tool_result|<system-reminder',text,re.I):
+        if re.search(r'\[from:|\[tproj-message:|\[OpenClaw Agent|<tool_result|<system-reminder|<codex_internal_context',text,re.I):
             break
-        direct = scope == text and text.strip().startswith(("Task Intent:", "実行指示:", "実装指示:"))
+        # The native user's wording is authoritative; no magic approval phrase.
+        # This binds the exact scope, not a paraphrase or an agent-authored expansion.
+        direct = isinstance(scope, str) and bool(scope.strip()) and scope == text
         confirms_plan = text.strip().lower() in ('implement the plan.', 'implement the plan', '実行して', '実装して', 'すすめて', '進めて', 'つづけて')
         if not direct and not (confirms_plan and plan is not None and scope.strip() == plan):
             break
@@ -55,7 +57,8 @@ def validate_records(records, platform, intent, scope, evidence_hash):
 
 def attest(ep, req, home=None):
     home = Path(home or Path.home())
-    platform=ep.get('platform'); tid=ep.get('thread_id') or ep.get('session_id') or ep.get('runtime_id')
+    platform=ep.get('platform')
+    tid = next((ep.get(k) for k in ('thread_id','session_id','observed_runtime_id','runtime_id') if isinstance(ep.get(k),str) and re.fullmatch(r'[0-9a-fA-F-]{36}',ep[k])), None)
     if not isinstance(tid,str) or not re.fullmatch(r'[0-9a-fA-F-]{36}',tid):
         raise HubError('approval_unattested','native conversation ID unavailable')
     if platform == 'cdx':
@@ -68,6 +71,22 @@ def attest(ep, req, home=None):
     try:
         with paths[0].open() as stream:
             records=(json.loads(line) for line in stream if line.strip())
+            project = ep.get('project_path')
+            if not project:
+                raise HubError('approval_unattested','bound project path unavailable')
+            if platform == 'cdx':
+                header = next(records, {})
+                meta = header.get('payload') or {}
+                if header.get('type') != 'session_meta' or meta.get('id') != tid or not meta.get('cwd') or Path(meta['cwd']).resolve() != Path(project).resolve():
+                    raise HubError('approval_unattested','native transcript header does not match bound conversation')
+            else:
+                def bound_records(source):
+                    for row in source:
+                        if row.get('type') in ('user','assistant'):
+                            if row.get('sessionId') != tid or not row.get('cwd') or Path(row['cwd']).resolve() != Path(project).resolve():
+                                raise HubError('approval_unattested','native transcript record does not match bound conversation')
+                        yield row
+                records = bound_records(records)
             result=validate_records(records,platform,req.get('intent'),req.get('scope'),req.get('evidence_hash'))
     except (ValueError,TypeError,OSError):
         raise HubError('approval_unattested','native approval evidence is unavailable') from None

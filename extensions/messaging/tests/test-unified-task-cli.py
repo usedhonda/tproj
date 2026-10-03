@@ -24,6 +24,19 @@ class UnifiedTaskCliTest(unittest.TestCase):
         self.assertEqual(req["executor"], "worker")
         self.assertEqual(req["payload"], {"body": "packet", "target": "worker"})
 
+    def test_same_packet_retry_reuses_key_and_target_conflict_rejects(self):
+        seen=[]
+        with tempfile.TemporaryDirectory() as raw:
+            scope=Path(raw)/'scope'; scope.write_text('Repair selected module')
+            args=['submit','worker.cdx','--intent','Repair','--scope-file',str(scope),'--approval','a1']
+            with patch.object(task_cli,'request',side_effect=lambda op,**fields: seen.append(fields) or {}):
+                self.assertEqual(task_cli.main(args),0)
+                self.assertEqual(task_cli.main(args),0)
+                self.assertEqual(seen[0]['idempotency_key'],seen[1]['idempotency_key'])
+                with patch('sys.stdin',io.StringIO('{"target":"other.cdx"}')):
+                    self.assertEqual(task_cli.main(args+['--stdin']),2)
+                self.assertEqual(len(seen),2)
+
     def test_approval_reads_scope_file_and_never_accepts_selector(self):
         with tempfile.TemporaryDirectory() as raw:
             scope = Path(raw) / "scope.txt"
@@ -36,6 +49,18 @@ class UnifiedTaskCliTest(unittest.TestCase):
             self.assertEqual(req["scope"], "Implement the task")
             self.assertNotIn("as", req)
             self.assertNotIn("intent_hash", req)
+
+    def test_enrolled_wrapper_does_not_fall_back_on_broken_config(self):
+        import os, subprocess
+        wrapper=Path(__file__).resolve().parents[1]/'tproj-task'
+        with tempfile.TemporaryDirectory() as raw:
+            cfg=Path(raw)/'client.json'; latch=Path(raw)/'enrolled'; latch.touch()
+            env=dict(os.environ,TPROJ_UNIFIED_CONFIG=str(cfg),TPROJ_UNIFIED_LATCH=str(latch))
+            for content in (None,'{broken','{"active":false}'):
+                if content is not None: cfg.write_text(content)
+                result=subprocess.run(['bash',str(wrapper),'status','old-id'],env=env,capture_output=True,text=True)
+                self.assertEqual(result.returncode,2)
+                self.assertIn('configuration_error:',result.stderr)
 
     def test_handoff_maps_to_authenticated_task_operation(self):
         seen = []

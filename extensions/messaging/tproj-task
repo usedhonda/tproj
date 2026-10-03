@@ -10,6 +10,13 @@ _unified_config="${TPROJ_UNIFIED_CONFIG:-$HOME/.config/tproj/msg-client.json}"
 _unified_default="$HOME/lib/tproj-msg-unified/task_cli.py"
 [[ ! -f "$SELF_DIR/unified/task_cli.py" ]] || _unified_default="$SELF_DIR/unified/task_cli.py"
 _unified_cli="${TPROJ_UNIFIED_TASK_CLI:-$_unified_default}"
+_unified_latch="${TPROJ_UNIFIED_LATCH:-$HOME/.config/tproj/msg-client.enrolled}"
+if [[ -f "$_unified_latch" || -f "$_unified_config" ]]; then
+  if ! jq -e 'type == "object" and (.active == true or .enrolled == true)' "$_unified_config" >/dev/null 2>&1; then
+    echo 'configuration_error: enrolled task client configuration is unavailable or inactive' >&2
+    exit 2
+  fi
+fi
 case "${1:-}" in
   approval|submit|status|list|ack|progress|done|block|verify|report|cancel|freeze|handoff|detach|--help|-h)
     if [[ -f "$_unified_config" ]] && jq -e '.active == true or .enrolled == true' "$_unified_config" >/dev/null 2>&1 \

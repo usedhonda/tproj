@@ -21,6 +21,22 @@ class ApprovalTests(unittest.TestCase):
  def test_intervening_user_breaks_plan_approval(self):
   rows=[record('assistant','<proposed_plan>A</proposed_plan>'),record('user','Do not implement'),record('user','Implement the plan.')]
   with self.assertRaises(HubError):validate_records(rows,'cdx','A','A',digest('Implement the plan.'))
+ def test_native_header_binding_and_natural_user_instruction(self):
+  import tempfile
+  from task_approval import attest
+  tid='11111111-1111-4111-8111-111111111111'
+  instruction='選択したモジュールだけ修正して。'
+  with tempfile.TemporaryDirectory() as d:
+   home=Path(d).resolve(); project=home/'project'; project.mkdir()
+   root=home/'.codex/sessions/2026/01/01'; root.mkdir(parents=True)
+   path=root/('rollout-2026-01-01T00-00-00-'+tid+'.jsonl')
+   header={'type':'session_meta','payload':{'id':tid,'cwd':str(project)}}
+   path.write_text(json.dumps(header)+'\n'+json.dumps(record('user',instruction))+'\n')
+   ep=dict(A,platform='cdx',thread_id=tid,project_path=str(project))
+   req={'approval_id':'a','intent':'モジュール','scope':instruction,'evidence_hash':digest(instruction)}
+   self.assertTrue(attest(ep,req,home)['host_attested'])
+   with self.assertRaises(HubError):attest(dict(ep,project_path=str(home/'other')),req,home)
+
 class MasterTests(unittest.TestCase):
  def test_peer_dispatch_does_not_call_waiting_origin_back(self):
   class Hub:
@@ -30,8 +46,17 @@ class MasterTests(unittest.TestCase):
    def topology(self):return {'mode':'multi','task_master_host_id':'master'}
    def peers(self):return {'origin':{}}
    def remote(self,*args,**kwargs):raise AssertionError('would deadlock on serialized origin')
-  result=dispatch(Hub(),{'actor_evidence':evidence(),'request':{'op':'task_list'}},peer=True)
-  self.assertEqual(result,{'tasks':[]})
+  result=dispatch(Hub(),{'task_protocol':1,'actor_evidence':evidence(),'request':{'op':'task_list'}},peer=True)
+  self.assertEqual(result,{'task_protocol':1,'result':{'tasks':[]}})
+ def test_peer_without_task_capability_is_rejected_before_dispatch(self):
+  class Hub:
+   local_id='master'
+   def _auth(self,req):return 'origin'
+   def topology(self):return {'mode':'multi','task_master_host_id':'master'}
+   def peers(self):return {'origin':{}}
+  with self.assertRaises(HubError) as error:dispatch(Hub(),{'actor_evidence':evidence(),'request':{'op':'task_list'}},peer=True)
+  self.assertEqual(error.exception.code,'incompatible_peer')
+
  def test_multi_never_falls_back_to_local_master(self):
   class Hub:
    local_id='origin'

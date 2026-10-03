@@ -33,3 +33,27 @@ single master. A missing or unreadable journal must not turn a known assignment
 into an unassigned session. The marker is removed only after a successful
 terminal-task detach with no open operations. Ordinary unassigned sessions do
 not require the task master. This integration is not yet production-activated.
+
+## Approval and retry identity
+
+Approval binds the exact native user instruction (without prescribed wording),
+or the exact proposed plan confirmed by the next direct user instruction. Native
+transcript conversation and project must match the authenticated endpoint.
+Transport-injected messages and internal continuation blocks are not approvals.
+The host attests provenance and exact scope, not the semantic correctness of an
+agent's interpretation of user intent; agents must still follow the user's scope.
+
+Repeating `submit` with the same approval, scope, intent, target, and packet uses
+the same default idempotency key, including after an unknown transport result.
+A deliberately new identical task requires an explicit new `--idempotency-key`.
+A packet cannot name a target different from the command's target.
+
+Handoff release and acceptance retries never regress an advanced phase. A
+repeated commit with the same old epoch and exact target returns its committed
+result; another target or epoch is rejected. Cancellation and reported terminal
+states cannot be replaced by a later freeze or delayed lifecycle message.
+
+Federated task requests and responses confirm task protocol version 1. Missing
+or incompatible versions fail without routing into legacy task controls. The
+public client also refuses legacy fallback when an enrolled installation's
+configuration is missing, malformed, or inactive.
