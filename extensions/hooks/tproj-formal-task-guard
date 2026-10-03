@@ -51,7 +51,7 @@ def main() -> int:
     name, cmd = tool_name(data), command(data)
     if name in getattr(guard, "READONLY_TOOL_NAMES", set()) or guard.is_readonly_shell(cmd) or lifecycle(cmd):
         print(json.dumps({"decision": "allow"}, separators=(",", ":"))); return 0
-    if event in ("posttooluse", "posttool", "failure", "post_tool_use"):
+    if event in ("posttooluse", "posttool", "failure", "post_tool_use") or event.startswith("posttool"):
         op = "task_guard_end"
     else:
         if name not in getattr(guard, "MUTATING_TOOL_NAMES", set()) and not cmd:
