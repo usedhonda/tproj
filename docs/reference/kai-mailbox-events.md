@@ -51,6 +51,27 @@ the stored incarnation when the participant and persistent binding generation
 remain identical; the cursor and subscription continue. HTTP success never
 acknowledges mailbox consumption.
 
+`retry_once(message_id, actor_endpoint=...)` is the sole manual reconciliation
+path for one stored terminal event. The runtime must first authenticate the
+original message, verify that it is not cancelled or expired, and verify the
+exact current KAI recipient; the event adapter does not perform actor
+authentication. Under the private file lock the adapter requires exactly one
+matching stored event, an active subscription with the same enrolled binding
+and incarnation, and an unexpired callback whose persisted ID and URL binding
+still match.
+The `actor_endpoint` argument is an authenticated caller context supplied by
+the runtime; this adapter does not authenticate actor/message party identity.
+It validates the saved envelope and deterministic event ID, and never accepts
+caller-supplied payload data. A durable `manual_retry` claim (including a
+SHA-256 hash of the exact saved payload) and incremented attempt count are
+written before the POST. Existing payload hashes are checked; historical
+records without one are pinned only in this claim. A claim is one-per-event:
+repeated or concurrent calls return the stored result, while a crash after the
+claim remains `unknown` and performs no second POST. The outbox status remains
+`terminal` even after manual HTTP success, so `pump_once()` cannot requeue it.
+Results contain only message/event IDs, status, attempt counts, HTTP status, and
+the fixed error class.
+
 Subscriptions default to one day; explicit `ttlMs: null` means no expiry.
 This is separate from the control-plane credential's lifetime. The adapter
 has no default credentials, authorization policy, scheduler, or cloud enrollment.

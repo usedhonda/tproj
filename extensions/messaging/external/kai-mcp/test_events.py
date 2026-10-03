@@ -225,6 +225,64 @@ class EventTests(unittest.TestCase):
         self.assertNotIn("last_http_status", item)
         self.assertNotIn("last_error_class", item)
 
+    def _terminal_event(self):
+        sid = self.subscribe()
+        self.delivery._post = lambda *args: (False, {})
+        now = time.time()
+        for offset in (0, 10, 20, 30):
+            with patch.object(events.time, "time", return_value=now + offset):
+                self.delivery.pump_once()
+        return sid, next(iter(self.delivery._load()["outbox"]))
+
+    def test_retry_once_claims_one_terminal_event_and_never_requeues(self):
+        sid, eid = self._terminal_event()
+        posted = []
+        self.delivery._post = lambda *args: (posted.append(args) or (True, {}))
+        result = self.delivery.retry_once("message-one", actor_endpoint="https://callback.example/event?route=one")
+        again = self.delivery.retry_once("message-one", actor_endpoint="https://callback.example/event?route=one")
+        self.assertEqual(len(posted), 1)
+        self.assertEqual(result, again)
+        self.assertEqual(result["event_id"], eid)
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["attempts"], 1)
+        self.assertEqual(self.delivery._load()["outbox"][eid]["status"], "terminal")
+        self.delivery._post = lambda *args: self.fail("manual retry was requeued by pump")
+        self.delivery.pump_once()
+
+    def test_retry_once_rejects_binding_expiry_and_hash_without_post(self):
+        sid, eid = self._terminal_event()
+        posted = []
+        self.delivery._post = lambda *args: posted.append(args)
+        state = self.delivery._load()
+        state["subscriptions"][sid]["expiresAt"] = 0
+        with self.delivery._lock():
+            self.delivery._save(state)
+        with self.assertRaisesRegex(RuntimeError, "expired"):
+            self.delivery.retry_once("message-one", actor_endpoint="https://callback.example/event?route=one")
+        state = self.delivery._load()
+        state["subscriptions"][sid]["expiresAt"] = time.time() + 100
+        state["outbox"][eid]["payload_hash"] = "0" * 64
+        with self.delivery._lock():
+            self.delivery._save(state)
+        with self.assertRaisesRegex(RuntimeError, "payload hash"):
+            self.delivery.retry_once("message-one", actor_endpoint="https://callback.example/event?route=one")
+        self.assertEqual(posted, [])
+
+    def test_retry_once_crash_after_claim_is_unknown_and_not_posted_again(self):
+        sid, eid = self._terminal_event()
+        calls = []
+        def crash(*args):
+            calls.append(args)
+            raise RuntimeError("crash")
+        self.delivery._post = crash
+        with self.assertRaisesRegex(RuntimeError, "crash"):
+            self.delivery.retry_once("message-one", actor_endpoint="https://callback.example/event?route=one")
+        self.delivery._post = lambda *args: self.fail("crash claim was retried")
+        result = self.delivery.retry_once("message-one", actor_endpoint="https://callback.example/event?route=one")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["attempts"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

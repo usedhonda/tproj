@@ -34,6 +34,14 @@ POST_ERROR_CLASSES = frozenset((
 ))
 
 
+def _payload_bytes(payload):
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def _payload_hash(payload):
+    return hashlib.sha256(_payload_bytes(payload)).hexdigest()
+
+
 @dataclass(frozen=True)
 class TrustedBinding:
     binding_id: str
@@ -213,9 +221,11 @@ class KAIEventDelivery:
                         continue
                     eid = "evt_" + hashlib.sha256((sid + "\0" + mid).encode()).hexdigest()[:32]
                     if eid not in state["outbox"]:
+                        payload = {"eventId": eid, "name": EVENT_NAME, "timestamp": _iso(now), "data": {"messageId": mid}, "cursor": next_cursor}
                         state["outbox"][eid] = {
                             "subscription": sid,
-                            "payload": {"eventId": eid, "name": EVENT_NAME, "timestamp": _iso(now), "data": {"messageId": mid}, "cursor": next_cursor},
+                            "payload": payload,
+                            "payload_hash": _payload_hash(payload),
                             "attempts": 0, "nextAt": now, "status": "pending",
                         }
                         queued += 1
@@ -257,6 +267,103 @@ class KAIEventDelivery:
                 item["status"] = "sent" if ok else ("terminal" if item["attempts"] >= MAX_ATTEMPTS else "unknown")
                 self._save(state)
         return queued
+
+    def retry_once(self, message_id, *, actor_endpoint):
+        """Manually retry one stored terminal event exactly once.
+
+        The caller must have already authenticated the original message and
+        current KAI recipient.  This method only enforces the enrolled event
+        binding, callback subscription, and durable event record invariants.
+        """
+        if not isinstance(message_id, str) or not message_id:
+            raise RuntimeError("invalid message id")
+        if not isinstance(actor_endpoint, str) or not actor_endpoint:
+            raise RuntimeError("invalid actor endpoint")
+        with self._lock():
+            binding = self._binding()
+            state = self._load()
+            matches = []
+            for eid, item in state["outbox"].items():
+                payload = item.get("payload") if isinstance(item, dict) else None
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if isinstance(data, dict) and data.get("messageId") == message_id:
+                    matches.append((eid, item))
+            if len(matches) != 1:
+                raise RuntimeError("event message id is ambiguous" if len(matches) > 1 else "event not found")
+            eid, item = matches[0]
+            if item.get("status") != "terminal":
+                raise RuntimeError("event is not terminal")
+            sid = item.get("subscription")
+            sub = state["subscriptions"].get(sid)
+            now = time.time()
+            if not isinstance(sub, dict) or not self._owned(sub, binding):
+                raise RuntimeError("subscription binding mismatch")
+            if sub.get("incarnation") != binding.incarnation:
+                raise RuntimeError("subscription incarnation mismatch")
+            if not self._active(sub, binding, now):
+                raise RuntimeError("subscription expired")
+            if sub.get("id") != sid or not isinstance(sub.get("url"), str) or not _secure.public_https(sub["url"]):
+                raise RuntimeError("invalid subscription")
+            if self._sid(sub["url"], binding) != sid:
+                raise RuntimeError("subscription id mismatch")
+            claim = item.get("manual_retry")
+            if isinstance(claim, dict):
+                return self._retry_result(message_id, eid, item, claim)
+            payload = item.get("payload")
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if (not isinstance(payload, dict) or set(payload) != {"eventId", "name", "timestamp", "data", "cursor"}
+                    or payload.get("eventId") != eid or payload.get("name") != EVENT_NAME
+                    or not isinstance(payload.get("timestamp"), str) or not isinstance(data, dict)
+                    or set(data) != {"messageId"} or data.get("messageId") != message_id
+                    or isinstance(payload.get("cursor"), bool) or not isinstance(payload.get("cursor"), int)
+                    or payload.get("cursor") < 0):
+                raise RuntimeError("invalid stored event payload")
+            expected_eid = "evt_" + hashlib.sha256((sid + "\0" + message_id).encode()).hexdigest()[:32]
+            if eid != expected_eid:
+                raise RuntimeError("event id mismatch")
+            digest = _payload_hash(payload)
+            stored_hash = item.get("payload_hash")
+            if stored_hash is not None and (not isinstance(stored_hash, str) or not hmac.compare_digest(stored_hash, digest)):
+                raise RuntimeError("payload hash mismatch")
+            raw = _secure.secret_bytes(sub.get("secret"))
+            if raw is None:
+                raise RuntimeError("invalid persisted secret")
+            # Claim and count are durable before the external side effect.  A
+            # historical record without payload_hash is pinned only in claim.
+            claim = {"status": "unknown", "attempts": 1, "payload_hash": digest,
+                     "http_status": None, "error_class": None, "actor_endpoint": actor_endpoint}
+            item["manual_retry"] = claim
+            item["attempts"] = item.get("attempts", 0) + 1
+            item["last_http_status"] = None
+            item["last_error_class"] = None
+            self._save(state)
+            if not hmac.compare_digest(claim["payload_hash"], _payload_hash(item["payload"])):
+                return self._retry_result(message_id, eid, item, claim)
+            result = self._post(sub["url"], eid, raw, item["payload"], sid)
+            ok = result[0]
+            status = result[2] if len(result) > 2 and isinstance(result[2], int) and not isinstance(result[2], bool) else None
+            error_class = result[3] if len(result) > 3 and result[3] in POST_ERROR_CLASSES else None
+            claim["status"] = "sent" if ok else "failed"
+            claim["http_status"] = status
+            claim["error_class"] = error_class
+            item["last_http_status"] = status
+            item["last_error_class"] = error_class
+            # Keep the outbox terminal; manual result is separate from pump state.
+            self._save(state)
+            return self._retry_result(message_id, eid, item, claim)
+
+    @staticmethod
+    def _retry_result(message_id, eid, item, claim):
+        status = claim.get("status") if claim.get("status") in ("unknown", "sent", "failed") else "unknown"
+        code = claim.get("http_status")
+        if isinstance(code, bool) or not isinstance(code, int):
+            code = None
+        error = claim.get("error_class") if claim.get("error_class") in POST_ERROR_CLASSES else None
+        attempts = claim.get("attempts") if isinstance(claim.get("attempts"), int) and not isinstance(claim.get("attempts"), bool) else None
+        total = item.get("attempts") if isinstance(item.get("attempts"), int) and not isinstance(item.get("attempts"), bool) else None
+        return {"message_id": message_id, "event_id": eid, "status": status,
+                "attempts": attempts, "total_attempts": total,
+                "status_code": code, "error_class": error}
 
     def _post(self, url, webhook_id, secret, payload, subscription_id=None):
         target = _secure.validated_address(url)
