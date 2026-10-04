@@ -26,6 +26,12 @@ peer AI との通信に使う。host 内部 subagent の親報告は native coll
 | `gate` | 設定済み OpenClaw main participant |
 | `kai` | 設定済み KAI 接続（AIペインとは別） |
 
+`kai` は AI ペインではなく外部サービス（Dots 上の KAI）の宛先。画面がないので
+`--read` も `--status` の画面確認も使えない。やりとりは返信の自動提示
+（`[from:kai]`）、`tproj-msg message <ID>`（自分が当事者の1通）、`inbox` の3つで読む。
+KAI 側の会話画面そのものは tproj からは読めない。`kai` あての受付状態が
+`accepted` のまま変わらなくても、返信が届いたなら読まれている。
+
 「CCに」「Cdxに」だけなら同じプロジェクトの相方。別名へ勝手に置き換えない。
 `chi.cc` / `chi.cdx` も AI ペインであり、OpenClaw main ではない。
 別ホストでも送り方は同じ。SSH や `--remote` を足さない。
