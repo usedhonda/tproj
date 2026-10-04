@@ -328,6 +328,39 @@ class Host:
         allowed = {'message_id', 'event_id', 'status', 'attempts', 'total_attempts', 'status_code', 'error_class'}
         return {key: result[key] for key in allowed if key in result}
 
+    def _pending(self, ep):
+        """What this participant has sent that has not been presented yet.
+
+        Grouped by recipient so a stuck conversation stands out. Where the recipient
+        lives decides how far this host's copy can be trusted: only a recipient on this
+        Mac reports truthfully here; for another Mac or a service the owning side holds
+        the real state, which `message <ID>` fetches.
+        """
+        out = self.hub('outbox', endpoint_id=ep['endpoint_id'])
+        now = out.get('now') or time.time()
+        local_host = self.config.get('host_id')
+        groups = {}
+        for item in out.get('messages', []):
+            kind = item.get('recipient_kind')
+            if kind not in ('cc', 'cdx'):
+                where = 'service'
+            elif item.get('recipient_host_id') == local_host:
+                where = 'this_mac'
+            else:
+                where = 'other_mac'
+            key = (item['target_address'], where)
+            group = groups.setdefault(key, {'target': key[0], 'where': where, 'count': 0, 'states': {},
+                                            'oldest_age_s': 0, 'oldest_message_id': None, 'newest_message_id': None})
+            age = max(0, int(now - item['created_at']))
+            group['count'] += 1
+            group['states'][item['state']] = group['states'].get(item['state'], 0) + 1
+            if age >= group['oldest_age_s']:
+                group['oldest_age_s'] = age
+                group['oldest_message_id'] = group['oldest_message_id'] or item['message_id']
+            group['newest_message_id'] = item['message_id']
+        ordered = sorted(groups.values(), key=lambda g: -g['oldest_age_s'])
+        return {'groups': ordered, 'total': sum(g['count'] for g in ordered)}
+
     def dispatch(self, req, pid, uid):
         op = req.get('op')
         if uid != os.getuid():
@@ -361,6 +394,8 @@ class Host:
             if not isinstance(req.get('message_id'), str) or not req['message_id']:
                 raise HubError('invalid_message', 'message ID required')
             return self.hub('begin_present', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
+        if op == 'pending':
+            return self._pending(ep)
         if op == 'whoami':
             return {key: ep.get(key) for key in ('endpoint_id', 'participant_id', 'project_id', 'host_id',
                                                   'address', 'session', 'runtime_id', 'platform', 'thread_id', 'session_id')}

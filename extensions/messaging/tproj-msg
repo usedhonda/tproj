@@ -89,6 +89,7 @@ PY
         _ordinary=false ;;
   esac
   for _arg in "$@"; do case "$_arg" in --list|--status) _mutating=false ;; esac; done
+  [[ "$_UNIFIED_TARGET" == pending ]] && _mutating=false
   if $_readonly; then _ordinary=false; fi
   if [[ -f "$HOME/.config/tproj/msg-maintenance" ]] && $_mutating; then
     echo "tproj-msg: unified messaging maintenance is active; send/flush retired" >&2; exit 75
@@ -101,7 +102,7 @@ fi
 # During migration only explicit mailbox verbs use the new path for inactive clients.
 if [[ -f "$UNIFIED_CONFIG" ]]; then
   case "$_UNIFIED_TARGET" in
-    reply|inbox|message|ack|cancel|whoami|doctor|directory|directory-sync) exec "$HOME/bin/tproj-msg-unified" "$@" ;;
+    reply|inbox|message|ack|cancel|pending|whoami|doctor|directory|directory-sync) exec "$HOME/bin/tproj-msg-unified" "$@" ;;
   esac
   for _msg_arg in "$@"; do
     case "$_msg_arg" in --retry|--retry=*) exec "$HOME/bin/tproj-msg-unified" "$@" ;; esac
@@ -178,6 +179,7 @@ Usage:
   tproj-msg doctor                     Diagnose current conversation binding
   tproj-msg cancel <id>                Cancel delivery before presentation starts
   tproj-msg message <id>               Show one message
+  tproj-msg pending                    List what you sent that is not presented yet, by recipient
   tproj-msg ack <id>                   Acknowledge presentation of a message
   tproj-msg --retry <submission-id>    Retry a submission (same ID and content)
 

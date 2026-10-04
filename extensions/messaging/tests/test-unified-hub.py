@@ -42,6 +42,25 @@ class HubTest(unittest.TestCase):
         one=self.h.dispatch({"op":"query","host_id":"b","host_token":"tb","endpoint_id":"eb","message_id":"m1"})
         self.assertEqual(one["sender_address"],"proj.cc")
         self.assertEqual(one["sender_address"],inbox["messages"][0]["sender_address"])
+    def test_outbox_lists_only_my_unfinished_sends_without_bodies(self):
+        self.send(mid="o1",body="private-outbox-sentinel")
+        self.send(mid="o2",body="second")
+        mine=self.h.dispatch({"op":"outbox","host_id":"a","host_token":"ta","endpoint_id":"ea"})
+        self.assertEqual([m["message_id"] for m in mine["messages"]],["o1","o2"])
+        self.assertTrue(all(m["state"] in ("accepted","queued") for m in mine["messages"]))
+        self.assertEqual(mine["messages"][0]["recipient_host_id"],"b")
+        self.assertEqual(mine["messages"][0]["recipient_kind"],"cdx")
+        self.assertNotIn("private-outbox-sentinel",str(mine))
+        # The recipient sent nothing, so its outbox is empty.
+        theirs=self.h.dispatch({"op":"outbox","host_id":"b","host_token":"tb","endpoint_id":"eb"})
+        self.assertEqual(theirs["messages"],[])
+        # A presented message leaves the list.
+        self.h.dispatch({"op":"claim","host_id":"b","host_token":"tb","endpoint_id":"eb"})
+        self.h.dispatch({"op":"receipt","host_id":"b","host_token":"tb","endpoint_id":"eb","message_id":"o1","state":"presented"})
+        left=self.h.dispatch({"op":"outbox","host_id":"a","host_token":"ta","endpoint_id":"ea"})
+        self.assertEqual([m["message_id"] for m in left["messages"]],["o2"])
+        # Another host cannot read a sender's outbox with its own token.
+        with self.assertRaises(HubError): self.h.dispatch({"op":"outbox","host_id":"b","host_token":"tb","endpoint_id":"ea"})
     def test_reverse_reply_is_pinned(self):
         self.send(); self.h.dispatch({"op":"claim","host_id":"b","host_token":"tb","endpoint_id":"eb"})
         out=self.h.dispatch({"op":"submit","host_id":"b","host_token":"tb","message":{"message_id":"reply","thread_id":"t","in_reply_to":"m1","sender_endpoint":"eb","target":"proj.cc","body":"back"}})

@@ -216,6 +216,29 @@ class Hub:
         out = self.message_views(rows)
         return {"messages":out,"next_cursor":out[-1]["sequence"] if out else cursor}
 
+    def outbox(self, req):
+        """Messages this participant sent that have not reached a final state.
+
+        Metadata only (no body). Covers every endpoint incarnation of the sender so a
+        restart does not hide earlier sends. The state shown is this hub's copy: for a
+        recipient on another host the owning host holds the truth.
+        """
+        host = self._auth(req)
+        ep = self._host_endpoint(host, req.get("endpoint_id"))
+        now = self._now(); limit = min(max(int(req.get("limit", 200)), 1), 500)
+        rows = self.db.execute(
+            "SELECT m.message_id, m.target_address, m.state, m.created_at, m.expires_at, "
+            "e.host_id AS recipient_host_id, p.kind AS recipient_kind "
+            "FROM messages m "
+            "LEFT JOIN endpoints e ON e.endpoint_id=m.recipient_endpoint "
+            "LEFT JOIN participants p ON p.participant_id=e.participant_id "
+            "WHERE m.sender_endpoint IN (SELECT endpoint_id FROM endpoints WHERE participant_id=?) "
+            "AND m.expires_at>? AND m.created_at>? "
+            "AND m.state IN ('accepted','queued','adapter_received','dispatching','uncertain') "
+            "ORDER BY m.created_at LIMIT ?",
+            (ep["participant_id"], now, now - 7 * 86400, limit)).fetchall()
+        return {"messages": [dict(r) for r in rows], "now": now}
+
     def message_views(self, rows):
         out = []
         size = 0
@@ -365,6 +388,7 @@ class Hub:
         if op=="cancel": return self.cancel(req)
         if op=="delivery_status": return self.delivery_status(req)
         if op=="diagnose": return self.diagnose(req)
+        if op=="outbox": return self.outbox(req)
         if op=="query":
             host=self._auth(req); m=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),));
             if not m: raise HubError("not_found","message not found")

@@ -119,6 +119,33 @@ def submission(request: dict, *, spool: Path | None = None, retry: str | None = 
     return request, saved
 
 
+_WHERE_NOTE = {
+    "this_mac": "this Mac: waiting for the recipient to be idle with no draft",
+    "other_mac": "another Mac: this is only the hand-off record; the recipient's own state is shown by `message <ID>`",
+    "service": "service: its state is set by the service (`message <ID>`); a service must ack to show it read",
+}
+
+
+def _age(seconds: int) -> str:
+    if seconds < 90: return f"{seconds}s"
+    if seconds < 5400: return f"{seconds // 60}m"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+
+def format_pending(result: dict) -> str:
+    groups = result.get("groups", [])
+    if not groups:
+        return "nothing pending: every message you sent in the last 7 days has reached a final state"
+    lines = [f"{result.get('total', 0)} sent message(s) not presented yet (oldest first):"]
+    for group in groups:
+        states = ", ".join(f"{name}={count}" for name, count in sorted(group["states"].items()))
+        lines.append(f"  {group['target']:<18} {group['count']:>3} msg  oldest {_age(group['oldest_age_s']):>7}  [{states}]")
+        lines.append(f"      {_WHERE_NOTE.get(group['where'], group['where'])}")
+        lines.append(f"      oldest id {group['oldest_message_id']}")
+    lines.append("Read-only. Nothing was resent; resending creates a duplicate.")
+    return "\n".join(lines)
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tproj-msg-unified", epilog="diagnose MESSAGE_ID: read-only delivery metadata for a party or configured maintenance operator; never resends")
     p.add_argument("target", nargs="?")
@@ -167,6 +194,11 @@ def main(argv: list[str] | None = None) -> int:
             if not args.body: raise ClientError("retry-event requires message ID")
             result = rpc(cfg["socket"], _caller_request("retry_event", message_id=args.body,
                                                         session=args.session, **{"as": args.claimed_alias}))
+        elif args.target == "pending":
+            result = rpc(cfg["socket"], _caller_request("pending", session=args.session, **{"as": args.claimed_alias}))
+            if not args.json:
+                print(format_pending(result))
+                return 0
         elif args.target == "directory":
             result = rpc(cfg["socket"], {"op": "directory"})
         elif args.target == "directory-sync":

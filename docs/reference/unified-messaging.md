@@ -208,3 +208,17 @@ Transport timeout, command failure, and invalid protocol response have distinct
 fixed diagnostics; no SSH output or credentials are included. This does not
 change destination selection, authorize retry, or prove the original cause of a
 historical generic `host_unavailable` result.
+
+## Seeing what is stuck: `tproj-msg pending`
+
+`tproj-msg pending` is a read-only list of the messages the caller sent that have
+not reached a final state (not presented, not cancelled, not expired), grouped by
+recipient with the count, the states and the age of the oldest. It carries no
+message bodies and never resends. The group says where the recipient lives, because
+that decides how far the sender-side state can be trusted: for a recipient on this
+Mac the state is authoritative; for another Mac or a service the sender's hub holds
+only the hand-off record, and `tproj-msg message <ID>` asks the owning side. A
+service recipient (such as KAI) shows as presented only after the service
+acknowledges, which the external tool descriptions now ask it to do once it has read
+a message. The hub operation is `outbox` (sender-authenticated, current participant
+only, last 7 days, at most 500 rows).
