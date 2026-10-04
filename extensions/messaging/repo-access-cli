@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""tproj-repo-access: owner-only operator CLI for repo read service grants.
+
+Not reachable through messaging; adds no socket op. Output is JSON lines.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+
+_HERE = os.path.dirname(os.path.realpath(__file__))
+for _cand in (os.path.join(_HERE, "unified"), os.path.join(os.path.expanduser("~"), "lib", "tproj-msg-unified")):
+    if os.path.isfile(os.path.join(_cand, "repo_access_policy.py")):
+        sys.path.insert(0, _cand)
+        break
+
+from repo_access_policy import DEFAULT_OPS, RepoPolicy  # noqa: E402
+
+
+class UsageError(Exception):
+    pass
+
+
+def resolve_directory() -> dict:
+    override = os.environ.get("TPROJ_REPO_ACCESS_DIRECTORY_JSON")
+    if override:
+        with open(override, encoding="utf-8") as handle:
+            return json.load(handle)
+    for cand in (os.path.join(_HERE, "unified"), os.path.join(os.path.expanduser("~"), "lib", "tproj-msg-unified")):
+        if os.path.isfile(os.path.join(cand, "cli.py")):
+            if cand not in sys.path:
+                sys.path.insert(0, cand)
+            break
+    import cli  # type: ignore
+
+    try:
+        return cli.rpc(cli.config()["socket"], {"op": "directory"})
+    except cli.ClientError as exc:
+        raise UsageError("directory unavailable: %s" % exc)
+
+
+def _directory():
+    try:
+        value = resolve_directory()
+    except UsageError:
+        raise
+    except Exception as exc:  # directory is optional for list/revoke by raw id
+        raise UsageError("directory unavailable: %s" % exc)
+    if not isinstance(value, dict):
+        raise UsageError("directory unavailable: bad response")
+    return value
+
+
+def _try_directory():
+    try:
+        return _directory()
+    except UsageError:
+        return None
+
+
+def resolve_reader(token, directory, strict):
+    if directory is None:
+        if strict:
+            raise UsageError("cannot resolve reader: directory unavailable")
+        return token
+    parts = directory.get("participants") or []
+    hits = [p for p in parts if p.get("address") == token]
+    if len(hits) > 1:
+        raise UsageError("reader address is ambiguous: %s" % token)
+    if len(hits) == 1:
+        pid = hits[0].get("participant_id")
+        if not pid:
+            raise UsageError("reader has no participant_id: %s" % token)
+        return pid
+    ids = [p for p in parts if p.get("participant_id") == token]
+    if ids:
+        return token
+    if strict:
+        raise UsageError("unknown reader: %s" % token)
+    return token
+
+
+def _local_projects(directory):
+    host = directory.get("host_id")
+    out = []
+    for p in directory.get("projects") or []:
+        if host is not None:
+            if p.get("host_id") != host:
+                continue
+        elif not (p.get("path") and os.path.exists(p["path"])):
+            continue
+        out.append(p)
+    return out
+
+
+def resolve_project(token, directory, strict):
+    """Return (project_id, root-or-None)."""
+    if directory is None:
+        if strict:
+            raise UsageError("cannot resolve project: directory unavailable")
+        return token, None
+    projects = _local_projects(directory)
+    hits = [p for p in projects if p.get("alias") == token]
+    if len(hits) > 1:
+        raise UsageError("project alias is ambiguous: %s" % token)
+    if len(hits) == 0:
+        hits = [p for p in projects if p.get("project_id") == token]
+    if len(hits) == 1:
+        p = hits[0]
+        path = p.get("path")
+        root = os.path.realpath(path) if path else None
+        return p["project_id"], root
+    if strict:
+        raise UsageError("unknown project on this host: %s" % token)
+    return token, None
+
+
+def emit(obj):
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="tproj-repo-access")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("list")
+    p.add_argument("--reader")
+    p.add_argument("--project")
+    p = sub.add_parser("grant")
+    p.add_argument("--reader", required=True)
+    p.add_argument("--project", required=True)
+    p.add_argument("--ops", default=",".join(DEFAULT_OPS))
+    p.add_argument("--path-prefix")
+    p.add_argument("--expires-in-hours", type=float)
+    p = sub.add_parser("revoke")
+    p.add_argument("--reader")
+    p.add_argument("--project")
+    p.add_argument("--id", type=int)
+    p = sub.add_parser("check")
+    p.add_argument("--reader", required=True)
+    p.add_argument("--project", required=True)
+    p.add_argument("--op", required=True)
+    p.add_argument("--path")
+    p = sub.add_parser("audit")
+    p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--reader")
+    p.add_argument("--project")
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit as exc:
+        return 0 if exc.code in (0, None) else 2
+    if not args.cmd:
+        ap.print_usage(sys.stderr)
+        return 2
+    try:
+        return run(args)
+    except (UsageError, ValueError) as exc:
+        sys.stderr.write("error: %s\n" % exc)
+        return 2
+
+
+def run(args) -> int:
+    policy = RepoPolicy()
+    if args.cmd == "grant":
+        directory = _directory()
+        reader = resolve_reader(args.reader, directory, True)
+        project_id, root = resolve_project(args.project, directory, True)
+        if not root or not os.path.isdir(root):
+            raise UsageError("project root does not exist as a directory")
+        expires = None
+        if args.expires_in_hours is not None:
+            if args.expires_in_hours <= 0:
+                raise UsageError("--expires-in-hours must be positive")
+            expires = time.time() + args.expires_in_hours * 3600
+        gid = policy.grant(reader, project_id, root, ops=args.ops, path_scope=args.path_prefix, expires_at=expires)
+        rows = [g for g in policy.list(reader, project_id) if g["id"] == gid]
+        emit(rows[0])
+        return 0
+    if args.cmd in ("list", "audit", "revoke") and (args.reader or args.project):
+        directory = _try_directory()
+    else:
+        directory = None
+    reader = resolve_reader(args.reader, directory, False) if getattr(args, "reader", None) else None
+    project = resolve_project(args.project, directory, False)[0] if getattr(args, "project", None) else None
+    if args.cmd == "list":
+        for g in policy.list(reader, project):
+            emit(g)
+        return 0
+    if args.cmd == "audit":
+        for r in policy.audit_list(args.limit, reader, project):
+            emit(r)
+        return 0
+    if args.cmd == "revoke":
+        if args.id is None and reader is None and project is None:
+            raise UsageError("revoke needs --reader/--project or --id")
+        removed = policy.revoke(reader, project, args.id)
+        emit({"removed": removed, "revision": policy.revision()})
+        return 0 if removed else 3
+    if args.cmd == "check":
+        directory = _directory()
+        reader = resolve_reader(args.reader, directory, True)
+        project_id, root = resolve_project(args.project, directory, True)
+        if not root:
+            raise UsageError("project has no path on this host")
+        emit(policy.check(reader, project_id, root, args.op, args.path))
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
