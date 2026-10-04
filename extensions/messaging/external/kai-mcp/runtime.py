@@ -35,6 +35,7 @@ class RuntimeConfigError(RuntimeError):
 BRIDGE_OPS = frozenset({
     "list", "status", "service_send", "service_reply", "service_inbox",
     "service_message", "service_ack", "service_begin_present", "service_whoami",
+    "service_repo_list", "service_repo_tree", "service_repo_read", "service_repo_search",
 })
 CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "rejected", "stale_session", "presented"))
 

@@ -328,6 +328,49 @@ class Host:
         allowed = {'message_id', 'event_id', 'status', 'attempts', 'total_attempts', 'status_code', 'error_class'}
         return {key: result[key] for key in allowed if key in result}
 
+    REPO_FIELDS = ('repo_id', 'path', 'depth', 'start', 'end', 'max_bytes', 'pattern', 'mode', 'case_sensitive',
+                   'glob_include', 'glob_exclude', 'context', 'limit', 'cursor', 'snapshot_id')
+
+    def _repo_local(self):
+        from repo_access import RepoAccess
+        from repo_access_policy import RepoPolicy
+        if getattr(self, '_repo_svc', None) is None:
+            self._repo_svc = RepoAccess(RepoPolicy(), lambda: [
+                p for p in self.hub('directory_list')['projects'] if p.get('host_id') == self.config['host_id']])
+        return self._repo_svc
+
+    def _repo(self, ep, op, req):
+        """Read-only repo ops for an authenticated reader (pane or service).
+
+        Who the reader is comes only from the authenticated endpoint. Whether it may
+        read is the owning host's grant ledger (`repo_access_policy`); this method only
+        routes: local projects are read here, others are forwarded to their owner.
+        """
+        from repo_access import RepoError
+        reader = {'participant_id': ep['participant_id'], 'address': ep.get('address'), 'generation': ''}
+        payload = {key: req[key] for key in self.REPO_FIELDS if key in req}
+        try:
+            if op == 'list':
+                result = self._repo_local().list_repos(reader)
+                if self.config.get('federated'):
+                    remote = self.hub('repo_peer', endpoint_id=ep['endpoint_id'], repo_op='list')
+                    result['repos'] = result['repos'] + remote.get('repos', [])
+                    result['hosts_unavailable'] = remote.get('unavailable', [])
+                return result
+            target = payload.get('repo_id')
+            owner = None
+            if self.config.get('federated') and isinstance(target, str):
+                projects = self.hub('directory_all')['projects']
+                owners = {p['host_id'] for p in projects if target in (p.get('project_id'), p.get('alias'))}
+                if len(owners) > 1:
+                    raise RepoError('invalid_request')
+                owner = next(iter(owners), None)
+            if owner is None or owner == self.config['host_id']:
+                return self._repo_local().handle(op, reader, payload)
+            return self.hub('repo_peer', endpoint_id=ep['endpoint_id'], repo_op=op, host=owner, req=payload)
+        except RepoError as exc:
+            raise HubError(exc.code, str(exc)) from None
+
     def _pending(self, ep):
         """What this participant has sent that has not been presented yet.
 
@@ -410,6 +453,9 @@ class Host:
             if not isinstance(req.get('message_id'), str) or not req['message_id']:
                 raise HubError('invalid_message', 'message ID required')
             return self.hub('begin_present', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
+        repo_base = op[8:] if is_service else op
+        if repo_base in ('repo_list', 'repo_tree', 'repo_read', 'repo_search'):
+            return self._repo(ep, repo_base[5:], req)
         if op == 'pending':
             return self._pending(ep)
         if op == 'whoami':

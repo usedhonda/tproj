@@ -157,8 +157,10 @@ class MCPServer:
             except MailboxToolError as caught:
                 exc = caught
             else:
+                summary = result.pop("_summary", None) if isinstance(result, dict) else None
+                text = summary if isinstance(summary, str) else json.dumps(result, ensure_ascii=False, sort_keys=True)
                 return {"jsonrpc": "2.0", "id": req_id, "result": {
-                    "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, sort_keys=True)}],
+                    "content": [{"type": "text", "text": text}],
                     "structuredContent": result,
                 }}
         structured = {"ok": False, "error": {"code": exc.code, "message": exc.message}}

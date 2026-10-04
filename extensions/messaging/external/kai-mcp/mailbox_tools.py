@@ -62,7 +62,19 @@ class MailboxTools:
     normally a ``socket_rpc`` partial; tests inject a recorder.
     """
 
-    TOOLS = ("tproj_list", "tproj_status", "tproj_send", "tproj_inbox", "tproj_message", "tproj_reply", "tproj_ack")
+    TOOLS = ("tproj_list", "tproj_status", "tproj_send", "tproj_inbox", "tproj_message", "tproj_reply", "tproj_ack",
+             "tproj_repo_list", "tproj_repo_tree", "tproj_repo_read", "tproj_repo_search")
+
+    # Read-only repository tools: tool -> (host op, required fields, optional fields).
+    # Only these fields reach the host; the host's owner-local grants decide access.
+    REPO_TOOLS = {
+        "tproj_repo_list": ("service_repo_list", set(), set()),
+        "tproj_repo_tree": ("service_repo_tree", {"repo_id"}, {"path", "depth", "limit", "cursor", "snapshot_id"}),
+        "tproj_repo_read": ("service_repo_read", {"repo_id", "path"}, {"start", "end", "max_bytes", "snapshot_id"}),
+        "tproj_repo_search": ("service_repo_search", {"repo_id", "pattern"},
+                              {"path", "mode", "case_sensitive", "glob_include", "glob_exclude", "context", "limit",
+                               "cursor", "snapshot_id"}),
+    }
 
     def __init__(self, *, service_id: str, service_address: str, service_token: str,
                  authorizer: Callable[[str, Mapping[str, Any]], Mapping[str, Any] | None] | None,
@@ -80,6 +92,8 @@ class MailboxTools:
         if FORBIDDEN_SELECTORS.intersection(args):
             raise MailboxToolError("identity_rejected", "identity selectors are not tool arguments")
         ctx = self._authorize(name, args)
+        if name in self.REPO_TOOLS:
+            return self._repo(name, args)
         if name == "tproj_list": return self._list(args, ctx)
         if name == "tproj_status": return self._status(args, ctx)
         if name == "tproj_send": return self._send(args, ctx)
@@ -147,6 +161,22 @@ class MailboxTools:
             if code:
                 raise MailboxToolError(str(code), message) from exc
             raise MailboxToolError("unavailable", "host request failed") from exc
+
+    def _repo(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        op, required, optional = self.REPO_TOOLS[name]
+        self._keys(args, required, optional)
+        result = self._host(op, **dict(args))
+        if not isinstance(result, dict):
+            raise MailboxToolError("unavailable", "host returned an invalid repository result")
+        out = dict(result)
+        # One full copy only (structuredContent). The text channel carries a one-line summary.
+        if name == "tproj_repo_list":
+            out["_summary"] = "%d readable project(s)" % len(out.get("repos", []))
+        else:
+            out["_summary"] = "%s %s%s%s" % (name[len("tproj_repo_"):], out.get("cite") or out.get("path") or out.get("repo_id", ""),
+                                             " (truncated; see next_cursor)" if out.get("truncated") else "",
+                                             "" if out.get("consistent", True) else " (tree changed while reading)")
+        return out
 
     def _list(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, set())

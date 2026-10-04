@@ -161,3 +161,14 @@ descriptions, so a consumer can tell whether its copy is current without diffing
 The `tproj_inbox` and `tproj_message` descriptions ask a recipient that has actually
 read a message to call `tproj_ack`; otherwise the sender keeps seeing the message as
 not presented. Reading or enumerating still never acknowledges on the reader's behalf.
+
+## Repository read tools
+
+Four read-only tools extend the mailbox set: `tproj_repo_list`, `tproj_repo_tree`,
+`tproj_repo_read`, `tproj_repo_search`. They call the host service ops
+`service_repo_list|tree|read|search`, accept only the fields in the catalog, and
+reject identity selectors like the mailbox tools. What a service may read is decided by
+the owning host's grant ledger, never by the tool call; with no grant every call fails
+with `not_granted`. The full result is in `structuredContent`; the text channel carries a
+one-line summary so content is not sent twice. Behaviour, limits and safety rules:
+[repo-read-service.md](repo-read-service.md).

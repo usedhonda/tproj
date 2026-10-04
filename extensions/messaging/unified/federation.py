@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
 import time
 
 from hub import Hub
@@ -79,6 +80,111 @@ class FederatedHub(Hub):
             raise HubError('host_unavailable', 'remote transport could not run') from None
         except (ValueError, KeyError, TypeError, AttributeError):
             raise HubError('host_unavailable', 'remote messaging response is invalid') from None
+
+    def remote_bounded(self, host_id, op, args, max_bytes=300_000, timeout=15):
+        """Like `remote`, but the response is read with a hard byte cap.
+
+        `remote` captures all of stdout, so a peer could make this host buffer without
+        limit. File reads travel this way, so the cap is enforced while reading and the
+        transport is killed when it is exceeded.
+        """
+        peer = self.peers().get(host_id)
+        token = self.host_tokens.get(self.local_id)
+        if not peer or not token:
+            raise HubError('host_unavailable', 'destination host is not connected in this mode')
+        alias = peer['ssh_alias']
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', alias):
+            raise HubError('configuration_error', 'invalid SSH alias')
+        request = dict(args, op='peer_' + op, host_id=self.local_id, host_token=token, protocol=PROTOCOL)
+        try:
+            proc = subprocess.Popen(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3', '-T', '--', alias,
+                                     'PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" '
+                                     'python3 "$HOME/lib/tproj-msg-unified/federation.py" --rpc'],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError:
+            raise HubError('host_unavailable', 'remote transport could not run') from None
+        timer = threading.Timer(timeout, proc.kill)
+        timer.start()
+        try:
+            try:
+                proc.stdin.write(json.dumps(request).encode()); proc.stdin.close()
+            except OSError:
+                raise HubError('host_unavailable', 'remote transport command failed') from None
+            data = proc.stdout.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise HubError('too_large', 'remote response exceeds the size limit')
+            proc.wait(timeout=2)
+            if proc.returncode:
+                raise HubError('host_unavailable', 'remote transport command failed')
+            response = json.loads(data.decode('utf-8'))
+            if not isinstance(response, dict):
+                raise ValueError('invalid response envelope')
+            if not response.get('ok'):
+                e = response.get('error', {})
+                raise HubError(e.get('code', 'host_unavailable'), e.get('message', 'remote request failed'))
+            return response['result']
+        except (ValueError, KeyError, TypeError, AttributeError, UnicodeDecodeError):
+            raise HubError('host_unavailable', 'remote messaging response is invalid') from None
+        except subprocess.TimeoutExpired:
+            raise HubError('host_unavailable', 'remote messaging request timed out') from None
+        finally:
+            timer.cancel()
+            if proc.poll() is None:
+                proc.kill()
+            try: proc.stdout.close()
+            except OSError: pass
+
+    def repo_service(self):
+        from repo_access import RepoAccess
+        from repo_access_policy import RepoPolicy
+        if getattr(self, '_repo_svc', None) is None:
+            self._repo_svc = RepoAccess(RepoPolicy(), lambda: self.local_directory()['projects'])
+        return self._repo_svc
+
+    def repo_peer(self, req):
+        """Host-facing: forward one read to the host that owns the project.
+
+        The reader is taken from this hub's own record of the authenticated endpoint,
+        never from the caller's request, and is attested to the owner by this host.
+        """
+        from repo_access import RepoError
+        host = self._auth(req)
+        ep = self._host_endpoint(host, req.get('endpoint_id'))
+        reader = {'participant_id': ep['participant_id'], 'host_id': self.local_id}
+        op = req.get('repo_op')
+        if op == 'list':
+            repos, unavailable = [], []
+            for ident in self.peers():
+                try:
+                    part = self.remote_bounded(ident, 'repo', {'repo_op': 'list', 'reader': reader, 'req': {}})
+                except HubError:
+                    unavailable.append(ident); continue
+                if isinstance(part, dict) and isinstance(part.get('repos'), list):
+                    repos.extend(r for r in part['repos'] if isinstance(r, dict))
+            return {'repos': repos, 'unavailable': unavailable}
+        ident = req.get('host')
+        if op not in ('tree', 'read', 'search') or ident not in self.peers() or not isinstance(req.get('req'), dict):
+            raise HubError('invalid_request', 'invalid repo request')
+        result = self.remote_bounded(ident, 'repo', {'repo_op': op, 'reader': reader, 'req': req['req']})
+        if not isinstance(result, dict):
+            raise HubError('host_unavailable', 'remote messaging response is invalid')
+        return result
+
+    def peer_repo(self, req, owner):
+        """Owner-facing: a trusted peer attests its own participant; the policy decides."""
+        from repo_access import RepoError
+        reader = req.get('reader') if isinstance(req.get('reader'), dict) else {}
+        pid = reader.get('participant_id')
+        row = self._row('SELECT host_id FROM participants WHERE participant_id=?', (pid,)) if isinstance(pid, str) else None
+        if not row or row['host_id'] != owner or reader.get('host_id') != owner:
+            raise HubError('unauthorized', 'reader is not a participant of the calling host')
+        op = req.get('repo_op')
+        if op not in ('list', 'tree', 'read', 'search') or not isinstance(req.get('req', {}), dict):
+            raise HubError('invalid_request', 'invalid repo request')
+        try:
+            return self.repo_service().handle(op, {'participant_id': pid, 'generation': ''}, dict(req.get('req') or {}))
+        except RepoError as exc:
+            raise HubError(exc.code, str(exc)) from None
 
     def local_directory(self):
         d = super().directory_list()
@@ -369,6 +475,7 @@ class FederatedHub(Hub):
                 from task_transport import dispatch
                 return dispatch(self, req, peer=True)
             if op == 'peer_directory': return self.local_directory()
+            if op == 'peer_repo': return self.peer_repo(req, owner)
             if op == 'peer_resolve': return self.local_resolve(req.get('address'), req.get('endpoint_id'))
             if op == 'peer_accept': return self.accept(req)
             if op == 'peer_cancel':
@@ -430,6 +537,7 @@ class FederatedHub(Hub):
                 except HubError:
                     return dict(result, remote_state='unavailable')
             return result
+        if op == 'repo_peer': return self.repo_peer(req)
         return super().dispatch(req)
 
 

@@ -1,7 +1,8 @@
 # Repo read service (specification)
 
 Status: **specification agreed in review with the messaging owner (tproj.cdx)
-and the primary consumer (KAI); nothing here is implemented.** It describes a
+and the primary consumer (KAI). First slice implemented: `repo_list`, `repo_tree`,
+`repo_read`, `repo_search` (log and diff are not yet implemented).** It describes a
 read-only way for an authenticated participant (an AI pane on any enrolled Mac,
 or an external service such as KAI) to read a project owned by a conversation
 partner through the tproj messaging host. It does not approve implementation,
@@ -180,3 +181,21 @@ returns the owner's actual HEAD, dirty state and snapshot; the byte cap stops an
 oversized remote response; a changed working tree yields `snapshot_expired` or
 `consistent: false`; KAI lists, trees, reads and searches a granted project and
 cites `repo@sha:path:Lx-Ly`; the audit exists and holds no contents.
+
+## Implementation map (first slice)
+
+| Part | Where |
+| --- | --- |
+| Safe reader (fd-based, tracked files only, one filter) | `extensions/messaging/unified/repo_access.py` |
+| Owner-local grants and audit | `extensions/messaging/unified/repo_access_policy.py`, operator CLI `tproj-repo-access` |
+| Host routing and cross-host forwarding | `unified/host.py` (`_repo`), `unified/federation.py` (`repo_peer`, `peer_repo`, `remote_bounded`) |
+| Pane command | `tproj-repo list\|tree\|read\|search` |
+| KAI MCP tools | `tproj_repo_list\|tree\|read\|search` in `external/kai-mcp/` |
+
+Deviations and limits worth knowing: only tracked files are served, so untracked
+files are never returned (`untracked_included` is always false); the call-rate
+limiter is per process and so applies to each host process separately; a response
+over 256 KiB is prevented by per-op budgets (search stops at about 150 KB and
+returns a cursor); regular expressions are screened for nested quantifiers and
+back-references and limited to 200 characters, which is best effort, so literal
+search is the default.

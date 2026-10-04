@@ -37,6 +37,32 @@ class MailboxToolsTest(unittest.TestCase):
         self.tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
                                           authorizer=self.authorizer, host_call=self.host)
 
+    def test_repo_tools_send_only_declared_fields_to_the_service_ops(self):
+        seen = []
+        def host(req):
+            seen.append(req)
+            if req["op"] == "service_repo_list":
+                return {"repos": [{"repo_id": "p1", "name": "proj"}]}
+            return {"repo_id": "p1", "cite": "proj@abc:f.txt:L1-L2", "lines": [{"n": 1, "text": "SECRET-BODY-LINE"}], "truncated": False, "consistent": True}
+        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+                                    authorizer=self.authorizer, host_call=host)
+        listing = tools.dispatch("tproj_repo_list", {})
+        self.assertEqual(listing["repos"][0]["repo_id"], "p1"); self.assertIn("1 readable", listing["_summary"])
+        out = tools.dispatch("tproj_repo_read", {"repo_id": "p1", "path": "f.txt", "start": 1, "end": 2})
+        self.assertEqual(seen[-1]["op"], "service_repo_read")
+        self.assertEqual({k: seen[-1][k] for k in ("repo_id", "path", "start", "end")}, {"repo_id": "p1", "path": "f.txt", "start": 1, "end": 2})
+        self.assertIn("proj@abc:f.txt:L1-L2", out["_summary"])        # one-line text, not a second copy
+        self.assertNotIn("SECRET-BODY-LINE", out["_summary"])
+        before = len(seen)
+        for bad in ({"repo_id": "p1", "path": "f.txt", "host": "mini"}, {"repo_id": "p1", "path": "f.txt", "absolute_path": "/etc"},
+                    {"repo_id": "p1"}, {"path": "f.txt"}):
+            with self.assertRaises(module.MailboxToolError):
+                tools.dispatch("tproj_repo_read", bad)
+        self.assertEqual(len(seen), before)                           # rejected before the host is touched
+        with self.assertRaises(module.MailboxToolError) as raised:
+            tools.dispatch("tproj_repo_read", {"repo_id": "p1", "path": "f.txt", "session": "fake"})
+        self.assertEqual(raised.exception.code, "identity_rejected")
+
     def test_rejected_authorizer_makes_zero_host_calls(self):
         self.tools.authorizer = lambda _name, _args: None
         with self.assertRaises(module.MailboxToolError) as raised:
