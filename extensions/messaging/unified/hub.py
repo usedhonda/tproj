@@ -5,6 +5,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import re
 import os
 import secrets
 import socket
@@ -29,6 +30,7 @@ PRAGMA synchronous=FULL;
 CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS projects (project_id TEXT PRIMARY KEY, alias TEXT NOT NULL UNIQUE, host_id TEXT NOT NULL, path TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS alias_history (alias TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS alias_redirect (alias TEXT PRIMARY KEY, successor TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS participants (participant_id TEXT PRIMARY KEY, project_id TEXT, address TEXT NOT NULL UNIQUE, host_id TEXT NOT NULL, kind TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS endpoints (endpoint_id TEXT PRIMARY KEY, participant_id TEXT NOT NULL, host_id TEXT NOT NULL, session TEXT, pane TEXT, pid INTEGER, pid_start TEXT, runtime_id TEXT, platform TEXT, incarnation TEXT NOT NULL, last_heartbeat REAL NOT NULL, retired INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(participant_id) REFERENCES participants(participant_id));
 CREATE TABLE IF NOT EXISTS messages (message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, in_reply_to TEXT, sender_endpoint TEXT NOT NULL, target_address TEXT NOT NULL, recipient_endpoint TEXT, body TEXT NOT NULL, kind TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL, payload_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'accepted', adapter_received_at REAL, UNIQUE(message_id));
@@ -70,8 +72,39 @@ class Hub:
         base, dot, role = address.rpartition(".")
         if not dot or role not in ("cc", "cdx"): raise HubError("unknown_target", "address must be project.cc or project.cdx")
         p = self._row("SELECT * FROM projects WHERE alias=?", (base,))
-        if not p: raise HubError("unknown_target", "unknown project")
+        if not p or self._row("SELECT 1 FROM alias_redirect WHERE alias=?", (base,)): raise HubError("unknown_target", "unknown project")
         return p, role
+    def _redirect_target(self, target):
+        """Map a retired project alias to the alias that replaced it (one hop), or None."""
+        base, dot, role = target.rpartition(".")
+        if not dot or role not in ("cc", "cdx"): return None
+        r = self._row("SELECT successor FROM alias_redirect WHERE alias=?", (base,))
+        return r[0] + "." + role if r else None
+    def _submit_redirected(self, req):
+        msg = req.get("message") or {}; target = msg.get("target")
+        new = self._redirect_target(target) if isinstance(target, str) and target else None
+        if not new: return self.submit(req)
+        # Rewrite before hashing so a retry of the same ID with the old name stays the same message.
+        out = self.submit(dict(req, message=dict(msg, target=new)))
+        return dict(out, renamed_from=target, renamed_to=new) if isinstance(out, dict) else out
+    def directory_retire(self, req):
+        """Owner-side retirement of a local project alias that now lives elsewhere under `successor`."""
+        self._auth(req, True); alias, successor = str(req.get("alias") or ""), str(req.get("successor") or "")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", successor) or successor == alias: raise HubError("invalid_request", "valid successor alias required")
+        p = self._row("SELECT * FROM projects WHERE alias=?", (alias,))
+        if not p or p["host_id"] != self.config.get("host_id"): raise HubError("unknown_target", "alias is not a local project")
+        if self._row("SELECT 1 FROM alias_redirect WHERE alias=? OR alias=?", (alias, successor)): raise HubError("directory_conflict", "alias already retired or successor is retired")
+        now = self._now()
+        if self._row("SELECT 1 FROM endpoints e JOIN participants x ON x.participant_id=e.participant_id WHERE x.project_id=? AND e.retired=0 AND ?-e.last_heartbeat<=30", (p["project_id"], now)):
+            raise HubError("project_in_use", "project has a live endpoint")
+        self._tx()
+        try:
+            self.db.execute("INSERT OR IGNORE INTO alias_history(alias) VALUES(?)", (alias,))
+            self.db.execute("INSERT INTO alias_redirect(alias,successor) VALUES(?,?)", (alias, successor))
+            self.db.execute("UPDATE metadata SET value=CAST(value AS INTEGER)+1 WHERE key='directory_revision'")
+            self._commit()
+        except Exception: self._rollback(); raise
+        return {"retired": alias, "successor": successor}
     def _address(self, target, sender_endpoint):
         ep = self._row("SELECT * FROM endpoints WHERE endpoint_id=?", (sender_endpoint,))
         if not ep: raise HubError("identity_rejected", "unknown sender endpoint")
@@ -114,7 +147,10 @@ class Hub:
         now=self._now(); participants=[]
         for x in self.db.execute("SELECT * FROM participants"):
             d=dict(x); eps=[dict(e) for e in self.db.execute("SELECT endpoint_id,host_id,incarnation,last_heartbeat,retired FROM endpoints WHERE participant_id=?",(x["participant_id"],))]; d["endpoints"]=eps; d["online"]=any(not e["retired"] and now-e["last_heartbeat"] <= 30 for e in eps); participants.append(d)
-        return {"revision": int(self._row("SELECT value FROM metadata WHERE key='directory_revision'")[0]), "projects": [dict(x) for x in self.db.execute("SELECT * FROM projects")], "participants": participants, "services": [x for x in participants if x["project_id"] is None]}
+        retired = {r[0] for r in self.db.execute("SELECT alias FROM alias_redirect")}
+        projects = [dict(x) for x in self.db.execute("SELECT * FROM projects") if x["alias"] not in retired]
+        live = {x["project_id"] for x in projects}; participants = [x for x in participants if x["project_id"] is None or x["project_id"] in live]
+        return {"revision": int(self._row("SELECT value FROM metadata WHERE key='directory_revision'")[0]), "projects": projects, "participants": participants, "services": [x for x in participants if x["project_id"] is None]}
     def resolve(self, address):
         return dict(self._participant(address))
     def endpoints_list(self):
@@ -380,7 +416,8 @@ class Hub:
         if op=="endpoint_retire":
             host=self._auth(req); self._host_endpoint(host,req["endpoint_id"]); self.db.execute("UPDATE endpoints SET retired=1 WHERE endpoint_id=?",(req["endpoint_id"],)); self.db.execute("UPDATE messages SET state='stale_session' WHERE recipient_endpoint=? AND state IN ('accepted','queued','adapter_received')",(req["endpoint_id"],)); return {"retired":req["endpoint_id"]}
         if op=="endpoints_list": self._auth(req); return {"endpoints":[dict(x) for x in self.db.execute("SELECT * FROM endpoints WHERE host_id=?", (req.get("host_id"),))]}
-        if op=="submit": return self.submit(req)
+        if op=="directory_retire": return self.directory_retire(req)
+        if op=="submit": return self._submit_redirected(req)
         if op=="inbox": return self.inbox(req)
         if op=="claim": return self.claim(req)
         if op=="receipt": return self.receipt(req)

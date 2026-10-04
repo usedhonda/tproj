@@ -115,6 +115,29 @@ that same ID, content and recipient incarnation; presentation belongs to the
 recipient mailbox. Unknown transport outcome is not presentation. A local
 send is not blocked by a remote catalog refresh or retry worker.
 
+## Project names (aliases)
+
+A project's alias is its address (`<alias>.cc`, `<alias>.cdx`). Rules:
+
+- The alias comes from the `alias` field of the owning host's `workspace.yaml`
+  entry (the directory name only when `alias` is absent). The owning host is the
+  only authority for it; a project has exactly one owner and one live name.
+- A name is never reused for a different project, including after retirement.
+- When a project that used to be local becomes a `remote` entry (it now lives on
+  another Mac) or is renamed, the old local entry is **retired**:
+  `tproj-msg-runtime reconcile` lists local entries whose path the
+  workspace now declares as remote, and `reconcile --apply` retires them.
+  `retire-alias OLD --successor NEW` retires one explicitly. Retirement needs
+  the admin credential and is refused while the entry has a live endpoint.
+- A retired alias leaves the directory and `--list`, stays reserved, and
+  **redirects one hop** to its successor. A send to `OLD.cc` is delivered to
+  `NEW.cc` and the result carries `renamed_from` / `renamed_to` so the sender
+  learns the new name. A retry of the same message ID with the old name is the
+  same message.
+- Retirement never terminates sessions or deletes messages and endpoints.
+- Pane labels (`@alias`, titles) follow the workspace; a session that predates
+  an alias change is re-tagged with `tproj --repair`.
+
 Directory edits are serialized by the configured management host, with live
 snapshots of every member, owner-specific revision checks, prepare records and
 a durable commit decision. That host is a configuration coordinator only,

@@ -109,19 +109,22 @@ def _legacy_migration_ready(state: Path, host_id: str) -> bool:
         return False
 
 
-def _projects(home: Path, host_id: str) -> list[dict[str, str]]:
+def _workspace_payload(home: Path) -> dict | None:
     workspace = home / ".config/tproj/workspace.yaml"
     if not workspace.exists():
-        return []
-    payload = None
+        return None
     for command in (["yq", "-o=json", ".", str(workspace)], ["yq", ".", str(workspace)]):
         try:
             proc = subprocess.run(command, capture_output=True, text=True, check=True)
-            payload = json.loads(proc.stdout)
-            break
+            return json.loads(proc.stdout)
         except (OSError, subprocess.CalledProcessError, ValueError): pass
+    raise RuntimeError('Cannot read workspace.yaml; install yq and check the YAML syntax')
+
+
+def _projects(home: Path, host_id: str) -> list[dict[str, str]]:
+    payload = _workspace_payload(home)
     if payload is None:
-        raise RuntimeError('Cannot read workspace.yaml; install yq and check the YAML syntax')
+        return []
     existing_by_path = {}
     database = home / '.local/share/tproj-msg-unified/hub.db'
     if database.exists():
@@ -235,6 +238,39 @@ def setup(home: Path | None = None, refresh: bool = False, dry_run: bool = False
     return {"host_id": host_id, "changed": sum(changed_flags), "projects": len(projects), "socket": str(socket), "dry_run": dry_run, "activation": activation}
 
 
+def _admin_hub(home: Path):
+    from hub import Hub
+    hub_cfg = _read_json(home / ".config/tproj/msg-hub.json")
+    return Hub(str(home / ".local/share/tproj-msg-unified/hub.db"), hub_cfg), str(hub_cfg.get("admin_token") or "")
+
+
+def retire_alias(home: Path, alias: str, successor: str) -> dict[str, Any]:
+    """Retire a local project alias that now lives elsewhere; messages to the old name reach `successor`."""
+    hub, admin = _admin_hub(home)
+    try: return hub.directory_retire({"admin_token": admin, "alias": alias, "successor": successor})
+    finally: hub.close()
+
+
+def reconcile(home: Path, apply: bool = False) -> list[dict[str, str]]:
+    """Local hub projects whose path the workspace now lists as a remote project are retired to that alias."""
+    payload = _workspace_payload(home) or {}
+    remote = {os.path.abspath(os.path.expanduser(str(i.get("path")))): str(i.get("alias") or Path(str(i["path"])).name)
+              for i in payload.get("projects", []) if isinstance(i, dict) and i.get("type") == "remote" and i.get("path")}
+    hub, admin = _admin_hub(home); found = []
+    try:
+        redirected = {r[0] for r in hub.db.execute("SELECT alias FROM alias_redirect")}
+        for p in hub.directory_list()["projects"]:
+            successor = remote.get(os.path.abspath(p["path"]))
+            if successor and p["alias"] != successor and p["alias"] not in redirected:
+                item = {"alias": p["alias"], "successor": successor, "status": "pending"}
+                if apply:
+                    try: hub.directory_retire({"admin_token": admin, "alias": p["alias"], "successor": successor}); item["status"] = "retired"
+                    except Exception as exc: item["status"] = "skipped: " + getattr(exc, "code", type(exc).__name__)
+                found.append(item)
+    finally: hub.close()
+    return found
+
+
 def status(home: Path | None = None) -> dict[str, Any]:
     home = home or Path.home(); config_dir = home / ".config/tproj"
     hub = _read_json(config_dir / "msg-hub.json"); host = _read_json(config_dir / "msg-host.json")
@@ -247,8 +283,16 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("status"); s.add_argument("--json", action="store_true")
     d = sub.add_parser("dry-run"); d.add_argument("--refresh", action="store_true"); d.add_argument("--no-start", action="store_true")
     sub.add_parser("enroll").add_argument("alias")
+    r = sub.add_parser("retire-alias"); r.add_argument("alias"); r.add_argument("--successor", required=True)
+    c = sub.add_parser("reconcile"); c.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "status": print(json.dumps(status(), sort_keys=True)); return 0
+    if args.command in ("retire-alias", "reconcile"):
+        try:
+            result = retire_alias(Path.home(), args.alias, args.successor) if args.command == "retire-alias" else reconcile(Path.home(), args.apply)
+        except Exception as exc:
+            print("%s: %s" % (getattr(exc, "code", type(exc).__name__), exc), file=sys.stderr); return 2
+        print(json.dumps(result, sort_keys=True)); return 0
     if args.command == "enroll":
         try:
             from . import enrollment  # parent-owned implementation
