@@ -153,3 +153,11 @@ trusted service-process and cloud-conversation binding, duplicate-safe send and
 reply, cursor bounds, recipient-only acknowledgement, restart/stale-binding
 rejection, and cross-project/cross-conversation isolation. Until then the
 catalog remains a proposal and the integration status remains unimplemented.
+
+## Catalog version and acknowledgement guidance
+
+`tools/list` includes `_meta.catalog_version`, a short digest of the tool set and its
+descriptions, so a consumer can tell whether its copy is current without diffing it.
+The `tproj_inbox` and `tproj_message` descriptions ask a recipient that has actually
+read a message to call `tproj_ack`; otherwise the sender keeps seeing the message as
+not presented. Reading or enumerating still never acknowledges on the reader's behalf.

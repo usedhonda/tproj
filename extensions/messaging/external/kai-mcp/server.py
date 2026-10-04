@@ -6,6 +6,7 @@ credentials or authorizer and therefore cannot access the mailbox.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -43,6 +44,9 @@ def _catalog() -> list[dict[str, Any]]:
 
 
 TOOL_CATALOG = _catalog()
+# Lets a consumer compare tool sets without diffing them: it changes whenever a
+# tool is added, removed, or described differently.
+CATALOG_VERSION = hashlib.sha256(json.dumps(TOOL_CATALOG, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
 
 def _error(req_id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
@@ -97,7 +101,7 @@ class MCPServer:
                 "capabilities": capabilities,
             }}
         if method == "tools/list":
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOL_CATALOG}}
+            return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOL_CATALOG, "_meta": {"catalog_version": CATALOG_VERSION}}}
         if method in ("events/list", "events/subscribe", "events/unsubscribe"):
             if self.events is None:
                 return _error(req_id, -32601, "Method not found")
