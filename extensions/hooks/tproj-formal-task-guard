@@ -57,8 +57,31 @@ def command(data):
         return source
     return value
 
+_HEREDOC_FIRST_LINE = re.compile(r"^(?P<head>[^\n]*?)\s+<<-?\s*(?P<q>['\"])(?P<tag>[A-Za-z_][A-Za-z0-9_]*)(?P=q)\s*$")
+
+def _quoted_heredoc_head(text):
+    """Return the command line of `cmd <<'TAG' ... TAG`, or None for anything else.
+
+    The msg skill tells agents to send every body as `tproj-msg ... --stdin <<'EOF'`,
+    so a guard that refuses every heredoc also refuses the messages the skill asks
+    for. A quoted heredoc is only stdin data (no expansion), so it adds nothing the
+    first line does not already show. Accept it only when the body closes exactly
+    once, with its own terminator, as the last line.
+    """
+    lines = text.split("\n")
+    match = _HEREDOC_FIRST_LINE.match(lines[0])
+    if not match or len(lines) < 2:
+        return None
+    tag = match.group("tag")
+    body, closing = lines[1:-1], lines[-1].strip()
+    if closing != tag or any(line.strip() == tag for line in body):
+        return None
+    return match.group("head")
+
 def lifecycle(value):
     text = value.strip()
+    head = _quoted_heredoc_head(text)
+    if head is not None: text = head.strip()
     if not text or guard.AMBIGUOUS_SHELL_RE.search(text): return False
     try: argv = shlex.split(text)
     except ValueError: return False

@@ -182,6 +182,21 @@ class FormalGuardTest(unittest.TestCase):
                 _,result=self.run_hook({'tool_name':'exec','tool_use_id':'native-call','tool_input':{'code':code}})
                 self.assertEqual(result['decision'],'block')
 
+    def test_quoted_heredoc_msg_is_lifecycle_but_other_heredocs_are_not(self):
+        reply = "tproj-msg reply abc --stdin <<'EOF'\nbody with $(touch x) and `y`\nEOF"
+        self.assertTrue(guard.lifecycle(reply))
+        self.assertTrue(guard.lifecycle("tproj-task status t <<\"END\"\nx\nEND\n"))
+        for bad in (
+            "tproj-msg reply abc --stdin <<EOF\nbody\nEOF",                       # unquoted: expands
+            "tproj-msg reply abc --stdin <<'EOF'\nbody\nEOF\nrm -rf .",           # trailing command
+            "tproj-msg reply abc --stdin <<'EOF'\nbody\nEOF\nEOF",                # closes early
+            "tproj-msg reply abc --stdin <<'EOF'\nbody",                          # never closes
+            "tproj-msg reply abc --stdin; rm x <<'EOF'\nb\nEOF",                  # extra command on first line
+            "touch f <<'EOF'\nb\nEOF",                                            # not a lifecycle command
+            "tproj-msg reply abc --stdin > out <<'EOF'\nb\nEOF",                  # redirection
+        ):
+            self.assertFalse(guard.lifecycle(bad), bad)
+
     def test_bound_semicolon_and_unknown_exec_are_guarded(self):
         self._bound()
         with patch.object(guard.cli, "config", return_value={"socket": "x"}), patch.object(guard.cli, "rpc", side_effect=guard.cli.ClientError("epoch", "epoch_conflict")):
