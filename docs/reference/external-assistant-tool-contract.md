@@ -172,3 +172,13 @@ the owning host's grant ledger, never by the tool call; with no grant every call
 with `not_granted`. The full result is in `structuredContent`; the text channel carries a
 one-line summary so content is not sent twice. Behaviour, limits and safety rules:
 [repo-read-service.md](repo-read-service.md).
+
+## Repository write tools
+
+Two **write-class** tools extend the set: `tproj_repo_write` (create or modify whole
+text files) and `tproj_repo_revert` (undo a patch the same service wrote). They call
+`service_repo_write|revert`, accept only the fields in the catalog, and are no-ops
+without an explicit owner write grant: with only a read grant every call fails with
+`not_granted`. The owning host validates and applies the change in the call, all or
+nothing, and never stages, commits or pushes. Behaviour, limits and safety rules:
+[repo-write-service.md](repo-write-service.md).

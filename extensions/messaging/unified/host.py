@@ -329,7 +329,7 @@ class Host:
         return {key: result[key] for key in allowed if key in result}
 
     REPO_FIELDS = ('repo_id', 'path', 'depth', 'start', 'end', 'max_bytes', 'pattern', 'mode', 'case_sensitive',
-                   'glob_include', 'glob_exclude', 'context', 'limit', 'cursor', 'snapshot_id')
+                   'glob_include', 'glob_exclude', 'context', 'limit', 'cursor', 'snapshot_id', 'patch_id', 'changes', 'dry_run')
 
     def _repo_local(self):
         from repo_access import RepoAccess
@@ -454,7 +454,7 @@ class Host:
                 raise HubError('invalid_message', 'message ID required')
             return self.hub('begin_present', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
         repo_base = op[8:] if is_service else op
-        if repo_base in ('repo_list', 'repo_tree', 'repo_read', 'repo_search'):
+        if repo_base in ('repo_list', 'repo_tree', 'repo_read', 'repo_search', 'repo_write', 'repo_revert'):
             return self._repo(ep, repo_base[5:], req)
         if op == 'pending':
             return self._pending(ep)

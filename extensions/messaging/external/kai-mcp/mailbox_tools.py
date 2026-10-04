@@ -63,7 +63,8 @@ class MailboxTools:
     """
 
     TOOLS = ("tproj_list", "tproj_status", "tproj_send", "tproj_inbox", "tproj_message", "tproj_reply", "tproj_ack",
-             "tproj_repo_list", "tproj_repo_tree", "tproj_repo_read", "tproj_repo_search")
+             "tproj_repo_list", "tproj_repo_tree", "tproj_repo_read", "tproj_repo_search",
+             "tproj_repo_write", "tproj_repo_revert")
 
     # Read-only repository tools: tool -> (host op, required fields, optional fields).
     # Only these fields reach the host; the host's owner-local grants decide access.
@@ -74,6 +75,9 @@ class MailboxTools:
         "tproj_repo_search": ("service_repo_search", {"repo_id", "pattern"},
                               {"path", "mode", "case_sensitive", "glob_include", "glob_exclude", "context", "limit",
                                "cursor", "snapshot_id"}),
+        # Write class: the owner's host still needs an explicit write grant, so these return not_granted otherwise.
+        "tproj_repo_write": ("service_repo_write", {"repo_id", "patch_id", "changes"}, {"dry_run"}),
+        "tproj_repo_revert": ("service_repo_revert", {"repo_id", "patch_id"}, set()),
     }
 
     def __init__(self, *, service_id: str, service_address: str, service_token: str,
@@ -172,6 +176,9 @@ class MailboxTools:
         # One full copy only (structuredContent). The text channel carries a one-line summary.
         if name == "tproj_repo_list":
             out["_summary"] = "%d readable project(s)" % len(out.get("repos", []))
+        elif name in ("tproj_repo_write", "tproj_repo_revert"):
+            out["_summary"] = "%s patch %s: %d file(s)%s" % (name[len("tproj_repo_"):], out.get("patch_id", ""), len(out.get("files", [])),
+                                                            " (dry run)" if out.get("dry_run") else "")
         else:
             out["_summary"] = "%s %s%s%s" % (name[len("tproj_repo_"):], out.get("cite") or out.get("path") or out.get("repo_id", ""),
                                              " (truncated; see next_cursor)" if out.get("truncated") else "",

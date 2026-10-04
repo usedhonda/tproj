@@ -163,7 +163,7 @@ class FederatedHub(Hub):
                     repos.extend(r for r in part['repos'] if isinstance(r, dict))
             return {'repos': repos, 'unavailable': unavailable}
         ident = req.get('host')
-        if op not in ('tree', 'read', 'search') or ident not in self.peers() or not isinstance(req.get('req'), dict):
+        if op not in ('tree', 'read', 'search', 'write', 'revert') or ident not in self.peers() or not isinstance(req.get('req'), dict):
             raise HubError('invalid_request', 'invalid repo request')
         result = self.remote_bounded(ident, 'repo', {'repo_op': op, 'reader': reader, 'req': req['req']})
         if not isinstance(result, dict):
@@ -179,7 +179,7 @@ class FederatedHub(Hub):
         if not row or row['host_id'] != owner or reader.get('host_id') != owner:
             raise HubError('unauthorized', 'reader is not a participant of the calling host')
         op = req.get('repo_op')
-        if op not in ('list', 'tree', 'read', 'search') or not isinstance(req.get('req', {}), dict):
+        if op not in ('list', 'tree', 'read', 'search', 'write', 'revert') or not isinstance(req.get('req', {}), dict):
             raise HubError('invalid_request', 'invalid repo request')
         try:
             return self.repo_service().handle(op, {'participant_id': pid, 'generation': ''}, dict(req.get('req') or {}))

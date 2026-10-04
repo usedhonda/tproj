@@ -1,10 +1,9 @@
 # Repo write service (specification)
 
-Status: **proposed, not implemented.** It extends the repo read service
+Status: **first slice implemented** (`repo_write`, `repo_revert`; panes use `tproj-repo put|write|revert`, KAI uses `tproj_repo_write|revert`). It extends the repo read service
 (`repo-read-service.md`) so an authenticated participant (an AI pane on any
 enrolled Mac, or KAI) can change files in a project it has been granted write
-access to, through the messaging host. It does not approve implementation of
-anything beyond this document, and creates no grant.
+access to, through the messaging host. It creates no grant.
 
 ## Model
 
@@ -54,7 +53,7 @@ writer read. A modify whose base does not match the current file is `conflict`.
   place; file mode is preserved and never made executable.
 - **Content screening.** Content that matches the credential patterns is refused
   (`content_withheld`); a writer cannot plant a secret.
-- **Limits.** At most 20 files, 256 KiB per file, 512 KiB per call; parent
+- **Limits.** At most 20 files, 128 KiB per file, 192 KiB per call (one host frame); parent
   directories are created only below the granted prefix and only 3 levels deep.
 - **Idempotency.** `patch_id` is the idempotency key: the same id with the same
   content returns the original result; the same id with different content is

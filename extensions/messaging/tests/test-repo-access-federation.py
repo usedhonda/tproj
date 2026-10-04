@@ -73,6 +73,19 @@ class RepoFederationTest(unittest.TestCase):
             self.read()
         self.assertEqual(ctx.exception.code, "not_granted")
 
+    def test_a_remote_write_changes_only_the_owners_tree_and_needs_its_own_grant(self):
+        os.environ["TPROJ_REPO_PATCH_DIR"] = str(Path(self.tmp.name) / "patches"); self.addCleanup(os.environ.pop, "TPROJ_REPO_PATCH_DIR", None)
+        change = dict(patch_id="33333333-3333-4333-8333-333333333333", changes=[{"path": "n.txt", "action": "create", "content": "hi\n"}])
+        send = lambda: self.hubs["a"].dispatch(dict(op="repo_peer", host_id="a", host_token="a-token", endpoint_id="acc",
+                                                     repo_op="write", host="b", req=dict(repo_id="pb", **change)))
+        self.policy.grant(self.reader_id, "pb", self.root)               # read-only grant
+        with self.assertRaises(HubError) as ctx: send()
+        self.assertEqual(ctx.exception.code, "not_granted")
+        self.assertFalse((self.repo / "n.txt").exists())
+        self.policy.grant(self.reader_id, "pb", self.root, ops=["write"])
+        self.assertTrue(send()["applied"])
+        self.assertEqual((self.repo / "n.txt").read_text(), "hi\n")
+
     def test_a_host_cannot_attest_a_participant_it_does_not_own(self):
         self.policy.grant("pb:cc", "pb", self.root)   # a participant that lives on b itself
         with self.assertRaises(HubError) as ctx:
@@ -97,7 +110,7 @@ class RepoFederationTest(unittest.TestCase):
         self.assertEqual(out, {"repos": [], "unavailable": ["b"]})
 
     def test_invalid_forwarding_requests_are_rejected_before_any_transport(self):
-        for bad in (dict(repo_op="write", host="b", req={}), dict(repo_op="read", host="zzz", req={}), dict(repo_op="read", host="b", req="x")):
+        for bad in (dict(repo_op="execute", host="b", req={}), dict(repo_op="read", host="zzz", req={}), dict(repo_op="read", host="b", req="x")):
             with self.assertRaises(HubError) as ctx:
                 self.hubs["a"].dispatch(dict(op="repo_peer", host_id="a", host_token="a-token", endpoint_id="acc", **bad))
             self.assertEqual(ctx.exception.code, "invalid_request")

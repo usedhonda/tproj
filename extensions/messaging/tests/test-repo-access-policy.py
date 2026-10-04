@@ -106,7 +106,7 @@ class PolicyTest(unittest.TestCase):
 
     def test_ops_validation(self):
         with self.assertRaises(ValueError):
-            self.p.grant("r1", "p1", "/x", ops=["read", "write"])
+            self.p.grant("r1", "p1", "/x", ops=["read", "execute"])
         with self.assertRaises(ValueError):
             self.p.grant("r1", "p1", "/x", ops=[])
         self.p.grant("r1", "p1", "/x", ops=["search", "read", "read"])
@@ -204,7 +204,7 @@ class CliTest(unittest.TestCase):
             ("grant", "--reader", "nobody.cc", "--project", "demo"),
             ("grant", "--reader", "alpha.cc", "--project", "elsewhere"),
             ("grant", "--reader", "alpha.cc", "--project", "ghost"),
-            ("grant", "--reader", "alpha.cc", "--project", "demo", "--ops", "write"),
+            ("grant", "--reader", "alpha.cc", "--project", "demo", "--ops", "execute"),
             ("revoke",),
             ("bogus",),
         ):

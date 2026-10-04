@@ -77,6 +77,9 @@ FIXED_MESSAGES = {
     "rate_limited": "too many reads; retry later",
     "content_withheld": "content was withheld by the credential screen",
     "invalid_request": "invalid request",
+    "conflict": "the file changed since it was read, or the patch id was reused with different content",
+    "dirty_path": "the owner has uncommitted changes in that path",
+    "exists": "that path already exists",
 }
 
 
@@ -217,7 +220,7 @@ class RepoAccess:
             project = local.get(grant["project_id"])
             if not project or os.path.realpath(project["path"]) != grant["root"]:
                 continue
-            ops = [op for op in grant["ops"] if op in ("list", "tree", "read", "search")]
+            ops = [op for op in grant["ops"] if op in ("list", "tree", "read", "search", "write")]
             entry = {"repo_id": grant["project_id"], "name": project.get("alias") or os.path.basename(grant["root"]),
                      "ops": ops, "path_scope": grant["path_scope"], "state": "online"}
             try:
@@ -233,6 +236,9 @@ class RepoAccess:
         """Run one op for an already-authenticated reader."""
         if op == "list":
             return self.list_repos(reader)
+        if op in ("write", "revert"):
+            import repo_write
+            return getattr(repo_write, op)(self, reader, req)
         if op not in ("tree", "read", "search"):
             raise RepoError("invalid_request")
         repo_id = req.get("repo_id")

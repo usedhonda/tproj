@@ -95,7 +95,7 @@ for name in ('tproj_topology.py','tproj-common.sh','tproj-model-role.sh'):
     files['bin/lib/'+name]=root/'bin/lib'/name
 library=root/'extensions/messaging/unified'
 if not library.is_dir(): library=root/'lib/tproj-msg-unified'
-for name in ('cli.py','host.py','hub.py','identity.py','protocol.py','policy.py','receipt.py','federation.py','directory.py','enrollment.py','repo_access.py','repo_access_policy.py','runtime.py','terminal-guard.sh','terminal-parser.sh'):
+for name in ('cli.py','host.py','hub.py','identity.py','protocol.py','policy.py','receipt.py','federation.py','directory.py','enrollment.py','repo_access.py','repo_access_policy.py','repo_write.py','runtime.py','terminal-guard.sh','terminal-parser.sh'):
     files['lib/tproj-msg-unified/'+name]=library/name
 plist=root/'config/com.tproj.remote-host.plist'
 if not plist.exists(): plist=root/'.config/tproj/remote-host.plist'

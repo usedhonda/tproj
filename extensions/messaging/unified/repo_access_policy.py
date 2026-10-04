@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 DEFAULT_OPS = ("list", "tree", "read", "search")
-VALID_OPS = frozenset(("list", "tree", "read", "search", "log", "diff"))
+VALID_OPS = frozenset(("list", "tree", "read", "search", "log", "diff", "write"))
 AUDIT_KEYS = ("ts", "reader", "project_id", "op", "path_or_hash", "allowed", "reason", "bytes", "truncated", "revision")
 
 _SCHEMA = """

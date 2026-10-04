@@ -63,6 +63,26 @@ class MailboxToolsTest(unittest.TestCase):
             tools.dispatch("tproj_repo_read", {"repo_id": "p1", "path": "f.txt", "session": "fake"})
         self.assertEqual(raised.exception.code, "identity_rejected")
 
+    def test_write_tools_send_only_declared_fields_and_never_a_content_copy_in_the_text(self):
+        seen = []
+        def host(req):
+            seen.append(req)
+            return {"patch_id": req["patch_id"], "applied": True, "files": [{"path": "a.md", "status": "ok"}]}
+        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+                                    authorizer=self.authorizer, host_call=host)
+        change = {"repo_id": "p1", "patch_id": "44444444-4444-4444-8444-444444444444",
+                  "changes": [{"path": "a.md", "action": "create", "content": "PRIVATE-CONTENT"}]}
+        out = tools.dispatch("tproj_repo_write", change)
+        self.assertEqual(seen[-1]["op"], "service_repo_write")
+        self.assertNotIn("PRIVATE-CONTENT", out["_summary"]); self.assertIn("1 file", out["_summary"])
+        tools.dispatch("tproj_repo_revert", {"repo_id": "p1", "patch_id": change["patch_id"]})
+        self.assertEqual(seen[-1]["op"], "service_repo_revert")
+        before = len(seen)
+        for bad in (dict(change, host="mini"), dict(change, path="/etc/x"), {"repo_id": "p1"}):
+            with self.assertRaises(module.MailboxToolError):
+                tools.dispatch("tproj_repo_write", bad)
+        self.assertEqual(len(seen), before)
+
     def test_rejected_authorizer_makes_zero_host_calls(self):
         self.tools.authorizer = lambda _name, _args: None
         with self.assertRaises(module.MailboxToolError) as raised:
