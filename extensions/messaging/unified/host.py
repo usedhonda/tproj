@@ -340,6 +340,8 @@ class Host:
         now = out.get('now') or time.time()
         local_host = self.config.get('host_id')
         groups = {}
+        checked = 0
+        deadline = time.monotonic() + 12
         for item in out.get('messages', []):
             kind = item.get('recipient_kind')
             if kind not in ('cc', 'cdx'):
@@ -348,11 +350,25 @@ class Host:
                 where = 'this_mac'
             else:
                 where = 'other_mac'
+            item['verified'] = where == 'this_mac'
+            if where != 'this_mac' and checked < 25 and time.monotonic() < deadline:
+                # The owning side holds the real state; this hub only has the hand-off
+                # record. Ask it (bounded: at most 25 messages and 12 s per call).
+                try:
+                    fresh = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=item['message_id'])
+                    checked += 1
+                    if isinstance(fresh, dict) and fresh.get('remote_state') != 'unavailable' and fresh.get('state'):
+                        item['state'] = fresh['state']; item['verified'] = True
+                except HubError:
+                    pass
+            if item['state'] not in ('accepted', 'queued', 'adapter_received', 'dispatching', 'uncertain'):
+                continue  # presented or terminal on the owning side: nothing is stuck
             key = (item['target_address'], where)
             group = groups.setdefault(key, {'target': key[0], 'where': where, 'count': 0, 'states': {},
                                             'oldest_age_s': 0, 'oldest_message_id': None, 'newest_message_id': None})
             age = max(0, int(now - item['created_at']))
             group['count'] += 1
+            if not item['verified']: group['unchecked'] = group.get('unchecked', 0) + 1
             group['states'][item['state']] = group['states'].get(item['state'], 0) + 1
             if age >= group['oldest_age_s']:
                 group['oldest_age_s'] = age

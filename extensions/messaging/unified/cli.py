@@ -121,8 +121,8 @@ def submission(request: dict, *, spool: Path | None = None, retry: str | None = 
 
 _WHERE_NOTE = {
     "this_mac": "this Mac: waiting for the recipient to be idle with no draft",
-    "other_mac": "another Mac: this is only the hand-off record; the recipient's own state is shown by `message <ID>`",
-    "service": "service: its state is set by the service (`message <ID>`); a service must ack to show it read",
+    "other_mac": "another Mac: state re-checked on that Mac",
+    "service": "service: state re-checked on its side; a service shows as read only after it acks",
 }
 
 
@@ -139,7 +139,8 @@ def format_pending(result: dict) -> str:
     lines = [f"{result.get('total', 0)} sent message(s) not presented yet (oldest first):"]
     for group in groups:
         states = ", ".join(f"{name}={count}" for name, count in sorted(group["states"].items()))
-        lines.append(f"  {group['target']:<18} {group['count']:>3} msg  oldest {_age(group['oldest_age_s']):>7}  [{states}]")
+        extra = f"  ({group['unchecked']} not re-checked on the owning side)" if group.get('unchecked') else ""
+        lines.append(f"  {group['target']:<18} {group['count']:>3} msg  oldest {_age(group['oldest_age_s']):>7}  [{states}]{extra}")
         lines.append(f"      {_WHERE_NOTE.get(group['where'], group['where'])}")
         lines.append(f"      oldest id {group['oldest_message_id']}")
     lines.append("Read-only. Nothing was resent; resending creates a duplicate.")
