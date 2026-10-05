@@ -44,7 +44,7 @@ def config(path: Path | None = None) -> dict:
 def rpc(socket_path: str, request: dict) -> object:
     try:
         with socket.socket(socket.AF_UNIX) as sock:
-            sock.settimeout(15)
+            sock.settimeout(60)
             sock.connect(socket_path)
             sock.sendall((json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n").encode())
             with sock.makefile("rb") as stream:

@@ -31,7 +31,7 @@ def paste_parts(platform, header, body):
 
 def rpc(path, request):
     with socket.socket(socket.AF_UNIX) as sock:
-        sock.settimeout(12)
+        sock.settimeout(55)
         sock.connect(str(path))
         sock.sendall((json.dumps(request, ensure_ascii=False) + '\n').encode())
         with sock.makefile('rb') as stream:
@@ -640,7 +640,7 @@ def main():
         try:
             host = Host(json.loads(Path(args.config).read_text()), recover=False)
             with conn:
-                conn.settimeout(15)
+                conn.settimeout(60)
                 pid, uid = peer_credentials(conn)
                 with conn.makefile('rwb') as stream:
                     raw = stream.readline(WIRE_LIMIT+1)

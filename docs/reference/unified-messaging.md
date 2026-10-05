@@ -138,6 +138,12 @@ A project's alias is its address (`<alias>.cc`, `<alias>.cdx`). Rules:
 - Pane labels (`@alias`, titles) follow the workspace; a session that predates
   an alias change is re-tagged with `tproj --repair`.
 
+Host-to-host calls travel over SSH with one reused connection per peer
+(`ControlMaster=auto`, kept 15 minutes) and generous timeouts (30 s per call, 40 s
+for byte-capped repo calls, with the local sockets above them waiting longer), because
+two Macs can be far apart: over a relayed Tailscale path one handshake took about
+10 s, which a short timeout turned into intermittent `host_unavailable` failures.
+
 Directory edits are serialized by the configured management host, with live
 snapshots of every member, owner-specific revision checks, prepare records and
 a durable commit decision. That host is a configuration coordinator only,

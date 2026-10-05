@@ -20,6 +20,14 @@ from hub import Hub
 from protocol import HubError, MAX_REQUEST
 from policy import check_policy
 
+
+# Hosts may be far apart (a relayed Tailscale path can have ~1 s round trips, so one SSH
+# handshake takes ~10 s). Reuse one connection per peer and allow time for the first one.
+SSH_OPTIONS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-o', 'ControlMaster=auto',
+               '-o', 'ControlPath=~/.ssh/tproj-cm-%C', '-o', 'ControlPersist=15m', '-o', 'ServerAliveInterval=20']
+SSH_CALL_SECONDS = 30
+SSH_BOUNDED_SECONDS = 40
+
 PROTOCOL = 1
 
 
@@ -60,11 +68,10 @@ class FederatedHub(Hub):
         request = dict(args, op='peer_' + op, host_id=self.local_id,
                        host_token=token, protocol=PROTOCOL)
         try:
-            proc = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3',
-                                   '-T', '--', alias,
+            proc = subprocess.run(['ssh'] + SSH_OPTIONS + ['-T', '--', alias,
                                    'PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" '
                                    'python3 "$HOME/lib/tproj-msg-unified/federation.py" --rpc'],
-                                  input=json.dumps(request), capture_output=True, text=True, timeout=8)
+                                  input=json.dumps(request), capture_output=True, text=True, timeout=SSH_CALL_SECONDS)
             if proc.returncode:
                 raise HubError('host_unavailable', 'remote transport command failed')
             response = json.loads(proc.stdout)
@@ -81,7 +88,7 @@ class FederatedHub(Hub):
         except (ValueError, KeyError, TypeError, AttributeError):
             raise HubError('host_unavailable', 'remote messaging response is invalid') from None
 
-    def remote_bounded(self, host_id, op, args, max_bytes=300_000, timeout=15):
+    def remote_bounded(self, host_id, op, args, max_bytes=300_000, timeout=SSH_BOUNDED_SECONDS):
         """Like `remote`, but the response is read with a hard byte cap.
 
         `remote` captures all of stdout, so a peer could make this host buffer without
@@ -97,7 +104,7 @@ class FederatedHub(Hub):
             raise HubError('configuration_error', 'invalid SSH alias')
         request = dict(args, op='peer_' + op, host_id=self.local_id, host_token=token, protocol=PROTOCOL)
         try:
-            proc = subprocess.Popen(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3', '-T', '--', alias,
+            proc = subprocess.Popen(['ssh'] + SSH_OPTIONS + ['-T', '--', alias,
                                      'PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" '
                                      'python3 "$HOME/lib/tproj-msg-unified/federation.py" --rpc'],
                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)

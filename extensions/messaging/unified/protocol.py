@@ -52,7 +52,7 @@ def serve_socket(sock: socket.socket, handler, idle=None, concurrent=False) -> N
     slots = threading.BoundedSemaphore(16)
     def handle(conn):
         with conn:
-            conn.settimeout(15)
+            conn.settimeout(50)
             stream = conn.makefile("rwb")
             try:
                 for request in read_json_lines(stream):
