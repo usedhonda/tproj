@@ -36,6 +36,7 @@ MAX_LINE_CHARS = 4000        # a longer line is reported as truncated, never cut
 SEARCH_LINE_CHARS = 2000     # lines longer than this are skipped by search (bounds regex time)
 MAX_PATTERN_CHARS = 200
 SNIFF_BYTES = 8192
+FULL_HASH_MAX_BYTES = 1024 * 1024   # a whole-file SHA-256 (the base for a later write) is reported up to this size
 GIT_OUTPUT_CAP = 8 * 1024 * 1024
 RATE_CALLS_PER_MIN = 120
 RATE_BYTES_PER_HOUR = 8 * 1024 * 1024
@@ -411,7 +412,11 @@ class RepoAccess:
         self._check_snapshot(req, before)
         rel = "/".join(parts)
         files, _ = self._tracked(root, before)
-        if rel not in files:
+        # A file this service created is untracked until the owner commits it; it stays readable
+        # (so its writer can verify it) only while it still has exactly what the service wrote.
+        import repo_write
+        written = None if rel in files else repo_write.written_sha(project["project_id"], rel)
+        if rel not in files and written is None:
             raise RepoError("path_not_found")
         start = self._int(req.get("start", 1), 1, 10 ** 9)
         end = self._int(req["end"], start, 10 ** 9) if "end" in req else start + READ_DEFAULT_LINES - 1
@@ -421,6 +426,13 @@ class RepoAccess:
         fd = _open_beneath(root, parts, want_dir=False)
         size = os.fstat(fd).st_size
         with os.fdopen(fd, "rb") as handle:
+            full = hashlib.sha256()
+            if size <= FULL_HASH_MAX_BYTES:
+                for block in iter(lambda: handle.read(65536), b""):
+                    full.update(block)
+                handle.seek(0)
+            if written is not None and (size > FULL_HASH_MAX_BYTES or full.hexdigest() != written):
+                raise RepoError("path_not_found")
             if b"\0" in handle.read(SNIFF_BYTES):
                 return self._envelope(project, before, Snapshot(root), path=rel, kind="binary", size=size,
                                       truncated=False, returned_range=None, next_cursor=None, lines=[])
@@ -474,6 +486,7 @@ class RepoAccess:
                               truncated=truncated, line_truncated=long_line,
                               returned_range=[lines[0]["n"], last] if lines else None,
                               next_cursor=nxt, file_sha256_prefix=digest.hexdigest()[:16] if not truncated else None,
+                              file_sha256=full.hexdigest() if size <= FULL_HASH_MAX_BYTES else None,
                               cite="%s@%s:%s:%s" % (project.get("alias") or project["project_id"], tag, rel, cite_range))
 
     # --- search ------------------------------------------------------------

@@ -151,6 +151,23 @@ class RepoWriteTest(unittest.TestCase):
         self.writer = {"participant_id": "w1", "generation": ""}
         self.assertEqual(self.code("revert", patch_id="22222222-2222-4222-8222-222222222222"), "path_not_found")
 
+    def test_a_created_file_can_be_read_back_until_it_changes_and_read_gives_the_base_sha(self):
+        self.policy.grants[0]["ops"] = ["read", "write"]
+        tracked = self.call("read", path="docs/a.md")
+        self.assertEqual(tracked["file_sha256"], sha("one\n"))                      # the base for a later modify
+        out = self.call(changes=[self.mod("docs/a.md", "ONE\n", "one\n"), self.new("docs/c.md", "new\n")])
+        back = self.call("read", path="docs/c.md")
+        self.assertEqual([l["text"] for l in back["lines"]], ["new"]); self.assertEqual(back["file_sha256"], sha("new\n"))
+        self.assertEqual(self.call("read", path="docs/a.md")["file_sha256"], sha("ONE\n"))
+        self.assertEqual(self.code("read", path="docs/untouched-new.md"), "path_not_found")      # never an arbitrary untracked path
+        (self.root / "docs" / "other.md").write_text("owner file\n")
+        self.assertEqual(self.code("read", path="docs/other.md"), "path_not_found")
+        (self.root / "docs" / "c.md").write_text("owner changed it\n")
+        self.assertEqual(self.code("read", path="docs/c.md"), "path_not_found")                  # no longer what the service wrote
+        (self.root / "docs" / "c.md").write_text("new\n")
+        self.call("revert", patch_id=out["patch_id"])
+        self.assertEqual(self.code("read", path="docs/c.md"), "path_not_found")
+
     def test_audit_names_the_call_but_never_the_content(self):
         self.call(changes=[self.mod("docs/a.md", "SECRET-BODY-TEXT\n", "one\n")])
         self.code(changes=[self.new("../x", "x")])

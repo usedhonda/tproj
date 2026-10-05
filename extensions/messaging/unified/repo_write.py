@@ -49,6 +49,17 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def written_sha(project_id: str, rel: str):
+    """SHA-256 this service last wrote to `rel`, or None. Read-only: never creates state."""
+    path = os.path.join(state_dir(), re.sub(r"[^A-Za-z0-9_.-]", "_", project_id), "index.json")
+    try:
+        with open(path) as fh:
+            value = json.load(fh).get(rel)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, str) and SHA_RE.match(value) else None
+
+
 class _Store:
     """Owner-local record of applied patches (previous contents for revert). Never returned."""
 

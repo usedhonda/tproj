@@ -63,6 +63,15 @@ writer read. A modify whose base does not match the current file is `conflict`.
   executed or interpreted as an instruction, and nothing in a result is an
   approval.
 
+## Reading back
+
+`repo_read` returns the whole-file `file_sha256` (files up to 1 MiB), the value a
+writer passes as `base_sha256`. A file this service created stays untracked until
+the owner commits it, and reads serve tracked files only, so a created file is
+readable (by anyone holding a read grant, within its scope) only while it still has
+exactly the content the service last wrote; once the owner edits it, or the patch
+is reverted, it is `path_not_found` again. Tree and search do not list such files.
+
 ## Errors
 
 Reads' codes plus: `conflict`, `dirty_path`, `exists`, `too_large`,
