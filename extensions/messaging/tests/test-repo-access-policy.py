@@ -142,6 +142,44 @@ class PolicyTest(unittest.TestCase):
         self.assertNotIn(b"private-dir-xyz", blob)
 
 
+class WriteGrantTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "grants.sqlite"); self.p = rap.RepoPolicy(self.path)
+
+    def test_read_and_write_grants_coexist_with_their_own_scopes(self):
+        self.p.grant("r", "p", "/x", ops=["list", "tree", "read", "search"])
+        self.p.grant("r", "p", "/x", ops=["write"], path_scope="docs")
+        self.assertTrue(self.p.check("r", "p", "/x", "read", "src/a.py")["allowed"])
+        self.assertTrue(self.p.check("r", "p", "/x", "write", "docs/a.md")["allowed"])
+        self.assertEqual(self.p.check("r", "p", "/x", "write", "src/a.py")["reason"], "path_out_of_scope")
+        self.assertEqual(len(self.p.granted_projects("r")), 1)                    # one project, not two
+        self.assertEqual(self.p.granted_projects("r")[0]["write_scope"], "docs")
+        self.p.grant("r", "p", "/x", ops=["read"])                                  # regranting reads keeps the write grant
+        self.assertTrue(self.p.check("r", "p", "/x", "write", "docs/a.md")["allowed"])
+        self.p.revoke(reader="r", project_id="p")
+        self.assertFalse(self.p.check("r", "p", "/x", "write", "docs/a.md")["allowed"])
+
+    def test_a_read_only_grant_never_allows_a_write_and_mixed_ops_are_refused(self):
+        self.p.grant("r", "p", "/x", ops=["read"])
+        self.assertEqual(self.p.check("r", "p", "/x", "write", "docs/a.md")["reason"], "not_granted")
+        with self.assertRaises(ValueError): self.p.grant("r", "p", "/x", ops=["read", "write"])
+
+    def test_an_old_ledger_with_one_grant_per_project_is_migrated_in_place(self):
+        import sqlite3
+        old = os.path.join(self.tmp.name, "old.sqlite")
+        conn = sqlite3.connect(old)
+        conn.executescript("""CREATE TABLE grants (id INTEGER PRIMARY KEY AUTOINCREMENT, reader TEXT NOT NULL, generation TEXT NOT NULL DEFAULT '',
+            project_id TEXT NOT NULL, root TEXT NOT NULL, ops TEXT NOT NULL, path_scope TEXT, expires_at REAL, granted_at REAL NOT NULL, UNIQUE (reader, project_id));
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL); INSERT INTO meta VALUES ('revision', 3);
+            INSERT INTO grants (reader, project_id, root, ops, path_scope, granted_at) VALUES ('r','p','/x','list,read',NULL,1.0);""")
+        conn.commit(); conn.close()
+        p = rap.RepoPolicy(old)
+        self.assertTrue(p.check("r", "p", "/x", "read", "a")["allowed"])
+        p.grant("r", "p", "/x", ops=["write"], path_scope="docs")
+        self.assertTrue(p.check("r", "p", "/x", "read", "a")["allowed"]); self.assertTrue(p.check("r", "p", "/x", "write", "docs/a")["allowed"])
+
+
 class CliTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

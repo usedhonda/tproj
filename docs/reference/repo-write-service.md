@@ -20,7 +20,8 @@ uncommitted working-tree changes and decides what to do with them.
 ## Grants
 
 Same owner-local ledger as reads, with one new op: `write`. A write grant is
-separate from a read grant (granting read never grants write), should be scoped
+a separate row from a read grant (granting read never grants write, granting
+either never replaces the other, and each has its own path prefix), should be scoped
 with a path prefix, and may expire. Only the owner CLI creates or revokes it
 (`tproj-repo-access grant --ops write --path-prefix docs/ ...`). Identity, the
 shared-Codex-app-server rejection, and revocation timing are exactly as for reads.

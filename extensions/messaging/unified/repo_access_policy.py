@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS grants (
   path_scope TEXT,
   expires_at REAL,
   granted_at REAL NOT NULL,
-  UNIQUE (reader, project_id)
+  kind TEXT NOT NULL DEFAULT 'read',
+  UNIQUE (reader, project_id, kind)
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 INSERT OR IGNORE INTO meta (key, value) VALUES ('revision', 0);
@@ -105,9 +106,26 @@ class RepoPolicy:
         conn = self._connect()
         try:
             conn.execute("PRAGMA journal_mode=WAL")
+            self._migrate_kind(conn)
             conn.executescript(_SCHEMA)
         finally:
             conn.close()
+
+    @staticmethod
+    def _migrate_kind(conn) -> None:
+        """Older ledgers held one grant per (reader, project); reads and writes now keep separate rows."""
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(grants)").fetchall()]
+        if not cols or "kind" in cols:
+            return
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("ALTER TABLE grants RENAME TO grants_old")
+        start = _SCHEMA.index("CREATE TABLE IF NOT EXISTS grants")
+        conn.execute(_SCHEMA[start:_SCHEMA.index(");", start) + 1].replace("IF NOT EXISTS ", ""))
+        conn.execute("INSERT INTO grants (id, reader, generation, project_id, root, ops, path_scope, expires_at, granted_at, kind)"
+                     " SELECT id, reader, generation, project_id, root, ops, path_scope, expires_at, granted_at,"
+                     " CASE WHEN ops='write' THEN 'write' ELSE 'read' END FROM grants_old")
+        conn.execute("DROP TABLE grants_old")
+        conn.execute("COMMIT")
 
     def _connect(self):
         conn = sqlite3.connect(self.path, timeout=2.0, isolation_level=None)
@@ -133,17 +151,20 @@ class RepoPolicy:
         if not reader or not project_id or not root:
             raise ValueError("reader, project_id and root are required")
         ops_text = _norm_ops(ops)
+        kind = "write" if "write" in ops_text.split(",") else "read"
+        if kind == "write" and ops_text != "write":
+            raise ValueError("grant write separately from read ops (a write grant has its own path scope)")
         scope = _norm_scope(path_scope)
         if expires_at is not None:
             expires_at = float(expires_at)
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute("DELETE FROM grants WHERE reader=? AND project_id=?", (str(reader), str(project_id)))
+            conn.execute("DELETE FROM grants WHERE reader=? AND project_id=? AND kind=?", (str(reader), str(project_id), kind))
             cur = conn.execute(
-                "INSERT INTO grants (reader, generation, project_id, root, ops, path_scope, expires_at, granted_at)"
-                " VALUES (?,?,?,?,?,?,?,?)",
-                (str(reader), str(generation or ""), str(project_id), str(root), ops_text, scope, expires_at, time.time()),
+                "INSERT INTO grants (reader, generation, project_id, root, ops, path_scope, expires_at, granted_at, kind)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (str(reader), str(generation or ""), str(project_id), str(root), ops_text, scope, expires_at, time.time(), kind),
             )
             self._bump(conn)
             conn.execute("COMMIT")
@@ -196,6 +217,7 @@ class RepoPolicy:
             "path_scope": row["path_scope"],
             "expires_at": row["expires_at"],
             "granted_at": row["granted_at"],
+            "kind": row["kind"],
         }
 
     def list(self, reader=None, project_id=None) -> list:
@@ -221,27 +243,34 @@ class RepoPolicy:
             rows = conn.execute("SELECT * FROM grants WHERE reader=? ORDER BY id", (str(reader),)).fetchall()
         finally:
             conn.close()
-        out = []
+        merged = {}
         for row in rows:
             if row["expires_at"] is not None and row["expires_at"] <= now:
                 continue
             if row["generation"] and row["generation"] != (generation or ""):
                 continue
-            out.append({
-                "project_id": row["project_id"],
-                "root": row["root"],
-                "ops": row["ops"].split(","),
-                "path_scope": row["path_scope"],
-                "revision": rev,
-            })
-        return out
+            entry = merged.get(row["project_id"])
+            ops = row["ops"].split(",")
+            if entry is None:
+                merged[row["project_id"]] = {"project_id": row["project_id"], "root": row["root"], "ops": ops,
+                                             "path_scope": row["path_scope"] if row["kind"] == "read" else None,
+                                             "write_scope": row["path_scope"] if row["kind"] == "write" else None,
+                                             "revision": rev}
+            else:
+                entry["ops"] = sorted(set(entry["ops"]) | set(ops))
+                if row["kind"] == "read":
+                    entry["path_scope"] = row["path_scope"]
+                else:
+                    entry["write_scope"] = row["path_scope"]
+        return list(merged.values())
 
     def check(self, reader, project_id, root, op, rel_path=None, generation="") -> dict:
         conn = self._connect()
         try:
             rev = self._revision(conn)
             row = conn.execute(
-                "SELECT * FROM grants WHERE reader=? AND project_id=?", (str(reader), str(project_id))
+                "SELECT * FROM grants WHERE reader=? AND project_id=? AND kind=?",
+                (str(reader), str(project_id), "write" if op == "write" else "read")
             ).fetchone()
         finally:
             conn.close()
