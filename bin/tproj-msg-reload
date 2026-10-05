@@ -10,6 +10,8 @@ UNI="$MSG/unified"
 KAI="$MSG/external/kai-mcp"
 UID_NUM="$(id -u)"
 REMOTE="${TPROJ_RELOAD_REMOTE:-macmini}"
+# One reused SSH connection: a slow link costs one handshake, not one per file.
+SSHO=(-o BatchMode=yes -o ConnectTimeout=20 -o ControlMaster=auto -o "ControlPath=$HOME/.ssh/tproj-rl-%C" -o ControlPersist=3m)
 APP="plugin_asdk_app_6abe7ea4fa6c81919d9bf52ca9e6cf9a"
 UNI_FILES="cli.py host.py hub.py identity.py protocol.py policy.py receipt.py federation.py directory.py enrollment.py repo_access.py repo_access_policy.py repo_write.py runtime.py"
 
@@ -19,15 +21,14 @@ say "deploy this Mac"
 for f in $UNI_FILES; do cp "$UNI/$f" "$HOME/lib/tproj-msg-unified/$f" || say "copy failed: $f"; done
 cp "$MSG/repo-cli" "$HOME/bin/tproj-repo" && chmod +x "$HOME/bin/tproj-repo"
 
-if ssh -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE" true 2>/dev/null; then
+if ssh "${SSHO[@]}" "$REMOTE" true 2>/dev/null; then
   say "deploy $REMOTE"
-  for f in $UNI_FILES; do scp -q "$UNI/$f" "$REMOTE:lib/tproj-msg-unified/$f" || say "copy failed: $f"; done
-  scp -q "$MSG/repo-cli" "$REMOTE:bin/tproj-repo" && ssh "$REMOTE" 'chmod +x ~/bin/tproj-repo'
-  for f in mailbox_tools.py runtime.py server.py external-assistant-tools.json; do
-    scp -q "$KAI/$f" "$REMOTE:.local/share/tproj/kai-msg-prepared/kai-mcp/$f" || say "copy failed: kai-mcp/$f"
-  done
+  # One tar stream per directory over the shared connection (a slow link makes per-file copies take minutes).
+  (cd "$UNI" && tar cf - $UNI_FILES) | ssh "${SSHO[@]}" "$REMOTE" 'tar xf - -C ~/lib/tproj-msg-unified' || say "copy failed: unified"
+  (cd "$MSG" && tar cf - repo-cli) | ssh "${SSHO[@]}" "$REMOTE" 'tar xf - -C /tmp && mv /tmp/repo-cli ~/bin/tproj-repo && chmod +x ~/bin/tproj-repo' || say "copy failed: repo-cli"
+  (cd "$KAI" && tar cf - mailbox_tools.py runtime.py server.py external-assistant-tools.json) | ssh "${SSHO[@]}" "$REMOTE" 'tar xf - -C ~/.local/share/tproj/kai-msg-prepared/kai-mcp' || say "copy failed: kai-mcp"
   say "restart $REMOTE services"
-  ssh "$REMOTE" 'uid=$(id -u); for l in msg-unified-hub msg-unified-host kai-mailbox kai-probe-tunnel; do launchctl kickstart -k gui/$uid/local.tproj.$l; sleep 2; done'
+  ssh "${SSHO[@]}" "$REMOTE" 'uid=$(id -u); for l in msg-unified-hub msg-unified-host kai-mailbox kai-probe-tunnel; do launchctl kickstart -k gui/$uid/local.tproj.$l; sleep 2; done'
 else
   say "$REMOTE unreachable: skipped"
 fi
@@ -39,8 +40,12 @@ launchctl kickstart -k "gui/$UID_NUM/local.tproj.msg-unified-host"; sleep 5
 say "Dots tool refresh"
 if osascript -e 'tell application "Google Chrome" to get URL of active tab of front window' >/dev/null 2>&1; then
   osascript -e "tell application \"Google Chrome\" to set URL of active tab of front window to \"https://chatgpt.com/settings/plugins-settings/$APP\"" >/dev/null
-  sleep 6
-  osascript -e 'tell application "Google Chrome" to execute active tab of front window javascript "(function(){var b=Array.from(document.querySelectorAll(\"button\")).find(function(x){return x.innerText.trim()==\"ツールを更新\"});if(!b)return \"no button\";b.click();return \"refreshed\"})()"'
+  for try in 1 2 3 4 5 6 7 8; do
+    sleep 4
+    out=$(osascript -e 'tell application "Google Chrome" to execute active tab of front window javascript "(function(){var b=Array.from(document.querySelectorAll(\"button\")).find(function(x){return x.innerText.trim()==\"ツールを更新\"});if(!b)return \"no button\";b.click();return \"refreshed\"})()"' 2>/dev/null)
+    [ "$out" = "refreshed" ] && break
+  done
+  say "dots: ${out:-no result}"
 else
   say "Chrome not available: skipped"
 fi
