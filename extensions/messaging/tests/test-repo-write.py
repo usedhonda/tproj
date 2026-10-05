@@ -168,6 +168,15 @@ class RepoWriteTest(unittest.TestCase):
         self.call("revert", patch_id=out["patch_id"])
         self.assertEqual(self.code("read", path="docs/c.md"), "path_not_found")
 
+    def test_a_file_the_service_created_can_be_modified_until_the_owner_changes_it(self):
+        self.call(changes=[self.new("docs/c.md", "v1\n")])
+        self.call(changes=[self.mod("docs/c.md", "v2\n", "v1\n")])
+        self.assertEqual((self.root / "docs" / "c.md").read_text(), "v2\n")
+        (self.root / "docs" / "c.md").write_text("owner\n")
+        self.assertEqual(self.code(changes=[self.mod("docs/c.md", "v3\n", "owner\n")]), "path_not_found")
+        (self.root / "docs" / "other.md").write_text("not ours\n")                        # an untracked file nobody here wrote
+        self.assertEqual(self.code(changes=[self.mod("docs/other.md", "x", "not ours\n")]), "path_not_found")
+
     def test_audit_names_the_call_but_never_the_content(self):
         self.call(changes=[self.mod("docs/a.md", "SECRET-BODY-TEXT\n", "one\n")])
         self.code(changes=[self.new("../x", "x")])

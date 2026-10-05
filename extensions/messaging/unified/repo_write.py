@@ -284,7 +284,8 @@ def _write_locked(grant: dict, project_id: str, reader: dict, patch_id: str, cha
                 if exists or rel in tracked:
                     raise RepoError("exists")
             else:
-                if not exists or rel not in tracked:
+                # A file this service created is untracked; it stays editable while it still has what was written.
+                if not exists or (rel not in tracked and index.get(rel) != _sha(old)):
                     raise RepoError("path_not_found")
                 if mode & 0o111 or b"\0" in old[:SNIFF_BYTES]:
                     raise RepoError("path_denied")
