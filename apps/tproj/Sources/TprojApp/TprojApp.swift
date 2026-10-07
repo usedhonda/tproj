@@ -5676,6 +5676,7 @@ struct ContentView: View {
                         )
 
                     liveColumnRow(column)
+                        .background(workspaceRowBackground(at: insertionIndex))
                         .onDrop(
                             of: [UTType.text],
                             delegate: RowDropFallbackDelegate(
@@ -5702,8 +5703,9 @@ struct ContentView: View {
                         )
                     )
             }
-            ForEach(orderedInactiveProjects) { project in
-                inactiveProjectRow(project)
+            ForEach(Array(orderedInactiveProjects.enumerated()), id: \.element.id) { indexedProject in
+                inactiveProjectRow(indexedProject.element)
+                    .background(workspaceRowBackground(at: vm.liveColumns.count + indexedProject.offset))
             }
         }
         // Overlay scrollbars occupy the trailing edge when this list scrolls.
@@ -6018,6 +6020,15 @@ struct ContentView: View {
         )
     }
 
+    private func workspaceRowBackground(at index: Int) -> some View {
+        RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(GhosttyTheme.current.background.opacity(0.96))
+            .overlay {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(GhosttyTheme.current.foreground.opacity(index.isMultiple(of: 2) ? 0.035 : 0.085))
+            }
+    }
+
     private func liveColumnRow(_ column: LiveColumn) -> some View {
         let isDragging = draggingColumnID == column.column
         // Conversation-main side + mode tint. This is the pane the user chose to
@@ -6138,7 +6149,7 @@ struct ContentView: View {
                  tint: project.type == "remote" ? GhosttyTheme.current.accentYellow : GhosttyTheme.current.accentGreen)
             Text(project.effectiveAlias)
                 .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
-                .foregroundStyle(GhosttyTheme.current.foreground.opacity(0.5))
+                .foregroundStyle(GhosttyTheme.current.textPrimary)
                 .lineLimit(1)
             roleModeBadge(projectPath: project.path, host: project.type == "remote" ? project.host : nil)
             Spacer()
