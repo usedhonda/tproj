@@ -33,7 +33,13 @@ public struct BoundedCommandRunner: Sendable {
             if let exitDate, Date().timeIntervalSince(exitDate) > eofGrace { break }
             if terminated && Date().timeIntervalSince(started) > timeout + eofGrace { break }
         }
-        if p.isRunning { kill(p.processIdentifier, SIGKILL); _ = waitpid(p.processIdentifier, nil, 0) }
+        if p.isRunning {
+            // Let Foundation reap the child it owns. A raw waitpid can consume
+            // that lifecycle event before Process updates terminationStatus,
+            // which can abort callers when they read the status afterward.
+            kill(p.processIdentifier, SIGKILL)
+            p.waitUntilExit()
+        }
         return CommandResult(exitCode: p.terminationStatus, stdout: String(data: buffers[0], encoding: .utf8) ?? "", stderr: String(data: buffers[1], encoding: .utf8) ?? "")
     }
 }
