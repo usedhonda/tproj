@@ -8,6 +8,22 @@ from extensions.messaging.unified import cli
 
 
 class CliTest(unittest.TestCase):
+    def test_pending_explains_acceptance_and_no_ack_without_reroute(self):
+        text = cli.format_pending({
+            "total": 1,
+            "groups": [{
+                "target": "kai",
+                "count": 1,
+                "oldest_age_s": 12,
+                "states": {"accepted": 1},
+                "oldest_message_id": "message-id",
+                "where": "service",
+            }],
+        })
+        self.assertIn("Accepted is mailbox receipt only", text)
+        self.assertIn("No ACK does not prove absence, busy, or failure", text)
+        self.assertIn("do not duplicate via Issue/Slack/new IDs", text)
+
     def test_inbox_forwards_cursor_and_limit_for_next_page(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw); sock_path = root / "mailbox.sock"; cfg = root / "config.json"

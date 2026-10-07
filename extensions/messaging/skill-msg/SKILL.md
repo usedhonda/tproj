@@ -26,11 +26,16 @@ peer AI との通信に使う。host 内部 subagent の親報告は native coll
 | `gate` | 設定済み OpenClaw main participant |
 | `kai` | 設定済み KAI 接続（AIペインとは別） |
 
-`kai` は AI ペインではなく外部サービス（Dots 上の KAI）の宛先。画面がないので
+`kai` は AI ペインではなく外部サービス（Dots 上の KAI）の宛先。画面に出ていないので
 `--read` も `--status` の画面確認も使えない。やりとりは返信の自動提示
 （`[from:kai]`）、`tproj-msg message <ID>`（自分が当事者の1通）、`inbox` の3つで読む。
 KAI 側の会話画面そのものは tproj からは読めない。`kai` あての受付状態が
 `accepted` のまま変わらなくても、返信が届いたなら読まれている。
+`accepted` はハブのメールボックス受付であり、通知の受理・受信者への提示・受信者の消費・
+実質的な回答とは別の段階である。ACK が見えないことだけでは、画面に出ていない・多忙・失敗とは
+判断できない。許可された当事者が同じ ID の `message` / `diagnose` メタデータを確認し、
+Issue・Slack・新しい ID への重複転送や、所有者が調査できるのにユーザーへ代理リレーを
+求めることはしない。非同期の返信を待ちながら、依存しない作業は続ける。
 
 「CCに」「Cdxに」だけなら同じプロジェクトの相方。別名へ勝手に置き換えない。
 `chi.cc` / `chi.cdx` も AI ペインであり、OpenClaw main ではない。
@@ -86,7 +91,7 @@ tproj-msg ack <message-id>
 
 | 状態 | 分かること |
 |---|---|
-| `queued` / `accepted` | 受付・永続化のみ。届いた／読まれた証拠ではない |
+| `queued` / `accepted` | ハブの受付・永続化のみ。通知受理、提示、消費、回答の証拠ではない |
 | `adapter_received` | adapter が受け取った段階。提示の証拠ではない |
 | `presented` | 束縛された受信者への提示記録。回答の証拠ではない |
 | `uncertain` | 提示結果を確定できない。未配達や入力保護待ちと断定せず、自動再送しない |
@@ -114,7 +119,7 @@ tproj-msg message <message-id>
 |---|---|
 | `command not found` | `export PATH="$HOME/bin:$PATH"` 後、同じコマンドを実行 |
 | `unknown_target` | `--list` で名前を確認。似た別名へ置き換えない |
-| `queued` のまま／返答なし | `message <ID>` を一度確認。未提示なら配達ログ・生存状態・ペインから保留／接続断／endpoint失効／配達故障を切り分け、許可範囲で安全に修復。提示済みなら返信待ち。受付だけで完了扱いにしない |
+| `queued` のまま／返答なし | `message <ID>` を一度確認。提示未確認なら配達ログ・生存状態・ペインから保留／接続断／endpoint失効／配達故障を切り分け、許可範囲で安全に修復。提示済みなら返信待ち。ACK 不在だけで画面に出ていない・多忙・失敗とは断定しない。受付だけで完了扱いにせず、同じ ID を保ったまま非同期の返信を待ち、依存しない作業は続ける |
 | 結果不明で `Submission ID: <id>` が出た | 下記 `--retry` のみ。同じ ID・本文の再試行であり、新規送信を作らない |
 | `identity_rejected` | `whoami` / `doctor` で会話登録の不一致を確認。別名・他ペイン・旧方式で回避しない |
 | `endpoint_unavailable` | 宛先ホストの生存確認待ち。古い宛先に送り直さない |

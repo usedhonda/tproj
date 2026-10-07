@@ -122,7 +122,7 @@ def submission(request: dict, *, spool: Path | None = None, retry: str | None = 
 _WHERE_NOTE = {
     "this_mac": "this Mac: waiting for the recipient to be idle with no draft",
     "other_mac": "another Mac: state re-checked on that Mac",
-    "service": "service: state re-checked on its side; a service shows as read only after it acks",
+    "service": "service: state re-checked on its side; ACK absence does not prove screen absence, busy, or failure",
 }
 
 
@@ -143,6 +143,8 @@ def format_pending(result: dict) -> str:
         lines.append(f"  {group['target']:<18} {group['count']:>3} msg  oldest {_age(group['oldest_age_s']):>7}  [{states}]{extra}")
         lines.append(f"      {_WHERE_NOTE.get(group['where'], group['where'])}")
         lines.append(f"      oldest id {group['oldest_message_id']}")
+    lines.append("Accepted is mailbox receipt only; presentation, consumption, and an answer are separate.")
+    lines.append("No ACK does not prove absence, busy, or failure. Keep the same ID; do not duplicate via Issue/Slack/new IDs.")
     lines.append("Read-only. Nothing was resent; resending creates a duplicate.")
     return "\n".join(lines)
 

@@ -31,6 +31,13 @@ The states are distinct:
 3. a reply: a new message linked by the original message ID (`in_reply_to`).
 
 Transport health, a socket write, or a model run does not collapse these states.
+For a service recipient, mailbox acceptance, notification acceptance, presentation,
+recipient consumption, and a substantive answer are separate observations. The
+absence of an ACK does not establish that a screen is absent, that the recipient is
+busy, or that delivery failed. Preserve the original message ID while awaiting an
+asynchronous answer; an authorized party may use `message` or `diagnose` metadata,
+but must not duplicate the request through an Issue, Slack, or a new message ID, or
+ask the user to relay it when the owner can investigate.
 When a submission result is uncertain, `--retry` may retry **the same message
 ID and content only**; it must never create a second request automatically.
 Replies remain pinned to the original sender endpoint and message ID. If the
@@ -249,5 +256,8 @@ Mac the state is authoritative; for another Mac or a service the sender's hub ho
 only the hand-off record, and `tproj-msg message <ID>` asks the owning side. A
 service recipient (such as KAI) shows as presented only after the service
 acknowledges, which the external tool descriptions now ask it to do once it has read
-a message. The hub operation is `outbox` (sender-authenticated, current participant
+a message. Until then, the sender-side view cannot distinguish delayed consumption
+from an absent, busy, or failed screen. Keep the original ID, use authorized
+diagnostic metadata when needed, and await the async answer without creating a
+duplicate route. The hub operation is `outbox` (sender-authenticated, current participant
 only, last 7 days, at most 500 rows).
