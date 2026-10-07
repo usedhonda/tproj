@@ -373,15 +373,12 @@ WSEOF
   exit 0
 fi
 
-# stop/kill サブコマンド
-if [[ "${1:-}" == "stop" ]]; then
-  stop_session
-  exit 0
-fi
-if [[ "${1:-}" == "kill" ]]; then
-  kill_session
-  exit 0
-fi
+# Defer shutdown until its helpers have been defined; do not send the
+# subcommand through the workspace option parser.
+SHUTDOWN_ACTION=""
+case "${1:-}" in
+  stop|kill) SHUTDOWN_ACTION="$1"; shift ;;
+esac
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -1038,6 +1035,12 @@ stop_session() {
   stop_tproj_gui_if_needed
   echo "Session stopped" >&2
 }
+
+# Shell functions become available only after their definitions execute.
+case "$SHUTDOWN_ACTION" in
+  stop) stop_session; exit 0 ;;
+  kill) kill_session; exit 0 ;;
+esac
 
 # 既存 tproj-workspace に右列を追加
 # 引数なし: 現在のペインのプロジェクトを複製
