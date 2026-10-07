@@ -1,7 +1,18 @@
 # External assistant connection proposal
 
-**Status: proposed interface; no server, registration or subscription is
-installed.** This is the next capability-check packet for [issue #14](https://github.com/usedhonda/tproj/issues/14), not an operational setup guide.
+**Status: historical pre-implementation proposal, not an operational setup
+guide.** Its statements below about absent installation and proposed identity
+requirements describe the original discovery checkpoint, not current runtime
+state. The adapter tooling is documented in
+[the mailbox tool contract](kai-mailbox-tools.md); the approved
+connection-principal boundary and remaining live acceptance requirements are
+recorded in [the execution plan](kai-msg-execution-plan.md).
+
+The current connection authorizer authenticates a dedicated enrolled service,
+not a provider-attested cloud conversation or model persona. Do not interpret
+this historical proposal as proof that simultaneous cloud conversations are
+isolated, or interpret a successful service roundtrip as satisfying every
+requirement in [issue #14](https://github.com/usedhonda/tproj/issues/14).
 
 ## Evidence and selected candidate
 
