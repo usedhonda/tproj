@@ -17,10 +17,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from .protocol import HubError, MAX_BODY, MAX_TTL, serve_socket
+    from .protocol import HubError, MAX_TTL, serve_socket
     from .policy import check_policy
 except ImportError:  # allow the installed single-file entrypoint to be invoked directly
-    from protocol import HubError, MAX_BODY, MAX_TTL, serve_socket
+    from protocol import HubError, MAX_TTL, serve_socket
     from policy import check_policy
 
 
@@ -206,7 +206,7 @@ class Hub:
         mode = self._maintenance()
         if mode == "stopped": raise HubError("maintenance", "hub delivery is paused")
         body = msg.get("body", "")
-        if not isinstance(body, str) or len(body.encode()) > MAX_BODY: raise HubError("invalid_message", "body exceeds 64 KiB")
+        if not isinstance(body, str): raise HubError("invalid_message", "body must be text")
         if any(ord(c) < 32 and c not in "\n\t" for c in body) or "\x7f" in body:
             raise HubError("invalid_message", "terminal control characters are forbidden")
         ttl = int(msg.get("ttl_sec", MAX_TTL));

@@ -12,7 +12,6 @@ import re
 import socket
 from typing import Any, Callable, Mapping
 
-MAX_BODY_BYTES = 64 * 1024
 MAX_LIMIT = 100
 WIRE_LIMIT = 262_144
 CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "rejected", "stale_session"))
@@ -135,8 +134,8 @@ class MailboxTools:
 
     @staticmethod
     def _body(value: Any) -> str:
-        if not isinstance(value, str) or len(value.encode("utf-8")) > MAX_BODY_BYTES:
-            raise MailboxToolError("invalid_message", "body exceeds 64 KiB")
+        if not isinstance(value, str):
+            raise MailboxToolError("invalid_message", "body must be text")
         if any(ord(c) < 32 and c not in "\n\t" for c in value) or "\x7f" in value:
             raise MailboxToolError("invalid_message", "terminal control characters are forbidden")
         return value

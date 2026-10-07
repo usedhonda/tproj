@@ -431,7 +431,7 @@ class FederatedHub(Hub):
         if self._maintenance() == 'stopped':
             raise HubError('maintenance', 'mailbox paused')
         body = record['body']
-        if not isinstance(body, str) or len(body.encode()) > 65536 or any(ord(c)<32 and c not in '\n\t' for c in body) or '\x7f' in body:
+        if not isinstance(body, str) or any(ord(c)<32 and c not in '\n\t' for c in body) or '\x7f' in body:
             raise HubError('invalid_message', 'invalid body')
         if record['expires_at'] <= self._now() or record['expires_at'] - record['created_at'] > 86400:
             raise HubError('invalid_message', 'expired or invalid TTL')

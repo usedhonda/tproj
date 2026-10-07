@@ -91,9 +91,12 @@ the following cases are required:
 
 * missing or invalid trusted identity: `identity_rejected` (fail closed);
 * bare or unknown target, or ambiguous catalog entry: `unknown_target`;
-* malformed body/submission/message ID: `invalid_message` (including the
-  server's 64 KiB UTF-8 byte limit and forbidden terminal-control check;
-  JSON Schema's character-count bound alone is insufficient);
+* malformed body/submission/message ID: `invalid_message` (including a
+  non-string body or forbidden terminal-control character). Message bodies
+  have no arbitrary application-level byte cap; the JSON schemas therefore do
+  not impose a body `maxLength`. The host and federation transports still
+  enforce bounded request/response frames, so transport-size failures remain
+  possible and are not successful delivery;
 * duplicate ID with a different payload or sender: `id_conflict`;
 * reply from a non-recipient, receiver override, or cross-conversation use:
   `identity_rejected`;

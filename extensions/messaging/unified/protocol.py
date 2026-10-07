@@ -5,7 +5,6 @@ import json
 import socket
 from typing import Any, BinaryIO
 
-MAX_BODY = 64 * 1024
 MAX_TTL = 24 * 60 * 60
 MAX_REQUEST = 256 * 1024
 

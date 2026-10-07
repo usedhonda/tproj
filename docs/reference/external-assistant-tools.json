@@ -35,7 +35,7 @@
       "title": "Submit a tproj message",
       "description": "Submit one message to a full target address using a caller-persisted stable submission_id.",
       "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-      "inputSchema": {"type": "object", "required": ["target", "body", "submission_id"], "properties": {"target": {"type": "string", "pattern": "^[^./\\s]+\\.(cc|cdx)$", "description": "Full project-qualified target; bare cc/cdx is invalid."}, "body": {"type": "string", "maxLength": 65536}, "submission_id": {"type": "string", "minLength": 1, "maxLength": 128}}, "additionalProperties": false},
+      "inputSchema": {"type": "object", "required": ["target", "body", "submission_id"], "properties": {"target": {"type": "string", "pattern": "^[^./\\s]+\\.(cc|cdx)$", "description": "Full project-qualified target; bare cc/cdx is invalid."}, "body": {"type": "string"}, "submission_id": {"type": "string", "minLength": 1, "maxLength": 128}}, "additionalProperties": false},
       "outputSchema": {"type": "object", "required": ["message_id", "thread_id", "state"], "properties": {"message_id": {"type": "string", "minLength": 1}, "thread_id": {"type": "string", "minLength": 1}, "state": {"type": "string", "enum": ["accepted", "queued", "adapter_received", "presented", "uncertain", "stale_session", "rejected", "expired"]}, "duplicate": {"type": "boolean"}}, "additionalProperties": false}
     },
     {
@@ -59,7 +59,7 @@
       "title": "Reply to a pinned tproj message",
       "description": "Reply to the original message_id. The authenticated adapter resolves the original thread and recipient; callers cannot choose a receiver or conversation.",
       "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-      "inputSchema": {"type": "object", "required": ["message_id", "body", "submission_id"], "properties": {"message_id": {"type": "string", "minLength": 1}, "body": {"type": "string", "maxLength": 65536}, "submission_id": {"type": "string", "minLength": 1, "maxLength": 128}}, "additionalProperties": false},
+      "inputSchema": {"type": "object", "required": ["message_id", "body", "submission_id"], "properties": {"message_id": {"type": "string", "minLength": 1}, "body": {"type": "string"}, "submission_id": {"type": "string", "minLength": 1, "maxLength": 128}}, "additionalProperties": false},
       "outputSchema": {"type": "object", "required": ["message_id", "thread_id", "in_reply_to", "state"], "properties": {"message_id": {"type": "string", "minLength": 1}, "thread_id": {"type": "string", "minLength": 1}, "in_reply_to": {"type": "string", "minLength": 1}, "state": {"type": "string", "enum": ["accepted", "queued", "adapter_received", "presented", "uncertain", "stale_session", "rejected", "expired"]}, "duplicate": {"type": "boolean"}}, "additionalProperties": false}
     },
     {

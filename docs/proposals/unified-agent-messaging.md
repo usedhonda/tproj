@@ -117,8 +117,10 @@ The versioned envelope contains `message_id`, `thread_id`, optional `in_reply_to
 authenticated `sender_endpoint`, pinned `recipient_endpoint`, `kind`, UTF-8 body,
 creation/expiry timestamps and directory revision. Endpoint records contain
 host/project/participant/incarnation; role authority is separate validated task
-metadata, not inferred from the text. Maximum body size is 64 KiB in v1; larger
-messages fail before acceptance. Preserve newlines and literal shell characters.
+metadata, not inferred from the text. Bodies preserve newlines and literal shell
+characters without an arbitrary application-level byte cap. Bounded request
+and response frames still protect each transport, so a frame that exceeds its
+transport limit fails rather than being truncated or accepted.
 
 Operations: resolve/list participants; submit a new message; reply to a message;
 read one's own inbox; record delivery evidence; query a message; register/renew

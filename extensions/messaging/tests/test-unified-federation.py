@@ -46,6 +46,19 @@ class FederationTests(unittest.TestCase):
         r=self.hubs['a'].dispatch(dict(op='query',host_id='a',host_token='a-token',endpoint_id='acc',message_id='out'))
         self.assertEqual(r['state'],'presented')
         self.assertTrue(self.send('a','out','b.cc')['duplicate'])
+
+    def test_large_multibyte_send_and_reply_are_retained_exactly(self):
+        # 45,000 Japanese characters are over 64 KiB in UTF-8 but remain below
+        # the bounded request frame; federation must preserve the body exactly.
+        sent = '海' * 45000
+        self.assertGreater(len(sent.encode('utf-8')), 64 * 1024)
+        self.send('a', 'large-out', 'b.cc', body=sent)
+        received = self.hubs['b']._row('SELECT body FROM messages WHERE message_id=?', ('large-out',))[0]
+        self.assertEqual(received, sent)
+        reply = '帆' * 45000
+        self.send('b', 'large-reply', reply='large-out', body=reply)
+        returned = self.hubs['a']._row('SELECT body FROM messages WHERE message_id=?', ('large-reply',))[0]
+        self.assertEqual(returned, reply)
     def test_offline_no_accept_and_stale_reply_never_retargets(self):
         self.down={'b'}
         with self.assertRaises(HubError):self.send('a','missing','b.cc')
