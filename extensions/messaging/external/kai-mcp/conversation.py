@@ -108,7 +108,7 @@ def _expiry(value: Any) -> float | None:
     raise ConversationConfigError()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ConversationBinding:
     principal_id: str
     provider_subject_digest: str
