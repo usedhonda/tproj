@@ -331,7 +331,7 @@ brew untap usedhonda/tproj
   and remote panes and release it on update failure or process exit; attaching
   to an existing session does not update it. Vendor-managed Codex binaries are
   never ad-hoc re-signed by tproj.
-- New local and remote Codex launches run `npm update -g @openai/codex` (and
+- New local and remote Codex launches run `npm update -g @openai/codex`
   before resume; failures fall back to the installed version. The retained
   `sign-codex` command is a non-mutating compatibility shim. Existing sessions
   are never updated or restarted. The CLI
