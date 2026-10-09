@@ -1,9 +1,61 @@
 {
-  "title": "Proposed tproj external-assistant MCP tools",
-  "description": "Proposed, unimplemented MCP tool catalog for an independently authenticated external assistant adapter.",
-  "status": "proposed",
-  "implementationStatus": "not_implemented",
+  "title": "tproj external-assistant MCP tools",
+  "description": "Messaging and owner-granted repository tools for an enrolled external service. Isolated ChatGPT conversation bindings are not configured.",
+  "status": "service_implemented",
+  "implementationStatus": "service_implemented_conversation_isolation_pending",
   "tools": [
+    {
+      "name": "tproj_capabilities",
+      "title": "Diagnose MSG connection capability",
+      "description": "Check registered messaging tools and trusted service authorization without sending or reading messages. Service-principal authentication does not establish isolated ChatGPT conversation authority or automatic resumption.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "catalog",
+          "connection",
+          "binding",
+          "messaging",
+          "conversation_isolation",
+          "automatic_resumption",
+          "operation"
+        ],
+        "properties": {
+          "catalog": {
+            "type": "string"
+          },
+          "connection": {
+            "type": "string"
+          },
+          "binding": {
+            "type": "string"
+          },
+          "messaging": {
+            "type": "string"
+          },
+          "conversation_isolation": {
+            "type": "string"
+          },
+          "automatic_resumption": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     {"name":"tproj_list","title":"List authorized tproj participants","description":"List the caller's authorized participant catalog. This is not provider enrollment or proof of message presentation.","annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false},"inputSchema":{"type":"object","properties":{},"additionalProperties":false},"outputSchema":{"type":"object","required":["participants"],"properties":{"participants":{"type":"array","items":{"type":"object","required":["address"],"properties":{"address":{"type":"string","minLength":1},"kind":{"type":"string"},"available":{"type":"boolean"}},"additionalProperties":false}}},"additionalProperties":false}},
     {"name":"tproj_status","title":"Get authorized tproj participant status","description":"Return status for one full project-qualified target from the authorized catalog; never expose raw process, host, or credential data.","annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false},"inputSchema":{"type":"object","required":["target"],"properties":{"target":{"type":"string","pattern":"^[^./\\s]+\\.(cc|cdx)$"}},"additionalProperties":false},"outputSchema":{"type":"object","required":["target","available"],"properties":{"target":{"type":"string","minLength":1},"available":{"type":"boolean"},"state":{"type":"string"}},"additionalProperties":false}},
     {"name":"tproj_send","title":"Submit a tproj message","description":"Submit one message to a full target address using a caller-persisted stable submission_id.","annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false},"inputSchema":{"type":"object","required":["target","body","submission_id"],"properties":{"target":{"type":"string","pattern":"^[^./\\s]+\\.(cc|cdx)$"},"body":{"type":"string"},"submission_id":{"type":"string","minLength":1,"maxLength":128}},"additionalProperties":false},"outputSchema":{"type":"object","required":["message_id","thread_id","state"],"properties":{"message_id":{"type":"string","minLength":1},"thread_id":{"type":"string","minLength":1},"state":{"type":"string","enum":["accepted","queued","adapter_received","presented","uncertain","stale_session","rejected","expired"]},"duplicate":{"type":"boolean"}},"additionalProperties":false}},

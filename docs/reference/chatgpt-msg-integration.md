@@ -115,3 +115,21 @@ alone is insufficient proof of conversation isolation.
 - [Custom MCP connections](https://developers.openai.com/api/docs/guides/custom-mcp-server)
 - [MCP Events](https://developers.openai.com/plugins/build/mcp-events)
 - [Conversation correlation metadata](https://developers.openai.com/plugins/reference)
+
+## Implementation checkpoint
+
+`tproj_capabilities` now diagnoses catalog presence, connection, service
+authorization, messaging availability, conversation isolation, resumption and
+operation status without reading or sending a message. A valid fixed service
+principal reports `service_principal_valid` and `conversation_isolation:
+not_configured`; arbitrary conversation fields cannot upgrade that result.
+An absent authorizer reports authentication required. Failed attestation has
+unknown cause and does not expose exception text. The shared MSG skill now
+selects actual cloud MCP tools versus enrolled native CLI.
+
+This checkpoint does not implement isolated cloud conversation routing. The
+existing stdio tunnel/runtime supplies only a fixed service identity; no verified
+per-conversation authority ingress exists. Provider session correlation and
+user OAuth authentication are not proof of that missing binding. Production
+chat enrollment and the two-chat acceptance remain blocked on establishing
+that ingress, not on a new user approval. Existing participants are unchanged.

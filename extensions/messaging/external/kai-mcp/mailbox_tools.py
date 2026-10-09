@@ -29,6 +29,13 @@ class MailboxToolError(Exception):
         self.message = message
 
 
+def disconnected_capabilities() -> dict[str, Any]:
+    return {"catalog": "tools_present", "connection": "not_configured",
+            "binding": "authentication_required", "messaging": "unavailable",
+            "conversation_isolation": "not_configured",
+            "automatic_resumption": "unverified", "operation": "not_attempted"}
+
+
 def socket_rpc(socket_path: str, request: Mapping[str, Any]) -> Any:
     """Call one local host request; no credentials are read by this helper."""
     try:
@@ -61,7 +68,7 @@ class MailboxTools:
     normally a ``socket_rpc`` partial; tests inject a recorder.
     """
 
-    TOOLS = ("tproj_list", "tproj_status", "tproj_send", "tproj_inbox", "tproj_message", "tproj_reply", "tproj_ack",
+    TOOLS = ("tproj_capabilities", "tproj_list", "tproj_status", "tproj_send", "tproj_inbox", "tproj_message", "tproj_reply", "tproj_ack",
              "tproj_repo_list", "tproj_repo_tree", "tproj_repo_read", "tproj_repo_search",
              "tproj_repo_write", "tproj_repo_revert")
 
@@ -94,6 +101,10 @@ class MailboxTools:
             raise MailboxToolError("unknown_tool", "unsupported mailbox tool")
         if FORBIDDEN_SELECTORS.intersection(args):
             raise MailboxToolError("identity_rejected", "identity selectors are not tool arguments")
+        if name == "tproj_capabilities":
+            if args:
+                raise MailboxToolError("invalid_request", "capabilities takes no arguments")
+            return self.capabilities()
         ctx = self._authorize(name, args)
         if name in self.REPO_TOOLS:
             return self._repo(name, args)
@@ -104,6 +115,25 @@ class MailboxTools:
         if name == "tproj_message": return self._message(args, ctx)
         if name == "tproj_reply": return self._reply(args, ctx)
         return self._ack(args, ctx)
+
+    def capabilities(self) -> dict[str, Any]:
+        """Diagnose the attested connection without reading a mailbox or secrets.
+
+        Fixed service enrollment must never be advertised as isolated cloud
+        conversation authority. An authorization failure has an unknown cause
+        unless the trusted boundary supplies more precise evidence.
+        """
+        result = disconnected_capabilities()
+        if not callable(self.authorizer):
+            return result
+        try:
+            ctx = self._authorize("tproj_capabilities", {})
+        except MailboxToolError:
+            result.update(binding="authorization_unavailable", connection="unknown")
+            return result
+        result.update(connection="available", binding="service_principal_valid",
+                      messaging="available_for_enrolled_service")
+        return result
 
     def _authorize(self, name: str, args: Mapping[str, Any]) -> Mapping[str, Any]:
         if not callable(self.authorizer):

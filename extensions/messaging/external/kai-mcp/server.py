@@ -15,9 +15,9 @@ import time
 from typing import Any, TextIO
 
 try:
-    from .mailbox_tools import MailboxToolError, MailboxTools
+    from .mailbox_tools import MailboxToolError, MailboxTools, disconnected_capabilities
 except ImportError:  # direct ``python server.py`` invocation
-    from mailbox_tools import MailboxToolError, MailboxTools
+    from mailbox_tools import MailboxToolError, MailboxTools, disconnected_capabilities
 
 PROTOCOL_VERSION = "2024-11-05"
 EVENTS_PROTOCOL_VERSION = "2026-07-28"
@@ -149,6 +149,12 @@ class MCPServer:
         arguments = params.get("arguments", {})
         if name not in TOOL_NAMES or not isinstance(arguments, dict):
             return _error(req_id, -32602, "Invalid tool name or arguments")
+        if name == "tproj_capabilities" and self.tools is None and not arguments:
+            result = disconnected_capabilities()
+            return {"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": json.dumps(result, sort_keys=True)}],
+                "structuredContent": result,
+            }}
         if self.tools is None:
             exc = MailboxToolError("identity_rejected", "trusted conversation authorizer required")
         else:

@@ -13,6 +13,28 @@ spec.loader.exec_module(server)
 
 
 class MCPServerTest(unittest.TestCase):
+    def test_capability_diagnosis_never_claims_cloud_isolation_or_reads_mailbox(self):
+        request = {"jsonrpc": "2.0", "id": 101, "method": "tools/call",
+                   "params": {"name": "tproj_capabilities", "arguments": {}}}
+        absent = server.MCPServer().handle(request)["result"]["structuredContent"]
+        self.assertEqual(absent["binding"], "authentication_required")
+        self.assertEqual(absent["conversation_isolation"], "not_configured")
+        calls = []
+        tools = server.MailboxTools(service_id="external", service_address="external",
+            service_token="private", authorizer=lambda name, args: {"allowed_addresses": ["peer.cc"],
+                "principal": "kai-service", "conversation_id": "self-reported"},
+            host_call=lambda request: calls.append(request))
+        bound = server.MCPServer(tools).handle(request)["result"]["structuredContent"]
+        self.assertEqual(bound["binding"], "service_principal_valid")
+        self.assertEqual(bound["conversation_isolation"], "not_configured")
+        self.assertEqual(bound["operation"], "not_attempted")
+        self.assertEqual(calls, [])
+        tools.authorizer = lambda *_: (_ for _ in ()).throw(RuntimeError("private detail"))
+        failed = server.MCPServer(tools).handle(request)["result"]["structuredContent"]
+        self.assertEqual(failed["binding"], "authorization_unavailable")
+        self.assertEqual(failed["connection"], "unknown")
+        self.assertNotIn("private detail", str(failed))
+
     def test_initialize_and_tools_list_expose_contract_catalog(self):
         instance = server.MCPServer()
         initialized = instance.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})

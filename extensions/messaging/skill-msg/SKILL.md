@@ -28,7 +28,7 @@ peer AI との通信に使う。host 内部 subagent の親報告は native coll
 |---|---|---|
 | Cloud ChatGPT conversation | 接続済み・認証済みの MCP catalog にある `tproj_*` callable tools | shell、`tproj-msg`、ユーザー代理リレー、Issue/Slack、別 identity |
 | Enrolled native AI surface | 現在の native conversation binding が検証できるときだけ `tproj-msg` CLI | cloud chat からの CLI 実行、別 pane/identity への迂回 |
-| Ordinary ChatGPT chat | MSG は未確認として扱う | 対応済み・自動配送・自動再開と主張すること |
+| Ordinary ChatGPT chat | 実際の callable tools と本人 binding を確認して cloud MCP 経路を使う。未確認なら不明とする | skill 可視だけで接続済み・自動配送・自動再開と主張すること |
 
 診断は観測した層だけを報告する。`instructions_visible`（スキル可視）、
 `tools_present` / `tools_missing` / `catalog_unknown`（catalog）、
@@ -42,6 +42,10 @@ peer AI との通信に使う。host 内部 subagent の親報告は native coll
 ### Cloud MCP workflow
 
 Cloud surface では、catalog に実在する次の MCP tools **だけ**を呼ぶ。
+`tproj_capabilities` が登録されている場合は、送信前の接続診断に使える。
+`service_principal_valid` はサービス名義の認証だけであり、このチャット固有の
+本人確認ではない。`conversation_isolation: not_configured` の固定サービス接続を
+別の ChatGPT チャットが借りて送信しない。未登録の診断ツールを推測して呼ばない。
 
 1. `tproj_list` で宛先を発見し、必要なら `tproj_status` で状態を確認する。
 2. 送信前に本文に対応する stable submission ID を保存する。

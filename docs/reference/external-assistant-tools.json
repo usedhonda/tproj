@@ -1,8 +1,8 @@
 {
-  "title": "Proposed tproj external-assistant MCP tools",
-  "description": "Proposed, unimplemented MCP tool catalog for an independently authenticated external assistant adapter.",
-  "status": "proposed",
-  "implementationStatus": "not_implemented",
+  "title": "tproj external-assistant MCP tools",
+  "description": "Messaging and owner-granted repository tools for an enrolled external service. Isolated ChatGPT conversation bindings are not configured.",
+  "status": "service_implemented",
+  "implementationStatus": "service_implemented_conversation_isolation_pending",
   "authentication": {
     "proposedScopes": {"read": "tproj:read", "write": "tproj:write"},
     "note": "Application-policy scopes proposed by the connection contract; they are not existing provider or tproj scopes. Scope checks do not replace participant or conversation authorization."
@@ -10,10 +10,63 @@
   "identity": {
     "source": "trusted authenticated adapter context only",
     "callerArguments": "must not be supplied by a tool caller",
-    "requiredBinding": ["service participant", "endpoint incarnation", "authenticated conversation binding"],
+    "requiredBinding": ["service participant", "endpoint incarnation"],
+    "conversationIsolation": "not configured; provider session correlation alone cannot grant authority",
     "forbiddenCallerSelectors": ["role", "as", "session", "conversation", "conversation_id", "endpoint_id", "pid", "host"]
   },
   "tools": [
+    {
+      "name": "tproj_capabilities",
+      "title": "Diagnose MSG connection capability",
+      "description": "Check registered messaging tools and trusted service authorization without sending or reading messages. Service-principal authentication does not establish isolated ChatGPT conversation authority or automatic resumption.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "catalog",
+          "connection",
+          "binding",
+          "messaging",
+          "conversation_isolation",
+          "automatic_resumption",
+          "operation"
+        ],
+        "properties": {
+          "catalog": {
+            "type": "string"
+          },
+          "connection": {
+            "type": "string"
+          },
+          "binding": {
+            "type": "string"
+          },
+          "messaging": {
+            "type": "string"
+          },
+          "conversation_isolation": {
+            "type": "string"
+          },
+          "automatic_resumption": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     {
       "name": "tproj_list",
       "title": "List authorized tproj participants",
