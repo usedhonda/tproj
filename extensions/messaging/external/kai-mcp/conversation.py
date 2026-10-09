@@ -391,12 +391,12 @@ class ConversationBindingRegistry:
         """Explicitly enroll one attested identity under the owner policy."""
         principal, subject, session, generation = self._attested(attestor)
         expiry = _expiry(expires_at)
-        if expiry is not None and self._clock() >= expiry:
-            raise ConversationBindingExpired()
         if generation not in (None, 1):
             raise ConversationBindingDenied()
         with self._lock, self._file_lock() as path:
             bindings = self._reload_locked(path)
+            if expiry is not None and self._clock() >= expiry:
+                raise ConversationBindingExpired()
             if not self._policy_allows(principal, subject):
                 raise ConversationBindingDenied()
             matches = tuple(item for item in bindings if self._identity_matches(item, principal, subject, session))
@@ -412,6 +412,8 @@ class ConversationBindingRegistry:
                     raise ConversationBindingDenied()
                 return current
             binding_id, service_id, address, participant_id = self._new_ids()
+            if expiry is not None and self._clock() >= expiry:
+                raise ConversationBindingExpired()
             created = ConversationBinding(principal, subject, session, binding_id,
                                           service_id, address, participant_id,
                                           expires_at=expiry, generation=1)

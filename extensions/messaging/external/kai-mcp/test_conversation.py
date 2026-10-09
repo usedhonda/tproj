@@ -143,6 +143,33 @@ class ConversationBindingRegistryTest(unittest.TestCase):
                 registry.enroll(attestor)
             self.assertEqual(path.read_bytes(), before)
 
+    def test_expiry_rechecked_after_reload_when_clock_advances_while_waiting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bindings.json"
+            path.write_text(json.dumps({"bindings": []}), encoding="utf-8")
+            os.chmod(path, 0o600)
+            policy = {"principal_ids": ["fixture-owner"],
+                      "provider_subject_digests": [digest("fixture-subject")]}
+            now = [99]
+            registry = module.ConversationBindingRegistry.load(
+                path, owner_policy=policy, clock=lambda: now[0])
+            original_reload = registry._reload_locked
+
+            def reload_then_advance(locked_path):
+                bindings = original_reload(locked_path)
+                now[0] = 101
+                return bindings
+
+            registry._reload_locked = reload_then_advance
+            before = path.read_bytes()
+            attestor = lambda: {"principal_id": "fixture-owner",
+                                "provider_subject_digest": digest("fixture-subject"),
+                                "provider_session_digest": digest("new-session")}
+            with self.assertRaises(module.ConversationBindingExpired):
+                registry.enroll(attestor, expires_at=100)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(registry._bindings, ())
+
     def test_load_rejects_group_readable_or_symlinked_registry(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory)

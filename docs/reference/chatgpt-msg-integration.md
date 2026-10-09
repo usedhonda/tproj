@@ -170,6 +170,13 @@ transient transport session. Reconnect, revoke, expiry, binding generation and
 restart revalidation must be defined. Identity changes must not be repaired by
 matching chat titles or history.
 
+For a persisted binding registry, disappearance of an embedded `owner_policy`
+after it has been observed is a configuration rejection, not a request to
+resurrect the cached policy; the rejected operation performs no write. Enrollment
+expiry is checked after acquiring the file lock and reloading current state, and
+again immediately before writing a new binding, so a request that expires while
+waiting cannot create a binding.
+
 Acceptance additionally covers alternating and concurrent calls from two chats
 within one runtime, principal/session/participant argument spoofing, stale
 generations and identity changes, foreign cursors and batch acknowledgements
