@@ -84,13 +84,6 @@ mark_session_runtime() {
   fi
 }
 
-# Codex バイナリに署名（macOS コード署名問題の回避）
-sign_codex() {
-  if [[ "$(uname)" == "Darwin" ]]; then
-    find /opt/homebrew/lib/node_modules/@openai/codex -type f \( -perm +111 -o -name "*.node" \) -exec codesign -s - -f {} \; 2>/dev/null || true
-  fi
-}
-
 # 使い方:
 #   tproj              # 現在ディレクトリからプロジェクト起動
 #   tproj -s           # 単一プロジェクトモード強制（workspace.yaml 無視）
@@ -541,12 +534,10 @@ with_codex_update_prefix() {
     return 0
   fi
 
-  local sign_codex_cmd update_cmd
+  local update_cmd
   update_cmd="$(quoted_runtime_bin_path "tproj-cli-update")"
   [[ -z "$update_cmd" ]] && update_cmd="tproj-cli-update"
-  sign_codex_cmd="$(quoted_runtime_bin_path "sign-codex")"
-  [[ -z "$sign_codex_cmd" ]] && sign_codex_cmd="sign-codex"
-  printf '%s @openai/codex %s; hash -r; %s' "$update_cmd" "$sign_codex_cmd" "$command"
+  printf '%s @openai/codex; hash -r; %s' "$update_cmd" "$command"
 }
 
 # @tproj セッション一覧を取得（共通ヘルパー）

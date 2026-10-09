@@ -82,8 +82,8 @@ class CodexStartupUpdate(unittest.TestCase):
                 script.write_text('#!/bin/sh\n' + body + '\n')
                 script.chmod(0o755)
             for fail_update, skip, expected in [
-                (0, False, ['update', 'sign', 'launch resume --last']),
-                (1, False, ['update', 'sign', 'launch resume --last']),
+                (0, False, ['update', 'launch resume --last']),
+                (1, False, ['update', 'launch resume --last']),
                 (0, True, ['launch resume --last']),
             ]:
                 trace = root / 'trace'
@@ -97,6 +97,27 @@ class CodexStartupUpdate(unittest.TestCase):
                 result = subprocess.run(['bash', '-c', program], env=env, capture_output=True, text=True, timeout=5)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(trace.read_text().splitlines(), expected)
+
+    def test_sign_codex_compatibility_shim_never_invokes_codesign_or_mutates_fixture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            vendor = root / 'codex-vendor'
+            vendor.write_bytes(b'official-package-bytes')
+            before = vendor.read_bytes()
+            marker = root / 'codesign-called'
+            fake_codesign = root / 'codesign'
+            fake_codesign.write_text('#!/bin/sh\ntouch "$MARKER"\n')
+            fake_codesign.chmod(0o755)
+            fake_uname = root / 'uname'
+            fake_uname.write_text('#!/bin/sh\nprintf Darwin\n')
+            fake_uname.chmod(0o755)
+            result = subprocess.run([str(ROOT / 'bin/sign-codex')], env=dict(
+                os.environ, PATH=str(root) + ':' + os.environ['PATH'], MARKER=str(marker)),
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(vendor.read_bytes(), before)
+            self.assertFalse(marker.exists())
+            self.assertNotIn('codesign -s - -f', (ROOT / 'bin/tproj').read_text())
 
     def test_remote_generated_update_failure_still_launches(self):
         remote = (ROOT / 'bin/tproj-remote-host').read_text()

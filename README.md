@@ -328,11 +328,13 @@ brew untap usedhonda/tproj
 ## Notes
 
 - Startup global npm updates share one host-local per-user lock across local
-  and remote panes. The lock includes Codex signing and releases on update
-  failure or process exit; attaching to an existing session does not update it.
+  and remote panes and release it on update failure or process exit; attaching
+  to an existing session does not update it. Vendor-managed Codex binaries are
+  never ad-hoc re-signed by tproj.
 - New local and remote Codex launches run `npm update -g @openai/codex` (and
-  optional `sign-codex`) before resume; failures fall back to the installed
-  version. Existing sessions are never updated or restarted. The CLI
+  before resume; failures fall back to the installed version. The retained
+  `sign-codex` command is a non-mutating compatibility shim. Existing sessions
+  are never updated or restarted. The CLI
   `--no-update` option skips this Codex startup refresh. Claude Code is not
   auto-updated; update it manually when needed:
   ```bash

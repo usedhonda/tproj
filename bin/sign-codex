@@ -1,6 +1,4 @@
 #!/bin/bash
-# Codex バイナリに ad-hoc 署名を追加（macOS コード署名問題の回避）
-
-if [[ "$(uname)" == "Darwin" ]]; then
-  find /opt/homebrew/lib/node_modules/@openai/codex -type f \( -perm +111 -o -name "*.node" \) -exec codesign -s - -f {} \; 2>/dev/null || true
-fi
+# Compatibility shim: vendor-managed Codex binaries keep their official signature.
+# The startup/update path no longer mutates installed package files.
+exit 0
