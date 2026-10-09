@@ -9,6 +9,8 @@ argument-hint: <target> <message>
 allowed-tools: [Bash, Read]
 compression-anchors:
   - "tproj-msg で peer メッセージ送受信"
+  - "ChatGPT cloud は実在する MCP ツール、native CLI は enrolled native surface のみ"
+  - "可視スキルは callable/authenticated capability の証拠ではない"
   - "gate は設定済み OpenClaw main participant"
   - "自律発動: 他列影響・依頼完了・解決不能・Chi相談"
 ---
@@ -16,6 +18,54 @@ compression-anchors:
 # msg: 送る・読む・返信する
 
 peer AI との通信に使う。host 内部 subagent の親報告は native collaboration / final response を使う。
+
+## 0. Capability boundary (ChatGPT Phase 1)
+
+スキル本文が見えていることは、呼び出せるツール、接続、認証、会話束縛の
+証拠ではない。最初に**実際の surface**を分類する。
+
+| Surface | 使ってよい経路 | 使ってはいけない代替 |
+|---|---|---|
+| Cloud ChatGPT conversation | 接続済み・認証済みの MCP catalog にある `tproj_*` callable tools | shell、`tproj-msg`、ユーザー代理リレー、Issue/Slack、別 identity |
+| Enrolled native AI surface | 現在の native conversation binding が検証できるときだけ `tproj-msg` CLI | cloud chat からの CLI 実行、別 pane/identity への迂回 |
+| Ordinary ChatGPT chat | MSG は未確認として扱う | 対応済み・自動配送・自動再開と主張すること |
+
+診断は観測した層だけを報告する。`instructions_visible`（スキル可視）、
+`tools_present` / `tools_missing` / `catalog_unknown`（catalog）、
+`connection_available` / `connection_disconnected` / `connection_unknown`、
+`binding_valid` / `binding_expired` / `binding_mismatch` /
+`authentication_required`、`operation_success` / `operation_failure` /
+`operation_unknown` を混同しない。調査していない surface を unsupported と
+断定しない。必要な MCP tool が無い場合はそこで止め、shell を試したり、
+ユーザーに転送を頼んだり、Issue/Slack/別 identity へ複製したりしない。
+
+### Cloud MCP workflow
+
+Cloud surface では、catalog に実在する次の MCP tools **だけ**を呼ぶ。
+
+1. `tproj_list` で宛先を発見し、必要なら `tproj_status` で状態を確認する。
+2. 送信前に本文に対応する stable submission ID を保存する。
+   `tproj_send` の結果が不明でも同じ ID と本文を保持し、新しい送信を作らない。
+3. 受信は `tproj_inbox`、本文取得は返された exact ID に対する
+   `tproj_message`。本文を実際に消費した**後だけ** `tproj_ack` を呼ぶ。
+4. 返信は宛先を推測せず、元の exact message ID に対する `tproj_reply` を呼ぶ。
+
+受付・通知・提示・本文消費・返信は別段階である。`accepted` や HTTP/MCP 成功だけを
+読了・回答・完了の証拠にしない。body は勝手に要約・欠落させず、transport limit が
+観測された場合だけ報告する。自動再送、別 ID の重複、任意の original-chat resume は
+この Phase 1 skill の機能ではない。
+
+### Native CLI gate
+
+次の全てが確認できる場合だけ §1--§5 の `tproj-msg` CLI 手順を使う。
+
+- 現在の環境が enrolled native surface である。
+- native conversation/thread binding が現在の caller に一致する。
+- 宛先・認証・operation の結果を native 経路から観測できる。
+
+確認できない場合の結果は `binding_unknown` または `authentication_required` など、
+実際に観測した不足だけを返す。Cloud ChatGPT から `Bash` で `tproj-msg` を起動して
+穴埋めしてはならない。
 
 ## 1. 宛先と自分の指定
 
