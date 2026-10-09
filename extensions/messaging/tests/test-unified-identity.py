@@ -198,6 +198,47 @@ class UnifiedIdentityTest(unittest.TestCase):
             conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)", ("local", "old", str(self.project), "cli", 1.0))
         self.assertEqual(identity.native_thread_metadata("old", db)[0]["thread_id"], "old")
 
+    def test_native_catalog_closes_readonly_connection_on_success_and_error(self):
+        db = Path(self.tmp.name) / "tracked.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE local_thread_catalog(host_id TEXT, thread_id TEXT, cwd TEXT, source_kind TEXT, source_updated_at REAL)")
+            conn.execute("INSERT INTO local_thread_catalog VALUES(?,?,?,?,?)", ("local", "tracked", str(self.project), "cli", 1.0))
+
+        opened = []
+
+        class TrackingConnection:
+            def __init__(self, inner, fail=False):
+                self.inner = inner
+                self.fail = fail
+                self.closed = False
+
+            @property
+            def row_factory(self):
+                return self.inner.row_factory
+
+            @row_factory.setter
+            def row_factory(self, value):
+                self.inner.row_factory = value
+
+            def execute(self, *args):
+                if self.fail:
+                    raise sqlite3.OperationalError("injected read failure")
+                return self.inner.execute(*args)
+
+            def close(self):
+                self.closed = True
+                self.inner.close()
+
+        def connect(target, **kwargs):
+            wrapper = TrackingConnection(sqlite3.connect(target, **kwargs), fail=bool(opened))
+            opened.append(wrapper)
+            return wrapper
+
+        self.assertEqual(identity.native_thread_metadata("tracked", db, connect=connect)[0]["thread_id"], "tracked")
+        self.assertTrue(opened[0].closed)
+        self.assertEqual(identity.native_thread_metadata("tracked", db, connect=connect), [])
+        self.assertTrue(opened[1].closed)
+
     def test_native_rollout_adopts_and_binds_when_catalog_is_missing(self):
         thread = "019e9e25-a537-75c3-821e-8d057e86d19e"
         sessions = Path(self.tmp.name) / "sessions" / "2026" / "10" / "02"

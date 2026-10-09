@@ -14,6 +14,10 @@ catalog row marked `source_kind=vscode` is not sufficient by itself: it is
 adopted only when exactly one matching rollout header independently confirms
 the same thread, project, and any indexed session ID.
 
+The read-only native catalog lookup closes its SQLite connection explicitly on
+both successful reads and query errors; leaving transaction scope is not
+treated as closing a long-lived host descriptor.
+
 When the local thread catalog has no row, or has one matching
 `source_kind=vscode` row, adoption may read one exact native Codex TUI rollout
 header from `~/.codex/sessions/YYYY/MM/DD`. The filename UUID and first

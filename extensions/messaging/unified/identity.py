@@ -7,6 +7,7 @@ authority by themselves.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import ctypes
 import os
@@ -242,7 +243,8 @@ def _native_rollout_metadata(thread_id: str, sessions_root: Path) -> list[dict[s
 
 
 def native_thread_metadata(thread_id: str, db_path: str | os.PathLike | None = None,
-                           sessions_root: str | os.PathLike | None = None) -> list[dict[str, Any]]:
+                           sessions_root: str | os.PathLike | None = None,
+                           connect: Callable[..., Any] = sqlite3.connect) -> list[dict[str, Any]]:
     """Read host-local Codex thread metadata without opening a writer."""
     thread_id = str(thread_id or "").strip()
     if not thread_id:
@@ -252,7 +254,10 @@ def native_thread_metadata(thread_id: str, db_path: str | os.PathLike | None = N
     catalog_rows_seen = False
     try:
         if path.is_file():
-            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+            # sqlite3.Connection.__exit__ ends a transaction but does not
+            # close the handle.  Explicit closing is required for the
+            # long-lived host, including when a read raises halfway through.
+            with contextlib.closing(connect(f"file:{path}?mode=ro", uri=True)) as db:
                 db.row_factory = sqlite3.Row
                 columns = {row[1] for row in db.execute("PRAGMA table_info(local_thread_catalog)")}
                 session_column = ",session_id" if "session_id" in columns else ""
