@@ -34,6 +34,7 @@ architecture:
 | Authorized principal | Validated identity and permitted operations | Fixed service only |
 | Host-controlled subject/session | Field producer, overwrite rules and injection limits | Documented correlation, provenance unverified on this route |
 | Request binding | Context reaches the exact dispatched request | Resolver plumbing exists; production context absent |
+| Local stdio custody | Child stdin/stdout controlled by the tunnel process | Confirmed in public client source; not upstream user attestation |
 | Final-hop protection | Channel access control and immutable context handling | Must be proved end to end |
 | Other allowed caller surfaces | Whether they can inject another chat's correlation | Unverified |
 
@@ -45,6 +46,30 @@ expiry, scope and applicable replay policy. If the existing tunnel proves
 equivalent guarantees, reuse it without a public HTTP endpoint, new credentials
 or duplicate mTLS. Unknown guarantees remain unknown; do not invent flags such
 as caller-supplied `mtls_verified`.
+
+Source audit of the public client at revision
+`b91e6c992dfd33e5c5ea94b00449c527c110851e` confirms that
+`forwardingConnection.Write` carries headers in Go context while the stdio child
+uses `mcp.IOTransport` over its pipes. Those files do not establish an
+authenticated per-user context envelope for the child or prove upstream
+protection of host correlation fields. This is a concrete transfer-contract gap,
+not proof that every tunnel-based solution is impossible.
+
+The follow-up review distinguishes an owner-exclusive deployment from a shared
+caller deployment. Before selecting owner-only activation, enumerate effective
+Use access across the relevant Platform organization and ChatGPT workspace,
+including API callers and service accounts. Exclusivity must be established by
+access evidence, not by the tunnel ID/runtime key or a subject allowlist. An
+allowlisted subject is auxiliary matching, never first-request self-enrollment.
+Even proven owner exclusivity does not establish a particular ChatGPT UI origin
+or independent-chat isolation when a caller can copy session correlation.
+
+The pinned stdio route does not serialize Go-context HTTP headers into the child
+JSON-RPC stream. Public source does not establish upstream reserved-metadata
+overwrite protection either; this is unverified, not a demonstrated spoofing
+exploit. Keep effective caller access and upstream metadata generation/protection
+as separate open evidence requirements. Do not activate the conversation resolver
+from raw caller metadata while either required guarantee is absent.
 
 Deliverable: verified guarantees, exact gaps and one selected minimal ingress.
 A missing guarantee blocks live activation, not all independent source work.
@@ -155,3 +180,6 @@ from the reviewer.
 - [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
 - [Client authentication and mTLS](https://developers.openai.com/plugins/build/auth#mutual-tls-mtls)
 - [Host-provided correlation metadata](https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides)
+
+- [Pinned forwarding implementation](https://github.com/openai/tunnel-client/blob/b91e6c992dfd33e5c5ea94b00449c527c110851e/pkg/mcpclient/forwarding_transport_impl.go)
+- [Pinned stdio implementation](https://github.com/openai/tunnel-client/blob/b91e6c992dfd33e5c5ea94b00449c527c110851e/pkg/mcpclient/stdio_command.go)
