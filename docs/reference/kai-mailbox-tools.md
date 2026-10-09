@@ -59,6 +59,13 @@ reviewed catalog, so a standalone deployment does not depend on the repository
 `docs/` tree. The server validates that all seven expected names are present;
 it never logs catalog contents, credentials, or callback secrets.
 
+The supported `bin/tproj-msg-reload` path distributes the complete KAI MCP
+module closure in one tar stream: `mailbox_tools.py`, `connection.py`,
+`conversation.py`, `events.py`, `runtime.py`, `server.py`, and the sibling
+`external-assistant-tools.json` catalog. Keeping these files together is
+required because runtime imports the connection, event, mailbox, and server
+modules, while server dispatch also imports the conversation resolver.
+
 The adapter is not an MCP server, does not register cloud tools, and does not
 start a daemon. A host integration injects a host-socket call and a
 `FixedConnectionAuthorizer` from `connection.py`. That authorizer represents

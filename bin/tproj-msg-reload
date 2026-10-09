@@ -26,7 +26,7 @@ if ssh "${SSHO[@]}" "$REMOTE" true 2>/dev/null; then
   # One tar stream per directory over the shared connection (a slow link makes per-file copies take minutes).
   (cd "$UNI" && tar cf - $UNI_FILES) | ssh "${SSHO[@]}" "$REMOTE" 'tar xf - -C ~/lib/tproj-msg-unified' || say "copy failed: unified"
   (cd "$MSG" && tar cf - repo-cli) | ssh "${SSHO[@]}" "$REMOTE" 'tar xf - -C /tmp && mv /tmp/repo-cli ~/bin/tproj-repo && chmod +x ~/bin/tproj-repo' || say "copy failed: repo-cli"
-  (cd "$KAI" && tar cf - mailbox_tools.py runtime.py server.py external-assistant-tools.json) | ssh "${SSHO[@]}" "$REMOTE" 'tar xf - -C ~/.local/share/tproj/kai-msg-prepared/kai-mcp' || say "copy failed: kai-mcp"
+  (cd "$KAI" && tar cf - mailbox_tools.py connection.py conversation.py events.py runtime.py server.py external-assistant-tools.json) | ssh "${SSHO[@]}" "$REMOTE" 'tar xf - -C ~/.local/share/tproj/kai-msg-prepared/kai-mcp' || say "copy failed: kai-mcp"
   say "restart $REMOTE services"
   ssh "${SSHO[@]}" "$REMOTE" 'uid=$(id -u); for l in msg-unified-hub msg-unified-host kai-mailbox kai-probe-tunnel; do launchctl kickstart -k gui/$uid/local.tproj.$l; sleep 2; done'
 else
