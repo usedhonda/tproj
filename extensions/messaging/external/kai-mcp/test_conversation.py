@@ -125,6 +125,24 @@ class ConversationBindingRegistryTest(unittest.TestCase):
                 first.enroll(lambda: identity(), expires_at=1)
             self.assertEqual(path.read_bytes(), before)
 
+    def test_removed_persisted_owner_policy_fails_closed_without_resurrection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bindings.json"
+            policy = {"principal_ids": ["fixture-owner"],
+                      "provider_subject_digests": [digest("fixture-subject")]}
+            path.write_text(json.dumps({"bindings": [], "owner_policy": policy}), encoding="utf-8")
+            os.chmod(path, 0o600)
+            registry = module.ConversationBindingRegistry.load(path)
+            path.write_text(json.dumps({"bindings": []}), encoding="utf-8")
+            os.chmod(path, 0o600)
+            before = path.read_bytes()
+            attestor = lambda: {"principal_id": "fixture-owner",
+                                "provider_subject_digest": digest("fixture-subject"),
+                                "provider_session_digest": digest("new-session")}
+            with self.assertRaises(module.ConversationConfigError):
+                registry.enroll(attestor)
+            self.assertEqual(path.read_bytes(), before)
+
     def test_load_rejects_group_readable_or_symlinked_registry(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory)

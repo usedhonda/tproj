@@ -183,6 +183,7 @@ class ConversationBindingRegistry:
         self._lock = threading.RLock()
         self._path = Path(path).expanduser() if path is not None else None
         self._owner_policy = self._policy(owner_policy) if owner_policy is not None else None
+        self._policy_persisted = embedded_policy is not None
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any] | list[Mapping[str, Any]], **kwargs: Any):
@@ -313,6 +314,7 @@ class ConversationBindingRegistry:
                 os.fsync(directory)
             finally:
                 os.close(directory)
+            self._policy_persisted = self._owner_policy is not None
         except OSError as exc:
             raise ConversationConfigError() from exc
         finally:
@@ -322,10 +324,16 @@ class ConversationBindingRegistry:
     def _reload_locked(self, path: Path) -> tuple[ConversationBinding, ...]:
         value = self._read_file(path)
         loaded_policy = value.get("owner_policy")
-        if self._owner_policy is None and loaded_policy is not None:
-            self._owner_policy = self._policy(loaded_policy)
-        elif loaded_policy is not None and self._policy(loaded_policy) != self._owner_policy:
-            raise ConversationConfigError()
+        if loaded_policy is None:
+            if self._policy_persisted:
+                raise ConversationConfigError()
+        else:
+            parsed_policy = self._policy(loaded_policy)
+            if self._owner_policy is None:
+                self._owner_policy = parsed_policy
+            elif parsed_policy != self._owner_policy:
+                raise ConversationConfigError()
+            self._policy_persisted = True
         bindings = tuple(ConversationBinding.from_config(item) for item in value["bindings"])
         self._validate_unique(bindings)
         self._bindings = bindings
@@ -387,10 +395,10 @@ class ConversationBindingRegistry:
             raise ConversationBindingExpired()
         if generation not in (None, 1):
             raise ConversationBindingDenied()
-        if not self._policy_allows(principal, subject):
-            raise ConversationBindingDenied()
         with self._lock, self._file_lock() as path:
             bindings = self._reload_locked(path)
+            if not self._policy_allows(principal, subject):
+                raise ConversationBindingDenied()
             matches = tuple(item for item in bindings if self._identity_matches(item, principal, subject, session))
             if len(matches) > 1:
                 raise ConversationBindingConflict()
