@@ -15,6 +15,12 @@ SOURCE = (ROOT / 'bin/tproj').read_text()
 
 
 class CodexStartupUpdate(unittest.TestCase):
+    @staticmethod
+    def _write_inactive_ps(root):
+        ps = root / 'ps'
+        ps.write_text('#!/bin/sh\nprintf "python\\n"\n')
+        ps.chmod(0o755)
+
     def test_gui_generated_update_uses_helper_and_fails_open(self):
         gui = (ROOT / 'apps/tproj/Sources/TprojApp/TprojApp.swift').read_text()
         template = re.search(r'launchCmd = ("if \[ -x .*?\")$', gui, re.M).group(1)
@@ -73,6 +79,7 @@ class CodexStartupUpdate(unittest.TestCase):
         helper = re.search(r'^with_codex_update_prefix\(\) \{.*?^\}', SOURCE, re.M | re.S).group()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            self._write_inactive_ps(root)
             for name, body in {
                 'npm': 'echo update >> "$TRACE"; exit "${UPDATE_RC:-0}"',
                 'sign-codex': 'echo sign >> "$TRACE"',
@@ -119,11 +126,35 @@ class CodexStartupUpdate(unittest.TestCase):
             self.assertFalse(marker.exists())
             self.assertNotIn('codesign -s - -f', (ROOT / 'bin/tproj').read_text())
 
+    def test_codex_update_skips_when_active_or_unverifiable(self):
+        helper = str(ROOT / 'bin/tproj-cli-update')
+        for label, ps_body, ps_rc, expected_npm in [
+            ('active', 'printf "codex\\n"\n', 0, 0),
+            ('absent', 'printf "python\\n"\n', 0, 1),
+            ('ambiguous', '', 0, 0),
+            ('inspection-failed', 'exit 1\n', 1, 0),
+        ]:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                trace = root / 'trace'
+                npm = root / 'npm'
+                npm.write_text('#!/bin/sh\necho npm >> "$TRACE"\n')
+                npm.chmod(0o755)
+                ps = root / 'ps'
+                ps.write_text('#!/bin/sh\n' + ps_body + f'exit {ps_rc}\n')
+                ps.chmod(0o755)
+                result = subprocess.run([helper, '@openai/codex'], env=dict(
+                    os.environ, PATH=str(root) + ':' + os.environ['PATH'], TRACE=str(trace)),
+                    capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(trace.exists(), bool(expected_npm))
+
     def test_remote_generated_update_failure_still_launches(self):
         remote = (ROOT / 'bin/tproj-remote-host').read_text()
         helper = re.search(r'^start_command\(\) \{.*?^\}', remote, re.M | re.S).group()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            self._write_inactive_ps(root)
             trace = root / 'trace'
             for name, body in {
                 'npm': 'echo update >> "$TRACE"; exit 1',
@@ -148,6 +179,7 @@ class CodexStartupUpdate(unittest.TestCase):
     def test_npm_keeps_lock_after_helper_termination(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            self._write_inactive_ps(root)
             trace = root / 'trace'
             release = root / 'release'
             waiting = root / 'waiting'
@@ -198,6 +230,7 @@ class CodexStartupUpdate(unittest.TestCase):
     def test_concurrent_packages_hold_lock_through_sign_and_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            self._write_inactive_ps(root)
             trace = root / 'trace'
             npm = root / 'npm'
             npm.write_text('#!/bin/sh\necho "start $3" >> "$TRACE"\n'

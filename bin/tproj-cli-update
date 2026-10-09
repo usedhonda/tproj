@@ -6,6 +6,28 @@ import subprocess
 import sys
 
 
+def _codex_process_state():
+    """Return True when Codex is live, False when clearly absent, else None."""
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "comm="], capture_output=True, text=True, check=False
+        )
+    except (OSError, UnicodeError):
+        return None
+    if result.returncode != 0:
+        return None
+    names = []
+    for line in result.stdout.splitlines():
+        name = line.strip().rsplit("/", 1)[-1]
+        if name:
+            names.append(name)
+    if not names:
+        return None
+    if any(name == "codex" or name.startswith("codex-") for name in names):
+        return True
+    return False
+
+
 def main():
     if len(sys.argv) not in (2, 3) or sys.argv[1] not in (
         "@openai/codex", "@anthropic-ai/claude-code"
@@ -22,6 +44,12 @@ def main():
         # Children retain the same locked open description if this helper dies
         # while npm or signing is still running (for example, a closed terminal).
         inherited_lock = (lock.fileno(),)
+        if sys.argv[1] == "@openai/codex":
+            codex_state = _codex_process_state()
+            if codex_state is not False:
+                # Keep the installed vendor package when a live Codex is
+                # present or process inspection is unavailable/ambiguous.
+                return 0
         result = subprocess.run(["npm", "update", "-g", sys.argv[1]],
                                 check=False, pass_fds=inherited_lock)
         if len(sys.argv) == 3:

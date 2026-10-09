@@ -332,7 +332,9 @@ brew untap usedhonda/tproj
   to an existing session does not update it. Vendor-managed Codex binaries are
   never ad-hoc re-signed by tproj.
 - New local and remote Codex launches run `npm update -g @openai/codex`
-  before resume; failures fall back to the installed version. The retained
+  before resume only when no active Codex process is observed; an active or
+  ambiguous process observation skips the update and retains the installed
+  version. Other update failures also fall back to the installed version. The retained
   `sign-codex` command is a non-mutating compatibility shim. Existing sessions
   are never updated or restarted. The CLI
   `--no-update` option skips this Codex startup refresh. Claude Code is not
