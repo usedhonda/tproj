@@ -212,6 +212,35 @@ class MCPServerTest(unittest.TestCase):
         self.assertEqual([item[0] for item in selected], ["bind-a", "bind-b"])
         self.assertEqual(fixed_calls, [])
 
+    def test_malformed_tool_names_preserve_stdio_and_skip_identity(self):
+        calls = []
+        class Resolver:
+            def resolve(self, request):
+                calls.append(request)
+                raise AssertionError("must not resolve")
+        requests = [{"jsonrpc": "2.0", "id": n, "method": "tools/call",
+                     "params": {"name": name}} for n, name in enumerate(([], {}, None, 7))]
+        requests.append({"jsonrpc": "2.0", "id": 10, "method": "ping"})
+        output = StringIO()
+        server.run_stdio(server.MCPServer(conversation_resolver=Resolver()),
+                         StringIO("".join(json.dumps(r) + "\n" for r in requests)), output)
+        responses = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([r["error"]["code"] for r in responses[:-1]], [-32602] * 4)
+        self.assertEqual(responses[-1]["result"], {})
+        self.assertEqual(calls, [])
+
+    def test_stdio_pump_obeys_same_resolver_boundary_as_events(self):
+        from unittest.mock import patch
+        class Events:
+            def pump_once(self):
+                raise AssertionError("thread mocked; no real pump")
+        for resolver, starts in ((object(), 0), (None, 1)):
+            with patch.object(server.threading, "Thread") as thread:
+                thread.return_value.is_alive.return_value = False
+                server.run_stdio(server.MCPServer(events=Events(), conversation_resolver=resolver),
+                                 StringIO(""), StringIO())
+                self.assertEqual(thread.return_value.start.call_count, starts)
+
     def test_stdio_reports_parse_error_and_suppresses_notifications(self):
         output = StringIO()
         server.run_stdio(server.MCPServer(), StringIO("not-json\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"), output)

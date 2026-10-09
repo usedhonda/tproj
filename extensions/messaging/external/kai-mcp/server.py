@@ -155,7 +155,7 @@ class MCPServer:
             return _error(req_id, -32601, "Method not found")
         name = params.get("name")
         arguments = params.get("arguments", {})
-        if name not in TOOL_NAMES or not isinstance(arguments, dict):
+        if not isinstance(name, str) or name not in TOOL_NAMES or not isinstance(arguments, dict):
             return _error(req_id, -32602, "Invalid tool name or arguments")
         if (name == "tproj_capabilities" and self.tools is None
                 and self.conversation_resolver is None and not arguments):
@@ -200,7 +200,8 @@ class MCPServer:
 
 def run_stdio(server: MCPServer, stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout) -> int:
     stop = threading.Event()
-    pump = getattr(server.events, "pump_once", None) if server.events is not None else None
+    pump = (getattr(server.events, "pump_once", None)
+            if server.events is not None and server.conversation_resolver is None else None)
 
     def deliver() -> None:
         while not stop.wait(1.0):
