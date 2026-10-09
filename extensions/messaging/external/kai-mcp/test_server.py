@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location("kai_mcp_server", ROOT / "server.py")
 server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
+from conversation import ConversationBindingRegistry, ConversationToolResolver, provider_digest
 
 
 class MCPServerTest(unittest.TestCase):
@@ -125,6 +126,65 @@ class MCPServerTest(unittest.TestCase):
                                                   "params": {"name": "tproj_list", "arguments": {}}})
         self.assertEqual(response["result"]["structuredContent"], {"participants": []})
         self.assertEqual(fake.seen, ("tproj_list", {}))
+
+    def test_request_resolver_selects_enrolled_tools_and_denial_never_falls_back(self):
+        config = {"bindings": [
+            {"principal_id": "owner-a", "provider_subject_digest": provider_digest("sub-a"),
+             "provider_session_digest": provider_digest("sess-a"), "binding_id": "bind-a",
+             "service_id": "svc-a", "address": "a@example", "participant_id": "p-a"},
+            {"principal_id": "owner-b", "provider_subject_digest": provider_digest("sub-b"),
+             "provider_session_digest": provider_digest("sess-b"), "binding_id": "bind-b",
+             "service_id": "svc-b", "address": "b@example", "participant_id": "p-b"},
+        ]}
+        registry = ConversationBindingRegistry(config)
+        attestations = {
+            "a": {"principal_id": "owner-a", "provider_subject_digest": provider_digest("sub-a"),
+                  "provider_session_digest": provider_digest("sess-a")},
+            "b": {"principal_id": "owner-b", "provider_subject_digest": provider_digest("sub-b"),
+                  "provider_session_digest": provider_digest("sess-b")},
+            "wrong": {"principal_id": "owner-a", "provider_subject_digest": provider_digest("foreign"),
+                       "provider_session_digest": provider_digest("sess-a")},
+        }
+        selected = []
+        fixed_calls = []
+
+        class BoundTools:
+            def __init__(self, binding):
+                self.binding = binding
+
+            def dispatch(self, name, arguments):
+                selected.append((self.binding.binding_id, name, dict(arguments)))
+                return {"binding": self.binding.binding_id}
+
+        class FixedTools:
+            def dispatch(self, name, arguments):
+                fixed_calls.append((name, arguments))
+                return {"fixed": True}
+
+        def attestor(request):
+            value = attestations.get(request.get("id"))
+            if value is None:
+                raise RuntimeError("no independent attestation")
+            return value
+
+        resolver = ConversationToolResolver(registry, attestor, BoundTools)
+        instance = server.MCPServer(FixedTools(), conversation_resolver=resolver)
+        base = {"jsonrpc": "2.0", "method": "tools/call",
+                "params": {"name": "tproj_list", "arguments": {}}}
+        for request_id, expected in (("a", "bind-a"), ("b", "bind-b")):
+            request = dict(base, id=request_id,
+                           params=dict(base["params"], _meta={"principal_id": "spoofed"}))
+            response = instance.handle(request)
+            self.assertEqual(response["result"]["structuredContent"]["binding"], expected)
+        for request_id in ("missing", "wrong", "spoof"):
+            request = dict(base, id=request_id,
+                           params=dict(base["params"], arguments={"principal_id": "owner-a"},
+                                       _meta={"principal_id": "owner-a", "provider_subject_digest": provider_digest("sub-a")}))
+            response = instance.handle(request)
+            self.assertTrue(response["result"]["isError"])
+            self.assertEqual(response["result"]["structuredContent"]["error"]["code"], "identity_rejected")
+        self.assertEqual([item[0] for item in selected], ["bind-a", "bind-b"])
+        self.assertEqual(fixed_calls, [])
 
     def test_stdio_reports_parse_error_and_suppresses_notifications(self):
         output = StringIO()

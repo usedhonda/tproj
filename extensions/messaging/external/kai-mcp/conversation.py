@@ -64,6 +64,11 @@ BindingExpiredError = ConversationBindingExpired
 DuplicateBindingError = ConversationBindingConflict
 
 
+class ConversationToolFactoryError(ConversationBindingError):
+    code = "conversation_tool_factory_rejected"
+    message = "conversation tool factory rejected"
+
+
 def provider_digest(value: str) -> str:
     """Return the only provider correlation representation accepted here."""
     if not isinstance(value, str) or not value or len(value) > _MAX_TEXT:
@@ -212,3 +217,40 @@ class ConversationBindingRegistry:
             if binding.expires_at is not None and self._clock() >= binding.expires_at:
                 raise ConversationBindingExpired()
             return binding
+
+
+class ConversationToolResolver:
+    """Resolve one request to tools built for its enrolled binding.
+
+    ``attestor`` receives request context only to correlate an ingress event;
+    the returned principal and provider digests must still be independently
+    authenticated.  This class never reads request metadata itself.
+    """
+
+    def __init__(self, registry: ConversationBindingRegistry,
+                 attestor: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+                 tool_factory: Callable[[ConversationBinding], Any]):
+        if not isinstance(registry, ConversationBindingRegistry):
+            raise ConversationConfigError()
+        if not callable(attestor) or not callable(tool_factory):
+            raise ConversationConfigError()
+        self.registry = registry
+        self.attestor = attestor
+        self.tool_factory = tool_factory
+
+    def resolve(self, request_context: Mapping[str, Any]) -> Any:
+        if not isinstance(request_context, Mapping):
+            raise ConversationAttestationError()
+        try:
+            binding = self.registry.resolve(lambda: self.attestor(request_context))
+        except ConversationBindingError:
+            raise
+        except Exception:
+            raise ConversationAttestationError() from None
+        try:
+            tools = self.tool_factory(binding)
+        except Exception:
+            raise ConversationToolFactoryError() from None
+        if tools is None or not callable(getattr(tools, "dispatch", None)):
+            raise ConversationToolFactoryError()
+        return tools

@@ -16,8 +16,10 @@ from typing import Any, TextIO
 
 try:
     from .mailbox_tools import MailboxToolError, MailboxTools, disconnected_capabilities
+    from .conversation import ConversationBindingError, ConversationToolResolver
 except ImportError:  # direct ``python server.py`` invocation
     from mailbox_tools import MailboxToolError, MailboxTools, disconnected_capabilities
+    from conversation import ConversationBindingError, ConversationToolResolver
 
 PROTOCOL_VERSION = "2024-11-05"
 EVENTS_PROTOCOL_VERSION = "2026-07-28"
@@ -57,9 +59,11 @@ def _error(req_id: Any, code: int, message: str, data: Any = None) -> dict[str, 
 
 
 class MCPServer:
-    def __init__(self, tools: MailboxTools | None = None, events: Any = None):
+    def __init__(self, tools: MailboxTools | None = None, events: Any = None,
+                 conversation_resolver: ConversationToolResolver | None = None):
         self.tools = tools
         self.events = events
+        self.conversation_resolver = conversation_resolver
 
     def handle(self, request: Any) -> dict[str, Any] | None:
         if not isinstance(request, dict):
@@ -149,17 +153,30 @@ class MCPServer:
         arguments = params.get("arguments", {})
         if name not in TOOL_NAMES or not isinstance(arguments, dict):
             return _error(req_id, -32602, "Invalid tool name or arguments")
-        if name == "tproj_capabilities" and self.tools is None and not arguments:
+        if (name == "tproj_capabilities" and self.tools is None
+                and self.conversation_resolver is None and not arguments):
             result = disconnected_capabilities()
             return {"jsonrpc": "2.0", "id": req_id, "result": {
                 "content": [{"type": "text", "text": json.dumps(result, sort_keys=True)}],
                 "structuredContent": result,
             }}
-        if self.tools is None:
-            exc = MailboxToolError("identity_rejected", "trusted conversation authorizer required")
+        selected_tools = self.tools
+        exc = None
+        if self.conversation_resolver is not None:
+            try:
+                selected_tools = self.conversation_resolver.resolve(request)
+            except ConversationBindingError:
+                selected_tools = None
+                exc = MailboxToolError("identity_rejected", "trusted conversation binding required")
+            except Exception:
+                selected_tools = None
+                exc = MailboxToolError("identity_rejected", "trusted conversation binding required")
+        if selected_tools is None:
+            if exc is None:
+                exc = MailboxToolError("identity_rejected", "trusted conversation authorizer required")
         else:
             try:
-                result = self.tools.dispatch(name, arguments)
+                result = selected_tools.dispatch(name, arguments)
             except MailboxToolError as caught:
                 exc = caught
             else:

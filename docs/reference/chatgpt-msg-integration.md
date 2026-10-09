@@ -133,3 +133,11 @@ per-conversation authority ingress exists. Provider session correlation and
 user OAuth authentication are not proof of that missing binding. Production
 chat enrollment and the two-chat acceptance remain blocked on establishing
 that ingress, not on a new user approval. Existing participants are unchanged.
+
+The MCP dispatcher now has an optional runtime-injected conversation resolver.
+When configured, each `tools/call` must resolve one owner-enrolled binding from
+the trusted ingress attestor and receives tools built for that exact binding;
+denial never falls back to fixed KAI tools. Request `_meta` and arguments are
+correlation context only and cannot grant identity. This is a unit-tested
+dispatch boundary, not live ChatGPT acceptance: production still needs a real
+provider attestor and runtime wiring.
