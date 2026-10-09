@@ -76,6 +76,7 @@ class ConversationBindingRegistryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bindings.json"
             path.write_text(__import__("json").dumps(self.config), encoding="utf-8")
+            os.chmod(path, 0o600)
             self.assertEqual(module.ConversationBindingRegistry.load(path).resolve(
                 lambda: {"principal_id": "owner-a", "provider_subject_digest": digest("sub-a"),
                          "provider_session_digest": digest("sess-a")}).binding_id, "bind-a")
@@ -102,6 +103,41 @@ class ConversationBindingRegistryTest(unittest.TestCase):
                 registry.resolve(identity_a)
             with self.assertRaises(module.ConversationBindingDenied):
                 registry.enroll(identity_a)
+
+    def test_cross_instance_resolve_reloads_revocation_and_expired_enroll_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bindings.json"
+            path.write_text(json.dumps({"bindings": []}), encoding="utf-8")
+            os.chmod(path, 0o600)
+            policy = {"principal_ids": ["owner-a"],
+                      "provider_subject_digests": [digest("sub-a")]}
+            first = module.ConversationBindingRegistry.load(path, owner_policy=policy)
+            second = module.ConversationBindingRegistry.load(path, owner_policy=policy)
+            identity = lambda: {"principal_id": "owner-a", "provider_subject_digest": digest("sub-a"),
+                                "provider_session_digest": digest("sess-a"), "generation": 1}
+            binding = first.enroll(identity)
+            self.assertEqual(second.resolve(identity).binding_id, binding.binding_id)
+            first.revoke(binding.binding_id)
+            with self.assertRaises(module.ConversationBindingDenied):
+                second.resolve(identity)
+            before = path.read_bytes()
+            with self.assertRaises(module.ConversationBindingExpired):
+                first.enroll(lambda: identity(), expires_at=1)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_load_rejects_group_readable_or_symlinked_registry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            path = parent / "bindings.json"
+            path.write_text(json.dumps({"bindings": []}), encoding="utf-8")
+            os.chmod(path, 0o640)
+            with self.assertRaises(module.ConversationConfigError):
+                module.ConversationBindingRegistry.load(path)
+            os.chmod(path, 0o600)
+            link = parent / "link.json"
+            link.symlink_to(path)
+            with self.assertRaises(module.ConversationConfigError):
+                module.ConversationBindingRegistry.load(link)
 
     def test_policy_denial_and_nonfinite_expiry_do_not_mutate_config(self):
         with tempfile.TemporaryDirectory() as directory:
