@@ -278,9 +278,10 @@ class ConversationBindingRegistry:
             if (not stat.S_ISREG(file_stat.st_mode) or file_stat.st_uid != os.getuid()
                     or stat.S_IMODE(file_stat.st_mode) & 0o077):
                 raise ConversationConfigError()
-            with os.fdopen(fd, "r", encoding="utf-8") as stream:
-                value = json.load(stream)
+            stream = os.fdopen(fd, "r", encoding="utf-8")
             fd = None
+            with stream:
+                value = json.load(stream)
         except (OSError, ValueError) as exc:
             raise ConversationConfigError() from exc
         finally:

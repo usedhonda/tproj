@@ -139,6 +139,15 @@ class ConversationBindingRegistryTest(unittest.TestCase):
             with self.assertRaises(module.ConversationConfigError):
                 module.ConversationBindingRegistry.load(link)
 
+    def test_malformed_owner_private_registry_returns_fixed_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "malformed.json"
+            path.write_text('{"bindings":', encoding="utf-8")
+            os.chmod(path, 0o600)
+            with self.assertRaises(module.ConversationConfigError) as raised:
+                module.ConversationBindingRegistry.load(path)
+            self.assertEqual(str(raised.exception), "conversation binding configuration rejected")
+
     def test_policy_denial_and_nonfinite_expiry_do_not_mutate_config(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bindings.json"
