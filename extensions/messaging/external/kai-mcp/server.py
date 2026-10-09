@@ -77,16 +77,17 @@ class MCPServer:
         params = request.get("params", {})
         if not isinstance(params, dict):
             return _error(req_id, -32602, "Invalid params")
+        events_enabled = self.events is not None and self.conversation_resolver is None
         if method == "initialize":
             requested = params.get("protocolVersion")
-            if self.events is not None:
+            if events_enabled:
                 if requested not in (None, EVENTS_PROTOCOL_VERSION):
                     return _error(req_id, -32602, "events require protocol 2026-07-28")
                 selected_version = EVENTS_PROTOCOL_VERSION
             else:
                 selected_version = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
             capabilities = {"tools": {"listChanged": False}}
-            if self.events is not None and self.conversation_resolver is None:
+            if events_enabled:
                 capabilities["events"] = {}
             return {"jsonrpc": "2.0", "id": req_id, "result": {
                 "protocolVersion": selected_version,
@@ -97,11 +98,11 @@ class MCPServer:
             return {"jsonrpc": "2.0", "id": req_id, "result": {}}
         if method == "server/discover":
             capabilities = {"tools": {}}
-            if self.events is not None and self.conversation_resolver is None:
+            if events_enabled:
                 capabilities["events"] = {}
             return {"jsonrpc": "2.0", "id": req_id, "result": {
                 "resultType": "complete",
-                "supportedVersions": [EVENTS_PROTOCOL_VERSION] if self.events is not None else list(SUPPORTED_PROTOCOL_VERSIONS),
+                "supportedVersions": [EVENTS_PROTOCOL_VERSION] if events_enabled else list(SUPPORTED_PROTOCOL_VERSIONS),
                 "capabilities": capabilities,
             }}
         if method == "tools/list":

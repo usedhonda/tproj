@@ -80,6 +80,9 @@ class MCPServerTest(unittest.TestCase):
         instance = server.MCPServer(events=events, conversation_resolver=object())
         initialized = instance.handle({"jsonrpc": "2.0", "id": 51, "method": "initialize", "params": {}})
         self.assertNotIn("events", initialized["result"]["capabilities"])
+        legacy = instance.handle({"jsonrpc": "2.0", "id": 50, "method": "initialize",
+                                  "params": {"protocolVersion": server.PROTOCOL_VERSION}})
+        self.assertEqual(legacy["result"]["protocolVersion"], server.PROTOCOL_VERSION)
         response = instance.handle({"jsonrpc": "2.0", "id": 52, "method": "events/subscribe", "params": {
             "name": "kai.mailbox.message", "arguments": {},
             "delivery": {"mode": "webhook", "url": "https://example.test/hook", "secret": "hidden"},
