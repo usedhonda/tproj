@@ -220,7 +220,9 @@ class ConversationBindingRegistry:
     def _safe_path(path: Path) -> Path:
         path = path.absolute()
         parent = path.parent
-        if not parent.is_dir() or parent.is_symlink():
+        if (not parent.is_dir()
+                or any(ancestor.is_symlink() and ancestor.parent != Path("/")
+                        for ancestor in path.parents)):
             raise ConversationConfigError()
         parent_stat = parent.stat()
         if parent_stat.st_uid != os.getuid() or stat.S_IMODE(parent_stat.st_mode) & 0o077:
