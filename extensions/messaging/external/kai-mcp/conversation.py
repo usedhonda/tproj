@@ -172,9 +172,14 @@ class ConversationBindingRegistry:
             raise ConversationConfigError()
         if not callable(clock):
             raise ConversationConfigError()
-        if owner_policy is None:
-            owner_policy = embedded_policy
-        elif embedded_policy is not None and owner_policy != embedded_policy:
+        embedded_policy_parsed = (self._policy(embedded_policy)
+                                   if embedded_policy is not None else None)
+        owner_policy_parsed = (self._policy(owner_policy)
+                               if owner_policy is not None else None)
+        if owner_policy_parsed is None:
+            owner_policy_parsed = embedded_policy_parsed
+        elif (embedded_policy_parsed is not None
+              and owner_policy_parsed != embedded_policy_parsed):
             raise ConversationConfigError()
         bindings = tuple(ConversationBinding.from_config(item) for item in entries)
         self._validate_unique(bindings)
@@ -182,7 +187,7 @@ class ConversationBindingRegistry:
         self._clock = clock
         self._lock = threading.RLock()
         self._path = Path(path).expanduser() if path is not None else None
-        self._owner_policy = self._policy(owner_policy) if owner_policy is not None else None
+        self._owner_policy = owner_policy_parsed
         self._policy_persisted = embedded_policy is not None
 
     @classmethod
@@ -324,18 +329,22 @@ class ConversationBindingRegistry:
     def _reload_locked(self, path: Path) -> tuple[ConversationBinding, ...]:
         value = self._read_file(path)
         loaded_policy = value.get("owner_policy")
+        next_policy = self._owner_policy
+        next_policy_persisted = self._policy_persisted
         if loaded_policy is None:
             if self._policy_persisted:
                 raise ConversationConfigError()
         else:
             parsed_policy = self._policy(loaded_policy)
             if self._owner_policy is None:
-                self._owner_policy = parsed_policy
+                next_policy = parsed_policy
             elif parsed_policy != self._owner_policy:
                 raise ConversationConfigError()
-            self._policy_persisted = True
+            next_policy_persisted = True
         bindings = tuple(ConversationBinding.from_config(item) for item in value["bindings"])
         self._validate_unique(bindings)
+        self._owner_policy = next_policy
+        self._policy_persisted = next_policy_persisted
         self._bindings = bindings
         return bindings
 

@@ -81,6 +81,67 @@ class ConversationBindingRegistryTest(unittest.TestCase):
                 lambda: {"principal_id": "owner-a", "provider_subject_digest": digest("sub-a"),
                          "provider_session_digest": digest("sess-a")}).binding_id, "bind-a")
 
+    def test_owner_policy_aliases_and_order_roundtrip_as_same_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bindings.json"
+            embedded = {
+                "principals": ["owner-b", "owner-a"],
+                "provider_subjects": [digest("sub-b"), digest("sub-a")],
+            }
+            path.write_text(json.dumps({"bindings": [], "owner_policy": embedded}),
+                            encoding="utf-8")
+            os.chmod(path, 0o600)
+            supplied = {
+                "principal_ids": ["owner-a", "owner-b"],
+                "provider_subject_digests": [digest("sub-a"), digest("sub-b")],
+            }
+            registry = module.ConversationBindingRegistry.load(path, owner_policy=supplied)
+            self.assertEqual(registry._owner_policy["principal_ids"],
+                             frozenset({"owner-a", "owner-b"}))
+            enrolled = registry.enroll(lambda: {
+                "principal_id": "owner-a",
+                "provider_subject_digest": digest("sub-a"),
+                "provider_session_digest": digest("sess-a"),
+            })
+            self.assertEqual(registry.resolve(lambda: {
+                "principal_id": "owner-a",
+                "provider_subject_digest": digest("sub-a"),
+                "provider_session_digest": digest("sess-a"),
+            }).binding_id, enrolled.binding_id)
+
+    def test_malformed_reload_does_not_publish_policy_or_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bindings.json"
+            path.write_text(json.dumps({"bindings": []}), encoding="utf-8")
+            os.chmod(path, 0o600)
+            registry = module.ConversationBindingRegistry.load(path)
+            policy = {
+                "principal_ids": ["fixture-owner"],
+                "provider_subject_digests": [digest("fixture-subject")],
+            }
+            malformed = {
+                "bindings": [{"principal_id": "fixture-owner"}],
+                "owner_policy": policy,
+            }
+            path.write_text(json.dumps(malformed), encoding="utf-8")
+            with self.assertRaises(module.ConversationConfigError):
+                registry.resolve(lambda: {
+                    "principal_id": "fixture-owner",
+                    "provider_subject_digest": digest("fixture-subject"),
+                    "provider_session_digest": digest("new-session"),
+                })
+            self.assertIsNone(registry._owner_policy)
+            self.assertFalse(registry._policy_persisted)
+            self.assertEqual(registry._bindings, ())
+
+            path.write_text(json.dumps({"bindings": []}), encoding="utf-8")
+            with self.assertRaises(module.ConversationBindingDenied):
+                registry.enroll(lambda: {
+                    "principal_id": "fixture-owner",
+                    "provider_subject_digest": digest("fixture-subject"),
+                    "provider_session_digest": digest("new-session"),
+                })
+
     def test_explicit_enroll_reconnects_distinct_identity_and_fences_revoke(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bindings.json"

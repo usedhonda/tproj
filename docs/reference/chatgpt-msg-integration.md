@@ -177,6 +177,13 @@ expiry is checked after acquiring the file lock and reloading current state, and
 again immediately before writing a new binding, so a request that expires while
 waiting cannot create a binding.
 
+Owner policies are compared after normalization, so the canonical
+`principal_ids`/`provider_subject_digests` keys and their `principals`/
+`provider_subjects` aliases are equivalent regardless of list order. A reload
+publishes policy, its persisted-provenance flag, and bindings only after all
+three have validated; malformed bindings therefore cannot partially update the
+registry or grant enrollment.
+
 Acceptance additionally covers alternating and concurrent calls from two chats
 within one runtime, principal/session/participant argument spoofing, stale
 generations and identity changes, foreign cursors and batch acknowledgements
