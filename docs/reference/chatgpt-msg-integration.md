@@ -23,8 +23,11 @@ independent source of authorization. Caller-supplied conversation IDs cannot
 grant access or choose a sender.
 
 Even under one user account, knowledge of another conversation's message ID
-must not allow inbox, message, reply or acknowledgement access. Reconnection or
-conversation duplication must not silently move an old binding to another chat.
+must not allow inbox, message, reply or acknowledgement access. Reconnection must revalidate the same trusted identity; changed identity must
+not silently inherit an old binding. Distinct trusted identities are isolated.
+Whether a provider fork always creates a distinct identity is unverified: if
+the host duplicates the same identity, the backend cannot distinguish the copies.
+Phase 1 does not claim isolation between such indistinguishable copies.
 Replies resolve their recipient and originating conversation server-side from
 the original message ID. Messages never confer Role, task approval or execution
 authority.
@@ -94,7 +97,8 @@ events do not by themselves prove arbitrary original-chat resumption.
 2. Exercise an external assistant and a native AI session as destinations.
 3. Cross-conversation inbox/message/reply/ack access is rejected, including
    intentional use of a known foreign message ID.
-4. Reconnect/duplicate does not transfer another conversation's binding.
+4. Reconnect revalidates identity; a distinct fork identity does not inherit an
+   old binding. Same-identity provider duplication remains explicitly unproven.
 5. Missing tools or invalid binding yields the correct diagnostic and no send,
    alternate-route duplicate, or identity fallback.
 6. Deployed shared descriptions and callable catalogs agree.
@@ -141,3 +145,34 @@ denial never falls back to fixed KAI tools. Request `_meta` and arguments are
 correlation context only and cannot grant identity. This is a unit-tested
 dispatch boundary, not live ChatGPT acceptance: production still needs a real
 provider attestor and runtime wiring.
+
+## Reviewed implementation requirements
+
+Authentication requirements describe guarantees, not a mandatory deployment
+recipe: verified client origin appropriate to the actual transport, an
+authenticated principal with required authority, and host-controlled conversation
+correlation bound to that request through the final hop. Direct HTTPS mTLS and
+user OAuth serve different purposes. OAuth entrances validate issuer, audience,
+expiry and scope. A verified tunnel boundary may provide the necessary guarantees
+without a second public endpoint, extra credentials or duplicate mTLS. The
+current stdio boundary has not yet proved those guarantees; tunnel identity or
+workspace permission alone is not per-chat principal proof.
+
+Enrollment is an explicit connect action under an owner-approved policy, never
+an implicit side effect of read/reply. Labels are not authority; users do not
+copy internal IDs or tokens. Persistent participant identity is separate from a
+transient transport session. Reconnect, revoke, expiry, binding generation and
+restart revalidation must be defined. Identity changes must not be repaired by
+matching chat titles or history.
+
+Acceptance additionally covers alternating and concurrent calls from two chats
+within one runtime, principal/session/participant argument spoofing, stale
+generations and identity changes, foreign cursors and batch acknowledgements
+where supported. Rejection causes zero mailbox mutations, including send,
+acknowledgement, read state and enrollment. Idempotency is scoped by binding and
+operation: the same key with a different payload is rejected; an interrupted
+response is resolved using the original ID. Single acceptance is not a
+guarantee of single delivery.
+
+See [the reviewed execution plan](chatgpt-msg-execution-plan.md) for sequencing,
+production evidence and the remaining two blockers.
