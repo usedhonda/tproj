@@ -64,6 +64,29 @@ class MCPServerTest(unittest.TestCase):
         listed = instance.handle({"jsonrpc": "2.0", "id": 7, "method": "events/list", "params": {}})
         self.assertEqual(listed["result"]["events"][0]["name"], "kai.mailbox.message")
 
+    def test_conversation_resolver_cannot_reach_fixed_event_state(self):
+        class Events:
+            def __init__(self):
+                self.calls = 0
+
+            def definition(self):
+                return {"name": "kai.mailbox.message"}
+
+            def subscribe(self, *args):
+                self.calls += 1
+                return {"id": "unexpected"}
+
+        events = Events()
+        instance = server.MCPServer(events=events, conversation_resolver=object())
+        initialized = instance.handle({"jsonrpc": "2.0", "id": 51, "method": "initialize", "params": {}})
+        self.assertNotIn("events", initialized["result"]["capabilities"])
+        response = instance.handle({"jsonrpc": "2.0", "id": 52, "method": "events/subscribe", "params": {
+            "name": "kai.mailbox.message", "arguments": {},
+            "delivery": {"mode": "webhook", "url": "https://example.test/hook", "secret": "hidden"},
+        }})
+        self.assertEqual(response["error"]["data"]["code"], "identity_rejected")
+        self.assertEqual(events.calls, 0)
+
     def test_event_subscribe_rejects_resume_cursor_without_adapter_side_effect(self):
         class Events:
             def __init__(self):

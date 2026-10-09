@@ -146,6 +146,11 @@ correlation context only and cannot grant identity. This is a unit-tested
 dispatch boundary, not live ChatGPT acceptance: production still needs a real
 provider attestor and runtime wiring.
 
+Resolver-enabled MCP dispatch does not advertise or route the fixed KAI event
+and subscription handlers. Event delivery remains a fixed-service capability;
+ordinary conversation binding is limited to explicitly dispatched mailbox
+operations and does not grant access to fixed subscription state.
+
 ## Reviewed implementation requirements
 
 Authentication requirements describe guarantees, not a mandatory deployment

@@ -86,7 +86,7 @@ class MCPServer:
             else:
                 selected_version = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
             capabilities = {"tools": {"listChanged": False}}
-            if self.events is not None:
+            if self.events is not None and self.conversation_resolver is None:
                 capabilities["events"] = {}
             return {"jsonrpc": "2.0", "id": req_id, "result": {
                 "protocolVersion": selected_version,
@@ -97,7 +97,7 @@ class MCPServer:
             return {"jsonrpc": "2.0", "id": req_id, "result": {}}
         if method == "server/discover":
             capabilities = {"tools": {}}
-            if self.events is not None:
+            if self.events is not None and self.conversation_resolver is None:
                 capabilities["events"] = {}
             return {"jsonrpc": "2.0", "id": req_id, "result": {
                 "resultType": "complete",
@@ -107,6 +107,9 @@ class MCPServer:
         if method == "tools/list":
             return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOL_CATALOG, "_meta": {"catalog_version": CATALOG_VERSION}}}
         if method in ("events/list", "events/subscribe", "events/unsubscribe"):
+            if self.conversation_resolver is not None:
+                return _error(req_id, -32000, "trusted conversation binding required",
+                              {"code": "identity_rejected"})
             if self.events is None:
                 return _error(req_id, -32601, "Method not found")
             try:
