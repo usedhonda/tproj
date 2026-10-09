@@ -77,6 +77,16 @@ do not claim an enrollment screen fixes that limitation.
 
 Deliverable: explicit lifecycle operations and truthful user-facing diagnostics.
 
+The source lifecycle now provides explicit `enroll`, `revoke`, and reconnect
+operations over the existing owner-controlled JSON binding registry. Enrollment
+requires a trusted attestor plus principal/subject policy allowlists; resolve
+never auto-enrolls. Reconnect returns the same non-revoked, unexpired binding,
+while revoke fences its generation and old or changed identities are denied.
+Writes use an owner-permissioned, symlink-rejected path, an exclusive sidecar
+lock, and same-directory atomic replacement. This is source-level lifecycle
+proof only; no provider ingress, transport attestation, or live ChatGPT
+acceptance is implied.
+
 ## D. Minimal source acceptance
 
 Use the smallest relevant fixtures after the behavior stabilizes:

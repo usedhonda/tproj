@@ -7,10 +7,17 @@ and provider-correlation evidence.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import contextlib
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
+import os
+import stat
+import tempfile
+import uuid
+import fcntl
 from pathlib import Path
 import re
 import threading
@@ -94,7 +101,7 @@ def _expiry(value: Any) -> float | None:
     if isinstance(value, bool):
         raise ConversationConfigError()
     if isinstance(value, (int, float)):
-        if value <= 0:
+        if not math.isfinite(value) or value <= 0:
             raise ConversationConfigError()
         return float(value)
     if isinstance(value, str):
@@ -118,13 +125,15 @@ class ConversationBinding:
     address: str
     participant_id: str
     expires_at: float | None = None
+    generation: int = 1
+    revoked: bool = False
 
     @classmethod
     def from_config(cls, value: Mapping[str, Any]) -> "ConversationBinding":
         if not isinstance(value, Mapping):
             raise ConversationConfigError()
         try:
-            return cls(
+            binding = cls(
                 principal_id=_text(value["principal_id"]),
                 provider_subject_digest=_digest(value["provider_subject_digest"]),
                 provider_session_digest=_digest(value["provider_session_digest"]),
@@ -133,29 +142,47 @@ class ConversationBinding:
                 address=_text(value["address"]),
                 participant_id=_text(value["participant_id"]),
                 expires_at=_expiry(value.get("expires_at")),
+                generation=value.get("generation", 1),
+                revoked=value.get("revoked", False),
             )
         except KeyError as exc:
             raise ConversationConfigError() from exc
+        if (isinstance(value.get("generation", 1), bool)
+                or not isinstance(value.get("generation", 1), int)
+                or value.get("generation", 1) < 1
+                or not isinstance(value.get("revoked", False), bool)):
+            raise ConversationConfigError()
+        return binding
 
 
 class ConversationBindingRegistry:
-    """Immutable, thread-safe lookup over owner-enrolled bindings."""
+    """Thread-safe lookup plus explicit owner-approved lifecycle persistence."""
 
     def __init__(self, config: Mapping[str, Any] | list[Mapping[str, Any]],
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, *,
+                 owner_policy: Mapping[str, Any] | None = None,
+                 path: str | Path | None = None):
         if isinstance(config, Mapping):
             entries = config.get("bindings")
+            embedded_policy = config.get("owner_policy")
         else:
             entries = config
+            embedded_policy = None
         if not isinstance(entries, (list, tuple)):
             raise ConversationConfigError()
         if not callable(clock):
+            raise ConversationConfigError()
+        if owner_policy is None:
+            owner_policy = embedded_policy
+        elif embedded_policy is not None and owner_policy != embedded_policy:
             raise ConversationConfigError()
         bindings = tuple(ConversationBinding.from_config(item) for item in entries)
         self._validate_unique(bindings)
         self._bindings = bindings
         self._clock = clock
         self._lock = threading.RLock()
+        self._path = Path(path).expanduser() if path is not None else None
+        self._owner_policy = self._policy(owner_policy) if owner_policy is not None else None
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any] | list[Mapping[str, Any]], **kwargs: Any):
@@ -167,7 +194,112 @@ class ConversationBindingRegistry:
             value = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise ConversationConfigError() from exc
-        return cls(value, **kwargs)
+        return cls(value, path=path, **kwargs)
+
+    @staticmethod
+    def _policy(value: Mapping[str, Any] | None) -> dict[str, frozenset[str]]:
+        if not isinstance(value, Mapping):
+            raise ConversationConfigError()
+        principals = value.get("principal_ids", value.get("principals"))
+        subjects = value.get("provider_subject_digests", value.get("provider_subjects"))
+        if (not isinstance(principals, (list, tuple, set))
+                or not isinstance(subjects, (list, tuple, set))
+                or not principals or not subjects):
+            raise ConversationConfigError()
+        principal_set = frozenset(_text(item) for item in principals)
+        subject_set = frozenset(_digest(item) for item in subjects)
+        if len(principal_set) != len(principals) or len(subject_set) != len(subjects):
+            raise ConversationConfigError()
+        return {"principal_ids": principal_set, "provider_subject_digests": subject_set}
+
+    def _policy_allows(self, principal: str, subject: str) -> bool:
+        return (self._owner_policy is not None
+                and principal in self._owner_policy["principal_ids"]
+                and subject in self._owner_policy["provider_subject_digests"])
+
+    @staticmethod
+    def _safe_path(path: Path) -> Path:
+        if path.is_symlink() or path.parent.is_symlink() or not path.parent.is_dir():
+            raise ConversationConfigError()
+        if path.exists() and stat.S_IMODE(path.stat().st_mode) & 0o077:
+            raise ConversationConfigError()
+        return path
+
+    @contextlib.contextmanager
+    def _file_lock(self):
+        if self._path is None:
+            raise ConversationConfigError()
+        path = self._safe_path(self._path)
+        lock_path = Path(str(path) + ".lock")
+        if lock_path.is_symlink() or lock_path.parent.is_symlink():
+            raise ConversationConfigError()
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            os.fchmod(fd, 0o600)
+        except OSError as exc:
+            raise ConversationConfigError() from exc
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield path
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    @staticmethod
+    def _read_file(path: Path) -> dict[str, Any]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"bindings": []}
+        except (OSError, ValueError) as exc:
+            raise ConversationConfigError() from exc
+        if not isinstance(value, dict) or not isinstance(value.get("bindings"), list):
+            raise ConversationConfigError()
+        return value
+
+    def _write_file(self, path: Path, bindings: tuple[ConversationBinding, ...]) -> None:
+        path = self._safe_path(path)
+        payload: dict[str, Any] = {"bindings": [item.__dict__ for item in bindings]}
+        if self._owner_policy is not None:
+            payload["owner_policy"] = {
+                "principal_ids": sorted(self._owner_policy["principal_ids"]),
+                "provider_subject_digests": sorted(self._owner_policy["provider_subject_digests"]),
+            }
+        data = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        try:
+            fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, path)
+            directory = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError as exc:
+            raise ConversationConfigError() from exc
+        finally:
+            if "name" in locals() and os.path.exists(name):
+                os.unlink(name)
+
+    def _reload_locked(self, path: Path) -> tuple[ConversationBinding, ...]:
+        value = self._read_file(path)
+        loaded_policy = value.get("owner_policy")
+        if self._owner_policy is None and loaded_policy is not None:
+            self._owner_policy = self._policy(loaded_policy)
+        elif loaded_policy is not None and self._policy(loaded_policy) != self._owner_policy:
+            raise ConversationConfigError()
+        bindings = tuple(ConversationBinding.from_config(item) for item in value["bindings"])
+        self._validate_unique(bindings)
+        self._bindings = bindings
+        return bindings
+
+    @staticmethod
+    def _new_ids() -> tuple[str, str, str, str]:
+        token = uuid.uuid4().hex
+        return (f"chatgpt-binding-{token}", f"chatgpt-service-{token}",
+                f"chatgpt-{token}.cdx", f"chatgpt-{token}")
 
     @staticmethod
     def _validate_unique(bindings: tuple[ConversationBinding, ...]) -> None:
@@ -182,7 +314,7 @@ class ConversationBindingRegistry:
             raise ConversationBindingConflict()
 
     @staticmethod
-    def _attested(attestor: Callable[[], Mapping[str, Any]]) -> tuple[str, str, str]:
+    def _attested(attestor: Callable[[], Mapping[str, Any]]) -> tuple[str, str, str, int | None]:
         if not callable(attestor):
             raise ConversationAttestationError()
         try:
@@ -195,15 +327,74 @@ class ConversationBindingRegistry:
             principal = _text(value["principal_id"])
             subject = _digest(value["provider_subject_digest"])
             session = _digest(value["provider_session_digest"])
+            generation = value.get("generation", value.get("binding_generation"))
+            if generation is not None and (isinstance(generation, bool)
+                                           or not isinstance(generation, int) or generation < 1):
+                raise ConversationAttestationError()
         except (KeyError, ConversationBindingError):
             raise ConversationAttestationError() from None
-        return principal, subject, session
+        return principal, subject, session, generation
+
+    @staticmethod
+    def _identity_matches(item: ConversationBinding, principal: str,
+                          subject: str, session: str) -> bool:
+        return (item.principal_id == principal
+                and item.provider_subject_digest == subject
+                and item.provider_session_digest == session)
+
+    def enroll(self, attestor: Callable[[], Mapping[str, Any]], *,
+               expires_at: Any = None) -> ConversationBinding:
+        """Explicitly enroll one attested identity under the owner policy."""
+        principal, subject, session, generation = self._attested(attestor)
+        expiry = _expiry(expires_at)
+        if not self._policy_allows(principal, subject):
+            raise ConversationBindingDenied()
+        with self._lock, self._file_lock() as path:
+            bindings = self._reload_locked(path)
+            matches = tuple(item for item in bindings if self._identity_matches(item, principal, subject, session))
+            if len(matches) > 1:
+                raise ConversationBindingConflict()
+            if matches:
+                current = matches[0]
+                if current.revoked:
+                    raise ConversationBindingDenied()
+                if current.expires_at is not None and self._clock() >= current.expires_at:
+                    raise ConversationBindingExpired()
+                if generation is not None and generation != current.generation:
+                    raise ConversationBindingDenied()
+                return current
+            binding_id, service_id, address, participant_id = self._new_ids()
+            created = ConversationBinding(principal, subject, session, binding_id,
+                                          service_id, address, participant_id,
+                                          expires_at=expiry, generation=generation or 1)
+            updated = bindings + (created,)
+            self._validate_unique(updated)
+            self._write_file(path, updated)
+            self._bindings = updated
+            return created
+
+    def revoke(self, binding_id: str) -> ConversationBinding:
+        """Owner operation: fence a binding generation without deleting history."""
+        binding_id = _text(binding_id)
+        with self._lock, self._file_lock() as path:
+            bindings = self._reload_locked(path)
+            matches = [item for item in bindings if item.binding_id == binding_id]
+            if len(matches) != 1:
+                raise ConversationBindingDenied()
+            current = matches[0]
+            if current.revoked:
+                return current
+            fenced = replace(current, generation=current.generation + 1, revoked=True)
+            updated = tuple(fenced if item.binding_id == binding_id else item for item in bindings)
+            self._write_file(path, updated)
+            self._bindings = updated
+            return fenced
 
     def resolve(self, attestor: Callable[[], Mapping[str, Any]], *,
                 request_meta: Any = None, arguments: Any = None) -> ConversationBinding:
         """Resolve only trusted ingress evidence; request fields are ignored."""
         del request_meta, arguments
-        principal, subject, session = self._attested(attestor)
+        principal, subject, session, generation = self._attested(attestor)
         with self._lock:
             matches = tuple(item for item in self._bindings
                             if item.principal_id == principal
@@ -214,6 +405,10 @@ class ConversationBindingRegistry:
             if len(matches) != 1:
                 raise ConversationBindingConflict()
             binding = matches[0]
+            if binding.revoked or (generation is None and binding.generation != 1):
+                raise ConversationBindingDenied()
+            if generation is not None and generation != binding.generation:
+                raise ConversationBindingDenied()
             if binding.expires_at is not None and self._clock() >= binding.expires_at:
                 raise ConversationBindingExpired()
             return binding

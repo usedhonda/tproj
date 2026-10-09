@@ -1,7 +1,11 @@
 import importlib.util
+import json
+import math
+import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 
 
@@ -75,6 +79,75 @@ class ConversationBindingRegistryTest(unittest.TestCase):
             self.assertEqual(module.ConversationBindingRegistry.load(path).resolve(
                 lambda: {"principal_id": "owner-a", "provider_subject_digest": digest("sub-a"),
                          "provider_session_digest": digest("sess-a")}).binding_id, "bind-a")
+
+    def test_explicit_enroll_reconnects_distinct_identity_and_fences_revoke(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bindings.json"
+            path.write_text(json.dumps({"bindings": []}), encoding="utf-8")
+            os.chmod(path, 0o600)
+            policy = {"principal_ids": ["owner-a", "owner-b"],
+                      "provider_subject_digests": [digest("sub-a"), digest("sub-b")]}
+            registry = module.ConversationBindingRegistry.load(path, owner_policy=policy)
+            identity_a = lambda: {"principal_id": "owner-a", "provider_subject_digest": digest("sub-a"),
+                                  "provider_session_digest": digest("sess-a"), "generation": 1}
+            identity_b = lambda: {"principal_id": "owner-b", "provider_subject_digest": digest("sub-b"),
+                                  "provider_session_digest": digest("sess-b"), "generation": 1}
+            first = registry.enroll(identity_a)
+            self.assertEqual(registry.enroll(identity_a).binding_id, first.binding_id)
+            second = registry.enroll(identity_b)
+            self.assertNotEqual(first.binding_id, second.binding_id)
+            fenced = registry.revoke(first.binding_id)
+            self.assertTrue(fenced.revoked)
+            with self.assertRaises(module.ConversationBindingDenied):
+                registry.resolve(identity_a)
+            with self.assertRaises(module.ConversationBindingDenied):
+                registry.enroll(identity_a)
+
+    def test_policy_denial_and_nonfinite_expiry_do_not_mutate_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bindings.json"
+            path.write_text(json.dumps({"bindings": []}), encoding="utf-8")
+            os.chmod(path, 0o600)
+            policy = {"principal_ids": ["owner-a"],
+                      "provider_subject_digests": [digest("sub-a")]}
+            registry = module.ConversationBindingRegistry.load(path, owner_policy=policy)
+            before = path.read_bytes()
+            denied = lambda: {"principal_id": "owner-x", "provider_subject_digest": digest("sub-x"),
+                              "provider_session_digest": digest("sess-x")}
+            with self.assertRaises(module.ConversationBindingDenied):
+                registry.enroll(denied)
+            self.assertEqual(path.read_bytes(), before)
+            with self.assertRaises(module.ConversationConfigError):
+                module.ConversationBindingRegistry({"bindings": [{**self.config["bindings"][0],
+                                                                   "expires_at": math.inf}]})
+            with self.assertRaises(module.ConversationConfigError):
+                module.ConversationBindingRegistry({"bindings": [{**self.config["bindings"][0],
+                                                                   "expires_at": math.nan}]})
+
+    def test_concurrent_enrollment_creates_one_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bindings.json"
+            path.write_text(json.dumps({"bindings": []}), encoding="utf-8")
+            os.chmod(path, 0o600)
+            policy = {"principal_ids": ["owner-a"],
+                      "provider_subject_digests": [digest("sub-a")]}
+            registries = [module.ConversationBindingRegistry.load(path, owner_policy=policy) for _ in range(2)]
+            identity = lambda: {"principal_id": "owner-a", "provider_subject_digest": digest("sub-a"),
+                                "provider_session_digest": digest("sess-a")}
+            barrier = threading.Barrier(2)
+            results = []
+
+            def run(registry):
+                barrier.wait()
+                results.append(registry.enroll(identity).binding_id)
+
+            threads = [threading.Thread(target=run, args=(registry,)) for registry in registries]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(len(results), 2)
+            self.assertEqual(len(set(results)), 1)
 
 
 if __name__ == "__main__":
