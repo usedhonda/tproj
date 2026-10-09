@@ -7,11 +7,14 @@ the bridge keeps the launchd PID boundary in the parent service process.
 from __future__ import annotations
 
 import argparse
+import errno
+import fcntl
 import hmac
 import json
 import os
 from pathlib import Path
 import socket
+import stat
 import threading
 import time
 from typing import Any, Mapping
@@ -39,6 +42,7 @@ BRIDGE_OPS = frozenset({
     "service_repo_write", "service_repo_revert",
 })
 CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "rejected", "stale_session", "presented"))
+BRIDGE_CONNECTION_TIMEOUT = 2.0
 
 
 def _required(value: Any, name: str) -> str:
@@ -193,48 +197,139 @@ def _bridge_request(runtime: ServiceRuntime, request: Mapping[str, Any]) -> Any:
     raise RuntimeConfigError("invalid bridge request")
 
 
+def _bridge_lock(path: Path):
+    """Hold an advisory lock while replacing/binding one bridge socket."""
+    lock_path = path.with_name(path.name + ".lock")
+    if lock_path.is_symlink():
+        raise RuntimeConfigError("bridge lock must not be a symlink")
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError as exc:
+        raise RuntimeConfigError("bridge lock unavailable") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise RuntimeConfigError("unsafe bridge lock")
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except RuntimeConfigError:
+        os.close(fd)
+        raise
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in (errno.EACCES, errno.EAGAIN):
+            raise RuntimeConfigError("bridge already starting") from exc
+        raise RuntimeConfigError("bridge lock unavailable") from exc
+    return fd
+
+
+def _remove_stale_bridge_socket(path: Path) -> None:
+    """Remove only a proven-dead Unix socket, never a regular path."""
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISSOCK(before.st_mode):
+        raise RuntimeConfigError("bridge socket path is not a socket")
+    probe = socket.socket(socket.AF_UNIX)
+    try:
+        probe.settimeout(0.2)
+        probe.connect(str(path))
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return
+        if exc.errno != errno.ECONNREFUSED:
+            raise RuntimeConfigError("bridge socket unavailable") from exc
+        # ECONNREFUSED is the normal stale-socket case after an unclean exit.
+    else:
+        raise RuntimeConfigError("bridge already running")
+    finally:
+        probe.close()
+    try:
+        after = path.lstat()
+    except FileNotFoundError:
+        return
+    if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+        raise RuntimeConfigError("bridge socket changed during startup")
+    path.unlink()
+
+
 def bridge(config: Mapping[str, Any]) -> int:
+    # Validate all service settings before touching the bridge path. An invalid
+    # launch must not destroy a listener owned by a healthy previous process.
+    runtime = ServiceRuntime(dict(config, bridge_socket=None))
     path = Path(_required(config.get("bridge_socket"), "bridge_socket")).expanduser()
     if path.is_symlink():
         raise RuntimeConfigError("bridge socket must not be a symlink")
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.unlink(missing_ok=True)
-    runtime = ServiceRuntime(dict(config, bridge_socket=None))
+    lock_fd = _bridge_lock(path)
+    listener = None
+    bound_stat = None
+    stop = None
+    worker = None
     try:
-        runtime._attest()
-    except Exception:
-        # Keep the bridge available while launchd/host startup converges; the
-        # event pump retries the same attestation without exposing credentials.
-        pass
-    events = runtime.events()
-    stop = threading.Event()
-    def pump() -> None:
-        while not stop.wait(1.0):
-            try:
-                events.pump_once()
-            except Exception:
-                continue
-    worker = threading.Thread(target=pump, name="kai-bridge-event-pump", daemon=True)
-    worker.start()
-    listener = socket.socket(socket.AF_UNIX)
-    listener.bind(str(path)); os.chmod(path, 0o600); listener.listen(16)
-    try:
-        while True:
-            conn, _ = listener.accept()
-            with conn:
-                raw = conn.makefile("rb").readline(262145)
+        _remove_stale_bridge_socket(path)
+        try:
+            runtime._attest()
+        except Exception:
+            # Keep the bridge available while launchd/host startup converges; the
+            # event pump retries the same attestation without exposing credentials.
+            pass
+        events = runtime.events()
+        stop = threading.Event()
+        def pump() -> None:
+            while not stop.wait(1.0):
                 try:
-                    request = json.loads(raw)
-                    result = _bridge_request(runtime, request)
-                    response = {"ok": True, "result": result}
-                except MailboxToolError as exc:
-                    response = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+                    events.pump_once()
                 except Exception:
-                    response = {"ok": False, "error": {"code": "identity_rejected", "message": "bridge request rejected"}}
-                conn.sendall((json.dumps(response, separators=(",", ":")) + "\n").encode())
+                    continue
+        worker = threading.Thread(target=pump, name="kai-bridge-event-pump", daemon=True)
+        worker.start()
+        listener = socket.socket(socket.AF_UNIX)
+        listener.bind(str(path)); os.chmod(path, 0o600); listener.listen(16)
+        bound_stat = path.stat()
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                continue
+            try:
+                conn.settimeout(BRIDGE_CONNECTION_TIMEOUT)
+                with conn:
+                    with conn.makefile("rb") as stream:
+                        raw = stream.readline(262145)
+                    if not raw:
+                        continue
+                    response = None
+                    try:
+                        request = json.loads(raw)
+                        result = _bridge_request(runtime, request)
+                        response = {"ok": True, "result": result}
+                    except MailboxToolError as exc:
+                        response = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+                    except Exception:
+                        response = {"ok": False, "error": {"code": "identity_rejected", "message": "bridge request rejected"}}
+                    conn.sendall((json.dumps(response, separators=(",", ":")) + "\n").encode())
+            except (OSError, ValueError, TypeError):
+                # A client may disconnect, time out, or send an oversized/bad
+                # frame; isolate that transport failure to this connection.
+                continue
     finally:
-        stop.set(); worker.join(timeout=2)
-        listener.close(); path.unlink(missing_ok=True)
+        if stop is not None:
+            stop.set()
+        if worker is not None:
+            worker.join(timeout=2)
+        if listener is not None:
+            listener.close()
+        if bound_stat is not None:
+            try:
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) == (bound_stat.st_dev, bound_stat.st_ino):
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def main(argv: list[str] | None = None) -> int:
