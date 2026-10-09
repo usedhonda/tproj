@@ -218,6 +218,7 @@ class CodexStartupUpdate(unittest.TestCase):
                 self.assertEqual(trace.read_text().splitlines(), [
                     'start @openai/codex', 'end @openai/codex',
                     'start @anthropic-ai/claude-code', 'end @anthropic-ai/claude-code'])
+
             finally:
                 release.touch()
                 if first.poll() is None:
@@ -226,6 +227,95 @@ class CodexStartupUpdate(unittest.TestCase):
                 if second is not None and second.poll() is None:
                     second.terminate()
                     second.wait()
+
+    def test_managed_launch_blocks_codex_update(self):
+        helper = str(ROOT / 'bin/tproj-cli-update')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / 'trace'
+            ready = root / 'ready'
+            release = root / 'release'
+            codex = root / 'codex'
+            codex.write_text('#!/usr/bin/env python3\n'
+                             'import os, pathlib, time\n'
+                             'pathlib.Path(os.environ["READY"]).touch()\n'
+                             'while not pathlib.Path(os.environ["RELEASE"]).exists(): time.sleep(.01)\n'
+                             'pathlib.Path(os.environ["TRACE"]).open("a").write("launch\\n")\n')
+            codex.chmod(0o755)
+            npm = root / 'npm'
+            npm.write_text('#!/bin/sh\necho update >> "$TRACE"\n')
+            npm.chmod(0o755)
+            ps = root / 'ps'
+            ps.write_text('#!/bin/sh\nprintf "python\\n"\n')
+            ps.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + ':' + os.environ['PATH'],
+                       TRACE=str(trace), READY=str(ready), RELEASE=str(release))
+            launch = subprocess.Popen([helper, '--launch', 'codex'], env=env)
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists():
+                    self.assertIsNone(launch.poll())
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(.01)
+                update = subprocess.run([helper, '@openai/codex'], env=env,
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(update.returncode, 0, update.stderr)
+                self.assertFalse(trace.exists())
+                release.touch()
+                self.assertEqual(launch.wait(timeout=5), 0)
+                self.assertEqual(trace.read_text().splitlines(), ['launch'])
+            finally:
+                release.touch()
+                if launch.poll() is None:
+                    launch.terminate()
+                    launch.wait()
+
+    def test_managed_launch_waits_for_active_codex_update(self):
+        helper = str(ROOT / 'bin/tproj-cli-update')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / 'trace'
+            ready = root / 'ready'
+            release = root / 'release'
+            npm = root / 'npm'
+            npm.write_text('#!/usr/bin/env python3\n'
+                           'import os, pathlib, time\n'
+                           'pathlib.Path(os.environ["READY"]).touch()\n'
+                           'while not pathlib.Path(os.environ["RELEASE"]).exists(): time.sleep(.01)\n'
+                           'pathlib.Path(os.environ["TRACE"]).open("a").write("update\\n")\n')
+            npm.chmod(0o755)
+            ps = root / 'ps'
+            ps.write_text('#!/bin/sh\nprintf "python\\n"\n')
+            ps.chmod(0o755)
+            codex = root / 'codex'
+            codex.write_text('#!/bin/sh\necho launch >> "$TRACE"\n')
+            codex.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + ':' + os.environ['PATH'],
+                       TRACE=str(trace), READY=str(ready), RELEASE=str(release))
+            update = subprocess.Popen([helper, '@openai/codex'], env=env)
+            launch = None
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists():
+                    self.assertIsNone(update.poll())
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(.01)
+                launch = subprocess.Popen([helper, '--launch', 'codex'], env=env)
+                time.sleep(.2)
+                self.assertIsNone(launch.poll())
+                self.assertEqual(trace.read_text().splitlines() if trace.exists() else [], [])
+                release.touch()
+                self.assertEqual(update.wait(timeout=5), 0)
+                self.assertEqual(launch.wait(timeout=5), 0)
+                self.assertEqual(trace.read_text().splitlines(), ['update', 'launch'])
+            finally:
+                release.touch()
+                if update.poll() is None:
+                    update.terminate()
+                    update.wait()
+                if launch is not None and launch.poll() is None:
+                    launch.terminate()
+                    launch.wait()
 
     def test_concurrent_packages_hold_lock_through_sign_and_failure(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serialize startup global npm mutations across local and remote panes."""
+"""Serialize startup global npm mutations and managed Codex launches."""
 import fcntl
 import os
 import subprocess
@@ -28,7 +28,29 @@ def _codex_process_state():
     return False
 
 
+def _open_lock(path):
+    """Open a fixed per-user lock path without following symlinks."""
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    lock = os.fdopen(fd, "r+")
+    if os.fstat(lock.fileno()).st_uid != os.getuid():
+        lock.close()
+        raise ValueError("lock belongs to another user")
+    return lock
+
+
+def _launch(command):
+    """Run a managed command while holding the Codex launch lifetime lock."""
+    path = f"/tmp/tproj-codex-launch-{os.getuid()}.lock"
+    with _open_lock(path) as lock:
+        fcntl.flock(lock, fcntl.LOCK_SH)
+        os.set_inheritable(lock.fileno(), True)
+        os.execvp("sh", ["sh", "-c", command])
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--launch":
+        _launch(sys.argv[2])
+        return 0
     if len(sys.argv) not in (2, 3) or sys.argv[1] not in (
         "@openai/codex", "@anthropic-ai/claude-code"
     ):
@@ -36,25 +58,38 @@ def main():
     # Fixed host-local path: SSH and GUI can have different TMPDIR values.
     # Never unlink: otherwise competing processes could lock different inodes.
     path = f"/tmp/tproj-cli-update-{os.getuid()}.lock"
-    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "r+") as lock:
-        if os.fstat(lock.fileno()).st_uid != os.getuid():
-            raise ValueError("update lock belongs to another user")
+    with _open_lock(path) as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        # Children retain the same locked open description if this helper dies
-        # while npm or signing is still running (for example, a closed terminal).
-        inherited_lock = (lock.fileno(),)
-        if sys.argv[1] == "@openai/codex":
-            codex_state = _codex_process_state()
-            if codex_state is not False:
-                # Keep the installed vendor package when a live Codex is
-                # present or process inspection is unavailable/ambiguous.
-                return 0
-        result = subprocess.run(["npm", "update", "-g", sys.argv[1]],
-                                check=False, pass_fds=inherited_lock)
-        if len(sys.argv) == 3:
-            subprocess.run([sys.argv[2]], check=False, pass_fds=inherited_lock)
-        return result.returncode
+        launch_lock = None
+        try:
+            if sys.argv[1] == "@openai/codex":
+                launch_path = f"/tmp/tproj-codex-launch-{os.getuid()}.lock"
+                launch_lock = _open_lock(launch_path)
+                try:
+                    fcntl.flock(launch_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    # A managed launch owns the shared lock; keep its vendor
+                    # package untouched while the process is using it.
+                    return 0
+            # Children retain the same locked open description if this helper dies
+            # while npm or signing is still running (for example, a closed terminal).
+            inherited_lock = (lock.fileno(),)
+            if launch_lock is not None:
+                inherited_lock += (launch_lock.fileno(),)
+            if sys.argv[1] == "@openai/codex":
+                codex_state = _codex_process_state()
+                if codex_state is not False:
+                    # Keep the installed vendor package when a live Codex is
+                    # present or process inspection is unavailable/ambiguous.
+                    return 0
+            result = subprocess.run(["npm", "update", "-g", sys.argv[1]],
+                                    check=False, pass_fds=inherited_lock)
+            if len(sys.argv) == 3:
+                subprocess.run([sys.argv[2]], check=False, pass_fds=inherited_lock)
+            return result.returncode
+        finally:
+            if launch_lock is not None:
+                launch_lock.close()
 
 
 if __name__ == "__main__":

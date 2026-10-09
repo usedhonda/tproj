@@ -529,15 +529,25 @@ with_claude_update_prefix() {
 with_codex_update_prefix() {
   local command="$1"
   local no_update_mode="${2:-$CODEX_NO_UPDATE}"
-  if [[ "$no_update_mode" == "true" ]]; then
-    printf '%s' "$command"
-    return 0
-  fi
-
   local update_cmd
   update_cmd="$(quoted_runtime_bin_path "tproj-cli-update")"
-  [[ -z "$update_cmd" ]] && update_cmd="tproj-cli-update"
-  printf '%s @openai/codex; hash -r; %s' "$update_cmd" "$command"
+  if [[ "$no_update_mode" == "true" ]]; then
+    if [[ -n "$update_cmd" ]]; then
+      printf 'if [ -x %s ]; then %s --launch %q; else %s; fi' \
+        "$update_cmd" "$update_cmd" "$command" "$command"
+    else
+      printf 'if command -v tproj-cli-update >/dev/null 2>&1; then tproj-cli-update --launch %q; else %s; fi' \
+        "$command" "$command"
+    fi
+    return 0
+  fi
+  if [[ -n "$update_cmd" ]]; then
+    printf '%s @openai/codex; hash -r; if [ -x %s ]; then %s --launch %q; else %s; fi' \
+      "$update_cmd" "$update_cmd" "$update_cmd" "$command" "$command"
+  else
+    printf 'tproj-cli-update @openai/codex; hash -r; if command -v tproj-cli-update >/dev/null 2>&1; then tproj-cli-update --launch %q; else %s; fi' \
+      "$command" "$command"
+  fi
 }
 
 # @tproj セッション一覧を取得（共通ヘルパー）
