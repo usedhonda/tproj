@@ -39,6 +39,16 @@ operation on the master. A successful API lifecycle or notification receipt is
 not that evidence. An agent still running an older executable/configuration must
 not be reported as protected merely because the installed files are current.
 
+`tproj-task binding-status` (without a native ID, endpoint, role, or other
+caller selector) is a read-only diagnostic. The authenticated native host
+correlates the current conversation's marker with local formal binding records
+using its verified native ID, and reports marker presence, current binding
+status/epoch/incarnation match, and sanitized matching-binding counts. It may
+read authoritative task status to distinguish a missing or old task, but it
+never creates the binding table, writes a marker, changes the task master, or
+detaches, rebinds, cancels, or grants authority. Missing or ambiguous native
+identity fails closed; a caller-supplied selector cannot redirect the query.
+
 The established mutation/completion entrypoints also evaluate formal task
 operations. Completion matchers cover direct file edits as well as shell tools;
 shell-only acceptance does not prove edit completion. Installer migration removes

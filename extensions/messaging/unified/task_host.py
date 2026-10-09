@@ -44,9 +44,62 @@ def binding_marker(native_id):
     return root / digest(native_id)
 
 
+def _binding_status(host, ep):
+    """Return read-only native marker/formal-binding correlation evidence."""
+    native_id = str(ep.get('thread_id') or ep.get('session_id') or ep.get('runtime_id') or '')
+    if not native_id:
+        raise HubError('identity_rejected', 'native conversation ID required for binding diagnostics')
+    marker_present = binding_marker(native_id).is_file()
+    try:
+        rows = host.db.execute(
+            'SELECT endpoint_id, incarnation, task_id, epoch FROM formal_task_binding WHERE native_id=? ORDER BY endpoint_id',
+            (native_id,)).fetchall()
+    except Exception as exc:
+        # A diagnostic must not create the optional table.  A missing table is
+        # equivalent to no local formal bindings; other database failures fail
+        # closed without attempting recovery or mutation.
+        if 'no such table' not in str(exc).lower():
+            raise HubError('unavailable', 'formal binding records are unavailable') from exc
+        rows = []
+    current = next((row for row in rows if row['endpoint_id'] == ep['endpoint_id']), None)
+    current_binding = {'status': 'not_bound', 'task_id': None, 'epoch': None,
+                       'incarnation_matches': False}
+    if current is not None:
+        incarnation_matches = current['incarnation'] == ep['incarnation']
+        current_binding.update(task_id=current['task_id'], epoch=current['epoch'],
+                               incarnation_matches=incarnation_matches)
+        current_binding['status'] = 'bound' if incarnation_matches else 'stale_incarnation'
+        if incarnation_matches:
+            try:
+                snapshot = host.hub('task_status', endpoint_id=ep['endpoint_id'], task_id=current['task_id'])
+            except HubError as exc:
+                if exc.code in ('not_found', 'not_visible'):
+                    current_binding['status'] = 'task_not_visible'
+                else:
+                    current_binding['status'] = 'task_status_unavailable'
+            else:
+                task = snapshot.get('task') or {}
+                current_binding['task_status'] = task.get('status')
+                current_binding['task_epoch_matches'] = task.get('epoch') == current['epoch']
+    matching = [{
+        'task_id': row['task_id'],
+        'epoch': row['epoch'],
+        'current_endpoint': row['endpoint_id'] == ep['endpoint_id'],
+        'current_incarnation': row['incarnation'] == ep['incarnation'],
+    } for row in rows]
+    return {
+        'marker_present': marker_present,
+        'current_binding': current_binding,
+        'matching_native_bindings': matching,
+        'matching_native_bindings_count': len(matching),
+    }
+
+
 def dispatch(host, ep, req):
-    host.db.execute('CREATE TABLE IF NOT EXISTS formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, task_id TEXT NOT NULL, epoch INTEGER NOT NULL, native_id TEXT NOT NULL)')
     op=req['op']
+    if op == 'task_binding_status':
+        return _binding_status(host, ep)
+    host.db.execute('CREATE TABLE IF NOT EXISTS formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, task_id TEXT NOT NULL, epoch INTEGER NOT NULL, native_id TEXT NOT NULL)')
     if op in ('task_begin_operation','task_end_operation'):
         raise HubError('unsupported','operation admission uses the formal tool hook')
     if op == 'task_approval':

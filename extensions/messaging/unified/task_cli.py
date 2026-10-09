@@ -23,7 +23,7 @@ except ImportError:  # installed launcher executes this file directly
 
 
 TASK_OPS = {"approval", "submit", "status", "list", "ack", "progress", "done",
-            "block", "verify", "report", "cancel", "freeze", "unfreeze"}
+            "block", "verify", "report", "cancel", "freeze", "unfreeze", "binding-status"}
 HANDOFF_OPS = {"prepare_handoff", "release_handoff", "accept_handoff", "commit_handoff"}
 
 
@@ -68,6 +68,7 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--epoch", required=True, type=int, dest="expected_epoch")
     r.add_argument("--tool-use-id", required=True)
     sub.add_parser("list")
+    sub.add_parser("binding-status", help="read-only native marker and formal binding correlation")
     h = sub.add_parser("handoff", help="prepare, release, accept, or commit a handoff")
     h.add_argument("action", choices=("prepare", "release", "accept", "commit"))
     h.add_argument("task_id")
@@ -119,6 +120,8 @@ def main(argv: list[str] | None = None) -> int:
                              executor=args.target, payload=packet)
         elif args.command == "list":
             result = request("list")
+        elif args.command == "binding-status":
+            result = request("binding_status")
         elif args.command == "handoff":
             op = {"prepare": "prepare_handoff", "release": "release_handoff",
                   "accept": "accept_handoff", "commit": "commit_handoff"}[args.action]
