@@ -14,9 +14,9 @@ package. A launch started while an update is active waits for the exclusive
 lock, then runs with the same shell command, terminal, arguments, and exit
 status semantics.
 
-`with_codex_update_prefix` uses the wrapper for both updating and
-`--no-update` launches, with a command-availability fallback so an absent
-helper does not prevent startup. The guarantee applies only to launches that
-use this wrapper. Unmanaged `codex` processes, and the separately implemented
-remote-host launcher, still require adoption of the same protocol before they
-can claim this race-free behavior.
+`with_codex_update_prefix`, the remote-host launcher, and the GUI-generated
+local launcher use the wrapper for the complete Codex lifetime, with a
+command-availability fallback so an absent helper does not prevent startup.
+The guarantee applies only to launches that use one of these wrappers.
+Unmanaged `codex` processes still require adoption of the same protocol before
+they can claim this race-free behavior.

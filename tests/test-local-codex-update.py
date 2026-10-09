@@ -44,12 +44,15 @@ class CodexStartupUpdate(unittest.TestCase):
                 '{project}', shlex.quote(str(project)))
             command = json.loads(template.replace(
                 r'\(codexUpdater)', '{updater}').replace(
+                r'\(shellSingleQuote(codexResume))', '{quoted_resume}').replace(
                 r'\(codexResume)', '{resume}')).replace(
-                '{updater}', shlex.quote(str(updater))).replace('{resume}', resume_command)
+                '{updater}', shlex.quote(str(updater))).replace(
+                '{quoted_resume}', shlex.quote(resume_command)).replace('{resume}', resume_command)
             for present, signing, rc in [(True, True, 0), (True, False, 1), (False, True, 0)]:
                 with self.subTest(present=present, signing=signing, rc=rc):
                     trace.write_text('')
                     updater.write_text('#!/bin/sh\n'
+                                       'if [ "$1" = "--launch" ]; then echo "helper --launch" >> "$TRACE"; sh -c "$2"; exit $?; fi\n'
                                        'printf "helper %s %s\\n" "$1" "${2:-}" >> "$TRACE"\n'
                                        'if [ "$#" = 2 ]; then "$2"; fi\n'
                                        'exit "${UPDATE_RC:-0}"\n')
@@ -69,6 +72,7 @@ class CodexStartupUpdate(unittest.TestCase):
                         expected.append('helper @openai/codex ' + (str(sign) if signing else ''))
                         if signing:
                             expected.append('sign')
+                        expected.append('helper --launch')
                     expected.append(f'launch {project} resume --last -s danger-full-access -a never --search')
                     self.assertEqual(trace.read_text().splitlines(), expected)
                     if not present:
@@ -160,6 +164,7 @@ class CodexStartupUpdate(unittest.TestCase):
                 'npm': 'echo update >> "$TRACE"; exit 1',
                 'sign-codex': 'echo sign >> "$TRACE"',
                 'codex': 'echo "launch $*" >> "$TRACE"',
+                'tproj-cli-update': 'if [ "$1" = "--launch" ]; then sh -c "$2"; exit $?; fi; echo update >> "$TRACE"; if [ "$#" = 2 ]; then "$2"; fi; exit 1',
             }.items():
                 script = root / name
                 script.write_text('#!/bin/sh\n' + body + '\n')

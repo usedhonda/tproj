@@ -203,18 +203,17 @@ agent_status() {
   [[ -n "$pid" && ( "$cmd" == *"$c"* || "$cmd" == *"/$name "* || "$cmd" == *"/$name" ) ]] && printf '%s' "$pid"
 }
 start_command() {
-  local r=$1 c q npm_path sign_path update_path
+  local r=$1 c q npm_path sign_path update_path launch_cmd
   c=$(resolve_cli "$(cli_for_role "$r")")
   [[ -n "$c" ]] || die "required CLI not found on PATH: $(cli_for_role "$r")"
   q=$(printf '%q' "$c")
   if [[ "$r" == cdx ]]; then
     # Match local startup: update before resume, never while attaching to an
     # existing session. An unavailable registry must not prevent work.
+    update_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tproj-cli-update"
+    [[ -x "$update_path" ]] || update_path=$(resolve_cli tproj-cli-update)
     npm_path=$(resolve_cli npm)
-    if [[ -n "$npm_path" ]]; then
-      update_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tproj-cli-update"
-      [[ -x "$update_path" ]] || update_path=$(resolve_cli tproj-cli-update)
-      [[ -n "$update_path" ]] || update_path=tproj-cli-update
+    if [[ -n "$npm_path" && -n "$update_path" ]]; then
       printf '%q @openai/codex ' "$update_path"
       sign_path=$(resolve_cli sign-codex)
       [[ -z "$sign_path" ]] || printf '%q ' "$sign_path"
@@ -222,7 +221,17 @@ start_command() {
       printf 'hash -r; '
     fi
   fi
-  [[ "$r" == cc ]] && printf '%s --continue || exec %s' "$q" "$q" || printf '%s resume --last || exec %s' "$q" "$q"
+  if [[ "$r" == cc ]]; then
+    launch_cmd="$q --continue || exec $q"
+  else
+    launch_cmd="$q resume --last || exec $q"
+    if [[ -n "$update_path" ]]; then
+      printf 'if [ -x %q ]; then %q --launch %q; else %s; fi' \
+        "$update_path" "$update_path" "$launch_cmd" "$launch_cmd"
+      return 0
+    fi
+  fi
+  printf '%s' "$launch_cmd"
 }
 shared_pane_status() {
   local p=$1 r=$2 s pane c pid
