@@ -3,6 +3,15 @@
 # Mac mini, restart its services, refresh the Dots tool list, and show what is running.
 # One command, no arguments. Safe to rerun. It never touches grants, keys or sessions.
 set -u
+# Parse read-only/help arguments before touching runtime, services, or the UI.
+if [[ $# -gt 0 ]]; then
+  if [[ $# -eq 1 && ( "$1" == "--help" || "$1" == "-h" ) ]]; then
+    printf '%s\n' 'Usage: tproj-msg-reload' 'Deploy and reload the messaging runtime; no arguments performs the reload.'
+    exit 0
+  fi
+  printf '%s\n' 'tproj-msg-reload: unexpected argument; use --help' >&2
+  exit 2
+fi
 SELF="$0"; [ -L "$SELF" ] && SELF="$(readlink "$SELF")"
 REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
 MSG="$REPO/extensions/messaging"
