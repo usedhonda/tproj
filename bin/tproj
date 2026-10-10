@@ -669,6 +669,19 @@ _tproj_gui_kill_all() {
   fi
 }
 
+# Compare a running GUI by the executable it resolves to, not by the spelling
+# reported in ps. This keeps a symlink/canonical launch pair on one process.
+_tproj_gui_command_matches() {
+  local expected_path="$1" command_line="$2" resolved
+  case "$command_line" in
+    */apps/tproj/.build/*/tproj|*/apps/tproj/dist/release-app/tproj.app/Contents/MacOS/tproj|/Applications/tproj.app/Contents/MacOS/tproj)
+      ;;
+    *) return 1 ;;
+  esac
+  resolved="$(realpath "$command_line" 2>/dev/null || true)"
+  [[ -n "$resolved" && "$resolved" == "$expected_path" ]]
+}
+
 # TprojApp GUI を起動（新プロセス確認後に旧 GUI のみ停止）
 launch_tproj_gui() {
   [[ "$NO_GUI" == "true" ]] && return 0
@@ -684,7 +697,7 @@ launch_tproj_gui() {
     if kill -0 "$existing_pid" 2>/dev/null; then
       local existing_args
       existing_args="$(ps -p "$existing_pid" -o args= 2>/dev/null || true)"
-      if [[ "$existing_args" == "$gui_path" ]]; then
+      if _tproj_gui_command_matches "$gui_path" "$existing_args"; then
         return 0
       fi
     fi

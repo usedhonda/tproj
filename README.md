@@ -232,6 +232,9 @@ A native SwiftUI app for session control and monitoring. Features:
 - Window size persistence across restarts
 
 The GUI auto-launches when `tproj` starts a session **if the app is installed**.
+When a GUI process is already recorded, `tproj` compares the resolved executable
+path, so canonical and symlinked spellings reuse the same process; other command
+lines remain replaceable.
 A from-source install does not build the app automatically — build it once from
 `apps/tproj`:
 
