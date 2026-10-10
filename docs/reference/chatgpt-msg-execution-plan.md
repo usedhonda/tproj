@@ -18,9 +18,11 @@ assistant and native identities, permissions and sessions remain unchanged.
   back to a fixed service identity.
 - Registry/dispatcher fixtures do not establish a production authenticated ingress.
 - The deployed fixed-service stdio runtime is not ordinary-chat enrollment.
-- The current Computer Use attachment rejects process ancestry before obtaining
-  app state, so that observation route is unavailable. Another authorized,
-  supported route has not been confirmed; real two-chat acceptance remains open.
+- Supported Chrome Computer Use now reaches an ordinary ChatGPT web chat and
+  the existing plugin catalog. A capabilities-only UI response reports fixed
+  service authorization and isolation not configured. Independent tool receipt
+  and real two-chat acceptance remain open; the denied desktop branch is not
+  bypassed.
 - Fork behavior is not guaranteed: distinct trusted identities are isolated;
   indistinguishable provider identity copies cannot be separated by the backend.
 
@@ -72,6 +74,16 @@ exploit. Keep effective caller access and upstream metadata generation/protectio
 as separate open evidence requirements. Do not activate the conversation resolver
 from raw caller metadata while either required guarantee is absent.
 
+The deployed client revision `a390c168ff1b2d14e73a95991c186c6aba3ff5a0`
+decodes the raw JSON-RPC payload, forwards that message to `IOTransport`, and
+uses Go SDK v1.7.0 encoding. The SDK retains request `Params` as raw JSON,
+including any `params._meta` already present. Header non-transfer therefore
+does not imply metadata non-transfer. This establishes source preservation,
+not the upstream producer, overwrite protection, or an observed chat identity.
+Read-only access screens show an existing runtime credential with Tunnel Read
+and Use; a single owner in a member list alone does not exclude other caller
+surfaces using existing credentials or prove plugin sharing boundaries.
+
 Deliverable: verified guarantees, exact gaps and one selected minimal ingress.
 A missing guarantee blocks live activation, not all independent source work.
 
@@ -114,6 +126,12 @@ lock, and same-directory atomic replacement. This is source-level lifecycle
 proof only; no provider ingress, transport attestation, or live ChatGPT
 acceptance is implied.
 
+Request-local dispatch now revalidates the exact resolved binding, generation,
+identity, participant, address and expiry under the registry/file lock before
+invoking the mailbox operation. Revoke or expiry between resolution and dispatch
+is denied. A revoke after dispatch begins does not roll back committed work.
+This source fence is not production ingress activation.
+
 ## D. Minimal source acceptance
 
 Use the smallest relevant fixtures after the behavior stabilizes. Reuse existing
@@ -150,8 +168,8 @@ security-sensitive grants, if truly necessary, require a concrete target and
 minimum scope before their separate authorization.
 
 Use an authorized, supported observation/operation route to operate two actual
-ordinary app chats. Recovery of the current Computer Use attachment is one
-possible route, not an exclusive prerequisite; alternatives remain unconfirmed:
+ordinary app chats. The supported Chrome web route is now confirmed for the
+capabilities-only diagnostic. It does not replace the following acceptance:
 
 1. A sends to the external assistant; peer reads and replies; A reads that reply.
 2. B sends to a native session; peer reads and replies; B reads that reply.
@@ -179,8 +197,8 @@ explicitly unproven requirements and a resumable handoff.
 
 1. Existing stdio ingress has no verified per-request principal/conversation
    context transfer contract yet.
-2. Real two-chat app acceptance has no confirmed authorized, supported
-   observation/operation route; the current Computer Use attachment is unavailable.
+2. Real two-chat acceptance has not been executed. Supported web observation is
+   available; activation still depends on the trusted ingress contract above.
 
 Neither blocks independent Phase 1/source work, requires declaring all source
 work impossible, or justifies introducing a new conversation-signing infrastructure.
