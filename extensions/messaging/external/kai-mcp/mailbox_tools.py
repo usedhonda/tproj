@@ -15,10 +15,11 @@ from typing import Any, Callable, Mapping
 MAX_LIMIT = 100
 WIRE_LIMIT = 262_144
 CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "rejected", "stale_session"))
-# Project aliases may contain Unicode and dots, matching the hub's qualified
-# address contract. Enrolled service addresses use a conservative ASCII token.
+# Project aliases may contain Unicode and internal dots, matching the hub's
+# qualified address contract. Enrolled service addresses use a conservative
+# ASCII token.
 # In both cases the trusted authorization result remains the source of truth.
-PROJECT_ADDRESS_RE = re.compile(r"^[^./\s]+\.(?:cc|cdx)$")
+PROJECT_ADDRESS_RE = re.compile(r"^[^/\s]+(?:\.[^/\s]+)*\.(?:cc|cdx)$")
 SERVICE_ADDRESS_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*)(?:\.[A-Za-z0-9](?:[A-Za-z0-9_-]*)*)*$")
 SHORTCUT_TARGETS = frozenset(("cc", "cdx"))
 ID_RE = re.compile(r"^[^\s]+$")

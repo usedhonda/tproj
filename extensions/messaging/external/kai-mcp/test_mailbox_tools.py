@@ -125,6 +125,25 @@ class MailboxToolsTest(unittest.TestCase):
         self.assertEqual(result["message_id"], "unicode-1")
         self.assertEqual(self.calls[0]["target"], "航海.cc")
 
+    def test_internal_dot_unicode_project_target_status_and_send_are_authorized(self):
+        target = "航海.v2.cc"
+        self.tools.authorizer = lambda _name, _args: {"allowed_addresses": [target]}
+        status = self.tools.dispatch("tproj_status", {"target": target})
+        sent = self.tools.dispatch("tproj_send", {"target": target, "body": "x", "submission_id": "unicode-dot-1"})
+        self.assertEqual(status["target"], target)
+        self.assertEqual(sent["message_id"], "unicode-dot-1")
+        self.assertEqual([call["op"] for call in self.calls], ["status", "service_send"])
+        self.assertEqual(self.calls[0]["target"], target)
+        self.assertEqual(self.calls[1]["target"], target)
+
+    def test_internal_dot_unicode_project_target_outside_allowlist_never_reaches_host(self):
+        target = "航海.v2.cc"
+        self.tools.authorizer = lambda _name, _args: {"allowed_addresses": ["航海.v3.cc"]}
+        with self.assertRaises(module.MailboxToolError) as raised:
+            self.tools.dispatch("tproj_send", {"target": target, "body": "x", "submission_id": "unicode-dot-out"})
+        self.assertEqual(raised.exception.code, "unknown_target")
+        self.assertEqual(self.calls, [])
+
     def test_reply_is_pinned_and_ack_is_scoped(self):
         reply = self.tools.dispatch("tproj_reply", {"message_id": "original", "body": "back", "submission_id": "reply-1"})
         self.assertEqual(reply["in_reply_to"], "original")
