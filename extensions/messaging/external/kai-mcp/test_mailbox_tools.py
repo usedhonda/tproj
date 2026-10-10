@@ -144,6 +144,9 @@ class MailboxToolsTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, "unknown_target")
         self.assertEqual(self.calls, [])
 
+    def test_project_address_regex_rejects_long_dotted_nonmatching_target(self):
+        self.assertIsNone(module.PROJECT_ADDRESS_RE.fullmatch(("a." * 25) + "x"))
+
     def test_reply_is_pinned_and_ack_is_scoped(self):
         reply = self.tools.dispatch("tproj_reply", {"message_id": "original", "body": "back", "submission_id": "reply-1"})
         self.assertEqual(reply["in_reply_to"], "original")

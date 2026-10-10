@@ -19,7 +19,7 @@ CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "r
 # qualified address contract. Enrolled service addresses use a conservative
 # ASCII token.
 # In both cases the trusted authorization result remains the source of truth.
-PROJECT_ADDRESS_RE = re.compile(r"^[^/\s]+(?:\.[^/\s]+)*\.(?:cc|cdx)$")
+PROJECT_ADDRESS_RE = re.compile(r"^[^/\s]+\.(?:cc|cdx)$")
 SERVICE_ADDRESS_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*)(?:\.[A-Za-z0-9](?:[A-Za-z0-9_-]*)*)*$")
 SHORTCUT_TARGETS = frozenset(("cc", "cdx"))
 ID_RE = re.compile(r"^[^\s]+$")
