@@ -63,6 +63,20 @@ class TaskReconcileWitnessTest(unittest.TestCase):
                     with patch.object(task_host.Path, 'home', return_value=Path(raw)), patch.object(task_host.Path, 'is_symlink', return_value=False):
                         self.assertEqual(task_host._command_execution_outcome(ep, 'op-1', 1.5), expected)
 
+    def test_completion_rejects_mixed_file_change_and_command_execution(self):
+        thread = '99999999-9999-4999-8999-999999999999'
+        ep = {'platform':'cdx','thread_id':thread,'project_path':'/project'}
+        with tempfile.TemporaryDirectory() as raw:
+            self.write_transcript(raw, thread, {'type':'FileChange','id':'op-1','status':'completed'})
+            path = next((Path(raw) / '.codex/sessions/2026/01/01').glob('*.jsonl'))
+            row = {'type':'event_msg','payload':{'type':'item_completed','thread_id':thread,
+                                                  'item':{'type':'CommandExecution','id':'op-1',
+                                                          'status':'completed','exit_code':0},
+                                                  'started_at_ms':2000,'completed_at_ms':3000}}
+            path.write_text(path.read_text() + json.dumps(row) + '\n')
+            with patch.object(task_host.Path, 'home', return_value=Path(raw)), patch.object(task_host.Path, 'is_symlink', return_value=False):
+                self.assertIsNone(task_host._completion_outcome(ep, 'op-1', 1.5))
+
     def write_cc_transcript(self, root, thread, rows):
         path = Path(root) / '.claude/projects/project'
         path.mkdir(parents=True)

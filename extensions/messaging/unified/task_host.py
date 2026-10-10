@@ -40,17 +40,17 @@ def _file_change_witness(ep, tool_use_id, created_at, home=None):
     except (OSError, ValueError, TypeError, AttributeError, StopIteration, OverflowError): return False
 
 
-def _command_execution_outcome(ep, tool_use_id, created_at, home=None):
-    """Return success/error for one exact completed Codex CommandExecution."""
+def _command_execution_observation(ep, tool_use_id, created_at, home=None):
+    """Return whether target command/file items were seen and its strict outcome."""
     tid = str(ep.get('thread_id') or ep.get('session_id') or '')
     project = ep.get('project_path')
     if (ep.get('platform') != 'cdx' or not re.fullmatch(r'[0-9a-fA-F-]{36}', tid)
             or not project or not isinstance(tool_use_id, str) or not tool_use_id):
-        return None
+        return False, False, None
     try:
         created_ms = int(float(created_at) * 1000)
         if not math.isfinite(float(created_at)):
-            return None
+            return False, False, None
     except (TypeError, ValueError, OverflowError):
         return None
     root = Path(home or Path.home()) / '.codex/sessions'
@@ -59,6 +59,8 @@ def _command_execution_outcome(ep, tool_use_id, created_at, home=None):
     if len(paths) != 1:
         return None
     matches = []
+    saw_command = False
+    saw_file_change = False
     try:
         with paths[0].open(encoding='utf-8') as stream:
             header = json.loads(next(stream))
@@ -76,21 +78,35 @@ def _command_execution_outcome(ep, tool_use_id, created_at, home=None):
                 item = payload.get('item')
                 if not isinstance(item, dict) or item.get('id') != tool_use_id:
                     continue
+                if item.get('type') == 'FileChange':
+                    saw_file_change = True
+                    continue
+                if item.get('type') == 'CommandExecution':
+                    saw_command = True
+                else:
+                    continue
                 if payload.get('thread_id') != tid:
-                    return None
+                    return saw_command, saw_file_change, None
                 if (item.get('type') != 'CommandExecution' or item.get('status') != 'completed'
                         or type(item.get('exit_code')) is not int):
-                    return None
+                    return saw_command, saw_file_change, None
                 started = payload.get('started_at_ms'); completed = payload.get('completed_at_ms')
                 if (type(started) is not int or type(completed) is not int
                         or completed < started or started < created_ms):
-                    return None
+                    return saw_command, saw_file_change, None
                 matches.append(item)
+        if saw_command and saw_file_change:
+            return saw_command, saw_file_change, None
         if len(matches) != 1:
-            return None
-        return 'success' if matches[0]['exit_code'] == 0 else 'error'
+            return saw_command, saw_file_change, None
+        return saw_command, saw_file_change, ('success' if matches[0]['exit_code'] == 0 else 'error')
     except (OSError, ValueError, TypeError, AttributeError, StopIteration, OverflowError):
-        return None
+        return saw_command, saw_file_change, None
+
+
+def _command_execution_outcome(ep, tool_use_id, created_at, home=None):
+    """Return success/error for one exact completed Codex CommandExecution."""
+    return _command_execution_observation(ep, tool_use_id, created_at, home)[2]
 
 
 _CC_LOCAL_TOOLS = frozenset(('Bash', 'Edit', 'Write'))
@@ -195,9 +211,13 @@ def _completion_outcome(ep, tool_use_id, created_at):
     if ep.get('platform') == 'cc':
         return _cc_tool_outcome(ep, tool_use_id, created_at)
     if ep.get('platform') == 'cdx':
-        command_outcome = _command_execution_outcome(ep, tool_use_id, created_at)
+        saw_command, saw_file_change, command_outcome = _command_execution_observation(ep, tool_use_id, created_at)
         if command_outcome is not None:
             return command_outcome
+        if saw_command and saw_file_change:
+            return None
+        if saw_command:
+            return None
     return 'success' if _file_change_witness(ep, tool_use_id, created_at) else None
 
 
