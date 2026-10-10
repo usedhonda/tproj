@@ -297,6 +297,43 @@ class TaskAuthority:
         if op["state"] != "open": return {"token":token,"duplicate":True}
         self.db.execute("UPDATE task_operations SET state='closed' WHERE token=?",(token,)); return {"token":token,"closed":True}
 
+    def _op_binding_release_check(self, req, actor):
+        """Read-only permission for a former executor's local fence release."""
+        if not isinstance(req.get('task_id'), str) or not isinstance(req.get('expected_epoch'), int):
+            raise TaskAuthorityError('invalid_request', 'task and historical epoch are required')
+        previous = req.get('previous')
+        fields = ('endpoint_id', 'incarnation', 'host_id', 'project_id', 'platform', 'native_id')
+        if not isinstance(previous, dict) or not all(isinstance(previous.get(k), str) and previous[k] for k in fields):
+            raise TaskAuthorityError('identity_rejected', 'historical native binding evidence is incomplete')
+        if previous['host_id'] != actor['host_id'] or previous['project_id'] != actor['project_id']:
+            raise TaskAuthorityError('identity_rejected', 'historical binding is not the same enrolled participant')
+        row = self._task(req['task_id']); old_epoch = req['expected_epoch']
+        if row['status'] not in ('accepted', 'in_progress'):
+            raise TaskAuthorityError('stale_task', 'current task assignment is not active')
+        if row['epoch'] <= old_epoch:
+            raise TaskAuthorityError('stale_task', 'task has not transferred beyond the historical epoch')
+        if (row['executor_endpoint'], row['executor_incarnation'], row['executor_host_id']) != (
+                actor['endpoint_id'], actor['incarnation'], actor['host_id']):
+            raise TaskAuthorityError('stale_executor', 'current authenticated executor does not own the active assignment')
+        assignment = self.db.execute(
+            'SELECT 1 FROM task_assignments WHERE task_id=? AND endpoint=? AND incarnation=? AND host_id=? AND epoch=?',
+            (req['task_id'], previous['endpoint_id'], previous['incarnation'], previous['host_id'], old_epoch)).fetchone()
+        if not assignment:
+            raise TaskAuthorityError('identity_rejected', 'historical assignment continuity is unavailable')
+        if previous['endpoint_id'] == actor['endpoint_id'] and previous['incarnation'] == actor['incarnation']:
+            raise TaskAuthorityError('identity_rejected', 'historical binding must be a former endpoint')
+        pending = self.db.execute('SELECT * FROM task_handoffs WHERE task_id=?', (req['task_id'],)).fetchone()
+        if pending and pending['state'] in ('prepared', 'released', 'accepted') and (
+                pending['target_endpoint'] in (previous['endpoint_id'], actor['endpoint_id'])
+                or pending['target_incarnation'] in (previous['incarnation'], actor['incarnation'])):
+            raise TaskAuthorityError('handoff_pending', 'task has a pending handoff for this native binding')
+        if self.db.execute(
+                'SELECT 1 FROM task_operations WHERE task_id=? AND endpoint=? AND incarnation=? AND state="open"',
+                (req['task_id'], previous['endpoint_id'], previous['incarnation'])).fetchone():
+            raise TaskAuthorityError('operations_open', 'historical executor still has open operations')
+        return {'allowed': True, 'task_id': req['task_id'], 'epoch': old_epoch,
+                'previous_endpoint': previous['endpoint_id']}
+
     def _op_prepare_handoff(self, req, actor):
         row=self._task(str(req.get("task_id"))); self._owner(row,actor); self._epoch(req,row)
         self._handoff_allowed(row)

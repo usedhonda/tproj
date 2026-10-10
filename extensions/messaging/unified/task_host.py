@@ -134,6 +134,38 @@ def _completion_witness(ep, tool_use_id, created_at):
     return _file_change_witness(ep, tool_use_id, created_at)
 
 
+def _native_binding_id(ep):
+    return str(ep.get('thread_id') or ep.get('session_id') or ep.get('runtime_id') or '')
+
+
+def _historical_binding_proof(host, ep, task_id, epoch):
+    """Derive one former local binding from the authenticated native context."""
+    native_id = _native_binding_id(ep)
+    if not native_id or not binding_marker(native_id).is_file():
+        raise HubError('identity_rejected', 'native binding continuity is unavailable')
+    rows = host.db.execute(
+        'SELECT * FROM formal_task_binding WHERE native_id=? ORDER BY endpoint_id', (native_id,)).fetchall()
+    if len(rows) != 1:
+        raise HubError('identity_rejected', 'native binding continuity is ambiguous')
+    row = rows[0]
+    if (row['endpoint_id'] == ep['endpoint_id'] or row['task_id'] != task_id
+            or row['epoch'] != epoch):
+        raise HubError('identity_rejected', 'historical binding does not match detach request')
+    directory = host.hub('endpoints_list').get('endpoints', [])
+    matches = [item for item in directory if item.get('endpoint_id') == row['endpoint_id']]
+    if len(matches) != 1:
+        raise HubError('identity_rejected', 'historical endpoint continuity is unavailable')
+    old = matches[0]
+    if (old.get('host_id') != ep.get('host_id') or old.get('participant_id') != ep.get('participant_id')
+            or old.get('platform') != ep.get('platform') or old.get('incarnation') != row['incarnation']):
+        raise HubError('identity_rejected', 'historical endpoint continuity differs')
+    return {
+        'endpoint_id': old['endpoint_id'], 'incarnation': old['incarnation'],
+        'host_id': old['host_id'], 'project_id': ep.get('project_id'),
+        'platform': old['platform'], 'native_id': native_id,
+    }
+
+
 def binding_marker(native_id):
     # Presence is only a restrictive fence, never a copy of task authority.
     root = Path(os.environ.get('TPROJ_TASK_BINDING_DIR', str(Path.home()/'.local/state/tproj/task-bindings')))
@@ -196,6 +228,8 @@ def dispatch(host, ep, req):
     if op == 'task_binding_status':
         return _binding_status(host, ep)
     host.db.execute('CREATE TABLE IF NOT EXISTS formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, task_id TEXT NOT NULL, epoch INTEGER NOT NULL, native_id TEXT NOT NULL)')
+    if op == 'task_binding_release_check':
+        raise HubError('unsupported', 'binding release permission is host-internal')
     if op in ('task_begin_operation','task_end_operation'):
         raise HubError('unsupported','operation admission uses the formal tool hook')
     if op == 'task_approval':
@@ -247,7 +281,32 @@ def dispatch(host, ep, req):
         result=host.hub(actual,endpoint_id=ep['endpoint_id'],task_id=bound['task_id'],expected_epoch=bound['epoch'],tool_use_id=ident)
         return dict(result,assigned=True)
     if op == 'task_detach':
-        if not bound:return {'detached':True}
+        if not bound:
+            if not isinstance(req.get('expected_epoch'), int) or not isinstance(req.get('task_id'), str):
+                raise HubError('epoch_conflict', 'detach must name the historical assignment epoch and task')
+            host.db.execute('BEGIN IMMEDIATE')
+            try:
+                if host.db.execute('SELECT 1 FROM formal_task_binding WHERE endpoint_id=?', (ep['endpoint_id'],)).fetchone():
+                    raise HubError('stale_executor', 'current binding appeared during detach')
+                proof = _historical_binding_proof(host, ep, req['task_id'], req['expected_epoch'])
+                result = host.hub('task_binding_release_check', endpoint_id=ep['endpoint_id'],
+                                  task_id=req['task_id'], expected_epoch=req['expected_epoch'],
+                                  native_id=proof['native_id'], previous=proof)
+                if not isinstance(result, dict) or result.get('allowed') is not True:
+                    raise HubError('identity_rejected', 'master did not authorize historical binding release')
+                deleted = host.db.execute(
+                    'DELETE FROM formal_task_binding WHERE endpoint_id=? AND task_id=? AND epoch=?',
+                    (proof['endpoint_id'], req['task_id'], req['expected_epoch'])).rowcount
+                if deleted != 1:
+                    raise HubError('identity_rejected', 'historical binding changed during detach')
+                remaining = host.db.execute('SELECT 1 FROM formal_task_binding WHERE native_id=?', (proof['native_id'],)).fetchone()
+                if not remaining:
+                    binding_marker(proof['native_id']).unlink(missing_ok=True)
+                host.db.commit()
+                return {'detached': True, 'resynchronized': True}
+            except Exception:
+                if host.db.in_transaction: host.db.rollback()
+                raise
         if req.get('expected_epoch') != bound['epoch']:
             raise HubError('epoch_conflict','detach must name the bound assignment epoch')
         if req.get('task_id') != bound['task_id']:

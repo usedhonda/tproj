@@ -21,6 +21,33 @@ def master(hub):
     return selected
 
 
+def _attest_binding_release(hub, evidence, body):
+    """Bind historical release proof to this host's enrolled endpoint directory."""
+    previous = body.get('previous')
+    native_id = body.get('native_id')
+    fields = ('endpoint_id', 'incarnation', 'host_id', 'project_id', 'platform', 'native_id')
+    if not isinstance(native_id, str) or not native_id or not isinstance(previous, dict):
+        raise HubError('identity_rejected', 'historical native binding evidence is incomplete')
+    if any(not isinstance(previous.get(k), str) or not previous[k] for k in fields):
+        raise HubError('identity_rejected', 'historical native binding evidence is incomplete')
+    current_ep = evidence['endpoint']; current_participant = evidence['participant']
+    if previous['native_id'] != native_id:
+        raise HubError('identity_rejected', 'historical native context does not match current caller')
+    if previous['host_id'] != current_ep['host_id'] or previous['project_id'] != current_participant.get('project_id'):
+        raise HubError('identity_rejected', 'historical binding is not the same enrolled participant')
+    if previous['platform'] != current_ep.get('platform'):
+        raise HubError('identity_rejected', 'historical binding platform differs')
+    old = hub._row('SELECT * FROM endpoints WHERE endpoint_id=?', (previous['endpoint_id'],))
+    participant = hub._row('SELECT * FROM participants WHERE participant_id=?', (old['participant_id'],)) if old else None
+    if (not old or not participant or old['host_id'] != current_ep['host_id']
+            or old['participant_id'] != current_ep['participant_id']
+            or str(old['incarnation']) != previous['incarnation']
+            or str(old['platform']) != previous['platform']
+            or participant['project_id'] != previous['project_id']):
+        raise HubError('identity_rejected', 'historical endpoint continuity is unavailable')
+    return dict(previous)
+
+
 def dispatch(hub, req, peer=False):
     from tasks import TaskAuthority, TaskAuthorityError
     origin = hub._auth(req)
@@ -39,6 +66,15 @@ def dispatch(hub, req, peer=False):
         body=dict(req.get('request') or {})
         if not str(body.get('op','')).startswith('task_'):
             raise HubError('invalid_request','formal task operation required')
+        if body.get('op') == 'task_binding_release_check':
+            previous = body.get('previous')
+            current = evidence.get('endpoint') or {}
+            participant = evidence.get('participant') or {}
+            if (not isinstance(previous, dict) or previous.get('native_id') != body.get('native_id')
+                    or previous.get('host_id') != current.get('host_id')
+                    or previous.get('project_id') != participant.get('project_id')
+                    or previous.get('platform') != current.get('platform')):
+                raise HubError('identity_rejected', 'historical native binding evidence is incomplete')
     else:
         if origin != hub.local_id:
             raise HubError('unauthorized','formal tasks require local host ingress')
@@ -50,6 +86,9 @@ def dispatch(hub, req, peer=False):
             if not isinstance(value,str):raise HubError('invalid_request','task destination must be an address')
             if value in ('cc','cdx'):value=evidence['participant']['address'].rsplit('.',1)[0]+'.'+value
             body[field]=actor(hub.resolve_destination(value))
+        if body.get('op') == 'task_binding_release_check':
+            evidence = hub.local_resolve(endpoint_id=req.get('endpoint_id'))
+            _attest_binding_release(hub, evidence, body)
         if selected != hub.local_id:
             response = hub.remote(selected,'task',actor_evidence=evidence,request=body,task_protocol=TASK_PROTOCOL)
             if not isinstance(response,dict) or response.get('task_protocol') != TASK_PROTOCOL or 'result' not in response:

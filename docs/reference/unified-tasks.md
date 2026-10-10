@@ -152,6 +152,20 @@ still assigns it. Another executor's open operation does not prevent this local
 release. A wrong task ID cannot clear the local fence, and current active executors
 cannot detach before report or cancel. Superseded epochs still cannot mutate tasks.
 
+If the authenticated native conversation has lost its local binding after a
+handoff, `detach TASK --epoch N` may resynchronize one exact former binding.
+The host derives the old row from its verified native ID and enrolled endpoint
+directory; callers cannot supply a prior endpoint or continuity proof. The
+master performs a read-only release check: the exact historical assignment and
+epoch must exist on the same host/project/platform, the task must be actively
+owned by the current authenticated executor at a later epoch, the former
+executor must have no open operations, and no pending handoff may target either
+side. Frozen, current-owner, ambiguous, missing, cross-native, or forged proof
+is rejected without local cleanup. Other executors' open operations remain
+untouched. The operation changes only the requesting host's stale local binding
+and removes its marker when no binding for that native conversation remains; it
+does not change task authority, roles, grants, approvals, or history.
+
 Discovery preserves the incarnation returned by the hub's endpoint registration
 response in the authenticated caller record. Native registry evidence never
 mints this value. Missing or mismatched registration confirmation rejects task
