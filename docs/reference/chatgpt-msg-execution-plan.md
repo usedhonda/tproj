@@ -28,6 +28,38 @@ assistant and native identities, permissions and sessions remain unchanged.
 
 ## A. Establish the actual ingress contract
 
+### Select ingress and return route together
+
+The acceptance unit is the actual reply body returning to the original chat,
+not the existence of a registry or a successful catalog update. Classify the
+actual test chats before choosing an adapter; a cloud conversation URL alone
+does not establish Work mode or Events support.
+
+| Surface | Return route candidate | Limit |
+| --- | --- | --- |
+| Ordinary non-Work ChatGPT | Authenticated inbox/message tool result; active app UI can offer an explicit "pass reply to conversation" action | No verified arbitrary-chat backend posting API; UI availability is not idle-chat resumption |
+| Work chat on web or desktop Cloud; dots | Authenticated MCP Events subscription notifies its owning chat, then that chat pulls the message body | Requires MCP 2.0, verified callback, persistent authorized subscription; webhook receipt is not body consumption |
+| Local Codex/native CLI | Existing enrolled adapter; app-server thread operations only where the actual connection and ownership are verified | Local thread IDs are not consumer ChatGPT conversation IDs |
+| Authorized Web UI delivery | Reconfirm the original target, submit a clearly attributed external reply and read back the matching post | Paste, submit, visible post, model consumption and generation completion are distinct |
+
+MCP tool `content`/`structuredContent` carries the reply to the model; result
+`_meta` alone does not. An active app UI may use `ui/message` or
+`window.openai.sendFollowUpMessage` in its hosting conversation. This is not
+an API for selecting arbitrary closed chats. Keep notification, UI display,
+context update, follow-up submission and model activation separate.
+
+Reuse existing participant/mailbox state. Separate durable `participant_id`,
+unique `address`, authenticated conversation `binding`, transient
+`endpoint/incarnation`, typed live `return route`, and mutable display `label`.
+Labels never authorize access or restore a binding. Return replies through the
+original message's sender binding, not a responder-supplied URL or destination.
+Endpoint restart alone must not create a new participant.
+
+The next decision packet must contain the actual A/B surface, independent
+tool-invocation/context evidence, and a compatible return route. Missing ingress
+provenance is not repaired by manual pull, OAuth alone, or a different transport.
+Do not replace an ordinary ChatGPT conversation with an API Conversation.
+
 Produce a source-backed table for the existing tunnel before selecting an
 architecture:
 
@@ -183,6 +215,12 @@ capabilities-only diagnostic. It does not replace the following acceptance:
 Tool discovery, HTTP success, fixtures and existing assistant success do not
 substitute for this acceptance. Automatic idle-chat resumption is excluded.
 
+For the selected notification/UI return adapter, separately verify acceptance,
+presentation in the original chat, reply-body consumption and any model
+activation actually promised. A manual-pull milestone does not remove this
+return-route work from the overall communication objective. Preserve stable
+message/submission IDs on uncertain outcomes; do not resend to manufacture proof.
+
 ## F. Catalog, rollback and final report
 
 Keep shared plugin descriptions, schemas and callable catalogs consistent.
@@ -212,6 +250,11 @@ No configuration, test execution, credential issuance or deployment was requeste
 from the reviewer.
 
 ## Primary references
+
+- [MCP Events: supported surfaces and subscription delivery](https://developers.openai.com/plugins/build/mcp-events)
+- [ChatGPT app UI bridge](https://developers.openai.com/plugins/build/chatgpt-ui)
+- [Tool results and component follow-up messages](https://developers.openai.com/plugins/reference)
+- [Codex app-server thread operations](https://learn.chatgpt.com/docs/app-server)
 
 - [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
 - [Client authentication and mTLS](https://developers.openai.com/plugins/build/auth#mutual-tls-mtls)
