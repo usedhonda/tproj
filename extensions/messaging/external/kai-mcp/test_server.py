@@ -2,6 +2,7 @@ import importlib.util
 from io import StringIO
 import json
 from pathlib import Path
+import re
 import sys
 import unittest
 
@@ -44,6 +45,26 @@ class MCPServerTest(unittest.TestCase):
         self.assertEqual({tool["name"] for tool in listed["result"]["tools"]}, server.TOOL_NAMES)
         self.assertTrue(all("inputSchema" in tool and "annotations" in tool for tool in listed["result"]["tools"]))
         self.assertNotIn("events", initialized["result"]["capabilities"])
+
+    def test_catalog_target_patterns_match_runtime_for_status_and_send(self):
+        expected = r"^(?:(?!cc$|cdx$)[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9][A-Za-z0-9_-]*)*|[^/\s]+\.(?:cc|cdx))$"
+        catalogs = [
+            server.TOOL_CATALOG,
+            json.loads((ROOT.parents[3] / "docs" / "reference" / "external-assistant-tools.json").read_text())["tools"],
+            json.loads((ROOT / "external-assistant-tools.json").read_text())["tools"],
+        ]
+        accepted = ("kai", "kai.worker", "航海.v2.cc")
+        rejected = ("cc", "cdx", "kai/worker", "kai worker")
+        for catalog in catalogs:
+            tools = {tool["name"]: tool for tool in catalog}
+            patterns = [tools[name]["inputSchema"]["properties"]["target"]["pattern"]
+                        for name in ("tproj_status", "tproj_send")]
+            self.assertEqual(patterns, [expected, expected])
+            matcher = re.compile(expected)
+            for target in accepted:
+                self.assertIsNotNone(matcher.fullmatch(target), target)
+            for target in rejected:
+                self.assertIsNone(matcher.fullmatch(target), target)
 
     def test_optional_event_dispatcher_adds_capability_only_when_injected(self):
         class Events:
