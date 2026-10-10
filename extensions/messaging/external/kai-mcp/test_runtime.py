@@ -100,6 +100,7 @@ class RuntimeTest(unittest.TestCase):
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             path = Path(config["bridge_socket"])
+            idle = None
             try:
                 deadline = time.time() + 5
                 while not path.exists() and time.time() < deadline:
@@ -107,7 +108,6 @@ class RuntimeTest(unittest.TestCase):
                 self.assertTrue(path.exists())
                 idle = socket.socket(socket.AF_UNIX)
                 idle.connect(str(path))
-                idle.close()
                 time.sleep(module.BRIDGE_CONNECTION_TIMEOUT + 0.2)
                 disconnected = socket.socket(socket.AF_UNIX)
                 disconnected.connect(str(path))
@@ -123,6 +123,8 @@ class RuntimeTest(unittest.TestCase):
                 self.assertTrue(response)
                 self.assertFalse(json.loads(response)["ok"])
             finally:
+                if idle is not None:
+                    idle.close()
                 process.terminate()
                 process.wait(timeout=5)
 
