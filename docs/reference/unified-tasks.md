@@ -190,6 +190,8 @@ boolean. Both success and terminal error results close the operation; the
 reconcile response reports the native outcome separately and never implies task
 success, verification, or report. Sidechains, other sessions/projects,
 duplicate or malformed records, and non-boolean `is_error` values are rejected.
+Unrelated historical rows in the same native session are not witness records;
+only rows containing the exact target ID must match the bound session and cwd.
 The task must still be accepted/in-progress
 with no pending handoff, and the command has no bulk or force-close mode. A
 closed or absent operation is never treated as reconciled without an exact

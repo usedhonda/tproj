@@ -85,6 +85,17 @@ class TaskReconcileWitnessTest(unittest.TestCase):
                 self.assertEqual(task_host._cc_tool_outcome(ep, 'cc-1', 1_767_225_601.0), 'error')
                 self.assertFalse(task_host._cc_tool_witness(ep, 'cc-1', 1_767_225_601.0))
 
+    def test_cc_target_pair_ignores_unrelated_historical_cwds(self):
+        thread = '77777777-7777-4777-8777-777777777777'
+        ep={'platform':'cc','session_id':thread,'project_path':'/project'}
+        unrelated = {'type':'assistant','sessionId':thread,'cwd':'/old-project',
+                     'timestamp':'2025-01-01T00:00:00Z',
+                     'message':{'role':'assistant','content':[{'type':'text','text':'old'}]}}
+        with tempfile.TemporaryDirectory() as raw:
+            self.write_cc_transcript(raw, thread, [unrelated, *self.cc_rows(thread)])
+            with patch.object(task_host.Path, 'home', return_value=Path(raw)), patch.object(task_host.Path, 'is_symlink', return_value=False):
+                self.assertEqual(task_host._cc_tool_outcome(ep, 'cc-1', 1_767_225_601.0), 'success')
+
     def test_cc_dispatch_selects_cc_witness(self):
         class Host:
             def __init__(self):

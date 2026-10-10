@@ -85,29 +85,23 @@ def _cc_tool_outcome(ep, tool_use_id, created_at, home=None):
                 if not line.strip():
                     continue
                 row = json.loads(line)
-                if not isinstance(row, dict) or row.get('isSidechain') is True:
-                    return None
-                row_session = row.get('sessionId')
-                row_cwd = row.get('cwd')
-                relevant = row.get('type') in ('user', 'assistant')
-                if relevant:
-                    if (row_session != tid or not isinstance(row_cwd, str)
-                            or Path(row_cwd).resolve() != Path(str(project)).resolve()):
-                        return None
-                elif (row_session is not None and row_cwd is not None
-                      and (row_session != tid or not isinstance(row_cwd, str)
-                           or Path(row_cwd).resolve() != Path(str(project)).resolve())):
-                    return None
-                if not relevant:
+                if not isinstance(row, dict):
                     continue
-                if row.get('sessionId') != tid or not isinstance(row.get('cwd'), str):
+                content = (row.get('message') or {}).get('content')
+                if not isinstance(content, list):
+                    continue
+                target_items = [item for item in content if isinstance(item, dict) and (
+                    (row.get('type') == 'assistant' and item.get('type') == 'tool_use' and item.get('id') == tool_use_id)
+                    or (row.get('type') == 'user' and item.get('type') == 'tool_result' and item.get('tool_use_id') == tool_use_id))]
+                if not target_items:
+                    continue
+                if row.get('isSidechain') is True or row.get('sessionId') != tid or not isinstance(row.get('cwd'), str):
+                    return None
+                if Path(row['cwd']).resolve() != Path(str(project)).resolve():
                     return None
                 timestamp = _cc_timestamp(row.get('timestamp'))
                 if timestamp is None:
                     return None
-                content = (row.get('message') or {}).get('content')
-                if not isinstance(content, list):
-                    continue
                 for item in content:
                     if not isinstance(item, dict):
                         continue
