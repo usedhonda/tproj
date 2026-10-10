@@ -62,6 +62,7 @@ class TaskReconcileWitnessTest(unittest.TestCase):
             'precreation': (self.cc_rows(thread, call_time='2025-12-31T23:59:59Z', result_time='2025-12-31T23:59:59Z'), ep, False),
             'error': (self.cc_rows(thread, error=True), ep, False),
             'duplicate': (self.cc_rows(thread, duplicate=True), ep, False),
+            'wrong_type_duplicate': ([{'type':'system','sessionId':thread,'cwd':'/project','timestamp':'2026-01-01T00:00:01Z','message':{'content':[{'type':'tool_use','id':'cc-1'}]}}, *self.cc_rows(thread)], ep, False),
             'text_mention': (self.cc_rows(thread, text_only=True), ep, False),
             'missing_result': ([self.cc_rows(thread)[0]], ep, False),
         }

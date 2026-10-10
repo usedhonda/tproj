@@ -86,16 +86,20 @@ def _cc_tool_outcome(ep, tool_use_id, created_at, home=None):
                     continue
                 row = json.loads(line)
                 if not isinstance(row, dict):
-                    continue
+                    return None
                 content = (row.get('message') or {}).get('content')
                 if not isinstance(content, list):
                     continue
                 target_items = [item for item in content if isinstance(item, dict) and (
-                    (row.get('type') == 'assistant' and item.get('type') == 'tool_use' and item.get('id') == tool_use_id)
-                    or (row.get('type') == 'user' and item.get('type') == 'tool_result' and item.get('tool_use_id') == tool_use_id))]
+                    item.get('id') == tool_use_id or item.get('tool_use_id') == tool_use_id)]
                 if not target_items:
                     continue
                 if row.get('isSidechain') is True or row.get('sessionId') != tid or not isinstance(row.get('cwd'), str):
+                    return None
+                if row.get('type') not in ('assistant', 'user') or not any(
+                        (row.get('type') == 'assistant' and item.get('type') == 'tool_use' and item.get('id') == tool_use_id)
+                        or (row.get('type') == 'user' and item.get('type') == 'tool_result' and item.get('tool_use_id') == tool_use_id)
+                        for item in target_items):
                     return None
                 if Path(row['cwd']).resolve() != Path(str(project)).resolve():
                     return None
