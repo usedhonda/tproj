@@ -146,6 +146,16 @@ correlation context only and cannot grant identity. This is a unit-tested
 dispatch boundary, not live ChatGPT acceptance: production still needs a real
 provider attestor and runtime wiring.
 
+Before dispatch, the resolver revalidates the exact binding ID, immutable
+attested identity, generation, revocation state and expiry from the current
+registry. The canonical owner lock is held across that validation and the
+dispatch call (including persisted-registry file locking), so a revoke that
+acquires the lock before dispatch wins and returns fixed `identity_rejected`
+with no mailbox call. A revoke that begins after dispatch has started is not
+claimed to roll back an already-started host operation. Attestation is captured
+once per request; revalidation never trusts request metadata or re-attests model
+arguments.
+
 Resolver-enabled MCP dispatch does not advertise or route the fixed KAI event
 and subscription handlers. Event delivery remains a fixed-service capability;
 ordinary conversation binding is limited to explicitly dispatched mailbox

@@ -164,25 +164,16 @@ class MCPServer:
                 "content": [{"type": "text", "text": json.dumps(result, sort_keys=True)}],
                 "structuredContent": result,
             }}
-        selected_tools = self.tools
         exc = None
         if self.conversation_resolver is not None:
             try:
-                selected_tools = self.conversation_resolver.resolve(request)
+                result = self.conversation_resolver.dispatch(request, name, arguments)
             except ConversationBindingError:
-                selected_tools = None
                 exc = MailboxToolError("identity_rejected", "trusted conversation binding required")
-            except Exception:
-                selected_tools = None
-                exc = MailboxToolError("identity_rejected", "trusted conversation binding required")
-        if selected_tools is None:
-            if exc is None:
-                exc = MailboxToolError("identity_rejected", "trusted conversation authorizer required")
-        else:
-            try:
-                result = selected_tools.dispatch(name, arguments)
             except MailboxToolError as caught:
                 exc = caught
+            except Exception:
+                exc = MailboxToolError("identity_rejected", "trusted conversation binding required")
             else:
                 summary = result.pop("_summary", None) if isinstance(result, dict) else None
                 text = summary if isinstance(summary, str) else json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -190,6 +181,24 @@ class MCPServer:
                     "content": [{"type": "text", "text": text}],
                     "structuredContent": result,
                 }}
+        else:
+            selected_tools = self.tools
+            if selected_tools is None:
+                exc = MailboxToolError("identity_rejected", "trusted conversation authorizer required")
+            else:
+                try:
+                    result = selected_tools.dispatch(name, arguments)
+                except MailboxToolError as caught:
+                    exc = caught
+                else:
+                    summary = result.pop("_summary", None) if isinstance(result, dict) else None
+                    text = summary if isinstance(summary, str) else json.dumps(result, ensure_ascii=False, sort_keys=True)
+                    return {"jsonrpc": "2.0", "id": req_id, "result": {
+                        "content": [{"type": "text", "text": text}],
+                        "structuredContent": result,
+                    }}
+        if exc is None:
+            exc = MailboxToolError("identity_rejected", "trusted conversation binding required")
         structured = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
         return {"jsonrpc": "2.0", "id": req_id, "result": {
             "content": [{"type": "text", "text": json.dumps(structured, ensure_ascii=False, sort_keys=True)}],

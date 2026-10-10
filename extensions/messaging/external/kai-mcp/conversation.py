@@ -461,6 +461,47 @@ class ConversationBindingRegistry:
                     return self._resolve_bindings(bindings, principal, subject, session, generation)
             return self._resolve_bindings(self._bindings, principal, subject, session, generation)
 
+    def dispatch(self, binding: ConversationBinding,
+                 operation: Callable[[], Any]) -> Any:
+        """Run one operation only while the exact binding remains valid.
+
+        The registry lock (and, for persisted registries, the canonical file
+        lock) is held across the final validation and operation invocation.
+        A revoke that starts before this section therefore wins; one that
+        starts after it waits until the operation has begun and is not claimed
+        to roll back an already-started host dispatch.
+        """
+        if not isinstance(binding, ConversationBinding) or not callable(operation):
+            raise ConversationBindingDenied()
+        with self._lock:
+            if self._path is not None:
+                with self._file_lock() as path:
+                    bindings = self._reload_locked(path)
+                    self._validate_resolved_binding(bindings, binding)
+                    return operation()
+            self._validate_resolved_binding(self._bindings, binding)
+            return operation()
+
+    def _validate_resolved_binding(self, bindings: tuple[ConversationBinding, ...],
+                                   resolved: ConversationBinding) -> ConversationBinding:
+        matches = tuple(item for item in bindings if item.binding_id == resolved.binding_id)
+        if len(matches) != 1:
+            raise ConversationBindingDenied()
+        current = matches[0]
+        if (current.principal_id != resolved.principal_id
+                or current.provider_subject_digest != resolved.provider_subject_digest
+                or current.provider_session_digest != resolved.provider_session_digest
+                or current.service_id != resolved.service_id
+                or current.address != resolved.address
+                or current.participant_id != resolved.participant_id
+                or current.expires_at != resolved.expires_at
+                or current.generation != resolved.generation
+                or current.revoked):
+            raise ConversationBindingDenied()
+        if current.expires_at is not None and self._clock() >= current.expires_at:
+            raise ConversationBindingExpired()
+        return current
+
     def _resolve_bindings(self, bindings: tuple[ConversationBinding, ...],
                           principal: str, subject: str, session: str,
                           generation: int | None) -> ConversationBinding:
@@ -517,3 +558,22 @@ class ConversationToolResolver:
         if tools is None or not callable(getattr(tools, "dispatch", None)):
             raise ConversationToolFactoryError()
         return tools
+
+    def dispatch(self, request_context: Mapping[str, Any], name: str,
+                 arguments: Mapping[str, Any]) -> Any:
+        """Resolve, build, revalidate, and dispatch one request-local tool call."""
+        if not isinstance(request_context, Mapping):
+            raise ConversationAttestationError()
+        try:
+            binding = self.registry.resolve(lambda: self.attestor(request_context))
+        except ConversationBindingError:
+            raise
+        except Exception:
+            raise ConversationAttestationError() from None
+        try:
+            tools = self.tool_factory(binding)
+        except Exception:
+            raise ConversationToolFactoryError() from None
+        if tools is None or not callable(getattr(tools, "dispatch", None)):
+            raise ConversationToolFactoryError()
+        return self.registry.dispatch(binding, lambda: tools.dispatch(name, arguments))

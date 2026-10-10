@@ -306,6 +306,56 @@ class ConversationBindingRegistryTest(unittest.TestCase):
             self.assertEqual(len(results), 2)
             self.assertEqual(len(set(results)), 1)
 
+    def test_resolver_revalidates_persisted_revoke_after_factory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bindings.json"
+            path.write_text(json.dumps({"bindings": self.config["bindings"]}), encoding="utf-8")
+            os.chmod(path, 0o600)
+            registry = module.ConversationBindingRegistry.load(path)
+            revoker = module.ConversationBindingRegistry.load(path)
+            identity = {"principal_id": "owner-a", "provider_subject_digest": digest("sub-a"),
+                        "provider_session_digest": digest("sess-a")}
+            calls = []
+
+            class Tools:
+                def dispatch(self, name, arguments):
+                    calls.append((name, arguments))
+                    return {"ok": True}
+
+            resolver = module.ConversationToolResolver(
+                registry, lambda _request: identity,
+                lambda binding: (revoker.revoke(binding.binding_id), Tools())[1])
+            with self.assertRaises(module.ConversationBindingDenied):
+                resolver.dispatch({"id": "request-a"}, "tproj_send", {"body": "x"})
+            self.assertEqual(calls, [])
+
+    def test_resolver_revalidates_expiry_after_factory_without_reattesting(self):
+        now = [10.0]
+        config = {"bindings": [{**self.config["bindings"][0], "expires_at": 20}]}
+        registry = module.ConversationBindingRegistry(config, clock=lambda: now[0])
+        attestations = []
+        calls = []
+
+        class Tools:
+            def dispatch(self, name, arguments):
+                calls.append(name)
+                return {"ok": True}
+
+        def attestor(_request):
+            attestations.append(True)
+            return {"principal_id": "owner-a", "provider_subject_digest": digest("sub-a"),
+                    "provider_session_digest": digest("sess-a")}
+
+        def factory(_binding):
+            now[0] = 20.0
+            return Tools()
+
+        resolver = module.ConversationToolResolver(registry, attestor, factory)
+        with self.assertRaises(module.ConversationBindingExpired):
+            resolver.dispatch({"id": "request-a"}, "tproj_send", {"body": "x"})
+        self.assertEqual(len(attestations), 1)
+        self.assertEqual(calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()
