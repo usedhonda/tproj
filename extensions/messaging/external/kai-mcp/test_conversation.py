@@ -108,6 +108,12 @@ class ConversationBindingRegistryTest(unittest.TestCase):
                 "provider_subject_digest": digest("sub-a"),
                 "provider_session_digest": digest("sess-a"),
             }).binding_id, enrolled.binding_id)
+            restarted = module.ConversationBindingRegistry.load(path, owner_policy=supplied)
+            self.assertEqual(restarted.resolve(lambda: {
+                "principal_id": "owner-a",
+                "provider_subject_digest": digest("sub-a"),
+                "provider_session_digest": digest("sess-a"),
+            }).binding_id, enrolled.binding_id)
 
     def test_malformed_reload_does_not_publish_policy_or_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
