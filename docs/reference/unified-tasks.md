@@ -164,10 +164,14 @@ reconcile or force-close capability.
 
 `tproj-task reconcile-operation TASK --epoch N --tool-use-id ID` is a bounded
 host-side recovery for one exact open operation. It accepts only an
-authenticated current binding plus an independently verified native Codex
-`FileChange` `item_completed` witness in the same thread and project, with
-valid timestamps after the master-recorded operation creation. Text mentions,
-other item types, wrong threads, and missing or ambiguous transcripts are
-rejected; the task must still be accepted/in-progress with no pending handoff,
-and the command has no bulk or force-close mode. A closed or absent operation
-is never treated as reconciled without an exact open-operation detail.
+authenticated current binding plus an independently verified native completion
+witness in the same thread and project, with valid timestamps after the
+master-recorded operation creation. Codex requires one exact `FileChange`
+`item_completed` record. CC requires one exact local `Bash`, `Edit`, or `Write`
+`tool_use` followed by one matching successful `tool_result`; sidechains,
+other sessions/projects, duplicate or malformed records, text mentions, and
+`is_error: true` results are rejected. The task must still be accepted/in-progress
+with no pending handoff, and the command has no bulk or force-close mode. A
+closed or absent operation is never treated as reconciled without an exact
+open-operation detail. Other native tool types (including server-side tools)
+are intentionally outside this witness contract.

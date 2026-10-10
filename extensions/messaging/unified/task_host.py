@@ -5,6 +5,8 @@ import uuid
 from pathlib import Path
 import os
 import re
+import math
+from datetime import datetime, timezone
 from protocol import HubError
 from task_approval import attest, digest
 
@@ -36,6 +38,95 @@ def _file_change_witness(ep, tool_use_id, created_at, home=None):
                 if type(started) is int and type(completed) is int and completed >= started >= int(float(created_at) * 1000): matches.append(item)
             return len(matches) == 1
     except (OSError, ValueError, TypeError, AttributeError, StopIteration, OverflowError): return False
+
+
+_CC_LOCAL_TOOLS = frozenset(('Bash', 'Edit', 'Write'))
+
+
+def _cc_timestamp(value):
+    """Return a finite epoch timestamp for a native CC row timestamp."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        number = parsed.timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _cc_tool_witness(ep, tool_use_id, created_at, home=None):
+    """Verify one exact successful native CC local-tool call/result pair."""
+    tid = str(ep.get('thread_id') or ep.get('session_id') or '')
+    project = ep.get('project_path')
+    created = _cc_timestamp(created_at)
+    if (ep.get('platform') != 'cc' or not re.fullmatch(r'[0-9a-fA-F-]{36}', tid)
+            or not project or not isinstance(tool_use_id, str) or not tool_use_id
+            or created is None):
+        return False
+    root = Path(home or Path.home()) / '.claude/projects'
+    paths = list(root.glob('*/' + tid + '.jsonl'))
+    paths = [p for p in paths if p.is_file() and not any(x.is_symlink() for x in (p, *p.parents))]
+    if len(paths) != 1:
+        return False
+    calls = []
+    results = []
+    try:
+        with paths[0].open(encoding='utf-8') as stream:
+            for index, line in enumerate(stream):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict) or row.get('isSidechain') is True:
+                    return False
+                row_session = row.get('sessionId')
+                row_cwd = row.get('cwd')
+                if row_session is not None or row_cwd is not None:
+                    if (row_session != tid or not isinstance(row_cwd, str)
+                            or Path(row_cwd).resolve() != Path(str(project)).resolve()):
+                        return False
+                if row.get('type') not in ('user', 'assistant'):
+                    continue
+                if row.get('sessionId') != tid or not isinstance(row.get('cwd'), str):
+                    return False
+                timestamp = _cc_timestamp(row.get('timestamp'))
+                if timestamp is None:
+                    return False
+                content = (row.get('message') or {}).get('content')
+                if not isinstance(content, list):
+                    continue
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if row.get('type') == 'assistant' and item.get('type') == 'tool_use' and item.get('id') == tool_use_id:
+                        if item.get('name') not in _CC_LOCAL_TOOLS:
+                            return False
+                        calls.append((index, timestamp))
+                    if row.get('type') == 'user' and item.get('type') == 'tool_result' and item.get('tool_use_id') == tool_use_id:
+                        if item.get('is_error') is True:
+                            return False
+                        results.append((index, timestamp))
+        if len(calls) != 1 or len(results) != 1:
+            return False
+        call_index, call_time = calls[0]
+        result_index, result_time = results[0]
+        return (call_time >= created and result_time >= created
+                and result_index > call_index and result_time >= call_time)
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+        return False
+
+
+def _completion_witness(ep, tool_use_id, created_at):
+    if ep.get('platform') == 'cc':
+        return _cc_tool_witness(ep, tool_use_id, created_at)
+    return _file_change_witness(ep, tool_use_id, created_at)
 
 
 def binding_marker(native_id):
@@ -138,8 +229,8 @@ def dispatch(host, ep, req):
         details = [item for item in snapshot.get('actor_open_operation_details', []) if item.get('tool_use_id') == ident]
         if (len(details) != 1 or type(details[0].get('epoch')) is not int
                 or details[0]['epoch'] != bound['epoch']
-                or not _file_change_witness(ep, ident, details[0].get('created_at'))):
-            raise HubError('witness_unavailable', 'native FileChange completion witness is unavailable')
+                or not _completion_witness(ep, ident, details[0].get('created_at'))):
+            raise HubError('witness_unavailable', 'native completion witness is unavailable')
         result = host.hub('task_end_operation', endpoint_id=ep['endpoint_id'], task_id=bound['task_id'], expected_epoch=epoch, tool_use_id=ident)
         return dict(result, assigned=True, reconciled=True)
     if op in ('task_guard_begin','task_guard_end'):
