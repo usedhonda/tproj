@@ -28,6 +28,9 @@ over the limit (including a valid prefix followed by extra bytes), malformed
 JSON, disconnects, read failures, and send failures are contained to that
 connection; they do not terminate the listener or event-pump thread.
 Successful later requests therefore remain serviceable after a bad client.
+Response delivery receives its own 2-second socket timeout after dispatch, so a
+slow or non-reading client cannot retain the receive deadline or trigger a
+second dispatch.
 
 Listener interruption errors (`EINTR` and `ECONNABORTED`) are retried. Other
 listener failures escape the bridge loop so the service supervisor can observe

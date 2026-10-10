@@ -336,6 +336,9 @@ def bridge(config: Mapping[str, Any]) -> int:
                         response = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
                     except Exception:
                         response = {"ok": False, "error": {"code": "identity_rejected", "message": "bridge request rejected"}}
+                    # The receive deadline must not become the send timeout:
+                    # response delivery gets its own bounded transport window.
+                    conn.settimeout(BRIDGE_CONNECTION_TIMEOUT)
                     conn.sendall((json.dumps(response, separators=(",", ":")) + "\n").encode())
             except (OSError, ValueError, TypeError):
                 # A client may disconnect, time out, or send an oversized/bad

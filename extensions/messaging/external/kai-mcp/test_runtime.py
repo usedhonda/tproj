@@ -285,6 +285,65 @@ class RuntimeTest(unittest.TestCase):
                 thread.join(timeout=2)
                 self.assertEqual(len(listener_errors), 1)
 
+    def test_bridge_response_timeout_does_not_redispatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bridge.sock"
+            config = self.config(directory)
+            config["bridge_socket"] = str(path)
+            real_socket = socket.socket
+            listeners = []
+            dispatches = []
+            listener_errors = []
+
+            class Events:
+                def pump_once(self):
+                    pass
+
+            class Runtime:
+                def __init__(self, _config):
+                    self.binding = mock.Mock(token="token")
+                def _attest(self):
+                    return {"service_id": "kai"}
+                def events(self):
+                    return Events()
+
+            def socket_factory(*args, **kwargs):
+                created = real_socket(*args, **kwargs)
+                if args and args[0] == socket.AF_UNIX:
+                    listeners.append(created)
+                return created
+
+            def dispatch(_runtime, _request):
+                dispatches.append(True)
+                return {"payload": "x" * (8 * 1024 * 1024)}
+
+            def serve():
+                try:
+                    module.bridge(config)
+                except OSError as exc:
+                    listener_errors.append(exc)
+
+            with mock.patch.object(module, "ServiceRuntime", Runtime), \
+                 mock.patch.object(module, "_bridge_request", side_effect=dispatch), \
+                 mock.patch.object(module.socket, "socket", side_effect=socket_factory), \
+                 mock.patch.object(module, "BRIDGE_CONNECTION_TIMEOUT", 0.05):
+                thread = threading.Thread(target=serve, daemon=True)
+                thread.start()
+                deadline = time.time() + 2
+                while not path.exists() and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(path.exists())
+                client = real_socket(socket.AF_UNIX)
+                client.connect(str(path))
+                client.sendall(b'{"op":"whoami"}\n')
+                time.sleep(0.2)
+                client.close()
+                self.assertEqual(len(dispatches), 1)
+                self.assertTrue(thread.is_alive())
+                listeners[0].close()
+                thread.join(timeout=2)
+                self.assertEqual(len(listener_errors), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
