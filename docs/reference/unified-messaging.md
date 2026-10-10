@@ -56,6 +56,8 @@ sent only when the application has an actual response.
 After a substantive peer message reaches an existing enrolled native CLI
 conversation, the receiver concisely explains the sender, request type, current
 status, and next action on that conversation's current user-facing surface.
+Include one nonsecret sentence identifying the request's target and key question
+or requested change.
 Do not echo the full peer body, secrets, or raw diagnostic output. This is local
 conversation progress, not forwarding or an additional notification route.
 FYI/no-reply messages do not require a peer reply; information affecting an active

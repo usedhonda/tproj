@@ -18,8 +18,9 @@ assistant and native identities, permissions and sessions remain unchanged.
   back to a fixed service identity.
 - Registry/dispatcher fixtures do not establish a production authenticated ingress.
 - The deployed fixed-service stdio runtime is not ordinary-chat enrollment.
-- Ordinary-chat GUI acceptance is unavailable because the current Computer Use
-  attachment rejects process ancestry before obtaining app state.
+- The current Computer Use attachment rejects process ancestry before obtaining
+  app state, so that observation route is unavailable. Another authorized,
+  supported route has not been confirmed; real two-chat acceptance remains open.
 - Fork behavior is not guaranteed: distinct trusted identities are isolated;
   indistinguishable provider identity copies cannot be separated by the backend.
 
@@ -84,7 +85,8 @@ parallel mailbox stores, a second role system, operation-specific identity
 wrappers, nonce-echo authentication or fixed-assistant fallback.
 
 Deliverable: runtime and host wiring selects the exact enrolled actor for each
-operation, with denied requests causing zero mailbox side effects.
+operation. Denial leaves logical mailbox and registration state unchanged;
+permitted audit recording is separate from that logical state.
 
 ## C. Define and implement explicit enrollment lifecycle
 
@@ -114,16 +116,28 @@ acceptance is implied.
 
 ## D. Minimal source acceptance
 
-Use the smallest relevant fixtures after the behavior stabilizes:
+Use the smallest relevant fixtures after the behavior stabilizes. Reuse existing
+coverage; add a scenario below only where its acceptance condition is unproved:
 
 - Alternate and concurrently process chats A/B in the same runtime: no global
   actor/context leakage.
 - Reject spoofed principal/session/participant arguments and foreign message IDs
   for message/reply/ack; isolate inboxes, cursors and batch ACK where supported.
 - Reject expired/revoked/old-generation bindings and unintended identity changes.
-- Assert zero send, acknowledgement, read-state or enrollment mutations on denial.
+- Exercise concurrent connect for the same validated binding: no duplicate
+  binding or participant is created.
+- Exercise registry/host partial failure and restart recovery without duplicate
+  registration or orphaned authoritative state.
+- Resolve a binding, then revoke or expire it before operation execution: deny
+  the stale operation, not merely the next resolve.
+- On rejection or a precommit exception, assert logical mailbox and registration
+  state remain unchanged, except permitted audit recording. Roll back precommit
+  changes; do not roll back a committed result merely because its response was
+  interrupted. Query that outcome using the same stable submission ID.
 - Scope idempotency by binding plus operation; reject key reuse with a different
   payload and preserve original IDs across uncertain response outcomes.
+- If existing coverage does not already prove it, use the same stable submission
+  ID under distinct bindings and verify their idempotency isolation.
 - Distinguish single mailbox acceptance from delivery cardinality.
 
 Synthetic acceptance is not authenticated production ingress or real chat proof.
@@ -135,8 +149,9 @@ entrypoint separately. Preserve existing sessions and grants. New credentials or
 security-sensitive grants, if truly necessary, require a concrete target and
 minimum scope before their separate authorization.
 
-After the authorized Computer Use attachment recovers, operate two actual
-ordinary app chats:
+Use an authorized, supported observation/operation route to operate two actual
+ordinary app chats. Recovery of the current Computer Use attachment is one
+possible route, not an exclusive prerequisite; alternatives remain unconfirmed:
 
 1. A sends to the external assistant; peer reads and replies; A reads that reply.
 2. B sends to a native session; peer reads and replies; B reads that reply.
@@ -162,10 +177,11 @@ explicitly unproven requirements and a resumable handoff.
 
 1. Existing stdio ingress has no verified per-request principal/conversation
    context transfer contract yet.
-2. Real ChatGPT GUI acceptance is blocked by the Computer Use attachment.
+2. Real two-chat app acceptance has no confirmed authorized, supported
+   observation/operation route; the current Computer Use attachment is unavailable.
 
-Neither requires declaring all source work impossible or introducing a new
-conversation-signing infrastructure.
+Neither blocks independent Phase 1/source work, requires declaring all source
+work impossible, or justifies introducing a new conversation-signing infrastructure.
 
 ## Review disposition
 
