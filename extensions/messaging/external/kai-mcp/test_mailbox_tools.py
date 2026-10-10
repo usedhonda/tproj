@@ -119,6 +119,12 @@ class MailboxToolsTest(unittest.TestCase):
             self.assertEqual(raised.exception.code, "unknown_target")
         self.assertEqual(len(self.calls), 1)
 
+    def test_unicode_project_target_remains_compatible(self):
+        self.tools.authorizer = lambda _name, _args: {"allowed_addresses": ["航海.cc"]}
+        result = self.tools.dispatch("tproj_send", {"target": "航海.cc", "body": "x", "submission_id": "unicode-1"})
+        self.assertEqual(result["message_id"], "unicode-1")
+        self.assertEqual(self.calls[0]["target"], "航海.cc")
+
     def test_reply_is_pinned_and_ack_is_scoped(self):
         reply = self.tools.dispatch("tproj_reply", {"message_id": "original", "body": "back", "submission_id": "reply-1"})
         self.assertEqual(reply["in_reply_to"], "original")

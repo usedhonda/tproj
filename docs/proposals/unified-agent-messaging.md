@@ -75,6 +75,10 @@ Sources consulted:
 - Keep public project addresses `<project>.cc` and `<project>.cdx`. Bare `cc` or
   `cdx` resolves inside the authenticated sender's project only. Cross-project
   addressing requires the full address; there is no focused-pane fallback.
+- Registered external services use their exact directory address (for example
+  `kai`) and are accepted only when the authenticated adapter's allowlist
+  contains that address. `cc` and `cdx` remain shortcuts only in the local
+  sender context; they are never service addresses or allowlist grants.
 - `gate` denotes the configured OpenClaw main participant. A project with a
   similar name remains an unrelated CC/Codex project. The OpenClaw adapter binds
   the configured gateway/account/agent identity, not a display prefix.

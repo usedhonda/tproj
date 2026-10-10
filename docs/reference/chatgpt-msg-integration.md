@@ -36,6 +36,14 @@ authority.
 
 Use the existing messaging tool names:
 
+Target syntax preserves qualified project addresses such as `<project>.cc` and
+`<project>.cdx` (including registered Unicode aliases). An enrolled service may
+be addressed by its exact directory address, such as `kai`, only when that
+address is present in the authenticated `allowed_addresses` scope. Native
+shortcuts `cc` and `cdx` are not service addresses or grants and are rejected
+by the external adapter; this contract does not claim service ingress or live
+provider availability.
+
 - Discover new destinations with `tproj_list`; use `tproj_status` when needed.
 - Persist a stable submission ID before `tproj_send`; preserve it on unknown
   outcomes rather than creating a new submission.

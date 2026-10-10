@@ -15,10 +15,12 @@ the latter requires an authenticated adapter mapping. Neither may be supplied
 as caller text. In particular, callers cannot pass `role`, `as`, `session`, a
 conversation selector, endpoint/PID/host data, or a receiver override.
 
-Send/status inputs require full project-qualified addresses such as `alpha.cc`
-and `alpha.cdx`; bare `cc` or `cdx` is rejected because it is projectless and
-ambiguous. Message views may show a registry-validated service address as a
-sender or target. `tproj_reply` is pinned to the supplied original `message_id`; the
+Send/status inputs accept a qualified project address such as `alpha.cc` or
+`alpha.cdx`, or an exact registered service address such as `kai`, only when
+that address is present in the authenticated context's `allowed_addresses`.
+Bare native aliases `cc` and `cdx` are rejected here: they are local sender
+shortcuts, not service addresses or allowlist grants. Message views may show a
+registry-validated service address as a sender or target. `tproj_reply` is pinned to the supplied original `message_id`; the
 adapter resolves the original thread and recipient and does not accept a
 receiver or conversation argument.
 
