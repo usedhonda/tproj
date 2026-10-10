@@ -76,6 +76,15 @@ class TaskReconcileWitnessTest(unittest.TestCase):
                         with patch.object(task_host.Path, 'home', return_value=Path(denied)), patch.object(task_host.Path, 'is_symlink', return_value=False):
                             self.assertEqual(task_host._cc_tool_witness(case_ep, 'cc-1', 1_767_225_601.0), expected)
 
+    def test_cc_terminal_error_is_reconciled_as_separate_outcome(self):
+        thread = '66666666-6666-4666-8666-666666666666'
+        ep={'platform':'cc','session_id':thread,'project_path':'/project'}
+        with tempfile.TemporaryDirectory() as raw:
+            self.write_cc_transcript(raw, thread, self.cc_rows(thread, error=True))
+            with patch.object(task_host.Path, 'home', return_value=Path(raw)), patch.object(task_host.Path, 'is_symlink', return_value=False):
+                self.assertEqual(task_host._cc_tool_outcome(ep, 'cc-1', 1_767_225_601.0), 'error')
+                self.assertFalse(task_host._cc_tool_witness(ep, 'cc-1', 1_767_225_601.0))
+
     def test_cc_dispatch_selects_cc_witness(self):
         class Host:
             def __init__(self):
@@ -89,7 +98,7 @@ class TaskReconcileWitnessTest(unittest.TestCase):
         host=Host(); host.db.execute('CREATE TABLE formal_task_binding(endpoint_id TEXT, incarnation TEXT, task_id TEXT, epoch INTEGER, native_id TEXT)')
         host.db.execute("INSERT INTO formal_task_binding VALUES('e','i','t',0,'native')")
         ep={'endpoint_id':'e','incarnation':'i','host_id':'h','project_id':'p','platform':'cc','session_id':'native','project_path':'/project'}
-        with patch.object(task_host, '_cc_tool_witness', return_value=True) as witness:
+        with patch.object(task_host, '_completion_outcome', return_value='success') as witness:
             result=task_host.dispatch(host, ep, {'op':'task_reconcile_operation','task_id':'t','expected_epoch':0,'tool_use_id':'op-1'})
         self.assertTrue(result['reconciled'])
         witness.assert_called_once_with(ep, 'op-1', 1.5)

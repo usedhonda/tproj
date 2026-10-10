@@ -185,9 +185,12 @@ valid and after both the master-recorded operation creation and its call; the
 call may predate operation admission because PreToolUse creates it first.
 Codex requires one exact `FileChange`
 `item_completed` record. CC requires one exact local `Bash`, `Edit`, or `Write`
-`tool_use` followed by one matching successful `tool_result`; sidechains,
-other sessions/projects, duplicate or malformed records, text mentions, and
-`is_error: true` results are rejected. The task must still be accepted/in-progress
+`tool_use` followed by one matching `tool_result` whose optional `is_error` is
+boolean. Both success and terminal error results close the operation; the
+reconcile response reports the native outcome separately and never implies task
+success, verification, or report. Sidechains, other sessions/projects,
+duplicate or malformed records, and non-boolean `is_error` values are rejected.
+The task must still be accepted/in-progress
 with no pending handoff, and the command has no bulk or force-close mode. A
 closed or absent operation is never treated as reconciled without an exact
 open-operation detail. Other native tool types (including server-side tools)

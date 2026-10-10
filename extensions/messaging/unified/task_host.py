@@ -62,22 +62,23 @@ def _cc_timestamp(value):
     return number if math.isfinite(number) else None
 
 
-def _cc_tool_witness(ep, tool_use_id, created_at, home=None):
-    """Verify one exact successful native CC local-tool call/result pair."""
+def _cc_tool_outcome(ep, tool_use_id, created_at, home=None):
+    """Return success/error for one exact native CC local-tool pair."""
     tid = str(ep.get('thread_id') or ep.get('session_id') or '')
     project = ep.get('project_path')
     created = _cc_timestamp(created_at)
     if (ep.get('platform') != 'cc' or not re.fullmatch(r'[0-9a-fA-F-]{36}', tid)
             or not project or not isinstance(tool_use_id, str) or not tool_use_id
             or created is None):
-        return False
+        return None
     root = Path(home or Path.home()) / '.claude/projects'
     paths = list(root.glob('*/' + tid + '.jsonl'))
     paths = [p for p in paths if p.is_file() and not any(x.is_symlink() for x in (p, *p.parents))]
     if len(paths) != 1:
-        return False
+        return None
     calls = []
     results = []
+    outcome = None
     try:
         with paths[0].open(encoding='utf-8') as stream:
             for index, line in enumerate(stream):
@@ -85,25 +86,25 @@ def _cc_tool_witness(ep, tool_use_id, created_at, home=None):
                     continue
                 row = json.loads(line)
                 if not isinstance(row, dict) or row.get('isSidechain') is True:
-                    return False
+                    return None
                 row_session = row.get('sessionId')
                 row_cwd = row.get('cwd')
                 relevant = row.get('type') in ('user', 'assistant')
                 if relevant:
                     if (row_session != tid or not isinstance(row_cwd, str)
                             or Path(row_cwd).resolve() != Path(str(project)).resolve()):
-                        return False
+                        return None
                 elif (row_session is not None and row_cwd is not None
                       and (row_session != tid or not isinstance(row_cwd, str)
                            or Path(row_cwd).resolve() != Path(str(project)).resolve())):
-                    return False
+                    return None
                 if not relevant:
                     continue
                 if row.get('sessionId') != tid or not isinstance(row.get('cwd'), str):
-                    return False
+                    return None
                 timestamp = _cc_timestamp(row.get('timestamp'))
                 if timestamp is None:
-                    return False
+                    return None
                 content = (row.get('message') or {}).get('content')
                 if not isinstance(content, list):
                     continue
@@ -112,26 +113,37 @@ def _cc_tool_witness(ep, tool_use_id, created_at, home=None):
                         continue
                     if row.get('type') == 'assistant' and item.get('type') == 'tool_use' and item.get('id') == tool_use_id:
                         if item.get('name') not in _CC_LOCAL_TOOLS:
-                            return False
+                            return None
                         calls.append((index, timestamp))
                     if row.get('type') == 'user' and item.get('type') == 'tool_result' and item.get('tool_use_id') == tool_use_id:
-                        if item.get('is_error') is True:
-                            return False
+                        if 'is_error' in item and not isinstance(item['is_error'], bool):
+                            return None
+                        outcome = 'error' if item.get('is_error') is True else 'success'
                         results.append((index, timestamp))
         if len(calls) != 1 or len(results) != 1:
-            return False
+            return None
         call_index, call_time = calls[0]
         result_index, result_time = results[0]
-        return (result_time >= created and result_index > call_index
-                and result_time >= call_time)
+        return (outcome if result_time >= created and result_index > call_index
+                and result_time >= call_time else None)
     except (OSError, ValueError, TypeError, AttributeError, OverflowError):
-        return False
+        return None
+
+
+def _cc_tool_witness(ep, tool_use_id, created_at, home=None):
+    return _cc_tool_outcome(ep, tool_use_id, created_at, home) == 'success'
 
 
 def _completion_witness(ep, tool_use_id, created_at):
     if ep.get('platform') == 'cc':
         return _cc_tool_witness(ep, tool_use_id, created_at)
     return _file_change_witness(ep, tool_use_id, created_at)
+
+
+def _completion_outcome(ep, tool_use_id, created_at):
+    if ep.get('platform') == 'cc':
+        return _cc_tool_outcome(ep, tool_use_id, created_at)
+    return 'success' if _file_change_witness(ep, tool_use_id, created_at) else None
 
 
 def _native_binding_id(ep):
@@ -266,12 +278,12 @@ def dispatch(host, ep, req):
                 or (snapshot.get('handoff') or {}).get('state') in ('prepared', 'released', 'accepted')):
             raise HubError('stale_executor', 'task authority no longer matches this binding')
         details = [item for item in snapshot.get('actor_open_operation_details', []) if item.get('tool_use_id') == ident]
-        if (len(details) != 1 or type(details[0].get('epoch')) is not int
-                or details[0]['epoch'] != bound['epoch']
-                or not _completion_witness(ep, ident, details[0].get('created_at'))):
+        outcome = None if len(details) != 1 or type(details[0].get('epoch')) is not int \
+                or details[0]['epoch'] != bound['epoch'] else _completion_outcome(ep, ident, details[0].get('created_at'))
+        if outcome is None:
             raise HubError('witness_unavailable', 'native completion witness is unavailable')
         result = host.hub('task_end_operation', endpoint_id=ep['endpoint_id'], task_id=bound['task_id'], expected_epoch=epoch, tool_use_id=ident)
-        return dict(result, assigned=True, reconciled=True)
+        return dict(result, assigned=True, reconciled=True, native_outcome=outcome)
     if op in ('task_guard_begin','task_guard_end'):
         if not bound:return {'assigned':False}
         if bound['incarnation']!=ep['incarnation']:raise HubError('stale_executor','formal task conversation changed')
