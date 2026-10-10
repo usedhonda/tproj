@@ -104,6 +104,21 @@ class MailboxToolsTest(unittest.TestCase):
         self.assertEqual(self.calls[0]["address"], "kai")
         self.assertNotIn("target", {"service_id", "service_token", "address"})
 
+    def test_authorized_service_target_sends_once_and_rejects_out_of_scope_forms(self):
+        with self.assertRaises(module.MailboxToolError) as raised:
+            self.tools.dispatch("tproj_send", {"target": "kai", "body": "x", "submission_id": "kai-out"})
+        self.assertEqual(raised.exception.code, "unknown_target")
+        self.assertEqual(self.calls, [])
+        self.tools.authorizer = lambda _name, _args: {"allowed_addresses": ["kai", "voyager.cc"]}
+        result = self.tools.dispatch("tproj_send", {"target": "kai", "body": "x", "submission_id": "kai-1"})
+        self.assertEqual(result["message_id"], "kai-1")
+        self.assertEqual([call["op"] for call in self.calls], ["service_send"])
+        for target in ("cc", "cdx", "not-authorized", "../kai", "kai\n", "kai\x01", "kai..service"):
+            with self.assertRaises(module.MailboxToolError) as raised:
+                self.tools.dispatch("tproj_send", {"target": target, "body": "x", "submission_id": "bad-" + str(len(self.calls))})
+            self.assertEqual(raised.exception.code, "unknown_target")
+        self.assertEqual(len(self.calls), 1)
+
     def test_reply_is_pinned_and_ack_is_scoped(self):
         reply = self.tools.dispatch("tproj_reply", {"message_id": "original", "body": "back", "submission_id": "reply-1"})
         self.assertEqual(reply["in_reply_to"], "original")

@@ -15,7 +15,11 @@ from typing import Any, Callable, Mapping
 MAX_LIMIT = 100
 WIRE_LIMIT = 262_144
 CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "rejected", "stale_session"))
-ADDRESS_RE = re.compile(r"^[^./\s]+\.(?:cc|cdx)$")
+# A target may be a project endpoint (``project.cc``/``project.cdx``) or an
+# enrolled service address (for example ``kai``). The trusted authorization
+# result remains the source of truth; this check only rejects malformed input.
+ADDRESS_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*)(?:\.[A-Za-z0-9](?:[A-Za-z0-9_-]*)*)*$")
+SHORTCUT_TARGETS = frozenset(("cc", "cdx"))
 ID_RE = re.compile(r"^[^\s]+$")
 FORBIDDEN_SELECTORS = {"role", "as", "session", "conversation", "conversation_id", "endpoint_id", "pid", "host"}
 
@@ -173,8 +177,9 @@ class MailboxTools:
     @staticmethod
     def _target(args: Mapping[str, Any], ctx: Mapping[str, Any]) -> str:
         value = args.get("target")
-        if not isinstance(value, str) or not ADDRESS_RE.fullmatch(value):
-            raise MailboxToolError("unknown_target", "full project-qualified target required")
+        if (not isinstance(value, str) or value in SHORTCUT_TARGETS
+                or not ADDRESS_RE.fullmatch(value)):
+            raise MailboxToolError("unknown_target", "valid authorized target required")
         if value not in set(ctx["allowed_addresses"]):
             raise MailboxToolError("unknown_target", "target is outside authorized catalog")
         return value
