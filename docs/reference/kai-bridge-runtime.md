@@ -29,5 +29,9 @@ JSON, disconnects, read failures, and send failures are contained to that
 connection; they do not terminate the listener or event-pump thread.
 Successful later requests therefore remain serviceable after a bad client.
 
+Listener interruption errors (`EINTR` and `ECONNABORTED`) are retried. Other
+listener failures escape the bridge loop so the service supervisor can observe
+and restart a failed listener instead of spinning on a persistent error.
+
 The bridge returns generic rejection text for request failures and never logs
 service credentials or request payloads.

@@ -317,8 +317,10 @@ def bridge(config: Mapping[str, Any]) -> int:
         while True:
             try:
                 conn, _ = listener.accept()
-            except OSError:
-                continue
+            except OSError as exc:
+                if exc.errno in (errno.EINTR, errno.ECONNABORTED):
+                    continue
+                raise
             try:
                 deadline = time.monotonic() + BRIDGE_CONNECTION_TIMEOUT
                 with conn:

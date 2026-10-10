@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -187,6 +188,87 @@ class RuntimeTest(unittest.TestCase):
         with mock.patch.object(module.time, "monotonic", side_effect=(0.0, 0.0, 1.0, 2.1)):
             with self.assertRaises(TimeoutError):
                 module._read_bridge_frame(Trickle())
+
+    def test_bridge_real_connections_bound_frames_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bridge.sock"
+            config = self.config(directory)
+            config["bridge_socket"] = str(path)
+            real_socket = socket.socket
+            listeners = []
+            dispatches = []
+            listener_errors = []
+
+            class Events:
+                def pump_once(self):
+                    pass
+
+            class Runtime:
+                def __init__(self, _config):
+                    self.binding = mock.Mock(token="token")
+                def _attest(self):
+                    return {"service_id": "kai"}
+                def events(self):
+                    return Events()
+
+            def socket_factory(*args, **kwargs):
+                created = real_socket(*args, **kwargs)
+                if args and args[0] == socket.AF_UNIX:
+                    listeners.append(created)
+                return created
+
+            def dispatch(_runtime, request):
+                dispatches.append(request)
+                return {"accepted": True}
+
+            def serve():
+                try:
+                    module.bridge(config)
+                except OSError as exc:
+                    listener_errors.append(exc)
+
+            with mock.patch.object(module, "ServiceRuntime", Runtime), \
+                 mock.patch.object(module, "_bridge_request", side_effect=dispatch), \
+                 mock.patch.object(module.socket, "socket", side_effect=socket_factory), \
+                 mock.patch.object(module, "BRIDGE_CONNECTION_TIMEOUT", 0.2):
+                thread = threading.Thread(target=serve, daemon=True)
+                thread.start()
+                deadline = time.time() + 2
+                while not path.exists() and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(path.exists())
+                trickle = real_socket(socket.AF_UNIX)
+                trickle.connect(str(path))
+                trickle.sendall(b"{")
+                time.sleep(0.3)
+
+                def request(frame):
+                    client = real_socket(socket.AF_UNIX)
+                    client.settimeout(2)
+                    client.connect(str(path))
+                    client.sendall(frame)
+                    response = client.makefile("rb").readline()
+                    client.close()
+                    return response
+
+                prefix = b'{"op":"whoami"}'
+                padded_invalid = prefix + b"x" * (module.BRIDGE_FRAME_LIMIT - len(prefix) - 1) + b"\n"
+                self.assertTrue(request(padded_invalid))
+                self.assertEqual(len(dispatches), 0)
+                incomplete = real_socket(socket.AF_UNIX)
+                incomplete.connect(str(path))
+                incomplete.sendall(prefix)
+                incomplete.close()
+                oversized = b"{}" + b"x" * module.BRIDGE_FRAME_LIMIT + b"\n"
+                self.assertEqual(request(oversized), b"")
+                self.assertEqual(len(dispatches), 0)
+                response = request(b'{"op":"whoami"}\n')
+                self.assertTrue(json.loads(response)["ok"])
+                self.assertEqual(len(dispatches), 1)
+                trickle.close()
+                listeners[0].close()
+                thread.join(timeout=2)
+                self.assertEqual(len(listener_errors), 1)
 
 
 if __name__ == "__main__":
