@@ -284,6 +284,11 @@ def dispatch(host, ep, req):
         if not bound:
             if not isinstance(req.get('expected_epoch'), int) or not isinstance(req.get('task_id'), str):
                 raise HubError('epoch_conflict', 'detach must name the historical assignment epoch and task')
+            native_id = _native_binding_id(ep)
+            matching = host.db.execute('SELECT 1 FROM formal_task_binding WHERE native_id=?', (native_id,)).fetchone()
+            marker = binding_marker(native_id)
+            if native_id and not marker.exists() and not matching:
+                return {'detached': True}
             host.db.execute('BEGIN IMMEDIATE')
             try:
                 if host.db.execute('SELECT 1 FROM formal_task_binding WHERE endpoint_id=?', (ep['endpoint_id'],)).fetchone():

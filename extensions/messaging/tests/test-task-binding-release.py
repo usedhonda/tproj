@@ -83,6 +83,7 @@ class BindingReleaseTest(unittest.TestCase):
             self.assertFalse(marker.exists())
             self.assertEqual(host.calls[0][0], 'endpoints_list')
             self.assertEqual(host.calls[1][0], 'task_binding_release_check')
+            self.assertEqual(task_host.dispatch(host, ep, {'op':'task_detach','task_id':'task','expected_epoch':0}), {'detached':True})
 
     def test_host_rejects_direct_internal_check_and_cross_native_without_cleanup(self):
         import sys
@@ -102,6 +103,7 @@ class BindingReleaseTest(unittest.TestCase):
             host = Host(); host.db.execute('CREATE TABLE formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT, task_id TEXT, epoch INTEGER, native_id TEXT)')
             host.db.execute("INSERT INTO formal_task_binding VALUES('old','old-inc','task',0,'native-1')"); host.db.commit()
             marker = Path(raw) / task_host.digest('native-1'); marker.touch()
+            Path(raw, task_host.digest('other-native')).touch()
             ep = {'endpoint_id':'new','incarnation':'new-inc','host_id':'host','project_id':'project',
                   'participant_id':'project:cdx','platform':'cdx','session_id':'other-native','project_path':'/project'}
             with patch.dict(os.environ, {'TPROJ_TASK_BINDING_DIR':raw}):
