@@ -315,6 +315,9 @@ class TaskAuthority:
         if (row['executor_endpoint'], row['executor_incarnation'], row['executor_host_id']) == (
                 previous['endpoint_id'], previous['incarnation'], previous['host_id']):
             raise TaskAuthorityError('stale_executor', 'historical executor still owns the active assignment')
+        if (row['executor_endpoint'], row['executor_incarnation'], row['executor_host_id']) == (
+                actor['endpoint_id'], actor['incarnation'], actor['host_id']):
+            raise TaskAuthorityError('stale_executor', 'current task executor cannot clear a local fence')
         assignment = self.db.execute(
             'SELECT 1 FROM task_assignments WHERE task_id=? AND endpoint=? AND incarnation=? AND host_id=? AND epoch=?',
             (req['task_id'], previous['endpoint_id'], previous['incarnation'], previous['host_id'], old_epoch)).fetchone()

@@ -11,7 +11,7 @@ from extensions.messaging.unified.tasks import TaskAuthority, TaskAuthorityError
 CURRENT = {'endpoint_id':'new', 'incarnation':'new-inc', 'host_id':'host', 'project_id':'project'}
 OTHER = {'endpoint_id':'other', 'incarnation':'other-inc', 'host_id':'host', 'project_id':'project'}
 OLD = {'endpoint_id':'old', 'incarnation':'old-inc', 'host_id':'host', 'project_id':'project',
-       'platform':'cc', 'native_id':'native-1'}
+       'platform':'cdx', 'native_id':'native-1'}
 
 
 def authority(status='accepted'):
@@ -30,7 +30,9 @@ class BindingReleaseTest(unittest.TestCase):
 
     def test_master_allows_former_assignment_only_read(self):
         task, db = authority()
-        db.execute("INSERT INTO task_operations VALUES('other-token','task','other','other-inc',1,'other-tool','open',1.0)")
+        for index in range(10):
+            db.execute("INSERT INTO task_operations VALUES(?,?,?,?,?,?,?,?)",
+                       (f'other-token-{index}', 'task', 'other', 'other-inc', 1, f'other-tool-{index}', 'open', 1.0 + index))
         result = task.dispatch({'op':'binding_release_check','task_id':'task','expected_epoch':0,'previous':self.proof()}, CURRENT)
         self.assertTrue(result['allowed'])
         self.assertEqual(db.execute('SELECT COUNT(*) FROM task_assignments').fetchone()[0], 1)
@@ -61,10 +63,8 @@ class BindingReleaseTest(unittest.TestCase):
             def hub(self, op, **kwargs):
                 self.calls.append((op, kwargs))
                 if op == 'endpoints_list':
-                    return {'endpoints':[{'endpoint_id':'old','participant_id':'project:cc','host_id':'host',
-                                          'incarnation':'old-inc','platform':'cc','retired':1}]}
-                if op == 'directory_list':
-                    return {'participants':[{'participant_id':'project:cc','project_id':'project'}]}
+                    return {'endpoints':[{'endpoint_id':'old','participant_id':'project:cdx','host_id':'host',
+                                          'incarnation':'old-inc','platform':'cdx','retired':1}]}
                 return {'allowed':True}
 
         with tempfile.TemporaryDirectory() as raw:
@@ -82,7 +82,35 @@ class BindingReleaseTest(unittest.TestCase):
             self.assertIsNone(host.db.execute("SELECT 1 FROM formal_task_binding WHERE endpoint_id='old'").fetchone())
             self.assertFalse(marker.exists())
             self.assertEqual(host.calls[0][0], 'endpoints_list')
-            self.assertEqual(host.calls[2][0], 'task_binding_release_check')
+            self.assertEqual(host.calls[1][0], 'task_binding_release_check')
+
+    def test_host_rejects_direct_internal_check_and_cross_native_without_cleanup(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'unified'))
+        import task_host
+
+        class Host:
+            def __init__(self):
+                self.db = sqlite3.connect(':memory:'); self.db.row_factory = sqlite3.Row
+            def hub(self, op, **kwargs):
+                if op == 'endpoints_list':
+                    return {'endpoints':[{'endpoint_id':'old','participant_id':'project:cdx','host_id':'host',
+                                          'incarnation':'old-inc','platform':'cdx','retired':1}]}
+                return {'allowed':True}
+
+        with tempfile.TemporaryDirectory() as raw:
+            host = Host(); host.db.execute('CREATE TABLE formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT, task_id TEXT, epoch INTEGER, native_id TEXT)')
+            host.db.execute("INSERT INTO formal_task_binding VALUES('old','old-inc','task',0,'native-1')"); host.db.commit()
+            marker = Path(raw) / task_host.digest('native-1'); marker.touch()
+            ep = {'endpoint_id':'new','incarnation':'new-inc','host_id':'host','project_id':'project',
+                  'participant_id':'project:cdx','platform':'cdx','session_id':'other-native','project_path':'/project'}
+            with patch.dict(os.environ, {'TPROJ_TASK_BINDING_DIR':raw}):
+                with self.assertRaises(task_host.HubError):
+                    task_host.dispatch(host, ep, {'op':'task_detach','task_id':'task','expected_epoch':0})
+                with self.assertRaises(task_host.HubError):
+                    task_host.dispatch(host, ep, {'op':'task_binding_release_check','task_id':'task','expected_epoch':0})
+            self.assertIsNotNone(host.db.execute("SELECT 1 FROM formal_task_binding WHERE endpoint_id='old'").fetchone())
+            self.assertTrue(marker.exists())
 
 
 if __name__ == '__main__':

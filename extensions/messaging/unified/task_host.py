@@ -156,10 +156,8 @@ def _historical_binding_proof(host, ep, task_id, epoch):
     if len(matches) != 1:
         raise HubError('identity_rejected', 'historical endpoint continuity is unavailable')
     old = matches[0]
-    participants = host.hub('directory_list').get('participants', [])
-    old_participants = [item for item in participants if item.get('participant_id') == old.get('participant_id')]
-    if (old.get('host_id') != ep.get('host_id') or old.get('incarnation') != row['incarnation']
-            or len(old_participants) != 1 or old_participants[0].get('project_id') != ep.get('project_id')):
+    if (old.get('host_id') != ep.get('host_id') or old.get('participant_id') != ep.get('participant_id')
+            or old.get('platform') != ep.get('platform') or old.get('incarnation') != row['incarnation']):
         raise HubError('identity_rejected', 'historical endpoint continuity differs')
     return {
         'endpoint_id': old['endpoint_id'], 'incarnation': old['incarnation'],
