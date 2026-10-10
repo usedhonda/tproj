@@ -159,6 +159,33 @@ class RuntimeTest(unittest.TestCase):
             with self.assertRaises(module.RuntimeConfigError):
                 module._bridge_lock(path)
 
+    def test_bridge_frame_reader_rejects_incomplete_and_oversized_frames(self):
+        class Chunks:
+            def __init__(self, *chunks):
+                self.chunks = list(chunks)
+            def settimeout(self, _timeout):
+                pass
+            def recv(self, _size):
+                return self.chunks.pop(0) if self.chunks else b""
+        with self.assertRaises(ValueError):
+            module._read_bridge_frame(Chunks(b'{"op":"whoami"}'))
+        oversized = b"{}\n" + b"x" * module.BRIDGE_FRAME_LIMIT
+        with self.assertRaises(ValueError):
+            module._read_bridge_frame(Chunks(oversized))
+        boundary = b"x" * module.BRIDGE_FRAME_LIMIT + b"\n"
+        self.assertEqual(module._read_bridge_frame(Chunks(boundary)), boundary)
+        self.assertEqual(module._read_bridge_frame(Chunks(b"{}\n")), b"{}\n")
+
+    def test_bridge_frame_reader_uses_total_monotonic_deadline_for_trickle(self):
+        class Trickle:
+            def settimeout(self, _timeout):
+                pass
+            def recv(self, _size):
+                return b"x"
+        with mock.patch.object(module.time, "monotonic", side_effect=(0.0, 0.0, 1.0, 2.1)):
+            with self.assertRaises(TimeoutError):
+                module._read_bridge_frame(Trickle())
+
 
 if __name__ == "__main__":
     unittest.main()

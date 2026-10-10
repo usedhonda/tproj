@@ -19,9 +19,14 @@ an already-running bridge.
 
 ## Connection isolation
 
-Each accepted connection has a bounded read deadline. EOF, an idle client,
-malformed JSON, disconnects, read failures, and send failures are contained to
-that connection; they do not terminate the listener or event-pump thread.
+Each accepted connection has one monotonic receive deadline (2 seconds) and a
+262,144-byte payload limit plus the required final newline (262,145 bytes on
+the wire). The listener collects bytes with `recv`; it does not parse JSON
+until the newline arrives.
+EOF before a newline, a trickled frame that exceeds the total deadline, a frame
+over the limit (including a valid prefix followed by extra bytes), malformed
+JSON, disconnects, read failures, and send failures are contained to that
+connection; they do not terminate the listener or event-pump thread.
 Successful later requests therefore remain serviceable after a bad client.
 
 The bridge returns generic rejection text for request failures and never logs

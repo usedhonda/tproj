@@ -43,6 +43,7 @@ BRIDGE_OPS = frozenset({
 })
 CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "rejected", "stale_session", "presented"))
 BRIDGE_CONNECTION_TIMEOUT = 2.0
+BRIDGE_FRAME_LIMIT = 262_144
 
 
 def _required(value: Any, name: str) -> str:
@@ -197,6 +198,31 @@ def _bridge_request(runtime: ServiceRuntime, request: Mapping[str, Any]) -> Any:
     raise RuntimeConfigError("invalid bridge request")
 
 
+def _read_bridge_frame(conn: socket.socket, deadline: float | None = None) -> bytes:
+    """Read exactly one newline-terminated frame within one total deadline."""
+    if deadline is None:
+        deadline = time.monotonic() + BRIDGE_CONNECTION_TIMEOUT
+    frame = bytearray()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("bridge frame deadline exceeded")
+        conn.settimeout(remaining)
+        chunk = conn.recv(min(65_536, BRIDGE_FRAME_LIMIT + 2 - len(frame)))
+        if not chunk:
+            if not frame:
+                return b""
+            raise ValueError("incomplete bridge frame")
+        frame.extend(chunk)
+        if len(frame) > BRIDGE_FRAME_LIMIT + 1:
+            raise ValueError("oversized bridge frame")
+        newline = frame.find(b"\n")
+        if newline >= 0:
+            if newline > BRIDGE_FRAME_LIMIT or newline != len(frame) - 1:
+                raise ValueError("oversized bridge frame")
+            return bytes(frame)
+
+
 def _bridge_lock(path: Path):
     """Hold an advisory lock while replacing/binding one bridge socket."""
     lock_path = path.with_name(path.name + ".lock")
@@ -294,10 +320,9 @@ def bridge(config: Mapping[str, Any]) -> int:
             except OSError:
                 continue
             try:
-                conn.settimeout(BRIDGE_CONNECTION_TIMEOUT)
+                deadline = time.monotonic() + BRIDGE_CONNECTION_TIMEOUT
                 with conn:
-                    with conn.makefile("rb") as stream:
-                        raw = stream.readline(262145)
+                    raw = _read_bridge_frame(conn, deadline)
                     if not raw:
                         continue
                     response = None
