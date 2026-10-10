@@ -40,6 +40,59 @@ def _file_change_witness(ep, tool_use_id, created_at, home=None):
     except (OSError, ValueError, TypeError, AttributeError, StopIteration, OverflowError): return False
 
 
+def _command_execution_outcome(ep, tool_use_id, created_at, home=None):
+    """Return success/error for one exact completed Codex CommandExecution."""
+    tid = str(ep.get('thread_id') or ep.get('session_id') or '')
+    project = ep.get('project_path')
+    if (ep.get('platform') != 'cdx' or not re.fullmatch(r'[0-9a-fA-F-]{36}', tid)
+            or not project or not isinstance(tool_use_id, str) or not tool_use_id):
+        return None
+    try:
+        created_ms = int(float(created_at) * 1000)
+        if not math.isfinite(float(created_at)):
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    root = Path(home or Path.home()) / '.codex/sessions'
+    paths = list(root.glob('[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9]/rollout-*-' + tid + '.jsonl'))
+    paths = [p for p in paths if p.is_file() and not any(x.is_symlink() for x in (p, *p.parents))]
+    if len(paths) != 1:
+        return None
+    matches = []
+    try:
+        with paths[0].open(encoding='utf-8') as stream:
+            header = json.loads(next(stream))
+            meta = header.get('payload') or {}
+            if (header.get('type') != 'session_meta' or meta.get('id') != tid
+                    or not meta.get('cwd') or Path(str(meta['cwd'])).resolve() != Path(str(project)).resolve()):
+                return None
+            for line in stream:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                payload = row.get('payload') or {}
+                if row.get('type') != 'event_msg' or payload.get('type') != 'item_completed':
+                    continue
+                item = payload.get('item')
+                if not isinstance(item, dict) or item.get('id') != tool_use_id:
+                    continue
+                if payload.get('thread_id') != tid:
+                    return None
+                if (item.get('type') != 'CommandExecution' or item.get('status') != 'completed'
+                        or type(item.get('exit_code')) is not int):
+                    return None
+                started = payload.get('started_at_ms'); completed = payload.get('completed_at_ms')
+                if (type(started) is not int or type(completed) is not int
+                        or completed < started or started < created_ms):
+                    return None
+                matches.append(item)
+        if len(matches) != 1:
+            return None
+        return 'success' if matches[0]['exit_code'] == 0 else 'error'
+    except (OSError, ValueError, TypeError, AttributeError, StopIteration, OverflowError):
+        return None
+
+
 _CC_LOCAL_TOOLS = frozenset(('Bash', 'Edit', 'Write'))
 
 
@@ -141,6 +194,10 @@ def _completion_witness(ep, tool_use_id, created_at):
 def _completion_outcome(ep, tool_use_id, created_at):
     if ep.get('platform') == 'cc':
         return _cc_tool_outcome(ep, tool_use_id, created_at)
+    if ep.get('platform') == 'cdx':
+        command_outcome = _command_execution_outcome(ep, tool_use_id, created_at)
+        if command_outcome is not None:
+            return command_outcome
     return 'success' if _file_change_witness(ep, tool_use_id, created_at) else None
 
 

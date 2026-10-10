@@ -32,6 +32,37 @@ class TaskReconcileWitnessTest(unittest.TestCase):
                 self.assertFalse(task_host._file_change_witness(ep, 'op-2', 1.5))
                 self.assertFalse(task_host._file_change_witness(ep, 'op-1', 2.5))
 
+    def test_exact_command_execution_outcome_requires_one_strict_terminal(self):
+        thread = '88888888-8888-4888-8888-888888888888'
+        ep = {'platform':'cdx','thread_id':thread,'project_path':'/project'}
+
+        def write_items(root, items):
+            path = Path(root) / '.codex/sessions/2026/01/01'
+            path.mkdir(parents=True)
+            file = path / ('rollout-test-' + thread + '.jsonl')
+            rows = [{'type':'session_meta','payload':{'id':thread,'cwd':'/project'}}]
+            rows.extend({'type':'event_msg','payload':{'type':'item_completed','thread_id':thread,
+                                                        'item':item,'started_at_ms':2000,
+                                                        'completed_at_ms':3000}} for item in items)
+            file.write_text('\n'.join(json.dumps(row) for row in rows) + '\n')
+
+        cases = [
+            ([{'type':'CommandExecution','id':'op-1','status':'completed','exit_code':0}], 'success'),
+            ([{'type':'CommandExecution','id':'op-1','status':'completed','exit_code':17}], 'error'),
+            ([{'type':'CommandExecution','id':'op-1','status':'completed','exit_code':True}], None),
+            ([{'type':'CommandExecution','id':'op-1','status':'completed','exit_code':0},
+              {'type':'CommandExecution','id':'op-1','status':'completed','exit_code':0}], None),
+            ([{'type':'CommandExecution','id':'op-1','status':'completed','exit_code':0},
+              {'type':'CommandExecution','id':'op-1','status':'completed','exit_code':17}], None),
+            ([{'type':'CommandExecution','id':'op-1','status':'running','exit_code':0}], None),
+        ]
+        for items, expected in cases:
+            with self.subTest(expected=expected, items=items):
+                with tempfile.TemporaryDirectory() as raw:
+                    write_items(raw, items)
+                    with patch.object(task_host.Path, 'home', return_value=Path(raw)), patch.object(task_host.Path, 'is_symlink', return_value=False):
+                        self.assertEqual(task_host._command_execution_outcome(ep, 'op-1', 1.5), expected)
+
     def write_cc_transcript(self, root, thread, rows):
         path = Path(root) / '.claude/projects/project'
         path.mkdir(parents=True)

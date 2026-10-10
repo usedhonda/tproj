@@ -183,8 +183,10 @@ authenticated current binding plus an independently verified native completion
 witness in the same thread and project. The matching result timestamp must be
 valid and after both the master-recorded operation creation and its call; the
 call may predate operation admission because PreToolUse creates it first.
-Codex requires one exact `FileChange`
-`item_completed` record. CC requires one exact local `Bash`, `Edit`, or `Write`
+Codex requires one exact `FileChange` or `CommandExecution`
+`item_completed` record. `CommandExecution` requires a strict integer
+`exit_code` and reports zero as `success` and any other integer as `error`.
+Duplicate, conflicting, or malformed terminal records are rejected. CC requires one exact local `Bash`, `Edit`, or `Write`
 `tool_use` followed by one matching `tool_result` whose optional `is_error` is
 boolean. Both success and terminal error results close the operation; the
 reconcile response reports the native outcome separately and never implies task
