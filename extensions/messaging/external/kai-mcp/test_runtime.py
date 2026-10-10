@@ -403,7 +403,9 @@ class RuntimeTest(unittest.TestCase):
                 time.sleep(0.1)
                 response = bytearray()
                 while not response.endswith(b"\n"):
-                    response.extend(client.recv(65_536))
+                    chunk = client.recv(65_536)
+                    self.assertTrue(chunk)
+                    response.extend(chunk)
                 client.close()
                 decoded = json.loads(response)
                 self.assertTrue(decoded["ok"])
