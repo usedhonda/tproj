@@ -590,9 +590,9 @@ class ConversationToolResolver:
         if (not isinstance(raw, str) or not raw or len(raw) > _ID_MAX
                 or any(char.isspace() for char in raw)):
             return arguments
-        token = hashlib.sha256(
-            f"{binding.binding_id}\0{name}\0{raw}".encode("utf-8")
-        ).hexdigest()
+        canonical = json.dumps([binding.binding_id, name, raw],
+                               ensure_ascii=False, separators=(",", ":"))
+        token = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         updated = dict(arguments)
         updated["submission_id"] = f"{name}:{token}"
         return updated

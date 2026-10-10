@@ -15,6 +15,11 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
+mailbox_spec = importlib.util.spec_from_file_location("kai_mailbox_tools", ROOT / "mailbox_tools.py")
+mailbox = importlib.util.module_from_spec(mailbox_spec)
+sys.modules[mailbox_spec.name] = mailbox
+mailbox_spec.loader.exec_module(mailbox)
+
 
 def digest(value):
     return module.provider_digest(value)
@@ -385,26 +390,68 @@ class ConversationBindingRegistryTest(unittest.TestCase):
         self.assertNotEqual(send_ids[0], captured[2][1]["submission_id"])
         self.assertNotEqual(send_ids[0], captured[3][1]["submission_id"])
 
-    def test_invalid_submission_ids_are_passed_unchanged_for_existing_rejection(self):
-        captured = []
+    def test_submission_namespace_encoding_separates_delimiter_like_values(self):
+        first = module.ConversationBinding.from_config({
+            **self.config["bindings"][0], "binding_id": "x\u0000tproj_send\u0000y"})
+        second = module.ConversationBinding.from_config({
+            **self.config["bindings"][1], "binding_id": "x"})
+        left = module.ConversationToolResolver._namespaced_arguments(
+            first, "tproj_send", {"submission_id": "z"})["submission_id"]
+        right = module.ConversationToolResolver._namespaced_arguments(
+            second, "tproj_send", {"submission_id": "y\u0000tproj_send\u0000z"})["submission_id"]
+        self.assertNotEqual(left, right)
 
-        class Tools:
-            def dispatch(self, name, arguments):
-                if " " in arguments.get("submission_id", ""):
-                    raise ValueError("invalid submission ID")
-                captured.append(dict(arguments))
-                return {"ok": True}
-
+    def test_invalid_submission_ids_use_existing_validator_without_host_call(self):
+        host_calls = []
+        tools = mailbox.MailboxTools(
+            service_id="svc-a", service_address="a@example", service_token="private",
+            authorizer=lambda _name, _args: {"allowed_addresses": ["peer.cc"]},
+            host_call=lambda request: host_calls.append(request) or {"message_id": "m-1", "thread_id": "t-1"})
         registry = module.ConversationBindingRegistry(self.config)
         resolver = module.ConversationToolResolver(
             registry, lambda _request: {"principal_id": "owner-a",
                 "provider_subject_digest": digest("sub-a"),
-                "provider_session_digest": digest("sess-a")}, lambda _binding: Tools())
-        original = {"submission_id": "bad id"}
-        with self.assertRaises(ValueError):
-            resolver.dispatch({"id": "a"}, "tproj_send", original)
-        self.assertEqual(captured, [])
-        self.assertEqual(original["submission_id"], "bad id")
+                "provider_session_digest": digest("sess-a")}, lambda _binding: tools)
+        invalid = (None, 7, [], "", "bad id", "bad\tid", "x" * 129)
+        for value in invalid:
+            original = {"target": "peer.cc", "body": "body", "submission_id": value}
+            with self.assertRaises(mailbox.MailboxToolError) as raised:
+                resolver.dispatch({"id": "a"}, "tproj_send", original)
+            self.assertEqual(raised.exception.code, "invalid_message")
+            self.assertEqual(original["submission_id"], value)
+        missing = {"target": "peer.cc", "body": "body"}
+        with self.assertRaises(mailbox.MailboxToolError):
+            resolver.dispatch({"id": "a"}, "tproj_send", missing)
+        self.assertEqual(host_calls, [])
+
+    def test_changed_payload_keeps_namespaced_id_for_host_conflict(self):
+        host_calls = []
+        seen = {}
+
+        def host_call(request):
+            host_calls.append(request)
+            key = request["submission_id"]
+            payload = request["body"]
+            if key in seen and seen[key] != payload:
+                raise mailbox.MailboxToolError("idempotency_conflict", "submission payload conflict")
+            seen[key] = payload
+            return {"message_id": "m-1", "thread_id": "t-1"}
+
+        tools = mailbox.MailboxTools(
+            service_id="svc-a", service_address="a@example", service_token="private",
+            authorizer=lambda _name, _args: {"allowed_addresses": ["peer.cc"]},
+            host_call=host_call)
+        registry = module.ConversationBindingRegistry(self.config)
+        resolver = module.ConversationToolResolver(
+            registry, lambda _request: {"principal_id": "owner-a",
+                "provider_subject_digest": digest("sub-a"),
+                "provider_session_digest": digest("sess-a")}, lambda _binding: tools)
+        base = {"target": "peer.cc", "body": "first", "submission_id": "same-input"}
+        resolver.dispatch({"id": "a"}, "tproj_send", base)
+        with self.assertRaises(mailbox.MailboxToolError) as raised:
+            resolver.dispatch({"id": "a"}, "tproj_send", {**base, "body": "changed"})
+        self.assertEqual(raised.exception.code, "idempotency_conflict")
+        self.assertEqual(host_calls[0]["submission_id"], host_calls[1]["submission_id"])
 
 
 if __name__ == "__main__":
