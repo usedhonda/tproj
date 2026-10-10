@@ -240,7 +240,21 @@ class RuntimeTest(unittest.TestCase):
                 trickle = real_socket(socket.AF_UNIX)
                 trickle.connect(str(path))
                 trickle.sendall(b"{")
-                time.sleep(0.3)
+                trickle_done = threading.Event()
+
+                def trickle_sender():
+                    try:
+                        while True:
+                            trickle.sendall(b" ")
+                            time.sleep(0.05)
+                    except OSError:
+                        trickle_done.set()
+
+                sender = threading.Thread(target=trickle_sender, daemon=True)
+                sender.start()
+                self.addCleanup(sender.join, 1)
+                self.addCleanup(trickle.close)
+                self.assertTrue(trickle_done.wait(2))
 
                 def request(frame):
                     client = real_socket(socket.AF_UNIX)
@@ -252,8 +266,8 @@ class RuntimeTest(unittest.TestCase):
                     return response
 
                 prefix = b'{"op":"whoami"}'
-                padded_invalid = prefix + b"x" * (module.BRIDGE_FRAME_LIMIT - len(prefix) - 1) + b"\n"
-                self.assertTrue(request(padded_invalid))
+                padded_invalid = prefix + b" " * (262_145 - len(prefix)) + b"x\n"
+                self.assertEqual(request(padded_invalid), b"")
                 self.assertEqual(len(dispatches), 0)
                 incomplete = real_socket(socket.AF_UNIX)
                 incomplete.connect(str(path))
@@ -266,6 +280,7 @@ class RuntimeTest(unittest.TestCase):
                 self.assertTrue(json.loads(response)["ok"])
                 self.assertEqual(len(dispatches), 1)
                 trickle.close()
+                sender.join(timeout=1)
                 listeners[0].close()
                 thread.join(timeout=2)
                 self.assertEqual(len(listener_errors), 1)
