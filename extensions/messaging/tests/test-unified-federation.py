@@ -3,9 +3,11 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'unified'))
 from federation import FederatedHub
-from protocol import HubError
+from protocol import HubError, MAX_REQUEST
 
 class FederationTests(unittest.TestCase):
     def setUp(self):
@@ -59,6 +61,63 @@ class FederationTests(unittest.TestCase):
         self.send('b', 'large-reply', reply='large-out', body=reply)
         returned = self.hubs['a']._row('SELECT body FROM messages WHERE message_id=?', ('large-reply',))[0]
         self.assertEqual(returned, reply)
+    def test_bounded_wire_recovers_saved_multilingual_payload(self):
+        sender = self.hubs['a']
+        original_remote = sender.remote
+        def hold_accept(owner, op, **args):
+            if op == 'accept': raise HubError('host_unavailable', 'offline')
+            return original_remote(owner, op, **args)
+        sender.remote = hold_accept
+        body = '海🚢' * 18000
+        self.assertTrue(self.send('a', 'wire-large', 'b.cc', body=body)['delivery_pending'])
+        row = sender._row('SELECT * FROM federated_outbox WHERE message_id=?', ('wire-large',))
+        saved = row['payload']
+        diagnostic = sender.dispatch(dict(op='diagnose', host_id='a', host_token='a-token',
+                                          endpoint_id='acc', message_id='wire-large'))
+        sizes = diagnostic['federated_outbox']
+        self.assertGreater(sizes['legacy_request_bytes'], MAX_REQUEST)
+        self.assertLess(sizes['current_request_bytes'], MAX_REQUEST)
+        self.assertEqual(diagnostic['remote_error'], 'not_found')
+        self.assertNotIn(body, json.dumps(diagnostic))
+        with self.assertRaises(HubError):
+            sender.dispatch(dict(op='diagnose', host_id='a', host_token='a-token',
+                                 endpoint_id='acdx', message_id='wire-large'))
+        sender.remote = FederatedHub.remote.__get__(sender)
+        frames = []
+        def transport(command, **kwargs):
+            frame = kwargs['input']; frames.append(frame)
+            self.assertLessEqual(len(frame.encode('utf-8')), MAX_REQUEST)
+            request = json.loads(frame)
+            self.assertNotIn('message', request['payload'])
+            # host.rpc's forwarding serializer is bounded by the same limit.
+            self.assertLessEqual(len((json.dumps(request, ensure_ascii=False) + '\n').encode()), MAX_REQUEST)
+            result = self.hubs['b'].dispatch(request)
+            return SimpleNamespace(returncode=0, stdout=json.dumps({'ok':True,'result':result}))
+        with patch('federation.subprocess.run', side_effect=transport):
+            self.assertEqual(sender.flush_one(row)['state'], 'queued')
+            self.assertTrue(self.send('a', 'wire-large', 'b.cc', body=body)['duplicate'])
+            with self.assertRaises(HubError) as caught:
+                self.send('a', 'wire-large', 'b.cc', body='changed')
+            self.assertEqual(caught.exception.code, 'id_conflict')
+            sender.cancel(dict(host_id='a',host_token='a-token',endpoint_id='acc',message_id='wire-large'))
+        self.assertEqual(len(frames), 2)
+        self.assertEqual(sender._row('SELECT payload FROM federated_outbox WHERE message_id=?', ('wire-large',))[0], saved)
+        self.assertEqual(self.hubs['b']._row('SELECT body FROM messages WHERE message_id=?', ('wire-large',))[0], body)
+        # A frame that cannot fit is deterministic rejection, without SSH/retry.
+        sender.remote = hold_accept
+        self.send('a', 'wire-oversize', 'b.cc', body='x' * 100)
+        oversized = sender._row('SELECT * FROM federated_outbox WHERE message_id=?', ('wire-oversize',))
+        payload = json.loads(oversized['payload'])
+        payload['sender']['padding'] = 'x' * MAX_REQUEST
+        sender.db.execute('UPDATE federated_outbox SET payload=? WHERE message_id=?',
+                          (json.dumps(payload), 'wire-oversize'))
+        oversized = sender._row('SELECT * FROM federated_outbox WHERE message_id=?', ('wire-oversize',))
+        sender.remote = FederatedHub.remote.__get__(sender)
+        with patch('federation.subprocess.run') as ssh:
+            result = sender.flush_one(oversized)
+            self.assertEqual((result['state'], result['reason']), ('rejected', 'request_too_large'))
+            ssh.assert_not_called()
+
     def test_offline_no_accept_and_stale_reply_never_retargets(self):
         self.down={'b'}
         with self.assertRaises(HubError):self.send('a','missing','b.cc')

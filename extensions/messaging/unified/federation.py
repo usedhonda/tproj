@@ -57,6 +57,40 @@ class FederatedHub(Hub):
         return {h['id']: h for h in top.get('hosts', [])
                 if h.get('id') != self.local_id and h.get('ssh_alias')}
 
+    def peer_request(self, op, args, legacy=False):
+        """Build wire-only frames; saved idempotency evidence stays immutable."""
+        args = dict(args)
+        if not legacy and op in ('accept', 'cancel') and 'payload' in args:
+            args['payload'] = {k: v for k, v in args['payload'].items() if k != 'message'}
+        return dict(args, op='peer_' + op, host_id=self.local_id,
+                    host_token=self.host_tokens.get(self.local_id), protocol=PROTOCOL)
+
+    def serialize_peer_request(self, op, args, legacy=False):
+        request = self.peer_request(op, args, legacy=legacy)
+        return json.dumps(request) if legacy else json.dumps(request, ensure_ascii=False) + '\n'
+
+    def peer_frame(self, op, args):
+        # Include the newline also added by host.rpc when forwarding to the hub.
+        frame = self.serialize_peer_request(op, args)
+        if len(frame.encode('utf-8')) > MAX_REQUEST:
+            raise HubError('request_too_large', 'peer request exceeds the size limit')
+        return frame
+
+    def outbox_diagnostic(self, message_id):
+        row = self._row('SELECT * FROM federated_outbox WHERE message_id=?', (message_id,))
+        if not row:
+            return {}
+        payload = json.loads(row['payload'])
+        op = 'cancel' if row['state'] == 'cancel_pending' else 'accept'
+        args = {'payload': payload}
+        current = self.serialize_peer_request(op, args)
+        legacy = self.serialize_peer_request(op, args, legacy=True)
+        return {'federated_outbox': {
+            'state': row['state'], 'operation': op, 'destination_host_id': row['host_id'],
+            'legacy_request_bytes': len(legacy.encode('utf-8')),
+            'current_request_bytes': len(current.encode('utf-8')),
+            'request_limit_bytes': MAX_REQUEST, 'expires_at': payload['record']['expires_at']}}
+
     def remote(self, host_id, op, **args):
         peer = self.peers().get(host_id)
         token = self.host_tokens.get(self.local_id)
@@ -65,13 +99,12 @@ class FederatedHub(Hub):
         alias = peer['ssh_alias']
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', alias):
             raise HubError('configuration_error', 'invalid SSH alias')
-        request = dict(args, op='peer_' + op, host_id=self.local_id,
-                       host_token=token, protocol=PROTOCOL)
+        frame = self.peer_frame(op, args)
         try:
             proc = subprocess.run(['ssh'] + SSH_OPTIONS + ['-T', '--', alias,
                                    'PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" '
                                    'python3 "$HOME/lib/tproj-msg-unified/federation.py" --rpc'],
-                                  input=json.dumps(request), capture_output=True, text=True, timeout=SSH_CALL_SECONDS)
+                                  input=frame, capture_output=True, text=True, encoding='utf-8', timeout=SSH_CALL_SECONDS)
             if proc.returncode:
                 raise HubError('host_unavailable', 'remote transport command failed')
             response = json.loads(proc.stdout)
@@ -102,7 +135,7 @@ class FederatedHub(Hub):
         alias = peer['ssh_alias']
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', alias):
             raise HubError('configuration_error', 'invalid SSH alias')
-        request = dict(args, op='peer_' + op, host_id=self.local_id, host_token=token, protocol=PROTOCOL)
+        frame = self.peer_frame(op, args)
         try:
             proc = subprocess.Popen(['ssh'] + SSH_OPTIONS + ['-T', '--', alias,
                                      'PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" '
@@ -114,7 +147,7 @@ class FederatedHub(Hub):
         timer.start()
         try:
             try:
-                proc.stdin.write(json.dumps(request).encode()); proc.stdin.close()
+                proc.stdin.write(frame.encode('utf-8')); proc.stdin.close()
             except OSError:
                 raise HubError('host_unavailable', 'remote transport command failed') from None
             data = proc.stdout.read(max_bytes + 1)
@@ -369,7 +402,7 @@ class FederatedHub(Hub):
         try:
             self.remote(row['host_id'], 'accept', payload=json.loads(row['payload']))
         except HubError as exc:
-            if exc.code in ('stale_session', 'no_recipient', 'identity_rejected', 'policy_blocked', 'id_conflict', 'invalid_message'):
+            if exc.code in ('stale_session', 'no_recipient', 'identity_rejected', 'policy_blocked', 'id_conflict', 'invalid_message', 'request_too_large'):
                 self.db.execute("UPDATE federated_outbox SET state='rejected' WHERE message_id=?", (row['message_id'],))
                 self.db.execute("UPDATE messages SET state='rejected' WHERE message_id=?", (row['message_id'],))
                 return {'message_id': row['message_id'], 'state': 'rejected', 'reason': exc.code}
@@ -403,7 +436,7 @@ class FederatedHub(Hub):
             if exc.code == 'too_late':
                 self.db.execute("UPDATE federated_outbox SET state='delivered' WHERE message_id=?", (row['message_id'],))
                 raise
-            if exc.code in ('identity_rejected', 'unauthorized', 'id_conflict', 'invalid_message', 'expired'):
+            if exc.code in ('identity_rejected', 'unauthorized', 'id_conflict', 'invalid_message', 'expired', 'request_too_large'):
                 self.db.execute("UPDATE federated_outbox SET state='rejected' WHERE message_id=?", (row['message_id'],))
                 raise
             return {'message_id': row['message_id'], 'state': 'cancellation_pending', 'delivery_pending': True}
@@ -520,9 +553,11 @@ class FederatedHub(Hub):
                 if len(authoritative)==1:return authoritative[0]
                 if len(matches)==1:return dict(matches[0],remote_state='unavailable')
                 raise HubError('ambiguous_diagnostic','multiple delivery owners responded')
+            outbox=self.outbox_diagnostic(req.get('message_id'))
+            local.update(outbox)
             destination=local.get('recipient_host_id')
             if destination and destination != self.local_id:
-                try:return self.remote(destination,'diagnose',**fields)
+                try:return dict(self.remote(destination,'diagnose',**fields), **outbox)
                 except HubError as exc:return dict(local,remote_state='unavailable',remote_error=exc.code)
             return local
         if op.startswith('task_'):

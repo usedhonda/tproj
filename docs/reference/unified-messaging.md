@@ -254,6 +254,23 @@ confirmation from recipient liveness; neither establishes a substantive answer.
 Cross-host diagnosis prefers the recipient host's record and labels unavailable
 remote evidence without claiming the sender-side copy is current.
 
+Authorized sender-side diagnosis also includes `federated_outbox` when a saved
+outbox exists, even when the destination has no record. It exposes only `state`,
+`operation`, `destination_host_id`, `legacy_request_bytes`, `current_request_bytes`,
+`request_limit_bytes`, and the unchanged `expires_at`. Legacy bytes reproduce the
+old duplicate-body, ASCII-escaped SSH request; current bytes include authentication,
+metadata and the newline used by hub forwarding, using the actual UTF-8 serializer.
+These sizes are derived from saved evidence, not captured historical transport traces.
+Neither size field exposes body or credentials. When remote evidence is unavailable,
+local `recipient_online` is cached evidence, not destination health.
+
+Accept/cancel transport omits only the unused `payload.message` duplicate; the
+saved submit payload, IDs, body, expiry, ownership and receiver checks stay intact.
+Older receivers already consume `record`, `sender` and `recipient`. Peer requests
+are bounded before SSH at 262144 bytes. Deterministic `request_too_large` marks
+accept delivery rejected rather than transient pending; cancellation records a
+rejected outbox and raises the error, never claiming cancellation succeeded.
+
 New uncertain deliveries retain a fixed cause: `receipt_timeout`,
 `dispatch_error`, or `adapter_interrupted`. Historical uncertain rows with no
 such evidence remain unclassified. Diagnosis never retries, acknowledges,
