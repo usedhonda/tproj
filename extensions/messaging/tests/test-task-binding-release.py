@@ -112,6 +112,35 @@ class BindingReleaseTest(unittest.TestCase):
             self.assertIsNotNone(host.db.execute("SELECT 1 FROM formal_task_binding WHERE endpoint_id='old'").fetchone())
             self.assertTrue(marker.exists())
 
+    def test_host_rejects_wrong_task_epoch_and_ambiguous_old_row(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'unified'))
+        import task_host
+
+        class Host:
+            def __init__(self, ambiguous=False):
+                self.db = sqlite3.connect(':memory:'); self.db.row_factory = sqlite3.Row
+                self.ambiguous = ambiguous
+            def hub(self, op, **kwargs):
+                if op == 'endpoints_list':
+                    old = {'endpoint_id':'old','participant_id':'project:cdx','host_id':'host',
+                           'incarnation':'old-inc','platform':'cdx','retired':1}
+                    return {'endpoints':[old, dict(old)] if self.ambiguous else [old]}
+                return {'allowed':True}
+
+        ep = {'endpoint_id':'new','incarnation':'new-inc','host_id':'host','project_id':'project',
+              'participant_id':'project:cdx','platform':'cdx','session_id':'native-1','project_path':'/project'}
+        for mode, task_id, epoch in (('wrong_task','other',0), ('wrong_epoch','task',1), ('ambiguous','task',0)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as raw:
+                host = Host(mode == 'ambiguous')
+                host.db.execute('CREATE TABLE formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT, task_id TEXT, epoch INTEGER, native_id TEXT)')
+                host.db.execute("INSERT INTO formal_task_binding VALUES('old','old-inc','task',0,'native-1')"); host.db.commit()
+                marker = Path(raw) / task_host.digest('native-1'); marker.touch()
+                with patch.dict(os.environ, {'TPROJ_TASK_BINDING_DIR':raw}), self.assertRaises(task_host.HubError):
+                    task_host.dispatch(host, ep, {'op':'task_detach','task_id':task_id,'expected_epoch':epoch})
+                self.assertIsNotNone(host.db.execute("SELECT 1 FROM formal_task_binding WHERE endpoint_id='old'").fetchone())
+                self.assertTrue(marker.exists())
+
 
 if __name__ == '__main__':
     unittest.main()
