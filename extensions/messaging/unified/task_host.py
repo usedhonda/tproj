@@ -50,14 +50,14 @@ def _command_execution_observation(ep, tool_use_id, created_at, home=None):
     try:
         created_ms = int(float(created_at) * 1000)
         if not math.isfinite(float(created_at)):
-            return False, False, None
+            return True, False, None
     except (TypeError, ValueError, OverflowError):
-        return None
+        return True, False, None
     root = Path(home or Path.home()) / '.codex/sessions'
     paths = list(root.glob('[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9]/rollout-*-' + tid + '.jsonl'))
     paths = [p for p in paths if p.is_file() and not any(x.is_symlink() for x in (p, *p.parents))]
     if len(paths) != 1:
-        return None
+        return True, False, None
     matches = []
     saw_command = False
     saw_file_change = False
@@ -67,7 +67,7 @@ def _command_execution_observation(ep, tool_use_id, created_at, home=None):
             meta = header.get('payload') or {}
             if (header.get('type') != 'session_meta' or meta.get('id') != tid
                     or not meta.get('cwd') or Path(str(meta['cwd'])).resolve() != Path(str(project)).resolve()):
-                return None
+                return True, False, None
             for line in stream:
                 if not line.strip():
                     continue

@@ -77,6 +77,13 @@ class TaskReconcileWitnessTest(unittest.TestCase):
             with patch.object(task_host.Path, 'home', return_value=Path(raw)), patch.object(task_host.Path, 'is_symlink', return_value=False):
                 self.assertIsNone(task_host._completion_outcome(ep, 'op-1', 1.5))
 
+    def test_command_observation_unavailable_fails_closed(self):
+        thread = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+        ep = {'platform':'cdx','thread_id':thread,'project_path':'/project'}
+        with tempfile.TemporaryDirectory() as raw:
+            with patch.object(task_host.Path, 'home', return_value=Path(raw)), patch.object(task_host.Path, 'is_symlink', return_value=False):
+                self.assertIsNone(task_host._completion_outcome(ep, 'op-1', 1.5))
+
     def write_cc_transcript(self, root, thread, rows):
         path = Path(root) / '.claude/projects/project'
         path.mkdir(parents=True)
