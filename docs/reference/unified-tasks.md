@@ -157,10 +157,11 @@ handoff, `detach TASK --epoch N` may resynchronize one exact former binding.
 The host derives the old row from its verified native ID and enrolled endpoint
 directory; callers cannot supply a prior endpoint or continuity proof. The
 master performs a read-only release check: the exact historical assignment and
-epoch must exist on the same host/project/platform, the task must be actively
-owned by the current authenticated executor at a later epoch, the former
-executor must have no open operations, and no pending handoff may target either
-side. Frozen, current-owner, ambiguous, missing, cross-native, or forged proof
+epoch must exist on the same host/project, the task must be actively owned by a
+different current executor at a later epoch, the former executor must have no
+open operations, and no pending handoff may target either side. The releasing
+native caller need not be the current task executor. Frozen, current-owner,
+ambiguous, missing, cross-native, or forged proof
 is rejected without local cleanup. Other executors' open operations remain
 untouched. The operation changes only the requesting host's stale local binding
 and removes its marker when no binding for that native conversation remains; it

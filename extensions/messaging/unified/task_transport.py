@@ -35,12 +35,9 @@ def _attest_binding_release(hub, evidence, body):
         raise HubError('identity_rejected', 'historical native context does not match current caller')
     if previous['host_id'] != current_ep['host_id'] or previous['project_id'] != current_participant.get('project_id'):
         raise HubError('identity_rejected', 'historical binding is not the same enrolled participant')
-    if previous['platform'] != current_ep.get('platform'):
-        raise HubError('identity_rejected', 'historical binding platform differs')
     old = hub._row('SELECT * FROM endpoints WHERE endpoint_id=?', (previous['endpoint_id'],))
     participant = hub._row('SELECT * FROM participants WHERE participant_id=?', (old['participant_id'],)) if old else None
     if (not old or not participant or old['host_id'] != current_ep['host_id']
-            or old['participant_id'] != current_ep['participant_id']
             or str(old['incarnation']) != previous['incarnation']
             or str(old['platform']) != previous['platform']
             or participant['project_id'] != previous['project_id']):
@@ -76,7 +73,7 @@ def dispatch(hub, req, peer=False):
                     or previous.get('native_id') != body.get('native_id')
                     or previous.get('host_id') != current.get('host_id')
                     or previous.get('project_id') != participant.get('project_id')
-                    or previous.get('platform') != current.get('platform')):
+                    or not previous.get('platform')):
                 raise HubError('identity_rejected', 'historical native binding evidence is incomplete')
     else:
         if origin != hub.local_id:

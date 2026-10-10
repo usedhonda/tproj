@@ -156,8 +156,10 @@ def _historical_binding_proof(host, ep, task_id, epoch):
     if len(matches) != 1:
         raise HubError('identity_rejected', 'historical endpoint continuity is unavailable')
     old = matches[0]
-    if (old.get('host_id') != ep.get('host_id') or old.get('participant_id') != ep.get('participant_id')
-            or old.get('platform') != ep.get('platform') or old.get('incarnation') != row['incarnation']):
+    participants = host.hub('directory_list').get('participants', [])
+    old_participants = [item for item in participants if item.get('participant_id') == old.get('participant_id')]
+    if (old.get('host_id') != ep.get('host_id') or old.get('incarnation') != row['incarnation']
+            or len(old_participants) != 1 or old_participants[0].get('project_id') != ep.get('project_id')):
         raise HubError('identity_rejected', 'historical endpoint continuity differs')
     return {
         'endpoint_id': old['endpoint_id'], 'incarnation': old['incarnation'],
@@ -299,10 +301,16 @@ def dispatch(host, ep, req):
                     (proof['endpoint_id'], req['task_id'], req['expected_epoch'])).rowcount
                 if deleted != 1:
                     raise HubError('identity_rejected', 'historical binding changed during detach')
-                remaining = host.db.execute('SELECT 1 FROM formal_task_binding WHERE native_id=?', (proof['native_id'],)).fetchone()
-                if not remaining:
-                    binding_marker(proof['native_id']).unlink(missing_ok=True)
                 host.db.commit()
+                try:
+                    host.db.execute('BEGIN IMMEDIATE')
+                    remaining = host.db.execute('SELECT 1 FROM formal_task_binding WHERE native_id=?', (proof['native_id'],)).fetchone()
+                    if not remaining:
+                        binding_marker(proof['native_id']).unlink(missing_ok=True)
+                    host.db.commit()
+                except Exception as exc:
+                    if host.db.in_transaction: host.db.rollback()
+                    raise HubError('unavailable', 'native binding marker cleanup is incomplete') from exc
                 return {'detached': True, 'resynchronized': True}
             except Exception:
                 if host.db.in_transaction: host.db.rollback()
@@ -349,11 +357,17 @@ def dispatch(host, ep, req):
         native_id = str(ep.get('thread_id') or ep.get('session_id') or ep.get('runtime_id') or '')
         if not native_id: raise HubError('identity_rejected','native conversation ID required for task binding')
         marker = binding_marker(native_id)
-        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with marker.open('ab') as handle:
-            handle.flush()
-            os.fsync(handle.fileno())
-        host.db.execute('INSERT INTO formal_task_binding VALUES(?,?,?,?,?) ON CONFLICT(endpoint_id) DO UPDATE SET epoch=excluded.epoch', (ep['endpoint_id'],ep['incarnation'],tid,epoch,str(ep.get('thread_id') or ep.get('session_id') or ep.get('runtime_id') or '')));host.db.commit()
+        host.db.execute('BEGIN IMMEDIATE')
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with marker.open('ab') as handle:
+                handle.flush()
+                os.fsync(handle.fileno())
+            host.db.execute('INSERT INTO formal_task_binding VALUES(?,?,?,?,?) ON CONFLICT(endpoint_id) DO UPDATE SET epoch=excluded.epoch', (ep['endpoint_id'],ep['incarnation'],tid,epoch,str(ep.get('thread_id') or ep.get('session_id') or ep.get('runtime_id') or '')))
+            host.db.commit()
+        except Exception:
+            if host.db.in_transaction: host.db.rollback()
+            raise
     result=host.hub(op,endpoint_id=ep['endpoint_id'],**body)
     if op == 'task_submit':
         task=result['task']
