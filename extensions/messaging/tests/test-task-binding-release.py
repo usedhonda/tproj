@@ -135,6 +135,8 @@ class BindingReleaseTest(unittest.TestCase):
                 host = Host(mode == 'ambiguous')
                 host.db.execute('CREATE TABLE formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT, task_id TEXT, epoch INTEGER, native_id TEXT)')
                 host.db.execute("INSERT INTO formal_task_binding VALUES('old','old-inc','task',0,'native-1')"); host.db.commit()
+                if mode == 'ambiguous':
+                    host.db.execute("INSERT INTO formal_task_binding VALUES('old2','old2-inc','task',0,'native-1')"); host.db.commit()
                 marker = Path(raw) / task_host.digest('native-1'); marker.touch()
                 with patch.dict(os.environ, {'TPROJ_TASK_BINDING_DIR':raw}), self.assertRaises(task_host.HubError):
                     task_host.dispatch(host, ep, {'op':'task_detach','task_id':task_id,'expected_epoch':epoch})
