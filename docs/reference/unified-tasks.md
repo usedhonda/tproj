@@ -165,8 +165,10 @@ reconcile or force-close capability.
 `tproj-task reconcile-operation TASK --epoch N --tool-use-id ID` is a bounded
 host-side recovery for one exact open operation. It accepts only an
 authenticated current binding plus an independently verified native completion
-witness in the same thread and project, with valid timestamps after the
-master-recorded operation creation. Codex requires one exact `FileChange`
+witness in the same thread and project. The matching result timestamp must be
+valid and after both the master-recorded operation creation and its call; the
+call may predate operation admission because PreToolUse creates it first.
+Codex requires one exact `FileChange`
 `item_completed` record. CC requires one exact local `Bash`, `Edit`, or `Write`
 `tool_use` followed by one matching successful `tool_result`; sidechains,
 other sessions/projects, duplicate or malformed records, text mentions, and

@@ -59,14 +59,14 @@ class TaskReconcileWitnessTest(unittest.TestCase):
         cases = {
             'wrong_session': (self.cc_rows('other'), ep, False),
             'wrong_project': (self.cc_rows(thread, project='/other'), ep, False),
-            'precreation': (self.cc_rows(thread, call_time='2025-12-31T23:59:59Z'), ep, False),
+            'precreation': (self.cc_rows(thread, call_time='2025-12-31T23:59:59Z', result_time='2025-12-31T23:59:59Z'), ep, False),
             'error': (self.cc_rows(thread, error=True), ep, False),
             'duplicate': (self.cc_rows(thread, duplicate=True), ep, False),
             'text_mention': (self.cc_rows(thread, text_only=True), ep, False),
             'missing_result': ([self.cc_rows(thread)[0]], ep, False),
         }
         with tempfile.TemporaryDirectory() as raw:
-            self.write_cc_transcript(raw, thread, self.cc_rows(thread))
+            self.write_cc_transcript(raw, thread, [{'type':'progress','sessionId':thread}, *self.cc_rows(thread)])
             with patch.object(task_host.Path, 'home', return_value=Path(raw)), patch.object(task_host.Path, 'is_symlink', return_value=False):
                 self.assertTrue(task_host._cc_tool_witness(ep, 'cc-1', 1_767_225_601.0))
             for name, (rows, case_ep, expected) in cases.items():

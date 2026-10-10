@@ -88,11 +88,16 @@ def _cc_tool_witness(ep, tool_use_id, created_at, home=None):
                     return False
                 row_session = row.get('sessionId')
                 row_cwd = row.get('cwd')
-                if row_session is not None or row_cwd is not None:
+                relevant = row.get('type') in ('user', 'assistant')
+                if relevant:
                     if (row_session != tid or not isinstance(row_cwd, str)
                             or Path(row_cwd).resolve() != Path(str(project)).resolve()):
                         return False
-                if row.get('type') not in ('user', 'assistant'):
+                elif (row_session is not None and row_cwd is not None
+                      and (row_session != tid or not isinstance(row_cwd, str)
+                           or Path(row_cwd).resolve() != Path(str(project)).resolve())):
+                    return False
+                if not relevant:
                     continue
                 if row.get('sessionId') != tid or not isinstance(row.get('cwd'), str):
                     return False
@@ -117,8 +122,8 @@ def _cc_tool_witness(ep, tool_use_id, created_at, home=None):
             return False
         call_index, call_time = calls[0]
         result_index, result_time = results[0]
-        return (call_time >= created and result_time >= created
-                and result_index > call_index and result_time >= call_time)
+        return (result_time >= created and result_index > call_index
+                and result_time >= call_time)
     except (OSError, ValueError, TypeError, AttributeError, OverflowError):
         return False
 
