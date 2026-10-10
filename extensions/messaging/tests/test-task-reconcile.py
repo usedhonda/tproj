@@ -68,7 +68,7 @@ class TaskReconcileWitnessTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             self.write_cc_transcript(raw, thread, [{'type':'progress','sessionId':thread}, *self.cc_rows(thread)])
             with patch.object(task_host.Path, 'home', return_value=Path(raw)), patch.object(task_host.Path, 'is_symlink', return_value=False):
-                self.assertTrue(task_host._cc_tool_witness(ep, 'cc-1', 1_767_225_601.0))
+                self.assertTrue(task_host._cc_tool_witness(ep, 'cc-1', 1_767_225_602.5))
             for name, (rows, case_ep, expected) in cases.items():
                 with self.subTest(name=name):
                     with tempfile.TemporaryDirectory() as denied:
