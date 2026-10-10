@@ -155,10 +155,12 @@ possible route, not an exclusive prerequisite; alternatives remain unconfirmed:
 
 1. A sends to the external assistant; peer reads and replies; A reads that reply.
 2. B sends to a native session; peer reads and replies; B reads that reply.
-3. A/B attempts to read each other's known message IDs are rejected.
+3. A/B attempts to read, reply to, or ACK each other's known message IDs are
+   rejected in both directions.
 4. Record the resolved actor/binding, original reply ID and body consumption;
-   verify reconnect and distinct-identity fork behavior without overstating
-   same-identity duplication guarantees.
+   verify explicit connect, same-identity reconnect, explicit revoke and rejection
+   of the revoked binding's old generation. Verify distinct-identity fork behavior
+   without overstating same-identity duplication guarantees.
 
 Tool discovery, HTTP success, fixtures and existing assistant success do not
 substitute for this acceptance. Automatic idle-chat resumption is excluded.
