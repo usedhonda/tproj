@@ -70,7 +70,10 @@ def dispatch(hub, req, peer=False):
             previous = body.get('previous')
             current = evidence.get('endpoint') or {}
             participant = evidence.get('participant') or {}
-            if (not isinstance(previous, dict) or previous.get('native_id') != body.get('native_id')
+            attested = evidence.get('binding_release') or {}
+            if (not isinstance(previous, dict) or attested.get('previous') != previous
+                    or attested.get('native_id') != body.get('native_id')
+                    or previous.get('native_id') != body.get('native_id')
                     or previous.get('host_id') != current.get('host_id')
                     or previous.get('project_id') != participant.get('project_id')
                     or previous.get('platform') != current.get('platform')):
@@ -90,7 +93,11 @@ def dispatch(hub, req, peer=False):
             evidence = hub.local_resolve(endpoint_id=req.get('endpoint_id'))
             _attest_binding_release(hub, evidence, body)
         if selected != hub.local_id:
-            response = hub.remote(selected,'task',actor_evidence=evidence,request=body,task_protocol=TASK_PROTOCOL)
+            actor_evidence = evidence
+            if body.get('op') == 'task_binding_release_check':
+                actor_evidence = dict(evidence, binding_release={
+                    'native_id': body.get('native_id'), 'previous': body.get('previous')})
+            response = hub.remote(selected,'task',actor_evidence=actor_evidence,request=body,task_protocol=TASK_PROTOCOL)
             if not isinstance(response,dict) or response.get('task_protocol') != TASK_PROTOCOL or 'result' not in response:
                 raise HubError('incompatible_peer','task master did not confirm formal task protocol')
             return response['result']
