@@ -3,8 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 REPO_ROOT="${SCRIPT_DIR:h}"
-TMP="${TMPDIR:-/tmp}/tproj-gui-reuse.$$"
-mkdir -p "$TMP"
+TMP=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/tproj-gui-reuse.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/project/apps/tproj/.build/debug/alias" "$TMP/project/apps/tproj/.build/debug/other"
 
