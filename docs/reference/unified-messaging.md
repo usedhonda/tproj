@@ -51,6 +51,32 @@ task. `--force` cannot bypass identity, generation, approval, draft, or
 sendability guards. Receipt/status events do not generate ACK loops; a reply is
 sent only when the application has an actual response.
 
+## Native CLI visible follow-through
+
+After a substantive peer message reaches an existing enrolled native CLI
+conversation, the receiver concisely explains the sender, request type, current
+status, and next action on that conversation's current user-facing surface.
+Do not echo the full peer body, secrets, or raw diagnostic output. This is local
+conversation progress, not forwarding or an additional notification route.
+FYI/no-reply messages do not require a peer reply; information affecting an active
+objective still belongs in the relevant visible status explanation.
+
+An exact-ID peer reply, user-visible progress, and completion of the original
+already-user-authorized objective are separate obligations. A successful reply
+does not finish that objective: continue its authorized scope through the required
+implementation, minimal verification, and result report. Ordinary messages and
+diagnostics grant no new implementation authorization. Existing task lifecycle
+authority alone controls formal task scope, executor, epoch, cancellation, and
+freeze; ignored notes are supplemental, not a new ledger or authority.
+
+Keep bound exact-prompt acceptance, TUI rendering, direct human observation, and
+the receiver's progress explanation separate in evidence and reports. A receipt
+alone proves neither that the human saw the message nor that progress was explained.
+This contract changes only existing native CLI receiver behavior. Existing KAI
+normal MSG delivery and existing ChatGPT failure notifications remain unchanged;
+it adds no all-MSG ChatGPT fanout, notification expansion, enrollment, role change,
+or ledger.
+
 ## Rollout boundary
 
 Before enabling the marker, verify the directory import, endpoint registration,
