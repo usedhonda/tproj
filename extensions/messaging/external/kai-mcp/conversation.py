@@ -26,6 +26,7 @@ from typing import Any, Callable, Mapping
 
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_ID_MAX = 128
 _MAX_TEXT = 256
 
 
@@ -576,4 +577,22 @@ class ConversationToolResolver:
             raise ConversationToolFactoryError() from None
         if tools is None or not callable(getattr(tools, "dispatch", None)):
             raise ConversationToolFactoryError()
-        return self.registry.dispatch(binding, lambda: tools.dispatch(name, arguments))
+        dispatch_arguments = self._namespaced_arguments(binding, name, arguments)
+        return self.registry.dispatch(binding, lambda: tools.dispatch(name, dispatch_arguments))
+
+    @staticmethod
+    def _namespaced_arguments(binding: ConversationBinding, name: str,
+                              arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Namespace valid send/reply IDs without normalizing invalid input."""
+        if name not in ("tproj_send", "tproj_reply") or not isinstance(arguments, Mapping):
+            return arguments
+        raw = arguments.get("submission_id")
+        if (not isinstance(raw, str) or not raw or len(raw) > _ID_MAX
+                or any(char.isspace() for char in raw)):
+            return arguments
+        token = hashlib.sha256(
+            f"{binding.binding_id}\0{name}\0{raw}".encode("utf-8")
+        ).hexdigest()
+        updated = dict(arguments)
+        updated["submission_id"] = f"{name}:{token}"
+        return updated

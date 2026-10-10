@@ -356,6 +356,56 @@ class ConversationBindingRegistryTest(unittest.TestCase):
         self.assertEqual(len(attestations), 1)
         self.assertEqual(calls, [])
 
+    def test_send_and_reply_submission_ids_are_binding_and_operation_scoped(self):
+        captured = []
+
+        class Tools:
+            def dispatch(self, name, arguments):
+                captured.append((name, dict(arguments)))
+                return {"ok": True}
+
+        config = {"bindings": self.config["bindings"]}
+        registry = module.ConversationBindingRegistry(config)
+        attestations = {
+            "a": {"principal_id": "owner-a", "provider_subject_digest": digest("sub-a"),
+                  "provider_session_digest": digest("sess-a")},
+            "b": {"principal_id": "owner-b", "provider_subject_digest": digest("sub-b"),
+                  "provider_session_digest": digest("sess-b")},
+        }
+        resolver = module.ConversationToolResolver(
+            registry, lambda request: attestations[request["id"]], lambda _binding: Tools())
+        original = {"target": "peer.cc", "body": "first", "submission_id": "same-input"}
+        resolver.dispatch({"id": "a"}, "tproj_send", original)
+        resolver.dispatch({"id": "a"}, "tproj_send", {**original, "body": "changed"})
+        resolver.dispatch({"id": "a"}, "tproj_reply", {**original, "message_id": "m-1"})
+        resolver.dispatch({"id": "b"}, "tproj_send", original)
+        self.assertEqual(original["submission_id"], "same-input")
+        send_ids = [args["submission_id"] for name, args in captured if name == "tproj_send"]
+        self.assertEqual(send_ids[0], send_ids[1])
+        self.assertNotEqual(send_ids[0], captured[2][1]["submission_id"])
+        self.assertNotEqual(send_ids[0], captured[3][1]["submission_id"])
+
+    def test_invalid_submission_ids_are_passed_unchanged_for_existing_rejection(self):
+        captured = []
+
+        class Tools:
+            def dispatch(self, name, arguments):
+                if " " in arguments.get("submission_id", ""):
+                    raise ValueError("invalid submission ID")
+                captured.append(dict(arguments))
+                return {"ok": True}
+
+        registry = module.ConversationBindingRegistry(self.config)
+        resolver = module.ConversationToolResolver(
+            registry, lambda _request: {"principal_id": "owner-a",
+                "provider_subject_digest": digest("sub-a"),
+                "provider_session_digest": digest("sess-a")}, lambda _binding: Tools())
+        original = {"submission_id": "bad id"}
+        with self.assertRaises(ValueError):
+            resolver.dispatch({"id": "a"}, "tproj_send", original)
+        self.assertEqual(captured, [])
+        self.assertEqual(original["submission_id"], "bad id")
+
 
 if __name__ == "__main__":
     unittest.main()

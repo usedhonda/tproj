@@ -39,6 +39,13 @@ Use the existing messaging tool names:
 - Discover new destinations with `tproj_list`; use `tproj_status` when needed.
 - Persist a stable submission ID before `tproj_send`; preserve it on unknown
   outcomes rather than creating a new submission.
+- For enrolled conversation dispatch, valid `tproj_send` and `tproj_reply`
+  submission IDs are deterministically namespaced by binding and operation
+  before reaching the shared mailbox. The caller's arguments remain unchanged;
+  invalid IDs are left untouched for the existing validator to reject. Thus
+  the same input ID is stable for one binding and operation, while independent
+  bindings or send/reply operations cannot collide; a changed payload retains
+  the same ID and follows existing idempotency-conflict behavior.
 - Receive through `tproj_inbox`, then read the exact ID with `tproj_message`.
 - Call `tproj_ack` only after the agent consumes the body.
 - Reply with `tproj_reply` against the original ID.
