@@ -678,7 +678,7 @@ _tproj_gui_command_matches() {
       ;;
     *) return 1 ;;
   esac
-  resolved="$(realpath "$command_line" 2>/dev/null || true)"
+  resolved="${command_line:A}"
   [[ -n "$resolved" && "$resolved" == "$expected_path" ]]
 }
 
