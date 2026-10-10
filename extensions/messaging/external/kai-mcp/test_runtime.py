@@ -373,6 +373,22 @@ class RuntimeTest(unittest.TestCase):
                 return created
 
             payload = "x" * (8 * 1024 * 1024)
+            real_read_frame = module._read_bridge_frame
+            real_dumps = json.dumps
+            received_connection = []
+            send_timeouts = []
+
+            def receive_with_known_remaining_timeout(conn, deadline):
+                raw = real_read_frame(conn, deadline)
+                # Fix the receive-end state without relying on scheduler timing.
+                conn.settimeout(0.05)
+                received_connection.append(conn)
+                return raw
+
+            def encode_response(*args, **kwargs):
+                # Encoding is evaluated immediately before sendall.
+                send_timeouts.append(received_connection[-1].gettimeout())
+                return real_dumps(*args, **kwargs)
 
             def dispatch(_runtime, _request):
                 dispatches.append(True)
@@ -387,7 +403,9 @@ class RuntimeTest(unittest.TestCase):
             with mock.patch.object(module, "ServiceRuntime", Runtime), \
                  mock.patch.object(module, "_bridge_request", side_effect=dispatch), \
                  mock.patch.object(module.socket, "socket", side_effect=socket_factory), \
-                 mock.patch.object(module, "BRIDGE_CONNECTION_TIMEOUT", 0.2):
+                 mock.patch.object(module, "BRIDGE_CONNECTION_TIMEOUT", 0.2), \
+                 mock.patch.object(module, "_read_bridge_frame", side_effect=receive_with_known_remaining_timeout), \
+                 mock.patch.object(module.json, "dumps", side_effect=encode_response):
                 thread = threading.Thread(target=serve, daemon=True)
                 thread.start()
                 deadline = time.time() + 2
@@ -411,6 +429,7 @@ class RuntimeTest(unittest.TestCase):
                 self.assertTrue(decoded["ok"])
                 self.assertEqual(len(decoded["result"]["payload"]), len(payload))
                 self.assertEqual(len(dispatches), 1)
+                self.assertEqual(send_timeouts, [0.2])
                 listeners[0].close()
                 thread.join(timeout=2)
                 self.assertEqual(len(listener_errors), 1)
