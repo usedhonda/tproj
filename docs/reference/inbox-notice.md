@@ -5,6 +5,10 @@ native `PostToolUse` safe points. It returns at most three message IDs and the
 canonical sender address, never a body. The operation does not claim, consume,
 present, acknowledge, resend, or otherwise modify messages.
 
+`dispatching` is included as in-flight pending metadata: it is not evidence of
+presentation or reading, and remains subject to the same no-ACK/no-mutation
+notice contract.
+
 The hook helper authenticates through the local host caller binding and passes
 native conversation context from the tool event. It has a sub-one-second
 timeout and fails open when native context is unavailable. Each native

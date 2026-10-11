@@ -276,7 +276,7 @@ class Hub:
             "FROM messages m JOIN endpoints e ON e.endpoint_id=m.sender_endpoint "
             "JOIN participants p ON p.participant_id=e.participant_id "
             "WHERE m.recipient_endpoint=? AND m.rowid>? "
-            "AND m.state IN ('accepted','queued','adapter_received','uncertain') "
+            "AND m.state IN ('accepted','queued','adapter_received','dispatching','uncertain') "
             "AND NOT EXISTS (SELECT 1 FROM messages reply "
             "WHERE reply.in_reply_to=m.message_id "
             "AND reply.sender_endpoint=m.recipient_endpoint "

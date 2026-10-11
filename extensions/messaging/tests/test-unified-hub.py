@@ -89,6 +89,23 @@ class HubTest(unittest.TestCase):
         second = self.h.dispatch({"op":"inbox_notice", "host_id":"b", "host_token":"tb",
                                   "endpoint_id":"eb", "cursor":first["next_cursor"]})
         self.assertEqual([row["message_id"] for row in second["messages"]], ["notice-3"])
+
+    def test_inbox_notice_includes_dispatching_before_cursor_advances(self):
+        self.send(mid="dispatching-row", body="in flight")
+        self.send(mid="queued-row", body="queued")
+        self.h.dispatch({"op":"begin_present", "host_id":"b", "host_token":"tb",
+                         "endpoint_id":"eb", "message_id":"dispatching-row"})
+        first = self.h.dispatch({"op":"inbox_notice", "host_id":"b", "host_token":"tb",
+                                 "endpoint_id":"eb", "cursor":0})
+        self.assertEqual([row["message_id"] for row in first["messages"]],
+                         ["dispatching-row", "queued-row"])
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='dispatching-row'")[0],
+                         "dispatching")
+        self.h.dispatch({"op":"receipt", "host_id":"b", "host_token":"tb", "endpoint_id":"eb",
+                         "message_id":"dispatching-row", "state":"uncertain"})
+        second = self.h.dispatch({"op":"inbox_notice", "host_id":"b", "host_token":"tb",
+                                  "endpoint_id":"eb", "cursor":first["next_cursor"]})
+        self.assertEqual(second["messages"], [])
     def test_large_first_message_advances_cursor_without_starving_next(self):
         body="x" * 226395
         self.send(mid="large-first",body=body)
