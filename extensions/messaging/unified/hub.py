@@ -341,7 +341,7 @@ class Hub:
         self._tx()
         try:
             limit=min(max(int(req.get("limit",100)),1),1000)
-            rows=self.db.execute("SELECT * FROM messages WHERE recipient_endpoint=? AND expires_at>? AND state IN ('accepted','queued','adapter_received') ORDER BY created_at,message_id LIMIT ?",(ep["endpoint_id"],now,limit)).fetchall()
+            rows=self.db.execute("SELECT m.* FROM messages m WHERE m.recipient_endpoint=? AND m.expires_at>? AND m.state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages reply WHERE reply.in_reply_to=m.message_id AND reply.sender_endpoint=m.recipient_endpoint) ORDER BY m.created_at,m.message_id LIMIT ?",(ep["endpoint_id"],now,limit)).fetchall()
             if self._maintenance() == "probe": rows=[r for r in rows if r["message_id"] in set(self.config.get("probe_message_ids", []))]
             rows=self.message_views(rows)
             for r in rows: self.db.execute("UPDATE messages SET state='adapter_received',adapter_received_at=? WHERE message_id=?",(now,r["message_id"]))
@@ -382,6 +382,8 @@ class Hub:
                 raise HubError("presentation_unavailable", "message is terminal or presentation has already begun")
             if msg["expires_at"] <= self._now():
                 raise HubError("expired", "message expired before presentation")
+            if self._row("SELECT 1 FROM messages WHERE in_reply_to=? AND sender_endpoint=? LIMIT 1", (msg["message_id"], msg["recipient_endpoint"])):
+                raise HubError("presentation_unavailable", "recipient already replied to message")
             self.db.execute("UPDATE messages SET state='dispatching' WHERE message_id=?", (msg["message_id"],))
             self._commit()
             return {"message_id": msg["message_id"], "state": "dispatching"}

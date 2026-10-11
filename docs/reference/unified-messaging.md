@@ -340,3 +340,15 @@ from an absent, busy, or failed screen. Keep the original ID, use authorized
 diagnostic metadata when needed, and await the async answer without creating a
 duplicate route. The hub operation is `outbox` (sender-authenticated, current participant
 only, last 7 days, at most 500 rows).
+
+### Already-replied automatic delivery
+
+A persisted, authenticated exact-ID reply from the original recipient suppresses
+automatic claim of its original message. The hub rechecks this evidence inside
+the atomic `begin_present` transaction, covering a reply committed after claim
+but before presentation begins. Reply destination endpoint rotation does not
+invalidate this evidence: reply ingress already authenticates the original
+recipient and thread. No receipt or `presented` state is fabricated; history
+remains queryable. Reading an inbox list alone does not suppress delivery.
+Once presentation has begun (`dispatching`), this gate cannot retract the paste
+or stop work. Later explicit user stop instructions remain authoritative.

@@ -153,6 +153,20 @@ class HubTest(unittest.TestCase):
         self.assertEqual([m["message_id"] for m in left["messages"]],["o2"])
         # Another host cannot read a sender's outbox with its own token.
         with self.assertRaises(HubError): self.h.dispatch({"op":"outbox","host_id":"b","host_token":"tb","endpoint_id":"ea"})
+    def test_committed_reply_suppresses_claim_and_pending_presentation(self):
+        self.send()
+        receiver = {"host_id":"b", "host_token":"tb", "endpoint_id":"eb"}
+        self.assertEqual(len(self.h.claim(receiver)["messages"]), 1)
+        self.h.dispatch({"op":"submit", "host_id":"b", "host_token":"tb", "message":{
+            "message_id":"handled-reply", "in_reply_to":"m1", "sender_endpoint":"eb", "body":"done"}})
+        self.send(mid="next-message")
+        self.assertEqual([m["message_id"] for m in self.h.claim(receiver)["messages"]], ["next-message"])
+        with self.assertRaisesRegex(HubError, "already replied"):
+            self.h.begin_present(dict(receiver, message_id="m1"))
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='m1'")[0], "adapter_received")
+        self.assertIsNone(self.h._row("SELECT * FROM receipts WHERE message_id='m1'"))
+        self.assertEqual(self.h.begin_present(dict(receiver, message_id="next-message"))["state"], "dispatching")
+
     def test_reverse_reply_is_pinned(self):
         self.send(); self.h.dispatch({"op":"claim","host_id":"b","host_token":"tb","endpoint_id":"eb"})
         out=self.h.dispatch({"op":"submit","host_id":"b","host_token":"tb","message":{"message_id":"reply","thread_id":"t","in_reply_to":"m1","sender_endpoint":"eb","target":"proj.cc","body":"back"}})
