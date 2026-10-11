@@ -22,7 +22,7 @@ The installer registers the guard for all mutating tool matchers on both
 Claude and Codex. It does not activate hooks or alter an existing process.
 
 Failure completion is platform-specific. Claude registers `PostToolUseFailure`
-with the same tool identity to close the admitted operation. Codex registers
+with the same tool identity to inspect the exact historical callback. Codex registers
 `PostToolUse` only: its documented Bash path emits that event for nonzero exits
 as well. Unsupported failure events must not be added to Codex hook settings.
 The installer includes the formal guard in required Codex trust metadata; copying
@@ -39,8 +39,7 @@ along with Bash and exec_command aliases, are matched. Lifecycle commands inside
 code mode are exempt only for one `text(await tools.exec_command({...}));` call
 whose argument is literal JSON with the documented benign execution fields.
 Computed arguments, custom shells, appended JavaScript, and shell chains are not
-lifecycle exemptions. This prevents the lifecycle command from creating an open
-operation that would deadlock its own completion, without treating arbitrary
+lifecycle exemptions. This keeps diagnostic and recovery commands reachable without treating arbitrary
 JavaScript containing a task command as read-only.
 Installer migration removes only obsolete exact installer-owned single-command
 matcher entries; grouped and customized hooks remain untouched.
@@ -48,8 +47,10 @@ matcher entries; grouped and customized hooks remain untouched.
 The established mutation/pretool and completion/posttool entry points also invoke
 the same formal evaluator. This covers tool paths whose hooks an already-running
 session loaded before the dedicated formal hook registration was installed.
-Dedicated and established callbacks share the original tool_use_id, so admission
-and completion are idempotent. A legacy mutation denial runs before admission.
+Dedicated and established callbacks share the original tool_use_id for retired
+identity checks. They neither admit new operations nor close old ones implicitly.
+Exact witnessed legacy completion remains available through reconcile-operation.
+A legacy mutation denial remains independent of the task ledger.
 This does not add matcher coverage to an old session: paths absent from its
 loaded posttool matchers cannot be reported as having confirmed completion.
 Never clear an open operation by timeout or by assuming a tool completed.
