@@ -5,11 +5,19 @@ It reuses `tproj-mutation-guard`'s shell classifier and never invents a local
 mutation whitelist. Read-only tools, read-only shell commands, and exact
 `tproj-msg`/`tproj-task` lifecycle commands pass without contacting the host.
 
-For a formal assignment it sends the native conversation context and exact
-`tool_use_id` to the authenticated host's `task_guard_begin` and
+The native conversation marker is progress-ledger/recovery state, not a
+conversation-wide permission overlay. Ordinary later user work is never
+silently attributed to the historical task and remains fail-open even when a
+ledger host is unavailable. An explicitly admitted task operation may opt in
+with `formal_task_operation: true`; only that path sends the native context
+and exact `tool_use_id` to the authenticated host's `task_guard_begin` and
 `task_guard_end` operations. Missing IDs, host failure, stale incarnation or
-epoch, and unknown operation completion deny the operation; an unassigned
-conversation remains fail-open because formal tasks are optional.
+epoch, and unknown operation completion deny that explicit operation.
+
+Retired-operation lookup remains independent of current assignment: an exact
+retired callback is fenced even after its marker is released. If the ledger
+cannot be read, that recordkeeping failure does not deny unrelated local work;
+an explicitly opted-in operation still uses the fail-closed assignment path.
 
 The installer registers the guard for all mutating tool matchers on both
 Claude and Codex. It does not activate hooks or alter an existing process.

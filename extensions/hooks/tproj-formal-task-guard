@@ -144,12 +144,6 @@ def assigned(data):
         if (not host_cfg_path.exists() and not cli.DEFAULT_CONFIG.exists()
                 and not (Path.home()/".config/tproj/msg-client.enrolled").exists()):
             return False
-        ident = tool_id(data)
-        if ident:
-            cfg = cli.config()
-            retired = cli.rpc(cfg["socket"], caller_request("task_retired_operation", data, tool_use_id=ident))
-            if isinstance(retired, dict) and retired.get("retired") is True:
-                raise RuntimeError('retired cancelled-assignment operation is fenced')
         if any(binding_marker(native_id).exists() for native_id in ids): return True
         host_cfg = json.loads(host_cfg_path.read_text(encoding="utf-8")) if host_cfg_path.is_file() else {}
         journal = host_cfg.get("journal")
@@ -165,6 +159,54 @@ def assigned(data):
     except (sqlite3.Error, OSError, ValueError, cli.ClientError):
         raise RuntimeError('formal task assignment cannot be verified') from None
 
+
+def explicit_task_operation(data):
+    """Return true only for a host-admitted task operation request.
+
+    A native conversation marker is historical/recovery state. It is not an
+    instruction to attribute every later tool call to that task. Producers
+    that have an explicit task operation must opt in with this schema field;
+    ordinary user work remains local and fail-open.
+    """
+    roots = (data, data.get('hook_input'), data.get('raw_event'))
+    return any(isinstance(root, dict) and root.get('formal_task_operation') is True
+               for root in roots)
+
+
+def retired_operation(data):
+    """Check an exact retired callback without binding the conversation.
+
+    ``None`` means the ledger could not be read. That is a recordkeeping
+    failure, not permission to deny unrelated local work; explicit task
+    operations are still handled by the fail-closed assignment path.
+    """
+    ident = tool_id(data)
+    if not ident:
+        return False
+    ids = native_ids(data)
+    if not ids or cli is None:
+        return False
+    # Do not contact the task host for a never-assigned conversation. A local
+    # marker or an existing journal is the minimum evidence that an old
+    # retired callback could exist; ordinary unassigned work stays local.
+    marker_seen = any(binding_marker(native_id).exists() for native_id in ids)
+    host_cfg_path = Path(os.environ.get("TPROJ_MSG_HOST_CONFIG", str(Path.home()/".config/tproj/msg-host.json")))
+    journal_seen = False
+    try:
+        if host_cfg_path.is_file():
+            cfg_data = json.loads(host_cfg_path.read_text(encoding="utf-8"))
+            journal_seen = isinstance(cfg_data, dict) and bool(cfg_data.get("journal"))
+    except (OSError, ValueError):
+        journal_seen = False
+    if not marker_seen and not journal_seen:
+        return False
+    try:
+        cfg = cli.config()
+        result = cli.rpc(cfg["socket"], caller_request("task_retired_operation", data, tool_use_id=ident))
+        return isinstance(result, dict) and result.get("retired") is True
+    except Exception:
+        return None
+
 def evaluate(data: dict, event: str) -> dict:
     name, cmd = tool_name(data), command(data)
     empty_poll = empty_write_stdin_observation(data)
@@ -172,6 +214,11 @@ def evaluate(data: dict, event: str) -> dict:
             or guard.is_readonly_shell(cmd) or lifecycle(cmd)
             or (empty_poll and event not in ("posttooluse", "posttool", "failure", "post_tool_use")
                 and not event.startswith("posttool"))):
+        return {"decision": "allow"}
+    retired = retired_operation(data)
+    if retired is True:
+        return {"decision": "block", "reason": "retired cancelled-assignment operation is fenced"}
+    if not explicit_task_operation(data):
         return {"decision": "allow"}
     try:
         is_assigned = assigned(data)

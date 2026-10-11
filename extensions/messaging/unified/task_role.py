@@ -8,7 +8,10 @@ import cli
 from identity import native_thread_metadata
 
 def _blocked(error, phase):
-    return {'assigned':True, 'can_mutate':False, 'task_status':'authority_unavailable',
+    # Task authority is a progress ledger. An unavailable ledger must not
+    # capture or disable the native conversation's local working role.
+    return {'assigned':False, 'can_mutate':False, 'task_record':True,
+            'task_status':'authority_unavailable',
             'authority_error':error, 'authority_phase':phase}
 
 def _failure_code(exc):
@@ -95,9 +98,17 @@ def context(payload):
             result=cli.rpc(cfg['socket'],request)
         except cli.ClientError as exc:
             return _blocked(_failure_code(exc), 'rpc')
-        if not isinstance(result,dict) or result.get('assigned') is not True:
+        if not isinstance(result,dict):
             return _blocked('assignment_mismatch', 'assignment')
-        return result
+        if result.get('assigned') is not True:
+            return {'assigned':False}
+        # Preserve the authoritative task snapshot as recordkeeping data, but
+        # never project it into a native worker role or mutation permission.
+        record = dict(result)
+        record['assigned'] = False
+        record['can_mutate'] = False
+        record['task_record'] = True
+        return record
     except Exception:
         return _blocked('helper_failure', 'helper')
 

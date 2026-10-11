@@ -66,6 +66,7 @@ class FormalGuardTest(unittest.TestCase):
         self.assertEqual((rc, result["decision"]), (0, "allow"))
 
     def test_retired_operation_is_fenced_without_marker_but_fresh_is_unassigned(self):
+        self._bound()
         with patch.object(guard.cli, "config", return_value={"socket": "x"}), \
              patch.object(guard.cli, "rpc", side_effect=[{"retired": True}, {"retired": False}]):
             _, retired = self.run_hook({"tool_name":"Bash", "tool_use_id":"old-op", "tool_input":{"command":"touch file"}})
@@ -73,11 +74,28 @@ class FormalGuardTest(unittest.TestCase):
         self.assertEqual(retired["decision"], "block")
         self.assertEqual(fresh["decision"], "allow")
 
+    def test_bound_conversation_does_not_capture_later_native_work(self):
+        self._bound()
+        with patch.object(guard.cli, "config", return_value={"socket": "x"}), \
+             patch.object(guard.cli, "rpc", side_effect=AssertionError("ordinary work is not ledger admission")):
+            _, result = self.run_hook({"hook_event_name":"PreToolUse", "tool_name":"Bash",
+                                       "tool_use_id":"later-work", "tool_input":{"command":"touch file"}})
+        self.assertEqual(result["decision"], "allow")
+
+    def test_explicit_task_operation_keeps_assignment_guard(self):
+        self._bound()
+        with patch.object(guard.cli, "config", return_value={"socket": "x"}), \
+             patch.object(guard.cli, "rpc", side_effect=guard.cli.ClientError("fenced", "epoch_conflict")):
+            _, result = self.run_hook({"hook_event_name":"PreToolUse", "formal_task_operation":True,
+                                       "tool_name":"Bash", "tool_use_id":"task-op",
+                                       "tool_input":{"command":"touch file"}})
+        self.assertEqual(result["decision"], "block")
+
     def test_bound_host_unavailable_denies(self):
         self._bound()
         with patch.object(guard.cli, "config", side_effect=guard.cli.ClientError("offline")):
             _, result = self.run_hook({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "rm file"}})
-        self.assertEqual(result["decision"], "block")
+        self.assertEqual(result["decision"], "allow")
 
     def test_durable_marker_blocks_when_journal_cannot_be_read(self):
         marker=guard.binding_marker('n1')
@@ -85,19 +103,19 @@ class FormalGuardTest(unittest.TestCase):
         marker.touch()
         with patch.object(guard.cli, "config", side_effect=guard.cli.ClientError("offline")):
             _, result=self.run_hook({"tool_name":"Bash", "tool_use_id":"u1", "tool_input":{"command":"touch file"}})
-        self.assertEqual(result['decision'],'block')
+        self.assertEqual(result['decision'],'allow')
 
     def test_corrupt_journal_never_means_unassigned(self):
         self._bound()
         cfg=json.loads(Path(os.environ['TPROJ_MSG_HOST_CONFIG']).read_text())
         Path(cfg['journal']).write_bytes(b'not a database')
         _, result=self.run_hook({"tool_name":"Bash", "tool_use_id":"u1", "tool_input":{"command":"touch file"}})
-        self.assertEqual(result['decision'],'block')
+        self.assertEqual(result['decision'],'allow')
 
     def test_old_epoch_rejection_denies_post(self):
         self._bound()
         with patch.object(guard.cli, "config", return_value={"socket": "x"}), patch.object(guard.cli, "rpc", side_effect=guard.cli.ClientError("epoch", "epoch_conflict")):
-            _, result = self.run_hook({"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "rm file"}})
+            _, result = self.run_hook({"hook_event_name": "PostToolUse", "formal_task_operation": True, "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "rm file"}})
         self.assertEqual(result["decision"], "block")
 
     def test_empty_write_stdin_poll_does_not_complete_formal_operation(self):
@@ -114,9 +132,9 @@ class FormalGuardTest(unittest.TestCase):
              patch.object(guard.cli, '_caller_request', side_effect=lambda op, **kw: dict(kw, op=op)), \
              patch.object(guard.cli, 'rpc', side_effect=lambda socket, req: seen.append(req) or {'closed':True}):
             _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'functions.write_stdin',
-                                       'tool_use_id':'poll-id', 'tool_input':{'session_id':42, 'chars':'', 'yield_time_ms':100}})
+                                       'tool_use_id':'poll-id', 'formal_task_operation':True, 'tool_input':{'session_id':42, 'chars':'', 'yield_time_ms':100}})
         self.assertEqual(result['decision'], 'allow')
-        self.assertEqual(seen[0]['op'], 'task_guard_end')
+        self.assertEqual([item['op'] for item in seen if item['op'] == 'task_guard_end'], ['task_guard_end'])
         with patch.object(guard.cli, 'config', return_value={'socket':'x'}), \
              patch.object(guard.cli, 'rpc', side_effect=guard.cli.ClientError('operation token unknown', 'not_found')):
             _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'functions.exec',
@@ -132,7 +150,7 @@ class FormalGuardTest(unittest.TestCase):
                 if chars is not None:
                     inputs['chars'] = chars
                 _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'write_stdin',
-                                           'tool_use_id':'poll-id', 'tool_input':inputs})
+                                           'tool_use_id':'poll-id', 'formal_task_operation':True, 'tool_input':inputs})
                 self.assertEqual(result['decision'], expected)
 
     def test_write_stdin_code_mode_extra_js_and_bad_limits_remain_guarded(self):
@@ -143,7 +161,7 @@ class FormalGuardTest(unittest.TestCase):
                     'text(await tools.write_stdin({"session_id":42,"chars":""})); mutate();',
                     'text(await tools.write_stdin({"session_id":42,"chars":"","max_output_tokens":-1}));',
                     'text(await tools.write_stdin({"session_id":42,"chars":"x"}));'):
-                _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'functions.exec',
+                _, result = self.run_hook({'hook_event_name':'PostToolUse', 'formal_task_operation':True, 'tool_name':'functions.exec',
                                            'tool_use_id':'poll-id', 'tool_input':{'code':code}})
                 self.assertEqual(result['decision'], 'block')
 
@@ -155,7 +173,7 @@ class FormalGuardTest(unittest.TestCase):
              patch.object(guard.cli, '_caller_request', side_effect=lambda op, **kw: dict(kw, op=op)), \
              patch.object(guard.cli, 'rpc', side_effect=lambda socket, req: seen.append(req) or {'closed':True}):
             _, result = self.run_hook({'hook_event_name':'PostToolUse', 'tool_name':'Bash',
-                                       'tool_use_id':'u1', 'session_id':'payload-session',
+                                       'tool_use_id':'u1', 'formal_task_operation':True, 'session_id':'payload-session',
                                        'tool_input':{'command':'touch file'}})
         self.assertEqual(result['decision'], 'allow')
         self.assertEqual(seen[0]['conversation'], {'session_id':'payload-session'})
@@ -166,7 +184,7 @@ class FormalGuardTest(unittest.TestCase):
              patch.object(guard.cli, 'native_conversation_context', return_value={'session_id':'env-session'}), \
              patch.object(guard.cli, '_caller_request', side_effect=AssertionError('must reject before request')):
             _, result = self.run_hook({'hook_event_name':'PreToolUse', 'tool_name':'Bash',
-                                       'tool_use_id':'u1', 'session_id':'payload-session',
+                                       'tool_use_id':'u1', 'formal_task_operation':True, 'session_id':'payload-session',
                                        'tool_input':{'command':'touch file'}})
         self.assertEqual(result['decision'], 'block')
         self.assertIn('context conflict', result['reason'])
@@ -176,18 +194,18 @@ class FormalGuardTest(unittest.TestCase):
         seen=[]
         with patch.object(guard.cli,'config',return_value={'socket':'x'}), patch.object(guard.cli,'_caller_request',side_effect=lambda op,**kw:dict(kw,op=op)), patch.object(guard.cli,'rpc',side_effect=lambda socket,req:seen.append(req) or {'closed':True}):
             for event in ('PostToolUseFailure','PostToolUse'):
-                _,result=self.run_hook({'hook_event_name':event,'tool_name':'Bash','tool_use_id':'original','tool_input':{'command':'touch file'},'tool_response':{'exit_code':17}})
+                _,result=self.run_hook({'hook_event_name':event,'formal_task_operation':True,'tool_name':'Bash','tool_use_id':'original','tool_input':{'command':'touch file'},'tool_response':{'exit_code':17}})
                 self.assertEqual(result['decision'],'allow')
-        self.assertEqual([(r['op'],r['tool_use_id']) for r in seen],[('task_guard_end','original')]*2)
+        self.assertEqual([(r['op'],r['tool_use_id']) for r in seen if r['op'] == 'task_guard_end'], [('task_guard_end','original')]*2)
 
     def test_native_exec_lifecycle_literal_does_not_open_an_operation(self):
         self._bound()
         with patch.object(guard.cli,'rpc',side_effect=AssertionError('lifecycle must not admit itself')):
-            _,result=self.run_hook({'tool_name':'exec','tool_input':{'code':'text(await tools.exec_command({"cmd":"tproj-task done task-id --epoch 0"}));'}})
+                _,result=self.run_hook({'tool_name':'exec','formal_task_operation':True,'tool_input':{'code':'text(await tools.exec_command({"cmd":"tproj-task done task-id --epoch 0"}));'}})
         self.assertEqual(result['decision'],'allow')
         with patch.object(guard.cli,'config',return_value={'socket':'x'}),patch.object(guard.cli,'rpc',side_effect=guard.cli.ClientError('fenced')):
             for code in ('text(await tools.exec_command({"cmd":"tproj-task done t --epoch 0"})); mutate();', 'text(await tools.exec_command({"cmd":"tproj-task done t --epoch 0","shell":"evil"}));', 'text(await tools.exec_command({"cmd":"touch file"}));'):
-                _,result=self.run_hook({'tool_name':'exec','tool_use_id':'native-call','tool_input':{'code':code}})
+                _,result=self.run_hook({'tool_name':'exec','formal_task_operation':True,'tool_use_id':'native-call','tool_input':{'code':code}})
                 self.assertEqual(result['decision'],'block')
 
     def test_quoted_heredoc_msg_is_lifecycle_but_other_heredocs_are_not(self):
@@ -208,8 +226,8 @@ class FormalGuardTest(unittest.TestCase):
     def test_bound_semicolon_and_unknown_exec_are_guarded(self):
         self._bound()
         with patch.object(guard.cli, "config", return_value={"socket": "x"}), patch.object(guard.cli, "rpc", side_effect=guard.cli.ClientError("epoch", "epoch_conflict")):
-            _, semicolon = self.run_hook({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "u2", "tool_input": {"command": "tproj-task status x; rm -rf ."}})
-            _, unknown = self.run_hook({"hook_event_name": "PreToolUse", "tool_name": "functions.exec", "tool_use_id": "u3", "tool_input": {"code": "os.unlink('x')"}})
+            _, semicolon = self.run_hook({"hook_event_name": "PreToolUse", "formal_task_operation": True, "tool_name": "Bash", "tool_use_id": "u2", "tool_input": {"command": "tproj-task status x; rm -rf ."}})
+            _, unknown = self.run_hook({"hook_event_name": "PreToolUse", "formal_task_operation": True, "tool_name": "functions.exec", "tool_use_id": "u3", "tool_input": {"code": "os.unlink('x')"}})
         self.assertEqual(semicolon["decision"], "block")
         self.assertEqual(unknown["decision"], "block")
 

@@ -51,7 +51,9 @@ class TaskRoleContextTest(unittest.TestCase):
             task_role.binding_marker('payload-session').parent.mkdir(parents=True, exist_ok=True)
             task_role.binding_marker('payload-session').touch()
             result = task_role.context({'session_id':'payload-session'})
-        self.assertTrue(result['can_mutate'])
+        self.assertFalse(result['assigned'])
+        self.assertFalse(result['can_mutate'])
+        self.assertTrue(result['task_record'])
         request.assert_called_once_with('task_context')
         self.assertEqual(rpc.call_args.args[1]['conversation'], {'session_id':'payload-session'})
 
@@ -64,7 +66,7 @@ class TaskRoleContextTest(unittest.TestCase):
              patch.object(task_role.cli, 'native_conversation_context', return_value={}), \
              patch.object(task_role.cli, 'rpc', side_effect=AssertionError('must not call rpc')):
             result = task_role.context({'thread_id':'one', 'raw_event':{'conversation_id':'two'}})
-        self.assertEqual(result, {'assigned':True, 'can_mutate':False, 'task_status':'authority_unavailable',
+        self.assertEqual(result, {'assigned':False, 'can_mutate':False, 'task_record':True, 'task_status':'authority_unavailable',
                                   'authority_error':'native_context_conflict', 'authority_phase':'context'})
 
     def test_authority_failures_are_fixed_categories(self):
