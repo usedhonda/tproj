@@ -176,11 +176,47 @@ class MailboxToolsTest(unittest.TestCase):
     def test_reply_is_pinned_and_ack_is_scoped(self):
         reply = self.tools.dispatch("tproj_reply", {"message_id": "original", "body": "back", "submission_id": "reply-1"})
         self.assertEqual(reply["in_reply_to"], "original")
-        self.assertEqual(self.calls[0]["op"], "service_reply")
+        self.assertEqual([call["op"] for call in self.calls[:2]], ["service_message", "service_reply"])
+        self.assertEqual({key: self.calls[1][key] for key in ("message_id", "body", "submission_id")},
+                         {"message_id": "original", "body": "back", "submission_id": "reply-1"})
         ack = self.tools.dispatch("tproj_ack", {"message_id": "original"})
         self.assertEqual(ack, {"message_id": "original", "state": "presented"})
         self.assertEqual(self.calls[-1]["op"], "service_ack")
         self.assertEqual(self.calls[-1]["message_id"], "original")
+
+    def test_reply_preloads_thread_and_never_reads_after_commit(self):
+        seen = []
+        committed = {"message_id": "reply-2", "state": "queued"}
+
+        def host(req):
+            seen.append(req["op"])
+            if req["op"] == "service_message":
+                return {"thread_id": "thread-original"}
+            if req["op"] == "service_reply":
+                return committed
+            raise AssertionError(req["op"])
+
+        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+                                    authorizer=self.authorizer, host_call=host)
+        result = tools.dispatch("tproj_reply", {"message_id": "original", "body": "back", "submission_id": "reply-2"})
+        self.assertEqual(result["thread_id"], "thread-original")
+        self.assertEqual(seen, ["service_message", "service_reply"])
+
+    def test_reply_thread_lookup_failure_prevents_mutation(self):
+        seen = []
+
+        def host(req):
+            seen.append(req["op"])
+            if req["op"] == "service_message":
+                raise module.MailboxToolError("unavailable", "host offline")
+            raise AssertionError(req["op"])
+
+        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+                                    authorizer=self.authorizer, host_call=host)
+        with self.assertRaises(module.MailboxToolError) as raised:
+            tools.dispatch("tproj_reply", {"message_id": "original", "body": "back", "submission_id": "reply-3"})
+        self.assertEqual(raised.exception.code, "unavailable")
+        self.assertEqual(seen, ["service_message"])
 
     def test_list_filters_to_authorized_scope(self):
         result = self.tools.dispatch("tproj_list", {})

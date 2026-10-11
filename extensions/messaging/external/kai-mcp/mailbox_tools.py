@@ -292,11 +292,13 @@ class MailboxTools:
     def _reply(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, {"message_id", "body", "submission_id"})
         original = self._id(args["message_id"]); body = self._body(args["body"]); sid = self._id(args["submission_id"], "submission ID")
+        # Resolve the thread before the mutating call.  A successful reply
+        # must never be followed by a read whose failure could mask the
+        # committed result or tempt a caller to resubmit it.
+        view = self._host("service_message", message_id=original) or {}
+        thread = view.get("thread_id", original)
         result = self._host("service_reply", message_id=original, body=body, submission_id=sid) or {}
-        thread = result.get("thread_id")
-        if not thread:
-            view = self._host("service_message", message_id=original) or {}
-            thread = view.get("thread_id", original)
+        thread = result.get("thread_id") or thread
         return {"message_id": result.get("message_id", sid), "thread_id": thread, "in_reply_to": result.get("in_reply_to", original),
                 "state": result.get("state", "queued"), **({"duplicate": bool(result["duplicate"])} if "duplicate" in result else {})}
 

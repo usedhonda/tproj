@@ -58,6 +58,10 @@ provider availability.
 - Receive through `tproj_inbox`, then read the exact ID with `tproj_message`.
 - Call `tproj_ack` only after the agent consumes the body.
 - Reply with `tproj_reply` against the original ID.
+- Reply thread metadata is read before the mutating `service_reply` call;
+  after a successful reply no follow-up read is allowed to mask the committed
+  result. A pre-read failure performs no reply mutation, and the stable
+  submission ID must not be retried automatically.
 
 Acknowledgement means agent consumption, not human read receipt, business
 acceptance, task approval or completion. Queue persistence alone is not failure.
