@@ -216,12 +216,28 @@ class BindingReleaseTest(unittest.TestCase):
             marker = Path(raw) / task_host.digest('native-cancelled'); marker.touch()
             ep = {'endpoint_id':'executor','incarnation':'inc','host_id':'host','project_id':'project',
                   'platform':'cdx','session_id':'native-cancelled','project_path':'/project'}
-            with patch.dict(os.environ, {'TPROJ_TASK_BINDING_DIR':raw}):
-                result = task_host.dispatch(host, ep, {'op':'task_release_cancelled','task_id':'cancelled-task','expected_epoch':0})
+            original_unlink = Path.unlink
+            calls = {'n': 0}
+            def fail_once(path, *args, **kwargs):
+                if path == marker and calls['n'] == 0:
+                    calls['n'] += 1
+                    raise OSError('simulated crash before marker cleanup')
+                return original_unlink(path, *args, **kwargs)
+            with patch.dict(os.environ, {'TPROJ_TASK_BINDING_DIR':raw}), patch.object(Path, 'unlink', fail_once):
+                with self.assertRaises(task_host.HubError):
+                    task_host.dispatch(host, ep, {'op':'task_release_cancelled','task_id':'cancelled-task','expected_epoch':0})
+                self.assertIsNone(host.db.execute("SELECT 1 FROM formal_task_binding WHERE endpoint_id='executor'").fetchone())
+                self.assertTrue(marker.exists())
+                result = task_host.dispatch(host, {**ep, 'incarnation':'restarted'}, {'op':'task_release_cancelled','task_id':'cancelled-task','expected_epoch':0})
             self.assertEqual(result['unresolved_operations'], 2)
-            self.assertIsNone(host.db.execute("SELECT 1 FROM formal_task_binding WHERE endpoint_id='executor'").fetchone())
             self.assertFalse(marker.exists())
             self.assertEqual(host.calls[0][0], 'task_cancelled_release_check')
+            marker.touch()
+            host.db.execute("INSERT INTO formal_task_binding VALUES('executor','restarted','new-task',1,'native-cancelled')")
+            host.db.commit()
+            with patch.dict(os.environ, {'TPROJ_TASK_BINDING_DIR':raw}), self.assertRaises(task_host.HubError):
+                task_host.dispatch(host, {**ep, 'incarnation':'restarted'}, {'op':'task_release_cancelled','task_id':'cancelled-task','expected_epoch':0})
+            self.assertTrue(marker.exists())
 
     def test_cancelled_release_keeps_binding_when_master_rejects_open_operation(self):
         import sys
