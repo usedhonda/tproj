@@ -24,6 +24,13 @@ class HubTest(unittest.TestCase):
         before=self.h.db.total_changes
         result=self.h.dispatch(request)
         self.assertEqual(self.h.db.total_changes,before)
+        recipient_request={'op':'diagnose','host_id':'b','host_token':'tb','endpoint_id':'eb','message_id':'m1'}
+        recipient_result=self.h.dispatch(recipient_request)
+        inbox=self.h.dispatch({'op':'inbox','host_id':'b','host_token':'tb','endpoint_id':'eb'})
+        self.assertIsInstance(recipient_result['sequence'],int)
+        self.assertEqual(recipient_result['message_id'],inbox['messages'][0]['message_id'])
+        self.assertEqual(recipient_result['sequence'],inbox['messages'][0]['sequence'])
+        self.assertEqual(result['sequence'],recipient_result['sequence'])
         self.assertNotIn('body',result)
         self.assertNotIn('payload_hash',result)
         self.assertNotIn('private-body-sentinel',str(result))

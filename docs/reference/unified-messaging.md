@@ -261,6 +261,9 @@ paths, headers, and credentials. It distinguishes delivery state and presentatio
 confirmation from recipient liveness; neither establishes a substantive answer.
 Cross-host diagnosis prefers the recipient host's record and labels unavailable
 remote evidence without claiming the sender-side copy is current.
+The integer `sequence` is the message's local hub row sequence, matching the
+`inbox` event cursor on that hub. For recipient cursor diagnosis, use the
+recipient host's record; sender and recipient hub sequences are not interchangeable.
 
 Authorized sender-side diagnosis also includes `federated_outbox` when a saved
 outbox exists, even when the destination has no record. It exposes only `state`,

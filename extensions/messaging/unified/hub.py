@@ -377,7 +377,7 @@ class Hub:
 
     def diagnose(self, req):
         host=self._auth(req)
-        message=self._row('SELECT message_id,state,sender_endpoint,recipient_endpoint,created_at,expires_at,adapter_received_at FROM messages WHERE message_id=?',(req.get('message_id'),))
+        message=self._row('SELECT rowid AS sequence,message_id,state,sender_endpoint,recipient_endpoint,created_at,expires_at,adapter_received_at FROM messages WHERE message_id=?',(req.get('message_id'),))
         if not message:raise HubError('not_found','message not found')
         operator=req.get('operator_diagnostic') is True and host in self.config.get('diagnostic_hosts',[])
         if not operator:
