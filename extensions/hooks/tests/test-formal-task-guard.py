@@ -137,6 +137,12 @@ class FormalGuardTest(unittest.TestCase):
         Path(cfg['journal']).write_bytes(b'not a database')
         _, result=self.run_hook({"tool_name":"Bash", "tool_use_id":"u1", "tool_input":{"command":"touch file"}})
         self.assertEqual(result['decision'],'allow')
+        marker=guard.binding_marker('n1')
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        _, result=self.run_hook({"hook_event_name":"PostToolUse", "tool_name":"Bash",
+                                 "tool_use_id":"u1", "tool_input":{"command":"touch file"}})
+        self.assertEqual(result['decision'],'block')
 
     def test_old_epoch_rejection_denies_post(self):
         self._bound()

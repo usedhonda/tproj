@@ -135,31 +135,6 @@ def caller_request(op, data, **kwargs):
         request['conversation'] = merged
     return request
 
-def assigned(data):
-    ids = native_ids(data)
-    if not ids: return False
-    if cli is None: raise RuntimeError('unified task client unavailable')
-    try:
-        host_cfg_path = Path(os.environ.get("TPROJ_MSG_HOST_CONFIG", str(Path.home()/".config/tproj/msg-host.json")))
-        if (not host_cfg_path.exists() and not cli.DEFAULT_CONFIG.exists()
-                and not (Path.home()/".config/tproj/msg-client.enrolled").exists()):
-            return False
-        if any(binding_marker(native_id).exists() for native_id in ids): return True
-        host_cfg = json.loads(host_cfg_path.read_text(encoding="utf-8")) if host_cfg_path.is_file() else {}
-        journal = host_cfg.get("journal")
-        if not journal:
-            journal = cli.config().get("journal")
-        if not journal: return False
-        with sqlite3.connect(f"file:{journal}?mode=ro", uri=True, timeout=0.2) as db:
-            marks = ",".join("?" for _ in ids)
-            return db.execute(f"SELECT 1 FROM formal_task_binding WHERE native_id IN ({marks}) LIMIT 1", tuple(ids)).fetchone() is not None
-    except sqlite3.OperationalError as exc:
-        if 'no such table: formal_task_binding' in str(exc): return False
-        raise RuntimeError('formal task assignment cannot be verified') from None
-    except (sqlite3.Error, OSError, ValueError, cli.ClientError):
-        raise RuntimeError('formal task assignment cannot be verified') from None
-
-
 def retired_operation(data):
     """Check an exact retired callback without binding the conversation.
 
@@ -211,7 +186,11 @@ def evaluate(data: dict, event: str) -> dict:
     if retired is True:
         return {"decision": "block", "reason": "retired cancelled-assignment operation is fenced"}
     if retired is None:
-        return {"decision": "block", "reason": "retired operation history cannot be verified"}
+        # A missing/corrupt ledger can only affect a callback that might be
+        # closing an old admitted operation. Never fence a new pre-tool call
+        # from marker presence alone.
+        if event in ("posttooluse", "posttool", "failure", "post_tool_use") or event.startswith("posttool"):
+            return {"decision": "block", "reason": "retired operation history cannot be verified"}
     return {"decision": "allow"}
 
 
