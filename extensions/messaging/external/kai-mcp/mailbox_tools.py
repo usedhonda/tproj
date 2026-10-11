@@ -147,6 +147,8 @@ class MailboxTools:
         try:
             result = self.authorizer(name, args)
         except Exception as exc:
+            if getattr(type(exc), "transport_unavailable", False):
+                raise MailboxToolError("unavailable", "trusted conversation service unavailable") from exc
             raise MailboxToolError("identity_rejected", "trusted conversation authorization failed") from exc
         if not isinstance(result, Mapping):
             raise MailboxToolError("identity_rejected", "trusted conversation authorization rejected")

@@ -28,6 +28,20 @@ class ConnectionAuthorizerTest(unittest.TestCase):
         self.observed["allowed_addresses"] = ["secret.cc"]
         with self.assertRaises(module.ConnectionBindingError):
             self.authorizer.authorize()
+
+    def test_attestation_rejection_is_sanitized(self):
+        self.authorizer.attestor = lambda: (_ for _ in ()).throw(
+            RuntimeError("socket /private/credential=secret timed out"))
+        with self.assertRaises(module.ConnectionBindingError) as raised:
+            self.authorizer.authorize()
+        self.assertIs(type(raised.exception), module.ConnectionBindingError)
+        self.assertEqual(str(raised.exception), "host service attestation rejected")
+
+        self.authorizer.attestor = lambda: (_ for _ in ()).throw(
+            OSError("socket /private/credential=secret unavailable"))
+        with self.assertRaises(module.ConnectionTransportUnavailable) as unavailable:
+            self.authorizer.authorize()
+        self.assertEqual(str(unavailable.exception), "host service unavailable")
         self.observed["allowed_addresses"] = ["voyager.cc"]
         self.observed["service_id"] = "openclaw"
         with self.assertRaises(module.ConnectionBindingError):

@@ -14,6 +14,12 @@ class ConnectionBindingError(RuntimeError):
     """Raised when the host cannot prove the configured KAI binding."""
 
 
+class ConnectionTransportUnavailable(ConnectionBindingError):
+    """Raised when attestation could not reach the enrolled host service."""
+
+    transport_unavailable = True
+
+
 def _text(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value or len(value) > 256:
         raise ConnectionBindingError(f"invalid {label}")
@@ -69,7 +75,9 @@ class FixedConnectionAuthorizer:
         try:
             observed = self.attestor()
         except Exception as exc:
-            raise ConnectionBindingError("host service attestation failed") from exc
+            if getattr(exc, "code", None) == "unavailable" or isinstance(exc, (OSError, TimeoutError, ConnectionError)):
+                raise ConnectionTransportUnavailable("host service unavailable") from exc
+            raise ConnectionBindingError("host service attestation rejected") from exc
         if not isinstance(observed, Mapping):
             raise ConnectionBindingError("host service attestation rejected")
         for field in ("binding_id", "incarnation", "service_id", "address", "participant_id"):

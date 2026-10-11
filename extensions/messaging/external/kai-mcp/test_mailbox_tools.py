@@ -10,6 +10,10 @@ spec = importlib.util.spec_from_file_location("kai_mailbox_tools", ROOT / "mailb
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
+connection_spec = importlib.util.spec_from_file_location("kai_connection", ROOT / "connection.py")
+connection = importlib.util.module_from_spec(connection_spec)
+connection_spec.loader.exec_module(connection)
+
 
 class MailboxToolsTest(unittest.TestCase):
     def setUp(self):
@@ -88,6 +92,28 @@ class MailboxToolsTest(unittest.TestCase):
         with self.assertRaises(module.MailboxToolError) as raised:
             self.tools.dispatch("tproj_send", {"target": "voyager.cc", "body": "x", "submission_id": "s1"})
         self.assertEqual(raised.exception.code, "identity_rejected")
+        self.assertEqual(self.calls, [])
+
+    def test_nested_transport_unavailable_is_not_identity_rejection(self):
+        binding = connection.KaiServiceBinding("kai", "kai", "kai.service", "secret", ("voyager.cc",), "gen-1")
+        authorizer = connection.FixedConnectionAuthorizer(
+            binding, lambda: (_ for _ in ()).throw(OSError("credential=secret socket unavailable")))
+        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+                                     authorizer=authorizer.authorize, host_call=self.host)
+        with self.assertRaises(module.MailboxToolError) as raised:
+            tools.dispatch("tproj_send", {"target": "voyager.cc", "body": "x", "submission_id": "s1"})
+        self.assertEqual(raised.exception.code, "unavailable")
+        self.assertEqual(raised.exception.message, "trusted conversation service unavailable")
+        self.assertEqual(self.calls, [])
+
+        rejecting = connection.FixedConnectionAuthorizer(
+            binding, lambda: {"binding_id": "wrong", "incarnation": "inc-1",
+                              "service_id": "other", "address": "kai",
+                              "participant_id": "kai.service", "allowed_addresses": ["voyager.cc"]})
+        tools.authorizer = rejecting.authorize
+        with self.assertRaises(module.MailboxToolError) as rejected:
+            tools.dispatch("tproj_send", {"target": "voyager.cc", "body": "x", "submission_id": "s2"})
+        self.assertEqual(rejected.exception.code, "identity_rejected")
         self.assertEqual(self.calls, [])
 
     def test_invalid_identity_selector_is_rejected_before_host(self):
