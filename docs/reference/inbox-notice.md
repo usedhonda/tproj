@@ -22,3 +22,9 @@ relay.
 Entries written before cursor version 1 are rewound once for a bounded
 backfill; their exact-ID dedup list is retained, preventing blind repeat
 notices while recovering rows that an earlier cursor could have skipped.
+
+Deduplication retains the most recent 256 IDs per native conversation. During
+legacy backfill, IDs already evicted from that history, or evicted while a
+large backfill progresses, can produce another metadata notice. This is not a
+whole-history zero-duplicate guarantee; notices never resend message bodies or
+acknowledge delivery.
