@@ -157,7 +157,9 @@ send is not blocked by a remote catalog refresh or retry worker.
 `tproj` registers the local projects requested by a workspace launch (and by
 `tproj --add ALIAS`) through the local host socket's `directory-sync` operation.
 It reads the current revision first and sends one bounded update containing only
-missing, existing-on-disk local paths; disabled, remote, and unrelated catalog
+missing, existing-on-disk local paths. Automatic launches exclude disabled
+entries; an explicit local `--add` registers its launched project even when it is
+disabled in the automatic workspace selection. Remote and unrelated catalog
 entries are not synchronized. Existing project IDs and aliases are preserved.
 The host/federated directory performs conflict and stale-revision checks before
 mutation, so a conflict or an unavailable optional messaging service leaves the
