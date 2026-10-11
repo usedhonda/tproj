@@ -338,14 +338,35 @@ class TaskAuthority:
                 'previous_endpoint': previous['endpoint_id']}
 
     def _op_cancelled_release_check(self, req, actor):
-        """Authorize only the exact executor's local release after cancellation."""
+        """Authorize the executor's local release after cancellation.
+
+        A native restart may change incarnation without changing the
+        authenticated endpoint/native/project tuple.  The caller must then
+        provide the immutable former binding proof; this never authorizes a
+        new task or a different project.
+        """
         if not isinstance(req.get('task_id'), str) or not isinstance(req.get('expected_epoch'), int):
             raise TaskAuthorityError('invalid_request', 'task and assignment epoch are required')
         row = self._task(req['task_id'])
         self._epoch(req, row)
-        self._executor(row, actor)
         if row['status'] != 'cancelled':
             raise TaskAuthorityError('stale_task', 'task must be cancelled before local release')
+        if (row['executor_endpoint'], row['executor_incarnation'], row['executor_host_id']) != (
+                actor['endpoint_id'], actor['incarnation'], actor['host_id']):
+            previous = req.get('previous')
+            if (not isinstance(previous, dict) or
+                    previous.get('endpoint_id') != row['executor_endpoint'] or
+                    previous.get('incarnation') != row['executor_incarnation'] or
+                    previous.get('host_id') != row['executor_host_id'] or
+                    previous.get('host_id') != actor['host_id'] or
+                    previous.get('project_id') != actor['project_id'] or
+                    previous.get('native_id') != req.get('native_id')):
+                raise TaskAuthorityError('stale_executor', 'cancelled assignment is not bound to this conversation')
+            assignment = self.db.execute(
+                'SELECT 1 FROM task_assignments WHERE task_id=? AND endpoint=? AND incarnation=? AND host_id=? AND epoch=?',
+                (row['task_id'], previous['endpoint_id'], previous['incarnation'], previous['host_id'], row['epoch'])).fetchone()
+            if not assignment:
+                raise TaskAuthorityError('identity_rejected', 'historical assignment continuity is unavailable')
         unresolved = self.db.execute(
             'SELECT kind,epoch FROM task_operations WHERE task_id=? AND state="open" ORDER BY created_at',
             (row['task_id'],)).fetchall()
