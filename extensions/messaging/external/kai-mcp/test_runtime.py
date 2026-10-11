@@ -344,6 +344,84 @@ class RuntimeTest(unittest.TestCase):
                 thread.join(timeout=2)
                 self.assertEqual(len(listener_errors), 1)
 
+    def test_slow_dispatch_does_not_block_next_authorized_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bridge.sock"
+            config = self.config(directory)
+            config["bridge_socket"] = str(path)
+            real_socket = socket.socket
+            listeners = []
+            listener_errors = []
+            release_slow = threading.Event()
+            dispatches = []
+
+            class Events:
+                def pump_once(self):
+                    pass
+
+            class Runtime:
+                def __init__(self, _config):
+                    self.binding = mock.Mock(token="token")
+                def _attest(self):
+                    return {"service_id": "kai"}
+                def events(self):
+                    return Events()
+
+            def socket_factory(*args, **kwargs):
+                created = real_socket(*args, **kwargs)
+                if args and args[0] == socket.AF_UNIX:
+                    listeners.append(created)
+                return created
+
+            def dispatch(_runtime, request):
+                dispatches.append(request)
+                if request.get("slow"):
+                    release_slow.wait(2)
+                return {"accepted": True}
+
+            def serve():
+                try:
+                    module.bridge(config)
+                except OSError as exc:
+                    listener_errors.append(exc)
+
+            with mock.patch.object(module, "ServiceRuntime", Runtime), \
+                 mock.patch.object(module, "_bridge_request", side_effect=dispatch), \
+                 mock.patch.object(module.socket, "socket", side_effect=socket_factory), \
+                 mock.patch.object(module, "BRIDGE_CONNECTION_TIMEOUT", 1.0), \
+                 mock.patch.object(module, "BRIDGE_MAX_CONNECTIONS", 2):
+                thread = threading.Thread(target=serve, daemon=True)
+                thread.start()
+                deadline = time.time() + 2
+                while not path.exists() and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(path.exists())
+
+                slow = real_socket(socket.AF_UNIX)
+                slow.settimeout(2)
+                slow.connect(str(path))
+                slow.sendall(b'{"op":"slow"}\n')
+                deadline = time.time() + 2
+                while not dispatches and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(dispatches)
+
+                healthy = real_socket(socket.AF_UNIX)
+                healthy.settimeout(1)
+                healthy.connect(str(path))
+                healthy.sendall(b'{"op":"whoami"}\n')
+                response = healthy.makefile("rb").readline()
+                self.assertTrue(json.loads(response)["ok"])
+                healthy.close()
+
+                release_slow.set()
+                slow.makefile("rb").readline()
+                slow.close()
+                listeners[0].close()
+                thread.join(timeout=2)
+                self.assertEqual(len(listener_errors), 1)
+                self.assertEqual(len(dispatches), 2)
+
     def test_bridge_response_uses_fresh_timeout_after_near_deadline_receive(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bridge.sock"

@@ -234,6 +234,14 @@ does not lose replies. Changing that generation creates a different endpoint;
 old KAI endpoints are not forwarded to the new enrollment. This continuity does
 not borrow OpenClaw identity or attest a cloud persona.
 
+The private KAI bridge admits only a bounded number of connections and handles
+each admitted connection independently. A slow host RPC therefore cannot hold
+the serial accept loop hostage; once capacity is full, a new caller receives a
+structured `unavailable` response and is not dispatched. Frame receive and
+response send each have their own bounded transport deadline. A timeout or
+disconnect never redispatches the request, and a timed-out mutation must not be
+reported as having a known result or as a publication success.
+
 When a standalone tmux observation is followed by a registry observation for a
 child agent, the host preserves the already-active endpoint ID only after both
 recorded PID start values verify and the two processes are proven to share a

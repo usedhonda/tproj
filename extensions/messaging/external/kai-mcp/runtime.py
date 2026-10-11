@@ -44,6 +44,9 @@ BRIDGE_OPS = frozenset({
 CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "rejected", "stale_session", "presented"))
 BRIDGE_CONNECTION_TIMEOUT = 2.0
 BRIDGE_FRAME_LIMIT = 262_144
+# Keep the bridge responsive to new callers without allowing an unbounded
+# number of slow host RPCs to accumulate in the launchd-owned process.
+BRIDGE_MAX_CONNECTIONS = 8
 
 
 def _required(value: Any, name: str) -> str:
@@ -293,6 +296,9 @@ def bridge(config: Mapping[str, Any]) -> int:
     bound_stat = None
     stop = None
     worker = None
+    slots = threading.BoundedSemaphore(BRIDGE_MAX_CONNECTIONS)
+    handlers: set[threading.Thread] = set()
+    handlers_lock = threading.Lock()
     try:
         _remove_stale_bridge_socket(path)
         try:
@@ -314,19 +320,24 @@ def bridge(config: Mapping[str, Any]) -> int:
         listener = socket.socket(socket.AF_UNIX)
         listener.bind(str(path)); os.chmod(path, 0o600); listener.listen(16)
         bound_stat = path.stat()
-        while True:
+
+        def reject_busy(conn: socket.socket) -> None:
+            response = {"ok": False, "error": {"code": "unavailable", "message": "service bridge busy"}}
             try:
-                conn, _ = listener.accept()
-            except OSError as exc:
-                if exc.errno in (errno.EINTR, errno.ECONNABORTED):
-                    continue
-                raise
-            try:
-                deadline = time.monotonic() + BRIDGE_CONNECTION_TIMEOUT
                 with conn:
+                    conn.settimeout(BRIDGE_CONNECTION_TIMEOUT)
+                    conn.sendall((json.dumps(response, separators=(",", ":")) + "\n").encode())
+            except OSError:
+                pass
+
+        def handle_connection(conn: socket.socket) -> None:
+            current = threading.current_thread()
+            try:
+                with conn:
+                    deadline = time.monotonic() + BRIDGE_CONNECTION_TIMEOUT
                     raw = _read_bridge_frame(conn, deadline)
                     if not raw:
-                        continue
+                        return
                     response = None
                     try:
                         request = json.loads(raw)
@@ -343,7 +354,37 @@ def bridge(config: Mapping[str, Any]) -> int:
             except (OSError, ValueError, TypeError):
                 # A client may disconnect, time out, or send an oversized/bad
                 # frame; isolate that transport failure to this connection.
+                pass
+            finally:
+                slots.release()
+                with handlers_lock:
+                    handlers.discard(current)
+
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError as exc:
+                if exc.errno in (errno.EINTR, errno.ECONNABORTED):
+                    continue
+                raise
+            if not slots.acquire(blocking=False):
+                reject_busy(conn)
                 continue
+            handler = threading.Thread(target=handle_connection, args=(conn,),
+                                        name="kai-bridge-connection", daemon=True)
+            with handlers_lock:
+                handlers.add(handler)
+            try:
+                handler.start()
+            except RuntimeError:
+                with handlers_lock:
+                    handlers.discard(handler)
+                slots.release()
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                raise
     finally:
         if stop is not None:
             stop.set()
