@@ -170,11 +170,11 @@ does not change task authority, roles, grants, approvals, or history.
 For an owner-cancelled task whose executor still holds the native binding,
 `tproj-task release-cancelled TASK --epoch N` is the explicit local recovery
 entrypoint. The authenticated host asks the master to authorize the exact
-current executor and epoch, and the master requires the task to be `cancelled`
-with no open operation owned by that executor. It then removes only that
-conversation's local binding and restrictive marker. Other executors' open
-operations remain unresolved history and are reported; any open operation of
-the releasing executor blocks cleanup. This operation never closes operations,
+current executor and epoch, and the master requires the task to be `cancelled`.
+It then removes only that conversation's local binding and restrictive marker.
+All open operations remain unresolved history and are returned as sanitized
+tool-use IDs/epochs, including operations owned by the releasing executor. This
+operation never closes operations,
 changes the cancelled task or epoch, resurrects work, or grants a new role.
 
 Discovery preserves the incarnation returned by the hub's endpoint registration

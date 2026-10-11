@@ -448,7 +448,8 @@ def dispatch(host, ep, req):
         except OSError as exc:
             raise HubError('unavailable', 'native binding marker cleanup is incomplete') from exc
         return {'released': True, 'cancelled': True, 'task_id': bound['task_id'],
-                'epoch': bound['epoch'], 'unresolved_operations': result.get('unresolved_operations', 0)}
+                'epoch': bound['epoch'], 'unresolved_operations': result.get('unresolved_operations', 0),
+                'unresolved_operation_details': result.get('unresolved_operation_details', [])}
     if op in ('task_ack','task_accept_handoff'):
         # Durable restrictive marker precedes remote effect and survives uncertainty.
         tid=body.get('task_id'); epoch=body.get('expected_epoch')

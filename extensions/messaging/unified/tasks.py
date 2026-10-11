@@ -346,14 +346,13 @@ class TaskAuthority:
         self._executor(row, actor)
         if row['status'] != 'cancelled':
             raise TaskAuthorityError('stale_task', 'task must be cancelled before local release')
-        if self.db.execute(
-                'SELECT 1 FROM task_operations WHERE task_id=? AND endpoint=? AND incarnation=? AND state="open"',
-                (row['task_id'], actor['endpoint_id'], actor['incarnation'])).fetchone():
-            raise TaskAuthorityError('operations_open', 'cancelled assignment still has open operations')
+        unresolved = self.db.execute(
+            'SELECT kind,epoch FROM task_operations WHERE task_id=? AND state="open" ORDER BY created_at',
+            (row['task_id'],)).fetchall()
         return {'allowed': True, 'task_id': row['task_id'], 'epoch': row['epoch'],
-                'status': row['status'], 'unresolved_operations': self.db.execute(
-                    'SELECT COUNT(*) FROM task_operations WHERE task_id=? AND state="open"',
-                    (row['task_id'],)).fetchone()[0]}
+                'status': row['status'], 'unresolved_operations': len(unresolved),
+                'unresolved_operation_details': [
+                    {'tool_use_id': item['kind'], 'epoch': item['epoch']} for item in unresolved]}
 
     def _op_prepare_handoff(self, req, actor):
         row=self._task(str(req.get("task_id"))); self._owner(row,actor); self._epoch(req,row)

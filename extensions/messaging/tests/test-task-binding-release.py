@@ -51,7 +51,7 @@ class BindingReleaseTest(unittest.TestCase):
                 with self.assertRaises(TaskAuthorityError):
                     task.dispatch({'op':'binding_release_check','task_id':'task','expected_epoch':0,'previous':self.proof()}, actor)
 
-    def test_master_cancelled_release_requires_exact_executor_and_no_own_open_operation(self):
+    def test_master_cancelled_release_preserves_open_operations_as_unresolved_history(self):
         task, db = authority('cancelled')
         with self.assertRaises(TaskAuthorityError):
             task.dispatch({'op':'cancelled_release_check','task_id':'task','expected_epoch':0}, CURRENT)
@@ -59,8 +59,9 @@ class BindingReleaseTest(unittest.TestCase):
         result = task.dispatch({'op':'cancelled_release_check','task_id':'task','expected_epoch':1}, CURRENT)
         self.assertTrue(result['allowed'])
         db.execute("INSERT INTO task_operations VALUES('tok','task','new','new-inc',1,'tool','open',1.0)")
-        with self.assertRaisesRegex(TaskAuthorityError, 'open operations'):
-            task.dispatch({'op':'cancelled_release_check','task_id':'task','expected_epoch':1}, CURRENT)
+        result = task.dispatch({'op':'cancelled_release_check','task_id':'task','expected_epoch':1}, CURRENT)
+        self.assertEqual(result['unresolved_operations'], 1)
+        self.assertEqual(result['unresolved_operation_details'], [{'tool_use_id':'tool','epoch':1}])
 
     def test_host_resynchronizes_only_exact_same_native_old_row(self):
         import sys
