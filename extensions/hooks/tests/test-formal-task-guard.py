@@ -65,6 +65,14 @@ class FormalGuardTest(unittest.TestCase):
             rc, result = self.run_hook({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "rm file"}})
         self.assertEqual((rc, result["decision"]), (0, "allow"))
 
+    def test_retired_operation_is_fenced_without_marker_but_fresh_is_unassigned(self):
+        with patch.object(guard.cli, "config", return_value={"socket": "x"}), \
+             patch.object(guard.cli, "rpc", side_effect=[{"retired": True}, {"retired": False}]):
+            _, retired = self.run_hook({"tool_name":"Bash", "tool_use_id":"old-op", "tool_input":{"command":"touch file"}})
+            _, fresh = self.run_hook({"tool_name":"Bash", "tool_use_id":"new-op", "tool_input":{"command":"touch file"}})
+        self.assertEqual(retired["decision"], "block")
+        self.assertEqual(fresh["decision"], "allow")
+
     def test_bound_host_unavailable_denies(self):
         self._bound()
         with patch.object(guard.cli, "config", side_effect=guard.cli.ClientError("offline")):

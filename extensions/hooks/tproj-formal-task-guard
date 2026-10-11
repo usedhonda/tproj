@@ -139,6 +139,12 @@ def assigned(data):
     ids = native_ids(data)
     if not ids: return False
     if cli is None: raise RuntimeError('unified task client unavailable')
+    ident = tool_id(data)
+    if ident:
+        cfg = cli.config()
+        retired = cli.rpc(cfg["socket"], caller_request("task_retired_operation", data, tool_use_id=ident))
+        if isinstance(retired, dict) and retired.get("retired") is True:
+            raise RuntimeError('retired cancelled-assignment operation is fenced')
     if any(binding_marker(native_id).exists() for native_id in ids): return True
     try:
         host_cfg_path = Path(os.environ.get("TPROJ_MSG_HOST_CONFIG", str(Path.home()/".config/tproj/msg-host.json")))

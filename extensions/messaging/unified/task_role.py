@@ -81,17 +81,6 @@ def context(payload):
     ids={os.environ.get('CODEX_THREAD_ID',''),os.environ.get('CODEX_SESSION_ID',''),
          native.get('thread_id',''),native.get('session_id','')}
     ids.discard('')
-    tool_use_id = next((root.get('tool_use_id') for root in (payload, payload.get('hook_input'), payload.get('raw_event'))
-                        if isinstance(root, dict) and isinstance(root.get('tool_use_id'), str) and root.get('tool_use_id')), None)
-    if tool_use_id:
-        try:
-            cfg = cli.config()
-            retired = cli.rpc(cfg['socket'], dict(cli._caller_request('task_retired_operation'), tool_use_id=tool_use_id,
-                                                 conversation=native_context(payload)))
-            if isinstance(retired, dict) and retired.get('retired') is True:
-                return _blocked('retired_operation', 'assignment')
-        except Exception:
-            pass
     if not any(binding_marker(native).exists() for native in ids):return {'assigned':False}
     try:
         request=_caller_request(payload)
