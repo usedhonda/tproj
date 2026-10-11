@@ -60,6 +60,15 @@ class HubTest(unittest.TestCase):
         self.assertNotIn("private-body-sentinel", str(result))
         self.assertEqual(self.h.db.total_changes, before)
         self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='notice-1'")[0], "accepted")
+
+    def test_inbox_notice_excludes_reply_to_message_already_received(self):
+        self.send(mid="notice-original")
+        self.h.dispatch({"op":"claim", "host_id":"b", "host_token":"tb", "endpoint_id":"eb"})
+        self.h.dispatch({"op":"submit", "host_id":"b", "host_token":"tb", "message":{
+            "message_id":"notice-reply", "thread_id":"t", "in_reply_to":"notice-original",
+            "sender_endpoint":"eb", "body":"reply"}})
+        result = self.h.dispatch({"op":"inbox_notice", "host_id":"a", "host_token":"ta", "endpoint_id":"ea"})
+        self.assertEqual(result["messages"], [])
     def test_large_first_message_advances_cursor_without_starving_next(self):
         body="x" * 226395
         self.send(mid="large-first",body=body)

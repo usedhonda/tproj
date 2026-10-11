@@ -271,6 +271,8 @@ class Hub:
             "FROM messages m JOIN endpoints e ON e.endpoint_id=m.sender_endpoint "
             "JOIN participants p ON p.participant_id=e.participant_id "
             "WHERE m.recipient_endpoint=? AND m.state IN ('accepted','queued','adapter_received','uncertain') "
+            "AND NOT EXISTS (SELECT 1 FROM messages original "
+            "WHERE original.message_id=m.in_reply_to AND original.recipient_endpoint=m.sender_endpoint) "
             "AND m.expires_at>? ORDER BY m.created_at, m.message_id LIMIT ?",
             (ep["endpoint_id"], self._now(), limit),
         ).fetchall()

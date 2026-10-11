@@ -4,6 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+import io
+import os
+from contextlib import redirect_stdout
+from importlib.machinery import SourceFileLoader
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +18,18 @@ spec.loader.exec_module(notice)
 
 
 class InboxNoticeTest(unittest.TestCase):
+    def test_codex_posttool_notice_uses_hook_specific_output_shape(self):
+        guard = SourceFileLoader("completion_guard", str(Path(__file__).resolve().parents[2] / "hooks/tproj-completion-guard")).load_module()
+        with tempfile.TemporaryDirectory() as raw:
+            helper = Path(raw) / "helper.py"
+            helper.write_text("print('{\"additionalContext\":\"Pending message metadata\"}')\n")
+            out = io.StringIO()
+            with patch.dict(os.environ, {"TPROJ_INBOX_NOTICE_HELPER": str(helper)}), redirect_stdout(out):
+                guard.emit_inbox_notice({}, "codex")
+            rendered = json.loads(out.getvalue())
+            self.assertEqual(rendered["hookSpecificOutput"]["hookEventName"], "PostToolUse")
+            self.assertEqual(rendered["hookSpecificOutput"]["additionalContext"], "Pending message metadata")
+
     def test_exact_id_dedup_is_native_scoped_and_metadata_only(self):
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw) / "notice.json"

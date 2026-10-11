@@ -105,10 +105,10 @@ def notice(payload: dict) -> str:
     fresh = _dedup(_state_path(), native_key, [row for row in rows if isinstance(row, dict)])
     if not fresh:
         return ""
-    lines = ["Unread tproj message notice (metadata only; read each exact ID with tproj-msg):"]
+    lines = ["Pending message metadata (read each exact ID with tproj-msg):"]
     for row in fresh[:3]:
         sender = str(row.get("sender_address") or "unknown sender")
-        lines.append(f"- {sender}: {row.get('message_id')}")
+        lines.append(f"- {sender}: {row.get('message_id')} (state={row.get('state', 'unknown')})")
     return "\n".join(lines)
 
 

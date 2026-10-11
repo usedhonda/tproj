@@ -489,7 +489,7 @@ def observe_posttool_failure(
         )
 
 
-def emit_inbox_notice(payload: dict[str, Any]) -> None:
+def emit_inbox_notice(payload: dict[str, Any], platform: str) -> None:
     """Emit a fail-open additionalContext notice at a native safe point."""
     candidates = []
     configured = os.environ.get("TPROJ_INBOX_NOTICE_HELPER", "")
@@ -512,7 +512,11 @@ def emit_inbox_notice(payload: dict[str, Any]) -> None:
         response = json.loads(result.stdout)
         context = response.get("additionalContext") if isinstance(response, dict) else None
         if isinstance(context, str) and context.strip():
-            print(json.dumps({"additionalContext": context}, ensure_ascii=False))
+            if platform == "codex":
+                print(json.dumps({"hookSpecificOutput": {
+                    "hookEventName": "PostToolUse", "additionalContext": context}}, ensure_ascii=False))
+            else:
+                print(json.dumps({"additionalContext": context}, ensure_ascii=False))
     except (OSError, subprocess.SubprocessError, ValueError, TypeError):
         return
 
@@ -569,7 +573,7 @@ def main() -> int:
     if args.event == "posttool":
         if mode in {"assist", "collab"}:
             observe_posttool_failure(payload, session, alias, role, mode)
-        emit_inbox_notice(payload)
+        emit_inbox_notice(payload, args.platform)
         return 0
     if args.event == "pretool":
         # Consultation and reflection are advisory. They never authorize work, so
