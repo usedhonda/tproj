@@ -315,6 +315,8 @@ def dispatch(host, ep, req):
     if op == 'task_binding_status':
         return _binding_status(host, ep)
     host.db.execute('CREATE TABLE IF NOT EXISTS formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, task_id TEXT NOT NULL, epoch INTEGER NOT NULL, native_id TEXT NOT NULL)')
+    host.db.execute('CREATE TABLE IF NOT EXISTS formal_task_retired(task_id TEXT NOT NULL, epoch INTEGER NOT NULL, native_id TEXT NOT NULL, tool_use_id TEXT NOT NULL, PRIMARY KEY(task_id,epoch,native_id,tool_use_id))')
+    host.db.execute('CREATE TABLE IF NOT EXISTS formal_cancelled_release(endpoint_id TEXT NOT NULL, incarnation TEXT NOT NULL, task_id TEXT NOT NULL, epoch INTEGER NOT NULL, native_id TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(endpoint_id,task_id,epoch))')
     if op == 'task_binding_release_check':
         raise HubError('unsupported', 'binding release permission is host-internal')
     if op == 'task_cancelled_release_check':
@@ -331,6 +333,13 @@ def dispatch(host, ep, req):
             raise HubError('invalid_request','intent and approved scope text required')
         body['intent_hash']=digest(body.pop('intent'));body['scope_hash']=digest(body.pop('scope'))
     bound=host.db.execute('SELECT * FROM formal_task_binding WHERE endpoint_id=?',(ep['endpoint_id'],)).fetchone()
+    if op in ('task_guard_begin','task_guard_end'):
+        ident = req.get('tool_use_id')
+        native_id = _native_binding_id(ep)
+        if isinstance(ident, str) and host.db.execute(
+                'SELECT 1 FROM formal_task_retired WHERE native_id=? AND tool_use_id=?',
+                (native_id, ident)).fetchone():
+            raise HubError('stale_executor', 'retired cancelled-assignment operation is fenced')
     if op == 'task_context':
         if not bound:return {'assigned':False}
         snapshot=host.hub('task_status',endpoint_id=ep['endpoint_id'],task_id=bound['task_id'])
@@ -427,6 +436,15 @@ def dispatch(host, ep, req):
         binding_marker(bound['native_id']).unlink(missing_ok=True)
         return {'detached':True}
     if op == 'task_release_cancelled':
+        native_id = _native_binding_id(ep)
+        receipt = host.db.execute(
+            'SELECT result_json FROM formal_cancelled_release WHERE endpoint_id=? AND task_id=? AND epoch=?',
+            (ep['endpoint_id'], req.get('task_id'), req.get('expected_epoch'))).fetchone()
+        if receipt:
+            if host.db.execute('SELECT 1 FROM formal_task_binding WHERE native_id=?', (native_id,)).fetchone():
+                raise HubError('stale_executor', 'new native binding appeared during release cleanup')
+            binding_marker(native_id).unlink(missing_ok=True)
+            return json.loads(receipt['result_json'])
         if not bound or bound['incarnation'] != ep['incarnation']:
             raise HubError('stale_executor', 'cancelled assignment is not bound to this conversation')
         if req.get('expected_epoch') != bound['epoch']:
@@ -437,19 +455,27 @@ def dispatch(host, ep, req):
                            task_id=bound['task_id'], expected_epoch=bound['epoch'])
         if not isinstance(result, dict) or result.get('allowed') is not True:
             raise HubError('stale_task', 'master did not authorize cancelled assignment release')
+        details = result.get('unresolved_operation_details', [])
         deleted = host.db.execute(
             'DELETE FROM formal_task_binding WHERE endpoint_id=? AND task_id=? AND epoch=?',
             (ep['endpoint_id'], bound['task_id'], bound['epoch'])).rowcount
         if deleted != 1:
             raise HubError('identity_rejected', 'cancelled binding changed during release')
+        output = {'released': True, 'cancelled': True, 'task_id': bound['task_id'],
+                  'epoch': bound['epoch'], 'unresolved_operations': result.get('unresolved_operations', 0),
+                  'unresolved_operation_details': details}
+        for item in details:
+            if isinstance(item, dict) and isinstance(item.get('tool_use_id'), str):
+                host.db.execute('INSERT OR IGNORE INTO formal_task_retired VALUES(?,?,?,?)',
+                                (bound['task_id'], bound['epoch'], bound['native_id'], item['tool_use_id']))
+        host.db.execute('INSERT INTO formal_cancelled_release VALUES(?,?,?,?,?,?)',
+                        (ep['endpoint_id'], ep['incarnation'], bound['task_id'], bound['epoch'], bound['native_id'], json.dumps(output, sort_keys=True)))
         host.db.commit()
         try:
             binding_marker(bound['native_id']).unlink(missing_ok=True)
         except OSError as exc:
             raise HubError('unavailable', 'native binding marker cleanup is incomplete') from exc
-        return {'released': True, 'cancelled': True, 'task_id': bound['task_id'],
-                'epoch': bound['epoch'], 'unresolved_operations': result.get('unresolved_operations', 0),
-                'unresolved_operation_details': result.get('unresolved_operation_details', [])}
+        return output
     if op in ('task_ack','task_accept_handoff'):
         # Durable restrictive marker precedes remote effect and survives uncertainty.
         tid=body.get('task_id'); epoch=body.get('expected_epoch')

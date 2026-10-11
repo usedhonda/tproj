@@ -207,6 +207,25 @@ class BindingReleaseTest(unittest.TestCase):
             self.assertIsNotNone(host.db.execute("SELECT 1 FROM formal_task_binding WHERE endpoint_id='executor'").fetchone())
             self.assertTrue(marker.exists())
 
+    def test_retired_operation_is_fenced_after_new_binding(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'unified'))
+        import task_host
+        class Host:
+            def __init__(self):
+                self.db = sqlite3.connect(':memory:'); self.db.row_factory = sqlite3.Row
+            def hub(self, op, **kwargs):
+                raise AssertionError('late retired operation reached hub')
+        host = Host()
+        ep = {'endpoint_id':'executor','incarnation':'inc','host_id':'host','project_id':'project',
+              'platform':'cdx','session_id':'native-cancelled','project_path':'/project'}
+        host.db.execute('CREATE TABLE formal_task_retired(task_id TEXT, epoch INTEGER, native_id TEXT, tool_use_id TEXT)')
+        host.db.execute('CREATE TABLE formal_task_binding(endpoint_id TEXT, incarnation TEXT, task_id TEXT, epoch INTEGER, native_id TEXT)')
+        host.db.execute('INSERT INTO formal_task_retired VALUES(?,?,?,?)', ('old-task', 0, 'native-cancelled', 'old-op'))
+        host.db.execute('INSERT INTO formal_task_binding VALUES(?,?,?,?,?)', ('executor','inc','new-task',1,'native-cancelled'))
+        with self.assertRaisesRegex(task_host.HubError, 'retired'):
+            task_host.dispatch(host, ep, {'op':'task_guard_begin','tool_use_id':'old-op'})
+
 
 if __name__ == '__main__':
     unittest.main()
