@@ -132,7 +132,7 @@ def _projects(home: Path, host_id: str, aliases: set[str] | None = None) -> list
             continue
         if aliases is not None and str(item.get("alias") or Path(str(item.get("path") or "")).name) not in aliases:
             continue
-        if item.get("enabled", True) is False:
+        if aliases is None and item.get("enabled", True) is False:
             continue
         if not item.get('path'): continue
         path = os.path.abspath(os.path.expanduser(str(item["path"])))
@@ -176,16 +176,18 @@ def register_projects(home: Path | None = None, aliases: list[str] | None = None
         return {"added": [], "unchanged": [], "revision": None}
     directory = _host_rpc(socket_path, {"op": "directory"})
     existing = list(directory.get("projects", [])) if isinstance(directory, dict) else []
-    by_path = {str(item.get("path")): item for item in existing}
+    by_host_path = {(str(item.get("host_id")), str(item.get("path"))): item for item in existing}
     by_id = {str(item.get("project_id")): item for item in existing}
     by_alias = {str(item.get("alias")): item for item in existing}
     additions = []
     unchanged = []
     for project in requested:
-        old = by_path.get(project["path"])
+        old = by_host_path.get((host_id, project["path"]))
         if old:
             if old.get("host_id") != host_id:
                 raise RuntimeError("project path is owned by another host")
+            if old.get("alias") != project["alias"]:
+                raise RuntimeError("project path is already assigned to a different alias")
             if by_id.get(project["project_id"], old).get("path") != old.get("path"):
                 raise RuntimeError("project identity conflicts with existing directory")
             unchanged.append(old["project_id"])
@@ -270,6 +272,22 @@ def setup(home: Path | None = None, refresh: bool = False, dry_run: bool = False
     agents = home / "Library/LaunchAgents"
     manifests = [agents / "local.tproj.msg-unified-hub.plist", agents / "local.tproj.msg-unified-host.plist"]
     changed_flags += [_atomic_text(manifests[0], _plist("local.tproj.msg-unified-hub", hub_script, config_dir / "msg-hub.json", ["--socket", str(socket), "--db", str(hub_db)]), 0o644, dry_run), _atomic_text(manifests[1], _plist("local.tproj.msg-unified-host", host_script, config_dir / "msg-host.json"), 0o644, dry_run)]
+    if projects and not dry_run and not migrate:
+        try:
+            from hub import Hub
+            mailbox = Hub(str(hub_db), hub)
+            revision = mailbox.directory_list()["revision"]
+            existing = mailbox.directory_list()["projects"]
+            by_id = {item["project_id"]: item for item in existing}
+            additions = [] if existing else projects
+            if additions:
+                topology = _read_json(topology_path)
+                if topology.get('mode') == 'multi':
+                    raise RuntimeError('Register new projects through the shared directory while in multi-host mode')
+                mailbox.directory_import({"admin_token": admin, "projects": additions, "services": [], "expected_revision": revision})
+            mailbox.close()
+        except (ImportError, OSError, ValueError) as exc:
+            raise RuntimeError(f"directory seed failed: {type(exc).__name__}") from exc
     if not dry_run:
         _atomic_text(config_dir / "msg-client.enrolled", "active\n", 0o600, False)
     activation = _activate(home, manifests, any(changed_flags), no_start, dry_run)
