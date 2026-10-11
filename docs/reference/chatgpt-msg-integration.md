@@ -143,9 +143,12 @@ authorization, messaging availability, conversation isolation, resumption and
 operation status without reading or sending a message. A valid fixed service
 principal reports `service_principal_valid` and `conversation_isolation:
 not_configured`; arbitrary conversation fields cannot upgrade that result.
-An absent authorizer reports authentication required. Failed attestation has
-unknown cause and does not expose exception text. The shared MSG skill now
-selects actual cloud MCP tools versus enrolled native CLI.
+An absent authorizer reports authentication required. A known transport
+unavailability during attestation is reported as sanitized `unavailable`; an
+actual or malformed binding rejection remains `identity_rejected`. Neither
+case exposes exception text, falls back to another authorization path, or
+dispatches to the host. The shared MSG skill now selects actual cloud MCP
+tools versus enrolled native CLI.
 
 This checkpoint does not implement isolated cloud conversation routing. The
 existing stdio tunnel/runtime supplies only a fixed service identity; no verified
