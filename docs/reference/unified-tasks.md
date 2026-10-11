@@ -176,6 +176,10 @@ All open operations remain unresolved history and are returned as sanitized
 tool-use IDs/epochs, including operations owned by the releasing executor. This
 operation never closes operations,
 changes the cancelled task or epoch, resurrects work, or grants a new role.
+The host durably records each unresolved old tool ID as retired before releasing
+the marker; a late guard callback is rejected even if the native conversation
+later binds a new task. A release receipt makes marker cleanup retryable after a
+lost response, while refusing cleanup if a new binding appeared.
 
 Discovery preserves the incarnation returned by the hub's endpoint registration
 response in the authenticated caller record. Native registry evidence never
