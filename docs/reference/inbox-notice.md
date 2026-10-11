@@ -18,3 +18,7 @@ claims or acknowledges messages, and lets later safe points reach messages
 beyond the three-row notice bound. An active recipient can read the original
 message by ID with `tproj-msg message <ID>` without a forced prompt or proxy
 relay.
+
+Entries written before cursor version 1 are rewound once for a bounded
+backfill; their exact-ID dedup list is retained, preventing blind repeat
+notices while recovering rows that an earlier cursor could have skipped.

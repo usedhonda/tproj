@@ -66,11 +66,22 @@ def _dedup(path: Path, native_key: str, messages: list[dict], next_cursor: objec
         except (OSError, ValueError):
             state = {}
         entry = state.get(native_key, []) if isinstance(state, dict) else []
+        cursor_version = 0
         if isinstance(entry, dict):
             seen = entry.get("seen", [])
             try:
-                stored_cursor = max(int(entry.get("cursor", 0)), 0)
+                cursor_version = int(entry.get("cursor_version", 0))
             except (TypeError, ValueError):
+                cursor_version = 0
+            if cursor_version == 1:
+                try:
+                    stored_cursor = max(int(entry.get("cursor", 0)), 0)
+                except (TypeError, ValueError):
+                    stored_cursor = 0
+            else:
+                # Entries written before cursor versioning may have advanced
+                # past mutable rows. Rewind once while retaining exact-ID
+                # deduplication so only genuinely unseen rows are backfilled.
                 stored_cursor = 0
         else:
             # Migrate the old native-key -> [message IDs] shape in place.
@@ -83,10 +94,10 @@ def _dedup(path: Path, native_key: str, messages: list[dict], next_cursor: objec
         except (TypeError, ValueError):
             observed_cursor = 0
         cursor = max(stored_cursor, observed_cursor)
-        if fresh or cursor != stored_cursor or not isinstance(entry, dict):
+        if fresh or cursor != stored_cursor or cursor_version != 1 or not isinstance(entry, dict):
             seen.extend(str(item["message_id"]) for item in fresh if item.get("message_id"))
             state = state if isinstance(state, dict) else {}
-            state[native_key] = {"cursor": cursor, "seen": seen[-256:]}
+            state[native_key] = {"cursor_version": 1, "cursor": cursor, "seen": seen[-256:]}
             fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent), text=True)
             try:
                 with os.fdopen(fd, "w") as stream:
@@ -122,7 +133,7 @@ def notice(payload: dict) -> str:
             fcntl.flock(lock, fcntl.LOCK_EX)
             state = json.loads(state_path.read_text()) if state_path.exists() else {}
             entry = state.get(native_key, []) if isinstance(state, dict) else []
-            if isinstance(entry, dict):
+            if isinstance(entry, dict) and int(entry.get("cursor_version", 0)) == 1:
                 cursor = max(int(entry.get("cursor", 0)), 0)
     except (OSError, ValueError, TypeError):
         cursor = 0

@@ -59,7 +59,35 @@ class InboxNoticeTest(unittest.TestCase):
                  patch.object(notice, "_native", return_value=payload):
                 self.assertEqual(notice.notice(payload), "")
             entry = json.loads(state.read_text())[key]
-            self.assertEqual(entry, {"cursor": 9, "seen": ["m1"]})
+            self.assertEqual(entry, {"cursor_version": 1, "cursor": 9, "seen": ["m1"]})
+
+    def test_pre_version_cursor_rewinds_once_for_backfill_without_repeating_seen_ids(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw) / "notice.json"
+            payload = {"thread_id": "native-a"}
+            key = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            state.write_text(json.dumps({key: {"cursor": 11, "seen": ["queued-row"]}}))
+            calls = []
+            responses = iter((
+                {"messages": [{"message_id": "old-dispatching"}], "next_cursor": 10},
+                {"messages": [], "next_cursor": 10},
+            ))
+            def rpc(_path, request):
+                calls.append(request)
+                return next(responses)
+            with patch.object(notice, "_state_path", return_value=state), \
+                 patch.object(notice, "_config", return_value={"socket": "/tmp/unused"}), \
+                 patch.object(notice, "_rpc", side_effect=rpc), \
+                 patch.object(notice, "_native", return_value=payload):
+                first = notice.notice(payload)
+                second = notice.notice(payload)
+            self.assertIn("old-dispatching", first)
+            self.assertEqual(second, "")
+            self.assertEqual([call["cursor"] for call in calls], [0, 10])
+            self.assertEqual(json.loads(state.read_text())[key], {
+                "cursor_version": 1, "cursor": 10,
+                "seen": ["queued-row", "old-dispatching"],
+            })
 
 
 if __name__ == "__main__":
