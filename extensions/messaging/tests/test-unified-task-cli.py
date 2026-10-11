@@ -68,6 +68,12 @@ class UnifiedTaskCliTest(unittest.TestCase):
             self.assertEqual(task_cli.main(["handoff", "prepare", "t1", "--epoch", "2", "--target", "proj.cdx"]), 0)
         self.assertEqual(seen, [("prepare_handoff", {"task_id": "t1", "expected_epoch": 2, "target": "proj.cdx"})])
 
+    def test_cancelled_release_maps_to_authenticated_task_operation(self):
+        seen = []
+        with patch.object(task_cli, "request", side_effect=lambda op, **fields: seen.append((op, fields)) or {}):
+            self.assertEqual(task_cli.main(["release-cancelled", "t1", "--epoch", "2"]), 0)
+        self.assertEqual(seen, [("release_cancelled", {"task_id": "t1", "expected_epoch": 2})])
+
     def test_enrolled_legacy_fallback_is_status_only(self):
         import os, shutil, subprocess
         source = Path(__file__).resolve().parents[1] / 'tproj-task'

@@ -317,6 +317,8 @@ def dispatch(host, ep, req):
     host.db.execute('CREATE TABLE IF NOT EXISTS formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, task_id TEXT NOT NULL, epoch INTEGER NOT NULL, native_id TEXT NOT NULL)')
     if op == 'task_binding_release_check':
         raise HubError('unsupported', 'binding release permission is host-internal')
+    if op == 'task_cancelled_release_check':
+        raise HubError('unsupported', 'cancelled release permission is host-internal')
     if op in ('task_begin_operation','task_end_operation'):
         raise HubError('unsupported','operation admission uses the formal tool hook')
     if op == 'task_approval':
@@ -424,6 +426,29 @@ def dispatch(host, ep, req):
         host.db.execute('DELETE FROM formal_task_binding WHERE endpoint_id=?',(ep['endpoint_id'],));host.db.commit()
         binding_marker(bound['native_id']).unlink(missing_ok=True)
         return {'detached':True}
+    if op == 'task_release_cancelled':
+        if not bound or bound['incarnation'] != ep['incarnation']:
+            raise HubError('stale_executor', 'cancelled assignment is not bound to this conversation')
+        if req.get('expected_epoch') != bound['epoch']:
+            raise HubError('epoch_conflict', 'release must name the bound assignment epoch')
+        if req.get('task_id') != bound['task_id']:
+            raise HubError('task_mismatch', 'release must name the bound task')
+        result = host.hub('task_cancelled_release_check', endpoint_id=ep['endpoint_id'],
+                           task_id=bound['task_id'], expected_epoch=bound['epoch'])
+        if not isinstance(result, dict) or result.get('allowed') is not True:
+            raise HubError('stale_task', 'master did not authorize cancelled assignment release')
+        deleted = host.db.execute(
+            'DELETE FROM formal_task_binding WHERE endpoint_id=? AND task_id=? AND epoch=?',
+            (ep['endpoint_id'], bound['task_id'], bound['epoch'])).rowcount
+        if deleted != 1:
+            raise HubError('identity_rejected', 'cancelled binding changed during release')
+        host.db.commit()
+        try:
+            binding_marker(bound['native_id']).unlink(missing_ok=True)
+        except OSError as exc:
+            raise HubError('unavailable', 'native binding marker cleanup is incomplete') from exc
+        return {'released': True, 'cancelled': True, 'task_id': bound['task_id'],
+                'epoch': bound['epoch'], 'unresolved_operations': result.get('unresolved_operations', 0)}
     if op in ('task_ack','task_accept_handoff'):
         # Durable restrictive marker precedes remote effect and survives uncertainty.
         tid=body.get('task_id'); epoch=body.get('expected_epoch')

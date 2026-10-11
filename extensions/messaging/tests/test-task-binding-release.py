@@ -51,6 +51,17 @@ class BindingReleaseTest(unittest.TestCase):
                 with self.assertRaises(TaskAuthorityError):
                     task.dispatch({'op':'binding_release_check','task_id':'task','expected_epoch':0,'previous':self.proof()}, actor)
 
+    def test_master_cancelled_release_requires_exact_executor_and_no_own_open_operation(self):
+        task, db = authority('cancelled')
+        with self.assertRaises(TaskAuthorityError):
+            task.dispatch({'op':'cancelled_release_check','task_id':'task','expected_epoch':0}, CURRENT)
+        db.execute("UPDATE tasks SET executor_endpoint='new', executor_incarnation='new-inc'")
+        result = task.dispatch({'op':'cancelled_release_check','task_id':'task','expected_epoch':1}, CURRENT)
+        self.assertTrue(result['allowed'])
+        db.execute("INSERT INTO task_operations VALUES('tok','task','new','new-inc',1,'tool','open',1.0)")
+        with self.assertRaisesRegex(TaskAuthorityError, 'open operations'):
+            task.dispatch({'op':'cancelled_release_check','task_id':'task','expected_epoch':1}, CURRENT)
+
     def test_host_resynchronizes_only_exact_same_native_old_row(self):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'unified'))
@@ -144,6 +155,56 @@ class BindingReleaseTest(unittest.TestCase):
                     task_host.dispatch(host, ep, {'op':'task_detach','task_id':task_id,'expected_epoch':epoch})
                 self.assertIsNotNone(host.db.execute("SELECT 1 FROM formal_task_binding WHERE endpoint_id='old'").fetchone())
                 self.assertTrue(marker.exists())
+
+    def test_cancelled_release_clears_exact_bound_marker_only_after_master_check(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'unified'))
+        import task_host
+
+        class Host:
+            def __init__(self):
+                self.db = sqlite3.connect(':memory:'); self.db.row_factory = sqlite3.Row
+                self.calls = []
+            def hub(self, op, **kwargs):
+                self.calls.append((op, kwargs))
+                if op == 'task_cancelled_release_check':
+                    return {'allowed': True, 'status': 'cancelled', 'unresolved_operations': 2}
+                raise AssertionError(op)
+
+        with tempfile.TemporaryDirectory() as raw:
+            host = Host(); host.db.execute('CREATE TABLE formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT, task_id TEXT, epoch INTEGER, native_id TEXT)')
+            host.db.execute("INSERT INTO formal_task_binding VALUES('executor','inc','cancelled-task',0,'native-cancelled')"); host.db.commit()
+            marker = Path(raw) / task_host.digest('native-cancelled'); marker.touch()
+            ep = {'endpoint_id':'executor','incarnation':'inc','host_id':'host','project_id':'project',
+                  'platform':'cdx','session_id':'native-cancelled','project_path':'/project'}
+            with patch.dict(os.environ, {'TPROJ_TASK_BINDING_DIR':raw}):
+                result = task_host.dispatch(host, ep, {'op':'task_release_cancelled','task_id':'cancelled-task','expected_epoch':0})
+            self.assertEqual(result['unresolved_operations'], 2)
+            self.assertIsNone(host.db.execute("SELECT 1 FROM formal_task_binding WHERE endpoint_id='executor'").fetchone())
+            self.assertFalse(marker.exists())
+            self.assertEqual(host.calls[0][0], 'task_cancelled_release_check')
+
+    def test_cancelled_release_keeps_binding_when_master_rejects_open_operation(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'unified'))
+        import task_host
+
+        class Host:
+            def __init__(self):
+                self.db = sqlite3.connect(':memory:'); self.db.row_factory = sqlite3.Row
+            def hub(self, op, **kwargs):
+                raise task_host.HubError('operations_open', 'cancelled assignment still has open operations')
+
+        with tempfile.TemporaryDirectory() as raw:
+            host = Host(); host.db.execute('CREATE TABLE formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT, task_id TEXT, epoch INTEGER, native_id TEXT)')
+            host.db.execute("INSERT INTO formal_task_binding VALUES('executor','inc','cancelled-task',0,'native-cancelled')"); host.db.commit()
+            marker = Path(raw) / task_host.digest('native-cancelled'); marker.touch()
+            ep = {'endpoint_id':'executor','incarnation':'inc','host_id':'host','project_id':'project',
+                  'platform':'cdx','session_id':'native-cancelled','project_path':'/project'}
+            with patch.dict(os.environ, {'TPROJ_TASK_BINDING_DIR':raw}), self.assertRaises(task_host.HubError):
+                task_host.dispatch(host, ep, {'op':'task_release_cancelled','task_id':'cancelled-task','expected_epoch':0})
+            self.assertIsNotNone(host.db.execute("SELECT 1 FROM formal_task_binding WHERE endpoint_id='executor'").fetchone())
+            self.assertTrue(marker.exists())
 
 
 if __name__ == '__main__':

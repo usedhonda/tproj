@@ -337,6 +337,24 @@ class TaskAuthority:
         return {'allowed': True, 'task_id': req['task_id'], 'epoch': old_epoch,
                 'previous_endpoint': previous['endpoint_id']}
 
+    def _op_cancelled_release_check(self, req, actor):
+        """Authorize only the exact executor's local release after cancellation."""
+        if not isinstance(req.get('task_id'), str) or not isinstance(req.get('expected_epoch'), int):
+            raise TaskAuthorityError('invalid_request', 'task and assignment epoch are required')
+        row = self._task(req['task_id'])
+        self._epoch(req, row)
+        self._executor(row, actor)
+        if row['status'] != 'cancelled':
+            raise TaskAuthorityError('stale_task', 'task must be cancelled before local release')
+        if self.db.execute(
+                'SELECT 1 FROM task_operations WHERE task_id=? AND endpoint=? AND incarnation=? AND state="open"',
+                (row['task_id'], actor['endpoint_id'], actor['incarnation'])).fetchone():
+            raise TaskAuthorityError('operations_open', 'cancelled assignment still has open operations')
+        return {'allowed': True, 'task_id': row['task_id'], 'epoch': row['epoch'],
+                'status': row['status'], 'unresolved_operations': self.db.execute(
+                    'SELECT COUNT(*) FROM task_operations WHERE task_id=? AND state="open"',
+                    (row['task_id'],)).fetchone()[0]}
+
     def _op_prepare_handoff(self, req, actor):
         row=self._task(str(req.get("task_id"))); self._owner(row,actor); self._epoch(req,row)
         self._handoff_allowed(row)

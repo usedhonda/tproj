@@ -23,7 +23,7 @@ except ImportError:  # installed launcher executes this file directly
 
 
 TASK_OPS = {"approval", "submit", "status", "list", "ack", "progress", "done",
-            "block", "verify", "report", "cancel", "freeze", "unfreeze", "binding-status"}
+            "block", "verify", "report", "cancel", "freeze", "unfreeze", "binding-status", "release-cancelled"}
 HANDOFF_OPS = {"prepare_handoff", "release_handoff", "accept_handoff", "commit_handoff"}
 
 
@@ -58,7 +58,7 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--approval", required=True, dest="approval_id")
     s.add_argument("--idempotency-key", default=None)
     s.add_argument("--stdin", action="store_true", help="read packet JSON from stdin")
-    for name in ("status", "ack", "progress", "done", "block", "verify", "report", "cancel", "freeze", "unfreeze", "detach"):
+    for name in ("status", "ack", "progress", "done", "block", "verify", "report", "cancel", "freeze", "unfreeze", "detach", "release-cancelled"):
         q = sub.add_parser(name)
         q.add_argument("task_id")
         q.add_argument("--epoch", type=int, dest="expected_epoch")
@@ -141,7 +141,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise cli.ClientError(f"{args.command} requires --epoch", "invalid_argument")
             if args.expected_epoch is not None: fields["expected_epoch"] = args.expected_epoch
             if args.data is not None: fields["data"] = _json_data(args.data)
-            result = request(args.command, **fields)
+            op = "release_cancelled" if args.command == "release-cancelled" else args.command
+            result = request(op, **fields)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
     except (cli.ClientError, ValueError, OSError) as exc:
