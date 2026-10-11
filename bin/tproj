@@ -58,6 +58,23 @@ quoted_runtime_bin_path() {
   [[ -n "$resolved" ]] && printf '%q' "$resolved"
 }
 
+register_workspace_messaging_projects() {
+  local runtime_setup alias i requested_alias="${1:-}"
+  runtime_setup="$(runtime_bin_path tproj-msg-runtime 2>/dev/null || true)"
+  [[ -n "$runtime_setup" && -x "$runtime_setup" ]] || return 0
+  local -a args=()
+  if [[ -n "$requested_alias" ]]; then
+    args+=(--alias "$requested_alias")
+  fi
+  for ((i=0; i<${#PROJECT_ALIASES[@]}; i++)); do
+    [[ -n "$requested_alias" ]] && break
+    [[ "${PROJECT_TYPES[$i]}" == "local" ]] || continue
+    [[ -n "${PROJECT_ALIASES[$i]}" ]] && args+=(--alias "${PROJECT_ALIASES[$i]}")
+  done
+  [[ ${#args[@]} -gt 0 ]] || return 0
+  "$runtime_setup" register "${args[@]}" || echo "tproj: messaging directory sync needs attention; the core workspace remains available." >&2
+}
+
 run_rebalance_workspace() {
   local session="$1"
   local rebalance_path
@@ -1921,6 +1938,7 @@ if [[ "$ADD_MODE" == "true" ]]; then
   }
   if [[ -n "$ADD_ALIAS" ]]; then
     if resolve_alias_to_project "$ADD_ALIAS"; then
+      [[ "$RESOLVED_TYPE" == "local" ]] && register_workspace_messaging_projects "$ADD_ALIAS"
       add_workspace_column "$RESOLVED_PATH" "$RESOLVED_TYPE" "$RESOLVED_HOST" "$ADD_ALIAS"
     else
       echo "Error: Unknown alias '$ADD_ALIAS'" >&2
@@ -1935,6 +1953,12 @@ if [[ "$ADD_MODE" == "true" ]]; then
     add_workspace_column
   fi
   exit 0
+fi
+
+# Register only the local columns this launch requested. Messaging is optional;
+# an unavailable host must not prevent the core tmux workspace from starting.
+if [[ "$WORKSPACE_MODE" == "true" ]]; then
+  register_workspace_messaging_projects
 fi
 
 # === ワークスペースモード用関数 ===

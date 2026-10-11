@@ -121,29 +121,85 @@ def _workspace_payload(home: Path) -> dict | None:
     raise RuntimeError('Cannot read workspace.yaml; install yq and check the YAML syntax')
 
 
-def _projects(home: Path, host_id: str) -> list[dict[str, str]]:
+def _projects(home: Path, host_id: str, aliases: set[str] | None = None) -> list[dict[str, str]]:
     payload = _workspace_payload(home)
     if payload is None:
         return []
-    existing_by_path = {}
-    database = home / '.local/share/tproj-msg-unified/hub.db'
-    if database.exists():
-        import sqlite3
-        with sqlite3.connect(str(database)) as conn:
-            try: existing_by_path = {r[0]:r[1] for r in conn.execute('SELECT path,project_id FROM projects WHERE host_id=?',(host_id,))}
-            except sqlite3.OperationalError: pass
     result = []
     for item in payload.get("projects", []) if isinstance(payload, dict) else []:
         if isinstance(item, str): item = {"path": item}
         if not isinstance(item, dict) or item.get("type", "local") != "local":
             continue
+        if aliases is not None and str(item.get("alias") or Path(str(item.get("path") or "")).name) not in aliases:
+            continue
+        if item.get("enabled", True) is False:
+            continue
         if not item.get('path'): continue
         path = os.path.abspath(os.path.expanduser(str(item["path"])))
-        if not path.startswith("/"): continue
+        if not path.startswith("/") or not Path(path).is_dir(): continue
         alias = str(item.get("alias") or Path(path).name)
-        project_id = str(item.get("project_id") or existing_by_path.get(path) or ("p-" + hashlib.sha256(f"{host_id}\0{path}".encode()).hexdigest()[:24]))
+        project_id = str(item.get("project_id") or ("p-" + hashlib.sha256(f"{host_id}\0{path}".encode()).hexdigest()[:24]))
         result.append({"project_id": project_id, "alias": alias, "host_id": host_id, "path": path})
     return result
+
+
+def _host_rpc(socket_path: str, request: dict[str, Any]) -> Any:
+    """Call the local host socket; directory mutation is canonicalized there."""
+    import socket
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.settimeout(15)
+        sock.connect(socket_path)
+        sock.sendall((json.dumps(request, separators=(",", ":")) + "\n").encode())
+        with sock.makefile("rb") as stream:
+            raw = stream.readline(262145)
+    if not raw.endswith(b"\n") or len(raw) > 262144:
+        raise RuntimeError("invalid host response")
+    response = json.loads(raw)
+    if not response.get("ok"):
+        error = response.get("error", {})
+        raise RuntimeError(error.get("message", "host directory unavailable"))
+    return response.get("result")
+
+
+def register_projects(home: Path | None = None, aliases: list[str] | None = None) -> dict[str, Any]:
+    """Add only requested local workspace projects through canonical directory-sync."""
+    home = home or Path.home()
+    config = _read_json(home / ".config/tproj/msg-host.json")
+    socket_path = str(config.get("socket") or "")
+    if not socket_path:
+        raise RuntimeError("local messaging host is not configured")
+    host_id = str(config.get("host_id") or "")
+    if not host_id:
+        raise RuntimeError("local messaging host identity is not configured")
+    requested = _projects(home, host_id, set(aliases) if aliases else None)
+    if not requested:
+        return {"added": [], "unchanged": [], "revision": None}
+    directory = _host_rpc(socket_path, {"op": "directory"})
+    existing = list(directory.get("projects", [])) if isinstance(directory, dict) else []
+    by_path = {str(item.get("path")): item for item in existing}
+    by_id = {str(item.get("project_id")): item for item in existing}
+    by_alias = {str(item.get("alias")): item for item in existing}
+    additions = []
+    unchanged = []
+    for project in requested:
+        old = by_path.get(project["path"])
+        if old:
+            if old.get("host_id") != host_id:
+                raise RuntimeError("project path is owned by another host")
+            if by_id.get(project["project_id"], old).get("path") != old.get("path"):
+                raise RuntimeError("project identity conflicts with existing directory")
+            unchanged.append(old["project_id"])
+            continue
+        conflict = by_id.get(project["project_id"]) or by_alias.get(project["alias"])
+        if conflict:
+            raise RuntimeError("project identity or alias conflicts with existing directory")
+        additions.append(project)
+    if not additions:
+        return {"added": [], "unchanged": unchanged, "revision": directory.get("revision")}
+    result = _host_rpc(socket_path, {"op": "directory-sync", "projects": additions,
+                                     "expected_revision": directory.get("revision")})
+    return {"added": [item["project_id"] for item in additions], "unchanged": unchanged,
+            "revision": result.get("revision") if isinstance(result, dict) else None}
 
 
 def _plist(label: str, script: Path, config: Path, extra: list[str] | None = None) -> str:
@@ -214,22 +270,6 @@ def setup(home: Path | None = None, refresh: bool = False, dry_run: bool = False
     agents = home / "Library/LaunchAgents"
     manifests = [agents / "local.tproj.msg-unified-hub.plist", agents / "local.tproj.msg-unified-host.plist"]
     changed_flags += [_atomic_text(manifests[0], _plist("local.tproj.msg-unified-hub", hub_script, config_dir / "msg-hub.json", ["--socket", str(socket), "--db", str(hub_db)]), 0o644, dry_run), _atomic_text(manifests[1], _plist("local.tproj.msg-unified-host", host_script, config_dir / "msg-host.json"), 0o644, dry_run)]
-    if projects and not dry_run and not migrate:
-        try:
-            from hub import Hub
-            mailbox = Hub(str(hub_db), hub)
-            revision = mailbox.directory_list()["revision"]
-            existing = mailbox.directory_list()["projects"]
-            by_id = {item["project_id"]: item for item in existing}
-            additions = [] if existing else projects
-            if additions:
-                topology = _read_json(topology_path)
-                if topology.get('mode') == 'multi':
-                    raise RuntimeError('Register new projects through the shared directory while in multi-host mode')
-                mailbox.directory_import({"admin_token": admin, "projects": additions, "services": [], "expected_revision": revision})
-            mailbox.close()
-        except (ImportError, OSError, ValueError) as exc:
-            raise RuntimeError(f"directory seed failed: {type(exc).__name__}") from exc
     if not dry_run:
         _atomic_text(config_dir / "msg-client.enrolled", "active\n", 0o600, False)
     activation = _activate(home, manifests, any(changed_flags), no_start, dry_run)
@@ -285,8 +325,14 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("enroll").add_argument("alias")
     r = sub.add_parser("retire-alias"); r.add_argument("alias"); r.add_argument("--successor", required=True)
     c = sub.add_parser("reconcile"); c.add_argument("--apply", action="store_true")
+    r = sub.add_parser("register"); r.add_argument("--alias", action="append", default=[])
     args = parser.parse_args(argv)
     if args.command == "status": print(json.dumps(status(), sort_keys=True)); return 0
+    if args.command == "register":
+        try: result = register_projects(aliases=args.alias or None)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(str(exc), file=sys.stderr); return 2
+        print(json.dumps(result, sort_keys=True)); return 0
     if args.command in ("retire-alias", "reconcile"):
         try:
             result = retire_alias(Path.home(), args.alias, args.successor) if args.command == "retire-alias" else reconcile(Path.home(), args.apply)

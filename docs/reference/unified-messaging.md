@@ -152,6 +152,18 @@ send is not blocked by a remote catalog refresh or retry worker.
 
 ## Project names (aliases)
 
+### Workspace launch registration
+
+`tproj` registers the local projects requested by a workspace launch (and by
+`tproj --add ALIAS`) through the local host socket's `directory-sync` operation.
+It reads the current revision first and sends one bounded update containing only
+missing, existing-on-disk local paths; disabled, remote, and unrelated catalog
+entries are not synchronized. Existing project IDs and aliases are preserved.
+The host/federated directory performs conflict and stale-revision checks before
+mutation, so a conflict or an unavailable optional messaging service leaves the
+core tmux launch available and does not replace the catalog. An unknown transport
+result is reported without an automatic retry.
+
 A project's alias is its address (`<alias>.cc`, `<alias>.cdx`). Rules:
 
 - The alias comes from the `alias` field of the owning host's `workspace.yaml`
