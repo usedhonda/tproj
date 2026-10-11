@@ -360,15 +360,11 @@ def dispatch(host, ep, req):
                 (native_id, ident)).fetchone():
             raise HubError('stale_executor', 'retired cancelled-assignment operation is fenced')
     if op == 'task_context':
-        if not bound:return {'assigned':False}
+        if not bound:return {'assigned':False, 'task_record':False}
         snapshot=host.hub('task_status',endpoint_id=ep['endpoint_id'],task_id=bound['task_id'])
-        task=snapshot['task']; handoff=snapshot.get('handoff') or {}
-        active=(bound['incarnation']==ep['incarnation'] and task['executor_endpoint']==ep['endpoint_id']
-                and task['executor_incarnation']==ep['incarnation'] and task['epoch']==bound['epoch']
-                and task['status'] in ('accepted','in_progress')
-                and handoff.get('state') not in ('prepared','released','accepted'))
-        return {'assigned':True,'task_id':task['task_id'],'task_epoch':task['epoch'],
-                'task_status':task['status'],'can_mutate':active}
+        task=snapshot['task']
+        return {'assigned':False,'task_record':True,'task_id':task['task_id'],
+                'task_epoch':task['epoch'],'task_status':task['status'],'can_mutate':False}
     if op == 'task_reconcile_operation':
         if not bound or bound['incarnation'] != ep['incarnation'] or body.get('task_id') != bound['task_id']:
             raise HubError('stale_executor', 'task binding does not match this conversation')
@@ -390,13 +386,11 @@ def dispatch(host, ep, req):
         result = host.hub('task_end_operation', endpoint_id=ep['endpoint_id'], task_id=bound['task_id'], expected_epoch=epoch, tool_use_id=ident)
         return dict(result, assigned=True, reconciled=True, native_outcome=outcome)
     if op in ('task_guard_begin','task_guard_end'):
-        if not bound:return {'assigned':False}
-        if bound['incarnation']!=ep['incarnation']:raise HubError('stale_executor','formal task conversation changed')
-        ident=req.get('tool_use_id')
-        if not isinstance(ident,str) or not ident:raise HubError('invalid_request','tool-use identity required for guarded operation')
-        actual='task_begin_operation' if op.endswith('begin') else 'task_end_operation'
-        result=host.hub(actual,endpoint_id=ep['endpoint_id'],task_id=bound['task_id'],expected_epoch=bound['epoch'],tool_use_id=ident)
-        return dict(result,assigned=True)
+        # A conversation binding is not execution provenance. Keep this legacy
+        # hook entrypoint compatible without creating or closing operations
+        # against whichever task happens to be bound. Known retired identities
+        # were rejected above; exact completion uses reconcile-operation.
+        return {'assigned':False, 'task_record':bool(bound)}
     if op == 'task_detach':
         native_id = _native_binding_id(ep)
         receipt = host.db.execute(

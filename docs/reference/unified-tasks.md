@@ -1,4 +1,4 @@
-# Unified task authority
+# Unified task progress ledger
 
 `extensions/messaging/unified/tasks.py` stores the formal task ledger in the
 hub SQLite database. Every request carries a host-authenticated actor tuple:
@@ -10,14 +10,14 @@ is a fence: a restarted process cannot mutate work owned by its predecessor.
 `dispatch(request, actor)` accepts `task_approval`, `task_submit`,
 `task_status`, `task_list`/`task_active`, lifecycle operations (`task_ack`,
 `task_progress`, `task_done`, `task_block`, `task_verify`, `task_report`),
-owner-only `task_cancel`/`task_freeze`, operation guards
+requester-only `task_cancel`/`task_freeze`, operation guards
 (`task_begin_operation`/`task_end_operation`), and handoff operations
 `task_prepare_handoff`, `task_release_handoff`, `task_accept_handoff`, and
 `task_commit_handoff`.
 
 Approval registration is accepted only when host integration attests direct-user
 evidence and supplies the source endpoint. Submission pins intent/scope hashes,
-approval reference, owner, executor, and executor incarnation. Repeated
+approval reference, requester (historical `owner` fields), executor, and executor incarnation. Repeated
 idempotency keys return the original task or a conflict.
 
 Handoff is a durable four-step fence: owner prepares a target, the old executor
@@ -25,19 +25,20 @@ releases after all operation tokens close, the target accepts, and the owner
 commits with an epoch compare-and-swap. Open operation tokens never expire;
 stale or terminal tasks cannot be resurrected.
 
-## Local assignment fence
+## Legacy local assignment records
 
-The native host records a restrictive presence marker before accepting an
-assignment. It contains no task state or authority; operations still query the
-single master. A missing or unreadable journal must not turn a known assignment
-into an unassigned session. The marker is removed only after a successful
-terminal-task detach with no open operations. Ordinary unassigned sessions do
-not require the task master. Installation and hook trust alone do not prove
-native enforcement in an already-running agent. Before relying on formal task
-mutation fences, verify that an actual native mutation creates and closes its
-operation on the master. A successful API lifecycle or notification receipt is
-not that evidence. An agent still running an older executable/configuration must
-not be reported as protected merely because the installed files are current.
+Task ownership identifies the requester of a ledger record, not ownership of
+another project or authority over the executor's entire conversation. ACK,
+cancellation, freeze, and service failure must not change the recipient's
+normal working role or capture later direct-user work. A task packet is a
+request within the recipient's independently authorized scope, not a new grant.
+
+Legacy assignment rows and presence markers remain recoverable evidence. They
+must not be interpreted as permission switches for all native tools. Unknown
+operations remain unknown; removing a binding is not proof that an OS process
+or external side effect has stopped. Before reusing a resource touched by an
+unresolved execution, obtain independent completion/stop evidence or isolate
+that resource. Unrelated work and diagnostics remain available.
 
 `tproj-task binding-status` (without a native ID, endpoint, role, or other
 caller selector) is a read-only diagnostic. The authenticated native host
@@ -49,8 +50,8 @@ never creates the binding table, writes a marker, changes the task master, or
 detaches, rebinds, cancels, or grants authority. Missing or ambiguous native
 identity fails closed; a caller-supplied selector cannot redirect the query.
 
-The established mutation/completion entrypoints also evaluate formal task
-operations. Completion matchers cover direct file edits as well as shell tools;
+The established mutation/completion entrypoints retain exact legacy-operation
+checks without attributing ordinary tools to the current task record. Completion matchers cover direct file edits as well as shell tools;
 shell-only acceptance does not prove edit completion. Installer migration removes
 only exact generated obsolete entries and preserves customized/grouped hooks.
 An already-running client must reload its hook configuration through a supported
@@ -84,9 +85,10 @@ Task notifications are durable hints, not a current assignment snapshot. Read
 current status and executor identity before accepting; a delayed notification
 never instructs acceptance with a captured epoch. Completed, cancelled, frozen,
 transferred, or already accepted tasks are not re-ACKed because a notice arrived.
-The host rejects a known non-acceptable status before creating a local assignment
-marker. Eligible acceptance still records its restrictive marker before the
-remote mutation, preserving fail-closed behavior on an unknown result.
+The host rejects a known non-acceptable status before ledger acceptance.
+New ACKs record the accepted task without installing a conversation-wide
+assignment marker or replacing a legacy binding. An unknown transport result
+remains an uncertain ledger outcome, not an edit prohibition over the receiver.
 
 Repeating `submit` with the same approval, scope, intent, target, and packet uses
 the same default idempotency key, including after an unknown transport result.
@@ -107,43 +109,27 @@ on `not_found` or an unknown command. Only historical non-UUID `status` retains
 read-only fallback. The enrolled MSG wrapper rejects legacy `--new-task` and
 `--role-handoff` controls; formal operations use `tproj-task` instead.
 
-## Model-role integration
+## Model-role independence
 
-The optional role bridge reads `task_context` through native caller
-verification. Hook invocations pass their authenticated native `thread_id` or
-`session_id` from the hook payload when process environment variables do not
-carry it. A payload/environment disagreement is rejected rather than resolved
-by guessing. Only a matching accepted executor at the authoritative epoch
-receives a transient worker role. Pending handoff, terminal state, or unavailable
-master stays read-only for the assigned task. Project role-mode files and peer
-registry entries are never rewritten by this overlay. Ordinary messages do not
-create assignments. The helper and formal tool guard must be installed together.
+Formal task records do not override Solo/Assist/Collab roles or inject an
+old-task-only directive into the native conversation. The task context helper
+provides sanitized record diagnostics; task status and availability do not grant
+or revoke local editing authority. Ordinary messages never authorize task work.
+Independent user-scope, identity, secret, destructive-operation, and model-role
+controls remain in force.
 
-When authority is unavailable, the native role helper reports only fixed
-`authority_error` and `authority_phase` fields (for example, configuration,
-identity, transport, assignment, or helper failure categories). It never emits
-exception text, native IDs, payloads, paths, or host configuration. These
-diagnostics explain a read-only fence; they do not grant or infer authority.
-When a hook supplies only `session_id`, the helper adds a `thread_id` only from
-exactly one host-verified Codex catalog/session record; absent, ambiguous, or
-mismatched provenance leaves the context unnormalized and the authenticated
-host checks remain authoritative.
-
-An explicit schema-valid `write_stdin` hook payload with a numeric
-`session_id`, no `chars` field or `chars` equal to the empty string, and only
-the optional numeric `yield_time_ms`/`max_output_tokens` fields is a read-only
-poll. A pre-tool poll does not begin an operation; a post-tool poll still tries
-to close its exact tool identity, tolerating only a host `not_found` result for
-that empty poll. Whitespace, control characters, non-empty input, malformed or
-missing identity, and other host errors remain guarded.
+A native tool ID alone is not proof that a tool belongs to a task. Ordinary
+native tools must not be admitted against whichever task is currently bound.
+Legacy exact retired tool identities remain protected against delayed callbacks;
+they cannot be resolved through a later binding or silently reopen old work.
 
 ## Freeze release and former executors
 
-Only the exact owner may `unfreeze TASK --epoch N`, after all admitted operations
+Only the exact requester may `unfreeze TASK --epoch N`, after all admitted operations
 have closed. Release advances the epoch, restores the recorded pre-freeze state
 (in-progress becomes accepted), and invalidates pending handoffs. Missing historic
 freeze evidence is rejected, never guessed. A released executor must ACK the new
-epoch before mutation. Cancelled and reported tasks cannot be unfrozen.
+epoch before further task-ledger execution admission. Cancelled and reported tasks cannot be unfrozen.
 
 Committed handoff retains the former executor's authenticated read access in the
 central ledger, not a replicated local authority. The former executor may explicitly
@@ -170,7 +156,8 @@ does not change task authority, roles, grants, approvals, or history.
 For an owner-cancelled task whose executor still holds the native binding,
 `tproj-task release-cancelled TASK --epoch N` is the explicit local recovery
 entrypoint. The authenticated host asks the master to authorize the exact
-current executor and epoch, and the master requires the task to be `cancelled`.
+executor and epoch, or host-proven historical native continuity after an
+incarnation change. The master requires the task to be `cancelled`.
 It then removes only that conversation's local binding and restrictive marker.
 All open operations remain unresolved history and are returned as sanitized
 tool-use IDs/epochs, including operations owned by the releasing executor. This
@@ -178,8 +165,9 @@ operation never closes operations,
 changes the cancelled task or epoch, resurrects work, or grants a new role.
 The host durably records each unresolved old tool ID as retired before releasing
 the marker; a late guard callback is rejected even if the native conversation
-later binds a new task. A release receipt makes marker cleanup retryable after a
-lost response, while refusing cleanup if a new binding appeared.
+later binds a new task. Release and normal-detach receipts are written in the same transaction as
+binding removal. They make marker cleanup retryable after a lost response or
+post-commit crash, while refusing cleanup if a new binding appeared.
 
 Discovery preserves the incarnation returned by the hub's endpoint registration
 response in the authenticated caller record. Native registry evidence never

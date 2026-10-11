@@ -100,7 +100,7 @@ def context(payload):
             return _blocked(_failure_code(exc), 'rpc')
         if not isinstance(result,dict):
             return _blocked('assignment_mismatch', 'assignment')
-        if result.get('assigned') is not True:
+        if result.get('assigned') is not True and result.get('task_record') is not True:
             return {'assigned':False}
         # Preserve the authoritative task snapshot as recordkeeping data, but
         # never project it into a native worker role or mutation permission.

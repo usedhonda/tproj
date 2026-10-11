@@ -325,6 +325,26 @@ class BindingReleaseTest(unittest.TestCase):
                 with self.assertRaises(task_host.HubError):
                     task_host.dispatch(host, {**ep, 'incarnation':'inc'}, {'op':'task_detach','task_id':'task','expected_epoch':0})
 
+    def test_legacy_binding_cannot_capture_new_tool_or_callback(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'unified'))
+        import task_host
+
+        class Host:
+            def __init__(self):
+                self.db = sqlite3.connect(':memory:'); self.db.row_factory = sqlite3.Row
+            def hub(self, op, **kwargs):
+                raise AssertionError('ordinary tool must not contact master')
+
+        host = Host()
+        host.db.execute('CREATE TABLE formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT, task_id TEXT, epoch INTEGER, native_id TEXT)')
+        host.db.execute("INSERT INTO formal_task_binding VALUES('executor','inc','old-task',0,'native')")
+        host.db.commit()
+        ep = {'endpoint_id':'executor','incarnation':'inc','session_id':'native'}
+        for op in ('task_guard_begin', 'task_guard_end'):
+            self.assertFalse(task_host.dispatch(host, ep, {'op':op,'tool_use_id':'new-user-tool'})['assigned'])
+        self.assertEqual(host.db.execute('SELECT task_id FROM formal_task_binding').fetchone()[0], 'old-task')
+
     def test_ack_records_ledger_transition_without_overwriting_legacy_binding(self):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'unified'))
