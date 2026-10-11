@@ -160,25 +160,11 @@ def assigned(data):
         raise RuntimeError('formal task assignment cannot be verified') from None
 
 
-def explicit_task_operation(data):
-    """Return true only for a host-admitted task operation request.
-
-    A native conversation marker is historical/recovery state. It is not an
-    instruction to attribute every later tool call to that task. Producers
-    that have an explicit task operation must opt in with this schema field;
-    ordinary user work remains local and fail-open.
-    """
-    roots = (data, data.get('hook_input'), data.get('raw_event'))
-    return any(isinstance(root, dict) and root.get('formal_task_operation') is True
-               for root in roots)
-
-
 def retired_operation(data):
     """Check an exact retired callback without binding the conversation.
 
-    ``None`` means the ledger could not be read. That is a recordkeeping
-    failure, not permission to deny unrelated local work; explicit task
-    operations are still handled by the fail-closed assignment path.
+    ``None`` means a known local native history could not be read. Only that
+    callback is fail-closed; unrelated local work remains available.
     """
     ident = tool_id(data)
     if not ident:
@@ -192,20 +178,26 @@ def retired_operation(data):
     marker_seen = any(binding_marker(native_id).exists() for native_id in ids)
     host_cfg_path = Path(os.environ.get("TPROJ_MSG_HOST_CONFIG", str(Path.home()/".config/tproj/msg-host.json")))
     journal_seen = False
+    journal = None
     try:
         if host_cfg_path.is_file():
             cfg_data = json.loads(host_cfg_path.read_text(encoding="utf-8"))
-            journal_seen = isinstance(cfg_data, dict) and bool(cfg_data.get("journal"))
+            journal = cfg_data.get("journal") if isinstance(cfg_data, dict) else None
+            journal_seen = bool(journal)
     except (OSError, ValueError):
         journal_seen = False
     if not marker_seen and not journal_seen:
         return False
+    if not journal:
+        return False
     try:
-        cfg = cli.config()
-        result = cli.rpc(cfg["socket"], caller_request("task_retired_operation", data, tool_use_id=ident))
-        return isinstance(result, dict) and result.get("retired") is True
-    except Exception:
-        return None
+        with sqlite3.connect(f"file:{journal}?mode=ro", uri=True, timeout=0.2) as db:
+            row = db.execute(
+                "SELECT 1 FROM formal_task_retired WHERE native_id IN ({}) AND tool_use_id=? LIMIT 1".format(
+                    ",".join("?" for _ in ids)), (*ids, ident)).fetchone()
+            return row is not None
+    except (sqlite3.Error, OSError, ValueError):
+        return None if marker_seen else False
 
 def evaluate(data: dict, event: str) -> dict:
     name, cmd = tool_name(data), command(data)
@@ -218,31 +210,9 @@ def evaluate(data: dict, event: str) -> dict:
     retired = retired_operation(data)
     if retired is True:
         return {"decision": "block", "reason": "retired cancelled-assignment operation is fenced"}
-    if not explicit_task_operation(data):
-        return {"decision": "allow"}
-    try:
-        is_assigned = assigned(data)
-    except Exception:
-        return {"decision": "block", "reason": "formal task assignment cannot be verified"}
-    if not is_assigned:
-        return {"decision": "allow"}
-    if event in ("posttooluse", "posttool", "failure", "post_tool_use") or event.startswith("posttool"):
-        op = "task_guard_end"
-    else:
-        op = "task_guard_begin"
-    ident = tool_id(data)
-    try:
-        if cli is None:
-            raise RuntimeError("unified task client unavailable")
-        cfg = cli.config(); req = caller_request(op, data, tool_use_id=ident)
-        result = cli.rpc(cfg["socket"], req)
-        if isinstance(result, dict) and result.get("assigned") is False:
-            return {"decision": "allow"}
-        return {"decision": "allow"}
-    except Exception as exc:
-        if empty_poll and op == 'task_guard_end' and getattr(exc, 'code', None) == 'not_found':
-            return {"decision": "allow"}
-        return {"decision": "block", "reason": f"formal task guard: {exc}"}
+    if retired is None:
+        return {"decision": "block", "reason": "retired operation history cannot be verified"}
+    return {"decision": "allow"}
 
 
 def main() -> int:

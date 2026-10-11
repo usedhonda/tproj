@@ -545,6 +545,22 @@ def dispatch(host, ep, req):
             raise HubError('unavailable', 'native binding marker cleanup is incomplete') from exc
         return output
     if op in ('task_ack','task_accept_handoff'):
+        if op == 'task_ack':
+            # ACK is a ledger transition only.  It must not create or replace
+            # a conversation-wide native binding; legacy rows remain available
+            # solely for explicit recovery of their original assignment.
+            tid = body.get('task_id'); epoch = body.get('expected_epoch')
+            if not isinstance(tid, str) or not isinstance(epoch, int):
+                raise HubError('invalid_request', 'task ID and epoch required')
+            snapshot = host.hub('task_status', endpoint_id=ep['endpoint_id'], task_id=tid)
+            task = snapshot['task']
+            if task['epoch'] != epoch:
+                raise HubError('epoch_conflict', 'task epoch changed')
+            if task['status'] not in ('submitted', 'accepted'):
+                raise HubError('stale_task', 'task no longer awaits acceptance')
+            if (task['executor_endpoint'], task['executor_incarnation']) != (ep['endpoint_id'], ep['incarnation']):
+                raise HubError('stale_executor', 'task is not assigned to this conversation')
+            return host.hub(op, endpoint_id=ep['endpoint_id'], **body)
         # Durable restrictive marker precedes remote effect and survives uncertainty.
         tid=body.get('task_id'); epoch=body.get('expected_epoch')
         if not isinstance(tid,str) or not isinstance(epoch,int):raise HubError('invalid_request','task ID and epoch required')

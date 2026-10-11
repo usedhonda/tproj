@@ -37,6 +37,11 @@ def _attest_binding_release(hub, evidence, body):
         raise HubError('identity_rejected', 'historical binding is not the same enrolled participant')
     if previous['platform'] != current_ep.get('platform'):
         raise HubError('identity_rejected', 'historical binding platform differs')
+    # Same endpoint with a new incarnation is a valid native restart.  The
+    # current authenticated tuple plus exact native identity proves continuity;
+    # do not require the directory to retain the retired incarnation.
+    if previous['endpoint_id'] == current_ep.get('endpoint_id'):
+        return dict(previous)
     old = hub._row('SELECT * FROM endpoints WHERE endpoint_id=?', (previous['endpoint_id'],))
     participant = hub._row('SELECT * FROM participants WHERE participant_id=?', (old['participant_id'],)) if old else None
     if (not old or not participant or old['host_id'] != current_ep['host_id']
@@ -66,7 +71,7 @@ def dispatch(hub, req, peer=False):
         body=dict(req.get('request') or {})
         if not str(body.get('op','')).startswith('task_'):
             raise HubError('invalid_request','formal task operation required')
-        if body.get('op') == 'task_binding_release_check':
+        if body.get('op') in ('task_binding_release_check', 'task_cancelled_release_check'):
             previous = body.get('previous')
             current = evidence.get('endpoint') or {}
             participant = evidence.get('participant') or {}
@@ -89,12 +94,12 @@ def dispatch(hub, req, peer=False):
             if not isinstance(value,str):raise HubError('invalid_request','task destination must be an address')
             if value in ('cc','cdx'):value=evidence['participant']['address'].rsplit('.',1)[0]+'.'+value
             body[field]=actor(hub.resolve_destination(value))
-        if body.get('op') == 'task_binding_release_check':
+        if body.get('op') in ('task_binding_release_check', 'task_cancelled_release_check'):
             evidence = hub.local_resolve(endpoint_id=req.get('endpoint_id'))
             _attest_binding_release(hub, evidence, body)
         if selected != hub.local_id:
             actor_evidence = evidence
-            if body.get('op') == 'task_binding_release_check':
+            if body.get('op') in ('task_binding_release_check', 'task_cancelled_release_check'):
                 actor_evidence = dict(evidence, binding_release={
                     'native_id': body.get('native_id'), 'previous': body.get('previous')})
             response = hub.remote(selected,'task',actor_evidence=actor_evidence,request=body,task_protocol=TASK_PROTOCOL)
