@@ -267,20 +267,78 @@ class RuntimeTest(unittest.TestCase):
 
                 prefix = b'{"op":"whoami"}'
                 padded_invalid = prefix + b" " * (262_145 - len(prefix)) + b"x\n"
-                self.assertEqual(request(padded_invalid), b"")
+                self.assertEqual(json.loads(request(padded_invalid)),
+                                 {"ok": False, "error": {"code": "frame_too_large", "message": "invalid bridge frame"}})
                 self.assertEqual(len(dispatches), 0)
                 incomplete = real_socket(socket.AF_UNIX)
                 incomplete.connect(str(path))
                 incomplete.sendall(prefix)
                 incomplete.close()
                 oversized = b"{}" + b"x" * module.BRIDGE_FRAME_LIMIT + b"\n"
-                self.assertEqual(request(oversized), b"")
+                oversized_response = json.loads(request(oversized))
+                self.assertEqual(oversized_response,
+                                 {"ok": False, "error": {"code": "frame_too_large", "message": "invalid bridge frame"}})
                 self.assertEqual(len(dispatches), 0)
                 response = request(b'{"op":"whoami"}\n')
                 self.assertTrue(json.loads(response)["ok"])
                 self.assertEqual(len(dispatches), 1)
                 trickle.close()
                 sender.join(timeout=1)
+                listeners[0].close()
+                thread.join(timeout=2)
+                self.assertEqual(len(listener_errors), 1)
+
+    def test_bridge_unicode_response_roundtrips_with_utf8_frame_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bridge.sock"
+            config = self.config(directory)
+            config["bridge_socket"] = str(path)
+            real_socket = socket.socket
+            listeners = []
+            listener_errors = []
+
+            class Events:
+                def pump_once(self):
+                    pass
+
+            class Runtime:
+                def __init__(self, _config):
+                    self.binding = mock.Mock(token="token")
+                def _attest(self):
+                    return {"service_id": "kai"}
+                def events(self):
+                    return Events()
+
+            def socket_factory(*args, **kwargs):
+                created = real_socket(*args, **kwargs)
+                if args and args[0] == socket.AF_UNIX:
+                    listeners.append(created)
+                return created
+
+            body = "あ" * 50_000
+
+            def dispatch(_runtime, _request):
+                return {"body": body}
+
+            def serve():
+                try:
+                    module.bridge(config)
+                except OSError as exc:
+                    listener_errors.append(exc)
+
+            with mock.patch.object(module, "ServiceRuntime", Runtime), \
+                 mock.patch.object(module, "_bridge_request", side_effect=dispatch), \
+                 mock.patch.object(module.socket, "socket", side_effect=socket_factory):
+                thread = threading.Thread(target=serve, daemon=True)
+                thread.start()
+                deadline = time.time() + 2
+                while not path.exists() and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(path.exists())
+
+                result = module._bridge_rpc(path, {"op": "whoami"})
+                self.assertEqual(result["body"], body)
+
                 listeners[0].close()
                 thread.join(timeout=2)
                 self.assertEqual(len(listener_errors), 1)
@@ -334,11 +392,15 @@ class RuntimeTest(unittest.TestCase):
                     time.sleep(0.01)
                 self.assertTrue(path.exists())
                 client = real_socket(socket.AF_UNIX)
+                client.settimeout(2)
                 client.connect(str(path))
                 client.sendall(b'{"op":"whoami"}\n')
-                time.sleep(0.2)
+                response = client.makefile("rb").readline()
                 client.close()
                 self.assertEqual(len(dispatches), 1)
+                self.assertEqual(json.loads(response),
+                                 {"ok": False, "error": {"code": "response_too_large",
+                                                            "message": "service bridge response too large"}})
                 self.assertTrue(thread.is_alive())
                 listeners[0].close()
                 thread.join(timeout=2)
@@ -504,10 +566,11 @@ class RuntimeTest(unittest.TestCase):
                     response.extend(chunk)
                 client.close()
                 decoded = json.loads(response)
-                self.assertTrue(decoded["ok"])
-                self.assertEqual(len(decoded["result"]["payload"]), len(payload))
+                self.assertEqual(decoded,
+                                 {"ok": False, "error": {"code": "response_too_large",
+                                                            "message": "service bridge response too large"}})
                 self.assertEqual(len(dispatches), 1)
-                self.assertEqual(send_timeouts, [0.2])
+                self.assertEqual(send_timeouts, [0.2, 0.2])
                 listeners[0].close()
                 thread.join(timeout=2)
                 self.assertEqual(len(listener_errors), 1)

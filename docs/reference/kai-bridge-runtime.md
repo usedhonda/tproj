@@ -20,13 +20,18 @@ an already-running bridge.
 ## Connection isolation
 
 Each accepted connection has one monotonic receive deadline (2 seconds) and a
-262,144-byte payload limit plus the required final newline (262,145 bytes on
-the wire). The listener collects bytes with `recv`; it does not parse JSON
-until the newline arrives.
+262,144-byte UTF-8 payload limit plus the required final newline (262,145 bytes
+on the wire). Requests and responses use the same byte limit and newline
+framing; JSON is encoded with native UTF-8 (`ensure_ascii=false`) so the limit
+does not depend on escaped code-point length. The listener collects bytes with
+`recv`; it does not parse JSON until the newline arrives.
 EOF before a newline, a trickled frame that exceeds the total deadline, a frame
 over the limit (including a valid prefix followed by extra bytes), malformed
 JSON, disconnects, read failures, and send failures are contained to that
-connection; they do not terminate the listener or event-pump thread.
+connection; they do not terminate the listener or event-pump thread. Oversized
+frames and malformed requests receive a bounded metadata-only error response;
+an oversized result is replaced with a bounded `response_too_large` error
+instead of emitting a truncated JSON response.
 Successful later requests therefore remain serviceable after a bad client.
 Response delivery receives its own 2-second socket timeout after dispatch, so a
 slow or non-reading client cannot retain the receive deadline or trigger a

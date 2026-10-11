@@ -166,17 +166,20 @@ def _bridge_rpc(path: Path, request: Mapping[str, Any]) -> Any:
         with socket.socket(socket.AF_UNIX) as sock:
             sock.settimeout(12)
             sock.connect(str(path))
-            sock.sendall((json.dumps(dict(request), separators=(",", ":")) + "\n").encode())
-            with sock.makefile("rb") as stream:
-                raw = stream.readline(262145)
-    except OSError as exc:
+            sock.sendall(_encode_bridge_frame(dict(request)))
+            raw = _read_bridge_frame(sock, time.monotonic() + 12)
+    except (OSError, ValueError, TimeoutError) as exc:
         raise MailboxToolError("unavailable", "service bridge unavailable") from exc
     try:
         response = json.loads(raw)
-    except (ValueError, UnicodeDecodeError) as exc:
+    except (ValueError, UnicodeDecodeError, TypeError) as exc:
         raise MailboxToolError("unavailable", "invalid service bridge response") from exc
+    if not isinstance(response, Mapping):
+        raise MailboxToolError("unavailable", "invalid service bridge response")
     if not response.get("ok"):
         error = response.get("error") or {}
+        if not isinstance(error, Mapping):
+            raise MailboxToolError("unavailable", "service bridge rejected")
         raise MailboxToolError(error.get("code", "unavailable"), error.get("message", "service bridge rejected"))
     return response.get("result")
 
@@ -224,6 +227,19 @@ def _read_bridge_frame(conn: socket.socket, deadline: float | None = None) -> by
             if newline > BRIDGE_FRAME_LIMIT or newline != len(frame) - 1:
                 raise ValueError("oversized bridge frame")
             return bytes(frame)
+
+
+def _encode_bridge_frame(value: Mapping[str, Any]) -> bytes:
+    """Encode one UTF-8 bridge frame without exceeding the wire limit."""
+    payload = json.dumps(dict(value), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(payload) > BRIDGE_FRAME_LIMIT:
+        raise ValueError("oversized bridge frame")
+    return payload + b"\n"
+
+
+def _bridge_error(code: str, message: str) -> dict[str, Any]:
+    """Return a small metadata-only response safe to send on the bridge."""
+    return {"ok": False, "error": {"code": code, "message": message}}
 
 
 def _bridge_lock(path: Path):
@@ -322,11 +338,11 @@ def bridge(config: Mapping[str, Any]) -> int:
         bound_stat = path.stat()
 
         def reject_busy(conn: socket.socket) -> None:
-            response = {"ok": False, "error": {"code": "unavailable", "message": "service bridge busy"}}
+            response = _bridge_error("unavailable", "service bridge busy")
             try:
                 with conn:
                     conn.settimeout(BRIDGE_CONNECTION_TIMEOUT)
-                    conn.sendall((json.dumps(response, separators=(",", ":")) + "\n").encode())
+                    conn.sendall(_encode_bridge_frame(response))
             except OSError:
                 pass
 
@@ -335,22 +351,37 @@ def bridge(config: Mapping[str, Any]) -> int:
             try:
                 with conn:
                     deadline = time.monotonic() + BRIDGE_CONNECTION_TIMEOUT
-                    raw = _read_bridge_frame(conn, deadline)
+                    try:
+                        raw = _read_bridge_frame(conn, deadline)
+                    except ValueError as exc:
+                        code = "frame_too_large" if "oversized" in str(exc) else "invalid_request"
+                        conn.settimeout(BRIDGE_CONNECTION_TIMEOUT)
+                        conn.sendall(_encode_bridge_frame(_bridge_error(code, "invalid bridge frame")))
+                        return
                     if not raw:
                         return
                     response = None
                     try:
                         request = json.loads(raw)
+                        if not isinstance(request, Mapping):
+                            raise ValueError("invalid bridge request")
                         result = _bridge_request(runtime, request)
                         response = {"ok": True, "result": result}
                     except MailboxToolError as exc:
                         response = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+                    except (ValueError, TypeError, UnicodeDecodeError):
+                        response = _bridge_error("invalid_request", "invalid bridge request")
                     except Exception:
-                        response = {"ok": False, "error": {"code": "identity_rejected", "message": "bridge request rejected"}}
+                        response = _bridge_error("identity_rejected", "bridge request rejected")
                     # The receive deadline must not become the send timeout:
                     # response delivery gets its own bounded transport window.
                     conn.settimeout(BRIDGE_CONNECTION_TIMEOUT)
-                    conn.sendall((json.dumps(response, separators=(",", ":")) + "\n").encode())
+                    try:
+                        encoded = _encode_bridge_frame(response)
+                    except ValueError:
+                        encoded = _encode_bridge_frame(_bridge_error(
+                            "response_too_large", "service bridge response too large"))
+                    conn.sendall(encoded)
             except (OSError, ValueError, TypeError):
                 # A client may disconnect, time out, or send an oversized/bad
                 # frame; isolate that transport failure to this connection.
