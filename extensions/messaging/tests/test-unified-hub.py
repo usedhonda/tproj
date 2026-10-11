@@ -68,7 +68,27 @@ class HubTest(unittest.TestCase):
             "message_id":"notice-reply", "thread_id":"t", "in_reply_to":"notice-original",
             "sender_endpoint":"eb", "body":"reply"}})
         result = self.h.dispatch({"op":"inbox_notice", "host_id":"a", "host_token":"ta", "endpoint_id":"ea"})
+        self.assertEqual([item["message_id"] for item in result["messages"]], ["notice-reply"])
+
+    def test_inbox_notice_excludes_candidate_already_replied_to_by_recipient(self):
+        self.h.dispatch({"op":"submit", "host_id":"b", "host_token":"tb", "message":{
+            "message_id":"incoming-question", "thread_id":"question-thread",
+            "sender_endpoint":"eb", "target":"proj.cc", "body":"question"}})
+        self.h.dispatch({"op":"submit", "host_id":"a", "host_token":"ta", "message":{
+            "message_id":"question-reply", "thread_id":"question-thread",
+            "in_reply_to":"incoming-question", "sender_endpoint":"ea", "body":"answer"}})
+        result = self.h.dispatch({"op":"inbox_notice", "host_id":"a", "host_token":"ta", "endpoint_id":"ea"})
         self.assertEqual(result["messages"], [])
+
+    def test_inbox_notice_cursor_reaches_fourth_row_on_second_safe_point(self):
+        for i in range(4):
+            self.send(mid=f"notice-{i}", body=f"body-{i}")
+        first = self.h.dispatch({"op":"inbox_notice", "host_id":"b", "host_token":"tb",
+                                 "endpoint_id":"eb", "cursor":0})
+        self.assertEqual([row["message_id"] for row in first["messages"]], ["notice-0", "notice-1", "notice-2"])
+        second = self.h.dispatch({"op":"inbox_notice", "host_id":"b", "host_token":"tb",
+                                  "endpoint_id":"eb", "cursor":first["next_cursor"]})
+        self.assertEqual([row["message_id"] for row in second["messages"]], ["notice-3"])
     def test_large_first_message_advances_cursor_without_starving_next(self):
         body="x" * 226395
         self.send(mid="large-first",body=body)

@@ -490,7 +490,8 @@ class Host:
         if op == 'inbox_notice':
             # Metadata-only safe-point read. It never claims or presents rows;
             # the helper owns local notice deduplication.
-            return self.hub('inbox_notice', endpoint_id=ep['endpoint_id'], limit=3)
+            return self.hub('inbox_notice', endpoint_id=ep['endpoint_id'],
+                            cursor=req.get('cursor', 0), limit=3)
         if op in ('message', 'service_message'):
             return self.hub('query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
         if op in ('ack', 'service_ack'):

@@ -265,18 +265,27 @@ class Hub:
         host = self._auth(req)
         ep = self._host_endpoint(host, req.get("endpoint_id"))
         limit = min(max(int(req.get("limit", 3)), 1), 3)
+        try:
+            cursor = int(req.get("cursor") or 0)
+        except (TypeError, ValueError):
+            cursor = 0
+        cursor = max(cursor, 0)
         rows = self.db.execute(
-            "SELECT m.message_id, m.state, m.kind, m.created_at, "
+            "SELECT m.rowid AS sequence, m.message_id, m.state, m.kind, m.created_at, "
             "p.address AS sender_address "
             "FROM messages m JOIN endpoints e ON e.endpoint_id=m.sender_endpoint "
             "JOIN participants p ON p.participant_id=e.participant_id "
-            "WHERE m.recipient_endpoint=? AND m.state IN ('accepted','queued','adapter_received','uncertain') "
-            "AND NOT EXISTS (SELECT 1 FROM messages original "
-            "WHERE original.message_id=m.in_reply_to AND original.recipient_endpoint=m.sender_endpoint) "
-            "AND m.expires_at>? ORDER BY m.created_at, m.message_id LIMIT ?",
-            (ep["endpoint_id"], self._now(), limit),
+            "WHERE m.recipient_endpoint=? AND m.rowid>? "
+            "AND m.state IN ('accepted','queued','adapter_received','uncertain') "
+            "AND NOT EXISTS (SELECT 1 FROM messages reply "
+            "WHERE reply.in_reply_to=m.message_id "
+            "AND reply.sender_endpoint=m.recipient_endpoint "
+            "AND reply.recipient_endpoint=m.sender_endpoint) "
+            "AND m.expires_at>? ORDER BY m.rowid LIMIT ?",
+            (ep["endpoint_id"], cursor, self._now(), limit),
         ).fetchall()
-        return {"messages": [dict(row) for row in rows]}
+        return {"messages": [dict(row) for row in rows],
+                "next_cursor": rows[-1]["sequence"] if rows else cursor}
 
     def outbox(self, req):
         """Messages this participant sent that have not reached a final state.

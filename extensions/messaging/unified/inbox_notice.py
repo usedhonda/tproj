@@ -56,7 +56,7 @@ def _state_path() -> Path:
     return Path(os.environ.get("TPROJ_INBOX_NOTICE_STATE", str(DEFAULT_STATE)))
 
 
-def _dedup(path: Path, native_key: str, messages: list[dict]) -> list[dict]:
+def _dedup(path: Path, native_key: str, messages: list[dict], next_cursor: object = 0) -> list[dict]:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock = open(str(path) + ".lock", "a+")
     try:
@@ -65,13 +65,28 @@ def _dedup(path: Path, native_key: str, messages: list[dict]) -> list[dict]:
             state = json.loads(path.read_text()) if path.exists() else {}
         except (OSError, ValueError):
             state = {}
-        seen = state.get(native_key, []) if isinstance(state, dict) else []
+        entry = state.get(native_key, []) if isinstance(state, dict) else []
+        if isinstance(entry, dict):
+            seen = entry.get("seen", [])
+            try:
+                stored_cursor = max(int(entry.get("cursor", 0)), 0)
+            except (TypeError, ValueError):
+                stored_cursor = 0
+        else:
+            # Migrate the old native-key -> [message IDs] shape in place.
+            seen = entry
+            stored_cursor = 0
         seen = [str(item) for item in seen if isinstance(item, str)]
         fresh = [item for item in messages if str(item.get("message_id", "")) not in seen]
-        if fresh:
+        try:
+            observed_cursor = max(int(next_cursor or 0), 0)
+        except (TypeError, ValueError):
+            observed_cursor = 0
+        cursor = max(stored_cursor, observed_cursor)
+        if fresh or cursor != stored_cursor or not isinstance(entry, dict):
             seen.extend(str(item["message_id"]) for item in fresh if item.get("message_id"))
             state = state if isinstance(state, dict) else {}
-            state[native_key] = seen[-256:]
+            state[native_key] = {"cursor": cursor, "seen": seen[-256:]}
             fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent), text=True)
             try:
                 with os.fdopen(fd, "w") as stream:
@@ -90,22 +105,38 @@ def notice(payload: dict) -> str:
     if not isinstance(payload, dict):
         return ""
     native = _native(payload)
+    # A cursor is safe only when scoped to native conversation identity.  A
+    # missing context could belong to another authenticated endpoint, so fail
+    # open instead of sharing a global cursor/dedup bucket.
+    if not native:
+        return ""
     cfg = _config()
     socket_path = str(cfg.get("socket") or "")
     if not socket_path:
         return ""
-    request = {"op": "inbox_notice", "conversation": native} if native else {"op": "inbox_notice"}
+    native_key = json.dumps(native, sort_keys=True, separators=(",", ":"))
+    state_path = _state_path()
+    cursor = 0
+    try:
+        with open(str(state_path) + ".lock", "a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            state = json.loads(state_path.read_text()) if state_path.exists() else {}
+            entry = state.get(native_key, []) if isinstance(state, dict) else []
+            if isinstance(entry, dict):
+                cursor = max(int(entry.get("cursor", 0)), 0)
+    except (OSError, ValueError, TypeError):
+        cursor = 0
+    request = {"op": "inbox_notice", "conversation": native, "cursor": cursor}
     result = _rpc(socket_path, request)
     if not isinstance(result, dict):
         return ""
     rows = result.get("messages")
     if not isinstance(rows, list):
         return ""
-    native_key = json.dumps(native, sort_keys=True, separators=(",", ":")) if native else "cli"
-    fresh = _dedup(_state_path(), native_key, [row for row in rows if isinstance(row, dict)])
+    fresh = _dedup(state_path, native_key, [row for row in rows if isinstance(row, dict)], result.get("next_cursor", cursor))
     if not fresh:
         return ""
-    lines = ["Pending message metadata (read each exact ID with tproj-msg):"]
+    lines = ["Pending message metadata (read each exact ID with tproj-msg message <ID>):"]
     for row in fresh[:3]:
         sender = str(row.get("sender_address") or "unknown sender")
         lines.append(f"- {sender}: {row.get('message_id')} (state={row.get('state', 'unknown')})")
