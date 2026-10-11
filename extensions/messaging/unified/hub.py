@@ -254,6 +254,28 @@ class Hub:
         self._check_message_response(result)
         return result
 
+    def inbox_notice(self, req):
+        """Read-only metadata for a native PostToolUse inbox notice.
+
+        This deliberately does not claim, consume, present, or acknowledge any
+        message.  The caller's endpoint is authenticated by the host and only
+        the canonical sender address plus a bounded set of message IDs leave
+        the hub.
+        """
+        host = self._auth(req)
+        ep = self._host_endpoint(host, req.get("endpoint_id"))
+        limit = min(max(int(req.get("limit", 3)), 1), 3)
+        rows = self.db.execute(
+            "SELECT m.message_id, m.state, m.kind, m.created_at, "
+            "p.address AS sender_address "
+            "FROM messages m JOIN endpoints e ON e.endpoint_id=m.sender_endpoint "
+            "JOIN participants p ON p.participant_id=e.participant_id "
+            "WHERE m.recipient_endpoint=? AND m.state IN ('accepted','queued','adapter_received','uncertain') "
+            "AND m.expires_at>? ORDER BY m.created_at, m.message_id LIMIT ?",
+            (ep["endpoint_id"], self._now(), limit),
+        ).fetchall()
+        return {"messages": [dict(row) for row in rows]}
+
     def outbox(self, req):
         """Messages this participant sent that have not reached a final state.
 
@@ -433,6 +455,7 @@ class Hub:
         if op=="directory_retire": return self.directory_retire(req)
         if op=="submit": return self._submit_redirected(req)
         if op=="inbox": return self.inbox(req)
+        if op=="inbox_notice": return self.inbox_notice(req)
         if op=="claim": return self.claim(req)
         if op=="receipt": return self.receipt(req)
         if op=="begin_present": return self.begin_present(req)

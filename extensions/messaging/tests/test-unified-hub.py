@@ -49,6 +49,17 @@ class HubTest(unittest.TestCase):
         one=self.h.dispatch({"op":"query","host_id":"b","host_token":"tb","endpoint_id":"eb","message_id":"m1"})
         self.assertEqual(one["sender_address"],"proj.cc")
         self.assertEqual(one["sender_address"],inbox["messages"][0]["sender_address"])
+
+    def test_inbox_notice_is_bounded_metadata_only_and_does_not_present(self):
+        self.send(mid="notice-1", body="private-body-sentinel")
+        before = self.h.db.total_changes
+        result = self.h.dispatch({"op":"inbox_notice", "host_id":"b", "host_token":"tb", "endpoint_id":"eb"})
+        self.assertEqual([item["message_id"] for item in result["messages"]], ["notice-1"])
+        self.assertEqual(result["messages"][0]["sender_address"], "proj.cc")
+        self.assertNotIn("body", result["messages"][0])
+        self.assertNotIn("private-body-sentinel", str(result))
+        self.assertEqual(self.h.db.total_changes, before)
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='notice-1'")[0], "accepted")
     def test_large_first_message_advances_cursor_without_starving_next(self):
         body="x" * 226395
         self.send(mid="large-first",body=body)

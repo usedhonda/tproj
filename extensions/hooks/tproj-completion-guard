@@ -489,6 +489,34 @@ def observe_posttool_failure(
         )
 
 
+def emit_inbox_notice(payload: dict[str, Any]) -> None:
+    """Emit a fail-open additionalContext notice at a native safe point."""
+    candidates = []
+    configured = os.environ.get("TPROJ_INBOX_NOTICE_HELPER", "")
+    if configured:
+        candidates.append(Path(configured))
+    candidates.extend((
+        Path.home() / "lib/tproj-msg-unified/inbox_notice.py",
+        Path(__file__).resolve().parents[1] / "messaging/unified/inbox_notice.py",
+    ))
+    helper = next((path for path in candidates if path.is_file()), None)
+    if helper is None:
+        return
+    try:
+        result = subprocess.run(
+            [sys.executable, str(helper)], input=json.dumps(payload), text=True,
+            capture_output=True, timeout=1.0, check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return
+        response = json.loads(result.stdout)
+        context = response.get("additionalContext") if isinstance(response, dict) else None
+        if isinstance(context, str) and context.strip():
+            print(json.dumps({"additionalContext": context}, ensure_ascii=False))
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return
+
+
 def own_runtime_role(session: str, self_alias: str) -> str:
     module = router_module()
     if module is None:
@@ -541,6 +569,7 @@ def main() -> int:
     if args.event == "posttool":
         if mode in {"assist", "collab"}:
             observe_posttool_failure(payload, session, alias, role, mode)
+        emit_inbox_notice(payload)
         return 0
     if args.event == "pretool":
         # Consultation and reflection are advisory. They never authorize work, so
