@@ -349,8 +349,10 @@ class TaskAuthority:
         unresolved = self.db.execute(
             'SELECT kind,epoch FROM task_operations WHERE task_id=? AND state="open" ORDER BY created_at',
             (row['task_id'],)).fetchall()
+        retired_ids = self.db.execute('SELECT DISTINCT kind FROM task_operations WHERE task_id=? ORDER BY kind', (row['task_id'],)).fetchall()
         return {'allowed': True, 'task_id': row['task_id'], 'epoch': row['epoch'],
                 'status': row['status'], 'unresolved_operations': len(unresolved),
+                'retired_tool_use_ids': [item['kind'] for item in retired_ids],
                 'unresolved_operation_details': [
                     {'tool_use_id': item['kind'], 'epoch': item['epoch']} for item in unresolved]}
 

@@ -473,11 +473,16 @@ def dispatch(host, ep, req):
             raise HubError('identity_rejected', 'cancelled binding changed during release')
         output = {'released': True, 'cancelled': True, 'task_id': bound['task_id'],
                   'epoch': bound['epoch'], 'unresolved_operations': result.get('unresolved_operations', 0),
-                  'unresolved_operation_details': details}
+                  'unresolved_operation_details': details,
+                  'retired_tool_use_ids': result.get('retired_tool_use_ids', [])}
         for item in details:
             if isinstance(item, dict) and isinstance(item.get('tool_use_id'), str):
                 host.db.execute('INSERT OR IGNORE INTO formal_task_retired VALUES(?,?,?,?)',
                                 (bound['task_id'], bound['epoch'], bound['native_id'], item['tool_use_id']))
+        for ident in result.get('retired_tool_use_ids', []):
+            if isinstance(ident, str):
+                host.db.execute('INSERT OR IGNORE INTO formal_task_retired VALUES(?,?,?,?)',
+                                (bound['task_id'], bound['epoch'], bound['native_id'], ident))
         host.db.execute('INSERT INTO formal_cancelled_release VALUES(?,?,?,?,?,?)',
                         (ep['endpoint_id'], ep['incarnation'], bound['task_id'], bound['epoch'], bound['native_id'], json.dumps(output, sort_keys=True)))
         host.db.commit()
