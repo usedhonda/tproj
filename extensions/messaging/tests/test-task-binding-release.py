@@ -320,6 +320,10 @@ class BindingReleaseTest(unittest.TestCase):
                 with self.assertRaises(OSError):
                     task_host.dispatch(host, ep, {'op':'task_detach','task_id':'task','expected_epoch':0})
                 self.assertIsNone(host.db.execute('SELECT 1 FROM formal_task_binding').fetchone())
+                recovered = task_host.dispatch(host, {**ep, 'incarnation':'restarted'}, {'op':'task_detach','task_id':'task','expected_epoch':0})
+                self.assertTrue(recovered['detached'])
+                self.assertFalse(marker.exists())
+                marker.touch()
                 host.db.execute("INSERT INTO formal_task_binding VALUES('executor','inc2','new-task',1,'native-detach')")
                 host.db.commit()
                 with self.assertRaises(task_host.HubError):

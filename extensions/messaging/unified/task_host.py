@@ -397,7 +397,7 @@ def dispatch(host, ep, req):
             'SELECT result_json,native_id,incarnation FROM formal_detach_receipt WHERE endpoint_id=? AND task_id=? AND epoch=?',
             (ep['endpoint_id'], req.get('task_id'), req.get('expected_epoch'))).fetchone()
         if receipt:
-            if receipt['incarnation'] != ep['incarnation'] or receipt['native_id'] != native_id:
+            if receipt['native_id'] != native_id:
                 raise HubError('identity_rejected', 'detach receipt does not match this native conversation')
             if host.db.execute('SELECT 1 FROM formal_task_binding WHERE native_id=?', (native_id,)).fetchone():
                 raise HubError('stale_executor', 'new native binding appeared during detach cleanup')
@@ -483,7 +483,7 @@ def dispatch(host, ep, req):
             'SELECT result_json,native_id,incarnation FROM formal_cancelled_release WHERE endpoint_id=? AND task_id=? AND epoch=?',
             (ep['endpoint_id'], req.get('task_id'), req.get('expected_epoch'))).fetchone()
         if receipt:
-            if receipt['incarnation'] != ep['incarnation'] or receipt['native_id'] != native_id:
+            if receipt['native_id'] != native_id:
                 raise HubError('identity_rejected', 'release receipt does not match this native conversation')
             if host.db.execute('SELECT 1 FROM formal_task_binding WHERE native_id=?', (native_id,)).fetchone():
                 raise HubError('stale_executor', 'new native binding appeared during release cleanup')
