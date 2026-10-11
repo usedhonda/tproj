@@ -362,11 +362,6 @@ class TaskAuthority:
                     previous.get('project_id') != actor['project_id'] or
                     previous.get('native_id') != req.get('native_id')):
                 raise TaskAuthorityError('stale_executor', 'cancelled assignment is not bound to this conversation')
-            assignment = self.db.execute(
-                'SELECT 1 FROM task_assignments WHERE task_id=? AND endpoint=? AND incarnation=? AND host_id=? AND epoch=?',
-                (row['task_id'], previous['endpoint_id'], previous['incarnation'], previous['host_id'], row['epoch'])).fetchone()
-            if not assignment:
-                raise TaskAuthorityError('identity_rejected', 'historical assignment continuity is unavailable')
         unresolved = self.db.execute(
             'SELECT kind,epoch FROM task_operations WHERE task_id=? AND state="open" ORDER BY created_at',
             (row['task_id'],)).fetchall()

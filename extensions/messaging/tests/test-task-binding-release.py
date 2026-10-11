@@ -65,12 +65,41 @@ class BindingReleaseTest(unittest.TestCase):
 
     def test_master_cancelled_release_accepts_authenticated_former_incarnation(self):
         task, db = authority('cancelled')
-        db.execute("UPDATE tasks SET executor_endpoint='old', executor_incarnation='old-inc', executor_host_id='host', epoch=0")
+        db.execute("UPDATE tasks SET executor_endpoint='new', executor_incarnation='former-inc', executor_host_id='host', epoch=1")
+        db.execute("DELETE FROM task_assignments WHERE endpoint='new'")
         result = task.dispatch({
-            'op': 'cancelled_release_check', 'task_id': 'task', 'expected_epoch': 0,
-            'native_id': 'native-1', 'previous': self.proof(),
-        }, CURRENT)
+            'op': 'cancelled_release_check', 'task_id': 'task', 'expected_epoch': 1,
+            'native_id': 'native-1', 'previous': {
+                'endpoint_id': 'new', 'incarnation': 'former-inc', 'host_id': 'host',
+                'project_id': 'project', 'platform': 'cdx', 'native_id': 'native-1',
+            },
+        }, {**CURRENT, 'incarnation': 'restarted-inc'})
         self.assertTrue(result['allowed'])
+
+    def test_master_cancelled_release_rejects_forged_binding_tuple_native_or_epoch(self):
+        task, db = authority('cancelled')
+        db.execute("UPDATE tasks SET executor_endpoint='new', executor_incarnation='former-inc', executor_host_id='host', epoch=1")
+        request = {
+            'op': 'cancelled_release_check', 'task_id': 'task', 'expected_epoch': 1,
+            'native_id': 'native-1', 'previous': {
+                'endpoint_id': 'new', 'incarnation': 'former-inc', 'host_id': 'host',
+                'project_id': 'project', 'platform': 'cdx', 'native_id': 'native-1',
+            },
+        }
+        actor = {**CURRENT, 'incarnation': 'restarted-inc'}
+        for field, value in (('endpoint_id', 'forged'), ('native_id', 'forged-native')):
+            with self.subTest(field=field):
+                forged = dict(request)
+                forged['previous'] = dict(request['previous'])
+                if field == 'native_id':
+                    forged['native_id'] = value
+                else:
+                    forged['previous'][field] = value
+                with self.assertRaises(TaskAuthorityError):
+                    task.dispatch(forged, actor)
+        forged = dict(request, expected_epoch=0)
+        with self.assertRaises(TaskAuthorityError):
+            task.dispatch(forged, actor)
 
     def test_host_resynchronizes_only_exact_same_native_old_row(self):
         import sys

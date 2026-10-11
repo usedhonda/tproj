@@ -163,6 +163,9 @@ All open operations remain unresolved history and are returned as sanitized
 tool-use IDs/epochs, including operations owned by the releasing executor. This
 operation never closes operations,
 changes the cancelled task or epoch, resurrects work, or grants a new role.
+The cancelled executor proof is taken from the authoritative cancelled task row
+and the authenticated same-native continuity tuple; a current
+`task_assignments` history row is not required after a handoff.
 The host durably records each unresolved old tool ID as retired before releasing
 the marker; a late guard callback is rejected even if the native conversation
 later binds a new task. Release and normal-detach receipts are written in the same transaction as
