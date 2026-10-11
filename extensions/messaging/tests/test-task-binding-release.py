@@ -276,7 +276,7 @@ class BindingReleaseTest(unittest.TestCase):
                 return None
 
         evidence = {
-            'endpoint': {'endpoint_id':'executor', 'incarnation':'new-inc', 'host_id':'host', 'platform':'cdx'},
+            'endpoint': {'endpoint_id':'executor', 'incarnation':'new-inc', 'host_id':'host', 'platform':'cdx', 'session_id':'native'},
             'participant': {'project_id':'project'},
         }
         previous = {'endpoint_id':'executor', 'incarnation':'old-inc', 'host_id':'host',

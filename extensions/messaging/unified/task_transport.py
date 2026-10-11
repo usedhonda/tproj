@@ -31,6 +31,9 @@ def _attest_binding_release(hub, evidence, body):
     if any(not isinstance(previous.get(k), str) or not previous[k] for k in fields):
         raise HubError('identity_rejected', 'historical native binding evidence is incomplete')
     current_ep = evidence['endpoint']; current_participant = evidence['participant']
+    authenticated_native = str(current_ep.get('thread_id') or current_ep.get('session_id') or current_ep.get('runtime_id') or '')
+    if not authenticated_native or native_id != authenticated_native:
+        raise HubError('identity_rejected', 'historical native context does not match authenticated endpoint')
     if previous['native_id'] != native_id:
         raise HubError('identity_rejected', 'historical native context does not match current caller')
     if previous['host_id'] != current_ep['host_id'] or previous['project_id'] != current_participant.get('project_id'):
@@ -71,13 +74,16 @@ def dispatch(hub, req, peer=False):
         body=dict(req.get('request') or {})
         if not str(body.get('op','')).startswith('task_'):
             raise HubError('invalid_request','formal task operation required')
-        if body.get('op') in ('task_binding_release_check', 'task_cancelled_release_check'):
+        if body.get('op') in ('task_binding_release_check', 'task_cancelled_release_check') and (
+                body.get('previous') is not None or body.get('native_id') is not None):
             previous = body.get('previous')
             current = evidence.get('endpoint') or {}
             participant = evidence.get('participant') or {}
             attested = evidence.get('binding_release') or {}
+            authenticated_native = str(current.get('thread_id') or current.get('session_id') or current.get('runtime_id') or '')
             if (not isinstance(previous, dict) or attested.get('previous') != previous
                     or attested.get('native_id') != body.get('native_id')
+                    or not authenticated_native or authenticated_native != body.get('native_id')
                     or previous.get('native_id') != body.get('native_id')
                     or previous.get('host_id') != current.get('host_id')
                     or previous.get('project_id') != participant.get('project_id')
@@ -94,12 +100,14 @@ def dispatch(hub, req, peer=False):
             if not isinstance(value,str):raise HubError('invalid_request','task destination must be an address')
             if value in ('cc','cdx'):value=evidence['participant']['address'].rsplit('.',1)[0]+'.'+value
             body[field]=actor(hub.resolve_destination(value))
-        if body.get('op') in ('task_binding_release_check', 'task_cancelled_release_check'):
+        if body.get('op') in ('task_binding_release_check', 'task_cancelled_release_check') and (
+                body.get('previous') is not None or body.get('native_id') is not None):
             evidence = hub.local_resolve(endpoint_id=req.get('endpoint_id'))
             _attest_binding_release(hub, evidence, body)
         if selected != hub.local_id:
             actor_evidence = evidence
-            if body.get('op') in ('task_binding_release_check', 'task_cancelled_release_check'):
+            if body.get('op') in ('task_binding_release_check', 'task_cancelled_release_check') and (
+                    body.get('previous') is not None or body.get('native_id') is not None):
                 actor_evidence = dict(evidence, binding_release={
                     'native_id': body.get('native_id'), 'previous': body.get('previous')})
             response = hub.remote(selected,'task',actor_evidence=actor_evidence,request=body,task_protocol=TASK_PROTOCOL)
