@@ -265,6 +265,15 @@ The integer `sequence` is the message's local hub row sequence, matching the
 `inbox` event cursor on that hub. For recipient cursor diagnosis, use the
 recipient host's record; sender and recipient hub sequences are not interchangeable.
 
+Inbox/claim pages retain the conservative 200000-byte message budget. An
+individually larger first message is returned alone when its complete success
+response fits the 262144-byte wire limit, including the response wrapper, default
+JSON spacing, and newline. This preserves message order, body, ID, and inbox
+cursor progress. Query uses the same full-frame bound, including receipt-derived
+fields. An accepted message whose response cannot fit raises the sanitized
+`response_too_large` error rather than an empty page or an indexing failure;
+messages are never skipped or truncated to make a response fit.
+
 Authorized sender-side diagnosis also includes `federated_outbox` when a saved
 outbox exists, even when the destination has no record. It exposes only `state`,
 `operation`, `destination_host_id`, `legacy_request_bytes`, `current_request_bytes`,

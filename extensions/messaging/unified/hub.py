@@ -17,10 +17,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from .protocol import HubError, MAX_TTL, serve_socket
+    from .protocol import HubError, MAX_REQUEST, MAX_TTL, serve_socket, success
     from .policy import check_policy
 except ImportError:  # allow the installed single-file entrypoint to be invoked directly
-    from protocol import HubError, MAX_TTL, serve_socket
+    from protocol import HubError, MAX_REQUEST, MAX_TTL, serve_socket, success
     from policy import check_policy
 
 
@@ -249,8 +249,10 @@ class Hub:
         cursor = int(req.get("cursor") or 0)
         limit = min(max(int(req.get("limit", 100)), 1), 100)
         rows = self.db.execute("SELECT rowid AS sequence,* FROM messages WHERE recipient_endpoint=? AND rowid>? ORDER BY rowid LIMIT ?", (ep["endpoint_id"], cursor, limit)).fetchall()
-        out = self.message_views(rows)
-        return {"messages":out,"next_cursor":out[-1]["sequence"] if out else cursor}
+        out = self.message_views(rows, response_kind="inbox")
+        result = {"messages":out,"next_cursor":out[-1]["sequence"] if out else cursor}
+        self._check_message_response(result)
+        return result
 
     def outbox(self, req):
         """Messages this participant sent that have not reached a final state.
@@ -275,7 +277,13 @@ class Hub:
             (ep["participant_id"], now, now - 7 * 86400, limit)).fetchall()
         return {"messages": [dict(r) for r in rows], "now": now}
 
-    def message_views(self, rows):
+    def _check_message_response(self, result):
+        # The host uses default JSON separators; this also bounds the smaller
+        # compact hub frame. Include the success envelope and trailing newline.
+        if len((json.dumps(success(result), ensure_ascii=False) + "\n").encode()) > MAX_REQUEST:
+            raise HubError("response_too_large", "message response exceeds wire limit")
+
+    def message_views(self, rows, response_kind="messages"):
         out = []
         size = 0
         for row in rows:
@@ -283,7 +291,13 @@ class Hub:
             q = self._row("SELECT p.address FROM participants p JOIN endpoints e ON e.participant_id=p.participant_id WHERE e.endpoint_id=?", (item["sender_endpoint"],))
             item["sender_address"] = q[0] if q else None
             encoded = len(json.dumps(item, ensure_ascii=False).encode())
-            if size + encoded > 200000: break
+            if size + encoded > 200000:
+                if out: break
+                result = item if response_kind == "query" else {"messages": [item]}
+                if response_kind == "inbox": result["next_cursor"] = item["sequence"]
+                self._check_message_response(result)
+                out.append(item)
+                break
             out.append(item); size += encoded
         return out
 
@@ -435,12 +449,13 @@ class Hub:
             if ep["endpoint_id"] not in (m["sender_endpoint"],m["recipient_endpoint"]): raise HubError("unauthorized","not party to message")
             # Same resolved sender the inbox and claim views carry: a reader that fetches
             # one message by ID must not have to trust the name written in its body.
-            result = self.message_views([m])[0]
+            result = self.message_views([m], response_kind="query")[0]
             receipt = self._row("SELECT evidence,at FROM receipts WHERE message_id=?", (m["message_id"],))
             if receipt and m["state"] in ("accepted", "queued", "adapter_received", "uncertain"):
                 try: reason = json.loads(receipt["evidence"]).get("delivery_reason")
                 except (ValueError, TypeError, AttributeError): reason = None
                 if reason: result.update(delivery_reason=reason, delivery_checked_at=receipt["at"])
+            self._check_message_response(result)
             return result
         if op=="maintenance":
             self._auth(req,True); mode=req.get("mode");

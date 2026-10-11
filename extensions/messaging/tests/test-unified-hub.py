@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-import pathlib, sys, tempfile, unittest
+import json, pathlib, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 from extensions.messaging.unified import Hub, HubError
-from extensions.messaging.unified.protocol import MAX_TTL
+from extensions.messaging.unified.protocol import MAX_REQUEST, MAX_TTL, success
 
 class HubTest(unittest.TestCase):
     def setUp(self):
@@ -49,6 +49,34 @@ class HubTest(unittest.TestCase):
         one=self.h.dispatch({"op":"query","host_id":"b","host_token":"tb","endpoint_id":"eb","message_id":"m1"})
         self.assertEqual(one["sender_address"],"proj.cc")
         self.assertEqual(one["sender_address"],inbox["messages"][0]["sender_address"])
+    def test_large_first_message_advances_cursor_without_starving_next(self):
+        body="x" * 226395
+        self.send(mid="large-first",body=body)
+        self.send(mid="small-next",body="next")
+        request={"op":"inbox","host_id":"b","host_token":"tb","endpoint_id":"eb"}
+        first=self.h.dispatch(request)
+        self.assertEqual([m["message_id"] for m in first["messages"]],["large-first"])
+        self.assertEqual(first["messages"][0]["body"],body)
+        self.assertEqual(first["next_cursor"],first["messages"][0]["sequence"])
+        one=self.h.dispatch(dict(request,op="query",message_id="large-first"))
+        self.assertEqual(one["body"],body)
+        self.assertEqual(one["message_id"],"large-first")
+        for result in (first,one):
+            self.assertLessEqual(len((json.dumps(success(result),ensure_ascii=False)+"\n").encode()),MAX_REQUEST)
+        second=self.h.dispatch(dict(request,cursor=first["next_cursor"]))
+        self.assertEqual([m["message_id"] for m in second["messages"]],["small-next"])
+        self.assertGreater(second["next_cursor"],first["next_cursor"])
+    def test_message_exceeding_response_frame_fails_explicitly(self):
+        body="x" * (MAX_REQUEST-300)
+        request={"op":"submit","host_id":"a","host_token":"ta","message":{"message_id":"too-large","thread_id":"t","sender_endpoint":"ea","target":"cdx","body":body,"kind":"chat"}}
+        self.assertLessEqual(len((json.dumps(request,ensure_ascii=False)+"\n").encode()),MAX_REQUEST)
+        self.h.dispatch(request)
+        recipient={"host_id":"b","host_token":"tb","endpoint_id":"eb"}
+        for op in ("inbox","query"):
+            with self.assertRaises(HubError) as caught:
+                self.h.dispatch(dict(recipient,op=op,message_id="too-large"))
+            self.assertEqual(caught.exception.code,"response_too_large")
+            self.assertNotIn(body,str(caught.exception))
     def test_outbox_lists_only_my_unfinished_sends_without_bodies(self):
         self.send(mid="o1",body="private-outbox-sentinel")
         self.send(mid="o2",body="second")
