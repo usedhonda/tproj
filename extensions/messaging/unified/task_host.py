@@ -321,6 +321,14 @@ def dispatch(host, ep, req):
         raise HubError('unsupported', 'binding release permission is host-internal')
     if op == 'task_cancelled_release_check':
         raise HubError('unsupported', 'cancelled release permission is host-internal')
+    if op == 'task_retired_operation':
+        ident = req.get('tool_use_id')
+        native_id = _native_binding_id(ep)
+        if not isinstance(ident, str) or not ident or not native_id:
+            return {'retired': False}
+        return {'retired': bool(host.db.execute(
+            'SELECT 1 FROM formal_task_retired WHERE native_id=? AND tool_use_id=?',
+            (native_id, ident)).fetchone())}
     if op in ('task_begin_operation','task_end_operation'):
         raise HubError('unsupported','operation admission uses the formal tool hook')
     if op == 'task_approval':
@@ -438,9 +446,11 @@ def dispatch(host, ep, req):
     if op == 'task_release_cancelled':
         native_id = _native_binding_id(ep)
         receipt = host.db.execute(
-            'SELECT result_json FROM formal_cancelled_release WHERE endpoint_id=? AND task_id=? AND epoch=?',
+            'SELECT result_json,native_id,incarnation FROM formal_cancelled_release WHERE endpoint_id=? AND task_id=? AND epoch=?',
             (ep['endpoint_id'], req.get('task_id'), req.get('expected_epoch'))).fetchone()
         if receipt:
+            if receipt['incarnation'] != ep['incarnation'] or receipt['native_id'] != native_id:
+                raise HubError('identity_rejected', 'release receipt does not match this native conversation')
             if host.db.execute('SELECT 1 FROM formal_task_binding WHERE native_id=?', (native_id,)).fetchone():
                 raise HubError('stale_executor', 'new native binding appeared during release cleanup')
             binding_marker(native_id).unlink(missing_ok=True)
@@ -457,8 +467,8 @@ def dispatch(host, ep, req):
             raise HubError('stale_task', 'master did not authorize cancelled assignment release')
         details = result.get('unresolved_operation_details', [])
         deleted = host.db.execute(
-            'DELETE FROM formal_task_binding WHERE endpoint_id=? AND task_id=? AND epoch=?',
-            (ep['endpoint_id'], bound['task_id'], bound['epoch'])).rowcount
+            'DELETE FROM formal_task_binding WHERE endpoint_id=? AND incarnation=? AND task_id=? AND epoch=? AND native_id=?',
+            (ep['endpoint_id'], ep['incarnation'], bound['task_id'], bound['epoch'], native_id)).rowcount
         if deleted != 1:
             raise HubError('identity_rejected', 'cancelled binding changed during release')
         output = {'released': True, 'cancelled': True, 'task_id': bound['task_id'],
