@@ -53,12 +53,35 @@ class FederationTests(unittest.TestCase):
         row = sender._row("SELECT * FROM federated_outbox WHERE message_id='lost-result'")
         result = sender.flush_one(row)
         self.assertEqual(result['state'], 'presented')
+        delivered = sender._row("SELECT * FROM federated_outbox WHERE message_id='lost-result'")
+        calls = len(self.calls)
+        self.assertEqual(sender.flush_one(delivered)['state'], 'presented')
+        self.assertEqual(len(self.calls), calls)
         self.assertNotEqual(sender._row("SELECT state FROM messages WHERE message_id='lost-result'")['state'], 'rejected')
         self.assertEqual(recipient._row("SELECT state FROM messages WHERE message_id='lost-result'")['state'], 'presented')
         payload = json.loads(row['payload']); payload['record']['body'] = 'changed'
         with self.assertRaises(HubError) as error:
             recipient.accept({'host_id': 'a', 'host_token': 'a-token', 'payload': payload})
         self.assertEqual(error.exception.code, 'id_conflict')
+
+    def test_delivered_retries_preserve_authority_state_atomically(self):
+        sender = self.hubs['a']
+        for state in ('dispatching', 'uncertain'):
+            mid = 'saved-' + state
+            remote = sender.remote
+            sender.remote = lambda owner, op, **args: ({'message_id': mid, 'state': state}
+                                                       if op == 'accept' else remote(owner, op, **args))
+            try:
+                self.send('a', mid, 'b.cdx')
+            finally:
+                sender.remote = remote
+            row = sender._row('SELECT * FROM federated_outbox WHERE message_id=?', (mid,))
+            self.assertEqual((row['state'], row['acceptance_state']), ('delivered', state))
+            self.assertEqual(sender.flush_one(row)['state'], state)
+        sender.db.execute("UPDATE federated_outbox SET acceptance_state=NULL WHERE message_id=?", (mid,))
+        with self.assertRaises(HubError) as error:
+            sender.flush_one(sender._row('SELECT * FROM federated_outbox WHERE message_id=?', (mid,)))
+        self.assertEqual(error.exception.code, 'host_unavailable')
 
     def test_invalid_acceptance_result_preserves_pending_outcome(self):
         sender = self.hubs['a']

@@ -39,8 +39,10 @@ class FederatedHub(Hub):
             self.db.executescript('''
             CREATE TABLE IF NOT EXISTS federated_outbox (
               message_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, payload TEXT NOT NULL,
-              state TEXT NOT NULL DEFAULT 'pending');
+              state TEXT NOT NULL DEFAULT 'pending', acceptance_state TEXT);
             ''')
+            if 'acceptance_state' not in {row['name'] for row in self.db.execute('PRAGMA table_info(federated_outbox)')}:
+                self.db.execute('ALTER TABLE federated_outbox ADD COLUMN acceptance_state TEXT')
 
     def topology(self):
         path = self.config.get('topology_path')
@@ -404,7 +406,9 @@ class FederatedHub(Hub):
         if row['state'] in ('cancelled', 'expired', 'rejected'):
             return {'message_id': row['message_id'], 'state': row['state'], 'duplicate': True}
         if row['state'] == 'delivered':
-            return {'message_id': row['message_id'], 'state': 'queued', 'duplicate': True}
+            if not row['acceptance_state']:
+                raise HubError('host_unavailable', 'historical peer acceptance outcome unavailable')
+            return {'message_id': row['message_id'], 'state': row['acceptance_state'], 'duplicate': True}
         record = self._row('SELECT * FROM messages WHERE message_id=?', (row['message_id'],))
         if record['expires_at'] <= self._now():
             self.db.execute("UPDATE federated_outbox SET state='expired' WHERE message_id=?", (row['message_id'],))
@@ -428,7 +432,8 @@ class FederatedHub(Hub):
                 self.db.execute("UPDATE messages SET state='rejected' WHERE message_id=?", (row['message_id'],))
                 return {'message_id': row['message_id'], 'state': 'rejected', 'reason': exc.code}
             return {'message_id': row['message_id'], 'state': 'queued', 'delivery_pending': True}
-        self.db.execute("UPDATE federated_outbox SET state='delivered' WHERE message_id=?", (row['message_id'],))
+        self.db.execute("UPDATE federated_outbox SET state='delivered',acceptance_state=? WHERE message_id=?",
+                        (outcome['state'], row['message_id']))
         return {'message_id': row['message_id'], 'state': outcome['state'],
                 **({'duplicate': True} if outcome.get('duplicate') else {})}
 

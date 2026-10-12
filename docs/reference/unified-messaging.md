@@ -468,3 +468,10 @@ historical replies do; aliases or caller assertions are not proof. The verified
 party is an internal argument, not a public operator flag, and does not register
 new endpoint/native evidence or authorize delivery. A forged/mismatched party is
 rejected.
+
+The sender stores the validated acceptance state in the same atomic outbox update
+as its delivered marker. Subsequent exact-ID retries return that saved authority
+state without contacting the recipient, rather than resetting it to queued.
+Pre-upgrade delivered rows lacking this evidence report host_unavailable; they do
+not fabricate a queued result or initiate new delivery. Read-only diagnosis remains
+available to inspect existing recipient evidence.
