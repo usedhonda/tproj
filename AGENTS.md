@@ -113,6 +113,11 @@ layers are tool- or machine-local and do not reach the other agent.
 
 ## Quality Bar and Completion
 
+Behavior and deployment changes follow the
+[development change contract](docs/reference/development-change-contract.md),
+including its specification template, affected lifecycle acceptance, and
+source/installed/loaded/actual-result evidence separation.
+
 A change is complete when all of the following hold:
 
 1. During iteration, run syntax/static checks and the smallest existing
