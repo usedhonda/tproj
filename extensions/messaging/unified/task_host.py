@@ -10,6 +10,11 @@ from datetime import datetime, timezone
 from protocol import HubError
 from task_approval import attest, digest
 
+def runtime_capabilities():
+    """Capabilities of this loaded host task implementation, not files on disk."""
+    return ['task_retired_operation', 'task_binding_status']
+
+
 def _file_change_witness(ep, tool_use_id, created_at, home=None):
     """Verify one exact completed Codex FileChange in the bound transcript."""
     tid = str(ep.get('thread_id') or ep.get('session_id') or '')

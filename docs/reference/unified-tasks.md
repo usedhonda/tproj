@@ -232,3 +232,5 @@ with no pending handoff, and the command has no bulk or force-close mode. A
 closed or absent operation is never treated as reconciled without an exact
 open-operation detail. Other native tool types (including server-side tools)
 are intentionally outside this witness contract.
+
+Host capabilities are declared by the loaded task-host implementation. A new host wrapper with an old task module cannot report compatibility; missing declaration is an unavailable response, not permission to activate dependent hooks.

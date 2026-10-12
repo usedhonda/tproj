@@ -11,7 +11,8 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+import types
 
 ROOT = Path(__file__).resolve().parents[3]
 INSTALLER = ROOT / 'extensions/messaging/install-tproj-messaging-runtime'
@@ -50,6 +51,15 @@ class CompatibilityTests(unittest.TestCase):
                 self.assertIn('binding-status diagnostics remain untouched', result.stderr)
                 after = {p.relative_to(home): (p.read_bytes(), p.stat().st_mode) for p in home.rglob('*') if p.is_file()}
                 self.assertEqual(before, after)
+
+    def test_new_host_does_not_claim_capabilities_of_old_task_module(self):
+        from host import Host
+        host = object.__new__(Host)
+        host.hub = Mock()
+        with patch.dict(sys.modules, {'task_host': types.ModuleType('old_task_host')}):
+            with self.assertRaises(ImportError):
+                host.dispatch({'op': 'runtime_capabilities'}, 1, os.getuid())
+        host.hub.assert_not_called()
 
     def test_route_authentication_and_master_selection(self):
         from host import Host
