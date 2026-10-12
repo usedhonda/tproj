@@ -27,6 +27,15 @@ class FederationTests(unittest.TestCase):
                 if owner in self.down:raise HubError('host_unavailable','offline')
                 return self.hubs[owner].dispatch(dict(args,op='peer_'+op,host_id=host,host_token=host+'-token',protocol=1))
             hub.remote=remote
+    def test_capability_probe_keeps_peer_without_transport_evidence(self):
+        hub = self.hubs['a']
+        hub.topology = lambda: {'mode': 'multi', 'hosts': [{'id': 'a'}, {'id': 'b', 'ssh_alias': ''}, {'id': 'c', 'ssh_alias': 'c'}]}
+        result = hub.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'a-token'})
+        self.assertFalse(result['peers']['b']['available'])
+        self.assertEqual(result['peers']['b']['error'], 'configuration_error')
+        self.assertTrue(result['peers']['c']['available'])
+        self.assertIn('native_continuity', result['peers']['c']['capabilities'])
+
     def send(self,host,mid,target=None,reply=None,body='hello'):
         message=dict(message_id=mid,sender_endpoint=host+'cc',body=body,kind='chat')
         if target:message['target']=target

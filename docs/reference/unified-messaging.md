@@ -266,7 +266,9 @@ consumer scope into the matching existing enrollment, once and idempotently;
 identity, token and generation are preserved, and competing edits or differing
 existing policies reject without replacement.
 
-Enrollment generation rotation is revocation, not native continuity. Old
+Every KAI request carries the current enrollment generation; omitted or revoked
+generation evidence is rejected before endpoint registration. Enrollment
+generation rotation is revocation, not native continuity. Old
 unpresented pending work becomes `stale_session`; dispatching or externally
 accepted work remains uncertain and is never replayed. Policy revocation at host
 admission rejects an unissued send, but cannot retroactively cancel an issued

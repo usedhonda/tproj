@@ -351,8 +351,7 @@ class Host:
         # then retain its mailbox across process restarts within one enrollment.
         # Rotating the operator-owned generation revokes this continuity.
         generation = cfg.get('binding_generation') if service_id == 'kai' else None
-        if (req.get('binding_generation') is not None and
-                req['binding_generation'] != generation):
+        if generation and req.get('binding_generation') != generation:
             raise HubError('stale_session', 'service enrollment generation revoked')
         if query_only and service_id == 'kai' and req.get('binding_generation') != generation:
             raise HubError('identity_rejected', 'current service enrollment evidence required')

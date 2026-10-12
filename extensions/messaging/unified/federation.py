@@ -602,7 +602,21 @@ class FederatedHub(Hub):
             result = {'capabilities': ['native_attest', 'native_continuity',
                                        'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted'],
                       'peers': {}}
-            for ident in self.peers():
+            top = self.topology()
+            hosts = top.get('hosts', []) if top.get('mode') == 'multi' else []
+            if not isinstance(hosts, list):
+                raise HubError('configuration_error', 'invalid topology host registry')
+            for peer in hosts:
+                if not isinstance(peer, dict) or not isinstance(peer.get('id'), str) or not peer['id']:
+                    raise HubError('configuration_error', 'invalid topology host registry')
+                ident = peer['id']
+                if ident == self.local_id:
+                    continue
+                if ident in result['peers']:
+                    raise HubError('configuration_error', 'duplicate topology peer')
+                if not isinstance(peer.get('ssh_alias'), str) or not peer['ssh_alias'].strip():
+                    result['peers'][ident] = {'available': False, 'capabilities': [], 'error': 'configuration_error'}
+                    continue
                 try:
                     caps = self.remote(ident, 'messaging_capabilities')
                     result['peers'][ident] = {'available': True, 'capabilities': caps.get('capabilities', []) if isinstance(caps, dict) else []}
