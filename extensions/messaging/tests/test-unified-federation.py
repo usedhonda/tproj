@@ -60,6 +60,20 @@ class FederationTests(unittest.TestCase):
             recipient.accept({'host_id': 'a', 'host_token': 'a-token', 'payload': payload})
         self.assertEqual(error.exception.code, 'id_conflict')
 
+    def test_invalid_acceptance_result_preserves_pending_outcome(self):
+        sender = self.hubs['a']
+        original_remote = sender.remote
+        def remote(owner, op, **args):
+            if op == 'accept':
+                original_remote(owner, op, **args)
+                return None
+            return original_remote(owner, op, **args)
+        sender.remote = remote
+        result = self.send('a', 'invalid-result', 'b.cdx')
+        self.assertTrue(result['delivery_pending'])
+        self.assertEqual(sender._row("SELECT state FROM federated_outbox WHERE message_id='invalid-result'")['state'], 'pending')
+        self.assertIsNotNone(self.hubs['b']._row("SELECT * FROM messages WHERE message_id='invalid-result'"))
+
     def test_rotated_sender_diagnosis_preserves_remote_presented_evidence(self):
         self.send('a', 'historical-diag', 'b.cdx')
         self.hubs['b'].db.execute("UPDATE messages SET state='presented' WHERE message_id='historical-diag'")

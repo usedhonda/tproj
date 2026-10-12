@@ -455,7 +455,9 @@ accepted exact-ID envelope returns its recorded result without registration or
 new delivery, even after recipient generation revocation. A changed immutable
 payload conflicts; an unaccepted envelope still requires current destination
 validation. Sender retry responses preserve the recipient's recorded state
-rather than replacing it with a fresh queued result.
+rather than replacing it with a fresh queued result. A malformed or mismatched
+acceptance response keeps the outbox pending with outcome unknown; it neither
+marks delivery successful nor raises an untyped exception that stops retries.
 
 Read-only cross-host diagnosis may carry an owner-verified historical-party
 attestation after the local host has authenticated current same-native

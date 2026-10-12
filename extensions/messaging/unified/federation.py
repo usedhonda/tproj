@@ -411,6 +411,11 @@ class FederatedHub(Hub):
             return {'message_id': row['message_id'], 'state': 'expired'}
         try:
             outcome = self.remote(row['host_id'], 'accept', payload=json.loads(row['payload']))
+            if (not isinstance(outcome, dict) or outcome.get('message_id') != row['message_id']
+                    or outcome.get('state') not in ('accepted', 'queued', 'adapter_received', 'dispatching',
+                                                   'uncertain', 'presented', 'cancelled', 'expired',
+                                                   'rejected', 'stale_session')):
+                raise HubError('host_unavailable', 'peer acceptance outcome unavailable')
         except HubError as exc:
             if exc.code == 'stale_session':
                 # The authority proved this immutable envelope names a retired
