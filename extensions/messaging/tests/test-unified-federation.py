@@ -32,6 +32,33 @@ class FederationTests(unittest.TestCase):
         if target:message['target']=target
         if reply:message['in_reply_to']=reply
         return self.hubs[host].submit(dict(host_id=host,host_token=host+'-token',message=message))
+    def rotate_native(self, host, role='cc', native='native-thread'):
+        hub = self.hubs[host]
+        old = host+role
+        auth = dict(host_id=host, host_token=host+'-token')
+        hub.attest_native(dict(auth, endpoint_id=old, native_kind='thread_id', native_id=native))
+        hub.dispatch(dict(auth, op='endpoint_retire', endpoint_id=old))
+        new = old+'-new'
+        hub.register(dict(auth, endpoint_id=new, participant_id=host+':'+role, session=host,
+                          pane='%1', pid=101, pid_start=11, runtime_id=new, platform=role))
+        hub.attest_native(dict(auth, endpoint_id=new, native_kind='thread_id', native_id=native))
+        return new
+
+    def test_exact_remote_reply_lands_on_same_native_rotated_sender(self):
+        self.send('a', 'rotation-original', 'b.cc')
+        new = self.rotate_native('a')
+        self.send('b', 'rotation-reply', reply='rotation-original')
+        self.assertEqual(self.hubs['a']._row("SELECT recipient_endpoint FROM messages WHERE message_id='rotation-reply'")[0], new)
+        result = self.hubs['a'].dispatch(dict(op='query', host_id='a', host_token='a-token', endpoint_id=new, message_id='rotation-original'))
+        self.assertEqual(result['sender_endpoint'], 'acc')
+
+    def test_rotated_recipient_remote_reply_owner_attestation(self):
+        self.send('a', 'recipient-original', 'b.cc')
+        new = self.rotate_native('b')
+        result = self.hubs['b'].submit(dict(host_id='b', host_token='b-token', message=dict(message_id='recipient-reply', sender_endpoint=new, in_reply_to='recipient-original', body='received')))
+        self.assertEqual(result['state'], 'queued')
+        self.assertEqual(self.hubs['a']._row("SELECT sender_endpoint FROM messages WHERE message_id='recipient-reply'")[0], new)
+
     def test_local_without_any_remote_and_same_path_isolated(self):
         self.down={'b','c'}
         self.assertEqual(self.send('a','local','cdx')['state'],'queued')

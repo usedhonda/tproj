@@ -352,3 +352,41 @@ recipient and thread. No receipt or `presented` state is fabricated; history
 remains queryable. Reading an inbox list alone does not suppress delivery.
 Once presentation has begun (`dispatching`), this gate cannot retract the paste
 or stop work. Later explicit user stop instructions remain authoritative.
+
+
+### Same-native endpoint continuity
+
+The owner host persists an immutable endpoint/native association only after local
+process binding and native registry/catalog adoption authenticate the caller.
+This is a separate messaging record, not a formal task binding. Public request
+selectors, alias equality, tmux session/pane, or a new endpoint alone never prove
+historical continuity. Both endpoint incarnations must have retained owner-host
+attestations for the same native ID and native ID kind, host, participant, and
+platform. The historical endpoint must be retired and the successor must be the
+unique current participant endpoint with a fresh heartbeat. Missing, conflicting,
+ambiguous, different-thread, or stale evidence fails closed.
+
+A proven successor may query historical party messages and reply by exact message
+ID. Original sender/recipient IDs and message thread IDs remain unchanged; replies
+are new messages addressed to the proven current incarnation. This does not resend,
+redispatch, retarget arbitrary aliases, alter task ownership, or grant general
+historical inbox/receipt/cancel access. Query returns `reader_is_recipient` so the
+host's reply boundary retains recipient-only authorization across rotation.
+
+Federated exact-ID resolution asks the historical endpoint's enrolled owner for
+the current endpoint. The receiving owner checks its own continuity record; a
+rotated replying recipient is attested by its enrolled sending owner with exact
+historical/current endpoint and same host/participant/platform constraints.
+Foreign cached endpoint rows are not native continuity authority.
+
+Migration creates empty continuity storage. Existing endpoint/message records do
+not contain historical native identity, so past rotations cannot be retroactively
+recovered from them. An authenticated current caller does not backfill a retired
+endpoint. Historical recovery requires independent owner-host historical native
+evidence; no recovery command or inference-based fallback is provided.
+
+Upgrade hubs (schema and `native_attest`) before dependent hosts. If a new host
+encounters an older hub's `unknown_op` for attestation, ordinary current-endpoint
+operations remain available, but no continuity evidence is created. Identity or
+other attestation errors are not ignored. Same-native continuation is unavailable
+in mixed-version deployments; complete both owner upgrades before relying on it.

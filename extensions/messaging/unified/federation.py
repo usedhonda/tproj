@@ -288,10 +288,7 @@ class FederatedHub(Hub):
         if endpoint_id:
             ep = self._row('SELECT * FROM endpoints WHERE endpoint_id=? AND host_id=?', (endpoint_id, self.local_id))
             if ep and ep['retired']:
-                participant = self._row('SELECT * FROM participants WHERE participant_id=?', (ep['participant_id'],))
-                if participant and participant['project_id'] is None and participant['kind'] == 'openclaw':
-                    ep = self._endpoint_for_send(participant)
-                else: ep = None
+                ep = self._reply_endpoint(endpoint_id)
             if not ep:
                 raise HubError('no_recipient', 'original endpoint is unavailable')
         else:
@@ -349,7 +346,7 @@ class FederatedHub(Hub):
             return self.flush_one(queued)
         if msg.get('in_reply_to'):
             original = self._row('SELECT * FROM messages WHERE message_id=?', (msg['in_reply_to'],))
-            if not original or original['recipient_endpoint'] != sender['endpoint_id']:
+            if not original or not self._same_native_party(sender, original['recipient_endpoint']):
                 raise HubError('identity_rejected', 'not original recipient')
             evidence = self.evidence(original['sender_endpoint'])
             owner = evidence['endpoint']['host_id']
@@ -367,17 +364,25 @@ class FederatedHub(Hub):
         self._tx()
         if msg.get('in_reply_to') and original['sender_endpoint'] != evidence['endpoint']['endpoint_id']:
             self.db.execute('UPDATE endpoints SET retired=1 WHERE endpoint_id=?', (original['sender_endpoint'],))
-        original_resolver, original_endpoint = self._participant, self._endpoint_for_send
+        original_resolver, original_endpoint, original_reply = self._participant, self._endpoint_for_send, self._reply_endpoint
         try:
             self.remember_evidence(evidence, owner)
             self._participant = lambda address: evidence['participant'] if address == target else original_resolver(address)
             self._endpoint_for_send = lambda participant: evidence['endpoint'] if participant['participant_id'] == evidence['participant']['participant_id'] else original_endpoint(participant)
+            if msg.get('in_reply_to'):
+                # The enrolled owner resolved this exact historical endpoint;
+                # foreign rows alone are not continuity authority.
+                self._reply_endpoint = lambda endpoint_id: evidence['endpoint'] if endpoint_id == original['sender_endpoint'] else original_reply(endpoint_id)
             accepted = super().submit(req)
             if accepted.get('duplicate'):
                 self._commit()
                 return accepted
             stored = dict(self._row('SELECT * FROM messages WHERE message_id=?', (mid,)))
             payload = {'message': msg, 'record': stored, 'sender': self.evidence(sender['endpoint_id']), 'recipient': evidence}
+            if msg.get('in_reply_to') and original['recipient_endpoint'] != sender['endpoint_id']:
+                # Same-native party access was checked above by the sender owner.
+                payload['reply_party'] = {'historical_endpoint': original['recipient_endpoint'],
+                                          'current_endpoint': sender['endpoint_id']}
             self.db.execute('INSERT INTO federated_outbox(message_id,host_id,payload) VALUES(?,?,?)',
                             (mid, owner, json.dumps(payload, ensure_ascii=False)))
             self._commit()
@@ -385,7 +390,7 @@ class FederatedHub(Hub):
             self._rollback()
             raise
         finally:
-            self._participant, self._endpoint_for_send = original_resolver, original_endpoint
+            self._participant, self._endpoint_for_send, self._reply_endpoint = original_resolver, original_endpoint, original_reply
         return self.flush_one(self._row('SELECT * FROM federated_outbox WHERE message_id=?', (mid,)))
 
     def flush_one(self, row):
@@ -470,14 +475,23 @@ class FederatedHub(Hub):
             raise HubError('invalid_message', 'expired or invalid TTL')
         if record['in_reply_to']:
             original = self._row('SELECT * FROM messages WHERE message_id=?', (record['in_reply_to'],))
-            recipient_matches = bool(original and original['sender_endpoint'] == record['recipient_endpoint'])
+            recipient_matches = bool(original and self._same_native_party(recipient['endpoint'], original['sender_endpoint']))
             if original and not recipient_matches:
                 old_sender = self.evidence(original['sender_endpoint'])
                 service = old_sender['participant']
                 recipient_matches = (service['project_id'] is None and service['kind'] == 'openclaw'
                     and service['participant_id'] == recipient['participant']['participant_id']
                     and self._endpoint_for_send(service)['endpoint_id'] == record['recipient_endpoint'])
-            if not original or original['recipient_endpoint'] != record['sender_endpoint'] or not recipient_matches or original['thread_id'] != record['thread_id']:
+            sender_matches = bool(original and original['recipient_endpoint'] == record['sender_endpoint'])
+            if original and not sender_matches:
+                historical = self.evidence(original['recipient_endpoint'])
+                attested = payload.get('reply_party') or {}
+                sender_matches = (attested.get('historical_endpoint') == original['recipient_endpoint']
+                    and attested.get('current_endpoint') == record['sender_endpoint']
+                    and historical['endpoint']['host_id'] == owner
+                    and all(historical['endpoint'][k] == sender['endpoint'][k]
+                            for k in ('participant_id', 'host_id', 'platform')))
+            if not original or not sender_matches or not recipient_matches or original['thread_id'] != record['thread_id']:
                 raise HubError('identity_rejected', 'reply does not match original endpoints')
         check_policy(self.db, record['sender_endpoint'], record['target_address'], body, self._now(), record['in_reply_to'])
         cols = ('message_id','thread_id','in_reply_to','sender_endpoint','target_address','recipient_endpoint','body','kind','created_at','expires_at','payload_hash')

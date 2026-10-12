@@ -159,8 +159,21 @@ class Host:
             self.refresh()
         try:
             endpoints = adopt_native_conversation(self.endpoints, req.get('conversation') or {})
-            return bind_caller(pid, uid, endpoints, session=req.get('session'),
-                               claimed_alias=req.get('as'), conversation=req.get('conversation'))
+            ep = bind_caller(pid, uid, endpoints, session=req.get('session'),
+                             claimed_alias=req.get('as'), conversation=req.get('conversation'))
+            # Native fields come from authenticated registry/catalog adoption,
+            # not the public request's selectors. Persist before any messaging.
+            kind = 'thread_id' if ep.get('thread_id') else 'session_id'
+            if ep.get(kind):
+                try:
+                    self.hub('native_attest', endpoint_id=ep['endpoint_id'],
+                             native_kind=kind, native_id=ep[kind])
+                except HubError as exc:
+                    # Optional continuity cannot break normal native messaging
+                    # during a host-first upgrade against an older hub.
+                    if exc.code != 'unknown_op':
+                        raise
+            return ep
         except IdentityError as exc:
             raise HubError('identity_rejected', str(exc)) from exc
 
@@ -268,7 +281,7 @@ class Host:
         envelope = dict(message_id=mid, sender_endpoint=ep['endpoint_id'], body=req.get('body', ''), kind='chat')
         if reply:
             original = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
-            if original['recipient_endpoint'] != ep['endpoint_id']:
+            if not original.get('reader_is_recipient', original['recipient_endpoint'] == ep['endpoint_id']):
                 raise HubError('identity_rejected', 'not original recipient')
             envelope.update(in_reply_to=original['message_id'], thread_id=original['thread_id'])
         else:

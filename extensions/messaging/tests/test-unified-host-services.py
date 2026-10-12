@@ -45,6 +45,26 @@ class UnifiedHostServicesTest(unittest.TestCase):
     def launchd(pid):
         return subprocess.CompletedProcess([], 0, stdout='"PID" = %d;\n' % pid, stderr='')
 
+    def test_native_attestation_is_authenticated_and_old_hub_fail_open_only(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self.host(tmp)
+            ep = {'endpoint_id': 'native', 'thread_id': 'verified-thread'}
+            host.endpoints = [ep]
+            host.refreshed = time.monotonic()
+            calls = []
+            def hub(op, **args):
+                calls.append((op, args))
+                raise HubError('unknown_op', 'old hub')
+            host.hub = hub
+            with patch.object(host_mod, 'adopt_native_conversation', return_value=[ep]), \
+                 patch.object(host_mod, 'bind_caller', return_value=ep):
+                self.assertEqual(host.caller(1, 1, {'conversation': {'thread_id': 'untrusted'}}), ep)
+                self.assertEqual(calls, [('native_attest', {'endpoint_id': 'native', 'native_kind': 'thread_id', 'native_id': 'verified-thread'})])
+                host.hub = lambda *a, **k: (_ for _ in ()).throw(HubError('identity_rejected', 'conflict'))
+                with self.assertRaises(HubError): host.caller(1, 1, {})
+            host.db.close()
+
     def test_service_registry_binds_identity_platform_and_incarnation(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)

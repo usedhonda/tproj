@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS alias_history (alias TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS alias_redirect (alias TEXT PRIMARY KEY, successor TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS participants (participant_id TEXT PRIMARY KEY, project_id TEXT, address TEXT NOT NULL UNIQUE, host_id TEXT NOT NULL, kind TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS endpoints (endpoint_id TEXT PRIMARY KEY, participant_id TEXT NOT NULL, host_id TEXT NOT NULL, session TEXT, pane TEXT, pid INTEGER, pid_start TEXT, runtime_id TEXT, platform TEXT, incarnation TEXT NOT NULL, last_heartbeat REAL NOT NULL, retired INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(participant_id) REFERENCES participants(participant_id));
+CREATE TABLE IF NOT EXISTS endpoint_native (endpoint_id TEXT PRIMARY KEY, native_kind TEXT NOT NULL, native_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS messages (message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, in_reply_to TEXT, sender_endpoint TEXT NOT NULL, target_address TEXT NOT NULL, recipient_endpoint TEXT, body TEXT NOT NULL, kind TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL, payload_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'accepted', adapter_received_at REAL, UNIQUE(message_id));
 CREATE TABLE IF NOT EXISTS receipts (message_id TEXT PRIMARY KEY, state TEXT NOT NULL, evidence TEXT, at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS message_recipient ON messages(recipient_endpoint, state, expires_at);
@@ -135,6 +136,47 @@ class Hub:
         if not e or e["host_id"] != host: raise HubError("identity_rejected", "endpoint is not owned by host")
         if e["retired"]: raise HubError("stale_session", "endpoint is retired")
         return e
+    def attest_native(self, req):
+        """Persist only owner-host authenticated native conversation evidence."""
+        host = self._auth(req)
+        ep = self._host_endpoint(host, req.get("endpoint_id"))
+        kind, native = req.get("native_kind"), req.get("native_id")
+        if ep["platform"] not in ("cc", "cdx") or kind not in ("thread_id", "session_id") or not isinstance(native, str) or not native:
+            raise HubError("identity_rejected", "authenticated native identity required")
+        old = self._row("SELECT * FROM endpoint_native WHERE endpoint_id=?", (ep["endpoint_id"],))
+        if old and (old["native_kind"] != kind or old["native_id"] != native):
+            raise HubError("identity_rejected", "endpoint native identity is immutable")
+        self.db.execute("INSERT OR IGNORE INTO endpoint_native VALUES(?,?,?)", (ep["endpoint_id"], kind, native))
+        return {"endpoint_id": ep["endpoint_id"]}
+
+    def _same_native_party(self, current, historical_id):
+        if current["endpoint_id"] == historical_id:
+            return True
+        old = self._row("SELECT * FROM endpoints WHERE endpoint_id=?", (historical_id,))
+        if not old or not old["retired"] or any(old[k] != current[k] for k in ("host_id", "participant_id", "platform")):
+            return False
+        native = self._row("SELECT * FROM endpoint_native WHERE endpoint_id=?", (historical_id,))
+        other = self._row("SELECT * FROM endpoint_native WHERE endpoint_id=?", (current["endpoint_id"],))
+        if not native or not other or any(native[k] != other[k] for k in ("native_kind", "native_id")):
+            return False
+        participant = self._row("SELECT * FROM participants WHERE participant_id=?", (current["participant_id"],))
+        try:
+            return self._endpoint_for_send(participant)["endpoint_id"] == current["endpoint_id"]
+        except HubError:
+            return False
+
+    def _reply_endpoint(self, historical_id):
+        old = self._row("SELECT * FROM endpoints WHERE endpoint_id=?", (historical_id,))
+        if not old or not old["retired"]:
+            return old
+        participant = self._row("SELECT * FROM participants WHERE participant_id=?", (old["participant_id"],))
+        if not participant:
+            return None
+        if participant["project_id"] is None and participant["kind"] == "openclaw":
+            return self._endpoint_for_send(participant)
+        current = self._endpoint_for_send(participant)
+        return current if self._same_native_party(current, historical_id) else None
+
     def _tx(self): self.db.execute("BEGIN IMMEDIATE")
     def _commit(self): self.db.execute("COMMIT")
     def _rollback(self):
@@ -222,13 +264,9 @@ class Hub:
         if msg.get("sender_endpoint") != sender["endpoint_id"]: raise HubError("identity_rejected", "sender endpoint mismatch")
         if msg.get("in_reply_to"):
             original = self._row("SELECT * FROM messages WHERE message_id=?", (msg["in_reply_to"],))
-            if not original or original["recipient_endpoint"] != sender["endpoint_id"]:
+            if not original or not self._same_native_party(sender, original["recipient_endpoint"]):
                 raise HubError("identity_rejected", "reply sender is not original recipient")
-            recipient = self._row("SELECT * FROM endpoints WHERE endpoint_id=?", (original["sender_endpoint"],))
-            if recipient and recipient["retired"]:
-                participant = self._row("SELECT * FROM participants WHERE participant_id=?", (recipient["participant_id"],))
-                if participant and participant["project_id"] is None and participant["kind"] == "openclaw":
-                    recipient = self._endpoint_for_send(participant)
+            recipient = self._reply_endpoint(original["sender_endpoint"])
             if not recipient or recipient["retired"]:
                 raise HubError("no_recipient", "original sender endpoint is unavailable")
             target = self._row("SELECT address FROM participants WHERE participant_id=?", (recipient["participant_id"],))[0]
@@ -465,6 +503,7 @@ class Hub:
         if op=="directory_import": return self.directory_import(req)
         if op=="directory_list": self._auth(req); return self.directory_list()
         if op=="directory_resolve": self._auth(req); p=self._participant(req["address"]); return dict(p)
+        if op=="native_attest": return self.attest_native(req)
         if op=="endpoint_register": return self.register(req)
         if op=="endpoint_retire":
             host=self._auth(req); self._host_endpoint(host,req["endpoint_id"]); self.db.execute("UPDATE endpoints SET retired=1 WHERE endpoint_id=?",(req["endpoint_id"],)); self.db.execute("UPDATE messages SET state='stale_session' WHERE recipient_endpoint=? AND state IN ('accepted','queued','adapter_received')",(req["endpoint_id"],)); return {"retired":req["endpoint_id"]}
@@ -486,10 +525,11 @@ class Hub:
             if m["expires_at"] <= self._now() and m["state"] in ("accepted","queued","adapter_received"):
                 self.db.execute("UPDATE messages SET state='expired' WHERE message_id=?", (m["message_id"],)); m=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),))
             ep=self._host_endpoint(host,req.get("endpoint_id"));
-            if ep["endpoint_id"] not in (m["sender_endpoint"],m["recipient_endpoint"]): raise HubError("unauthorized","not party to message")
+            if not any(self._same_native_party(ep, party) for party in (m["sender_endpoint"], m["recipient_endpoint"])): raise HubError("unauthorized","not party to message")
             # Same resolved sender the inbox and claim views carry: a reader that fetches
             # one message by ID must not have to trust the name written in its body.
             result = self.message_views([m], response_kind="query")[0]
+            result["reader_is_recipient"] = self._same_native_party(ep, m["recipient_endpoint"])
             receipt = self._row("SELECT evidence,at FROM receipts WHERE message_id=?", (m["message_id"],))
             if receipt and m["state"] in ("accepted", "queued", "adapter_received", "uncertain"):
                 try: reason = json.loads(receipt["evidence"]).get("delivery_reason")

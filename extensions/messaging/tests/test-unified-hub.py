@@ -10,6 +10,48 @@ class HubTest(unittest.TestCase):
         self.h.dispatch({"op":"directory_import","admin_token":"adm","projects":[{"project_id":"p","alias":"proj","host_id":"a","path":"/p"}]})
         self.h.db.execute("UPDATE participants SET host_id='b' WHERE participant_id='p:cdx'")
         self.reg("a","ta","ea","p:cc",1); self.reg("b","tb","eb","p:cdx",2)
+    def attest(self, host, endpoint, native='native-thread'):
+        return self.h.dispatch(dict(op='native_attest', host_id=host, host_token='t'+host,
+                                    endpoint_id=endpoint, native_kind='thread_id', native_id=native))
+
+    def test_same_native_rotation_preserves_exact_query_and_reply(self):
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
+        self.attest('b', 'eb')
+        self.send()
+        self.h.dispatch(dict(op='endpoint_retire', host_id='b', host_token='tb', endpoint_id='eb'))
+        self.reg('b', 'tb', 'eb-new', 'p:cdx', 3)
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb-new'")
+        self.attest('b', 'eb-new')
+        queried = self.h.dispatch(dict(op='query', host_id='b', host_token='tb', endpoint_id='eb-new', message_id='m1'))
+        self.assertEqual(queried['recipient_endpoint'], 'eb')
+        self.assertTrue(queried['reader_is_recipient'])
+        self.h.submit(dict(host_id='b', host_token='tb', message=dict(message_id='reply', sender_endpoint='eb-new', in_reply_to='m1', body='reply')))
+        self.assertEqual(self.h._row("SELECT recipient_endpoint FROM messages WHERE message_id='reply'")[0], 'ea')
+        self.h.close()
+        self.h = Hub(pathlib.Path(self.tmp.name)/'hub.db', {'admin_token':'adm','hosts':{'a':'ta','b':'tb'}})
+        self.assertTrue(self.h.dispatch(dict(op='query', host_id='b', host_token='tb', endpoint_id='eb-new', message_id='m1'))['reader_is_recipient'])
+
+    def test_native_rotation_unknown_different_ambiguous_and_stale_reject(self):
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
+        self.attest('b', 'eb')
+        self.send()
+        self.h.dispatch(dict(op='endpoint_retire', host_id='b', host_token='tb', endpoint_id='eb'))
+        self.reg('b', 'tb', 'eb-new', 'p:cdx', 3)
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb-new'")
+        query = dict(op='query', host_id='b', host_token='tb', endpoint_id='eb-new', message_id='m1')
+        with self.assertRaises(HubError): self.h.dispatch(query)
+        self.attest('b', 'eb-new', 'different-thread')
+        with self.assertRaises(HubError): self.h.dispatch(query)
+        with self.assertRaises(HubError): self.attest('b', 'eb-new')
+        self.reg('b', 'tb', 'same', 'p:cdx', 4)
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='same'")
+        self.attest('b', 'same')
+        query['endpoint_id'] = 'same'
+        with self.assertRaises(HubError): self.h.dispatch(query)
+        self.h.dispatch(dict(op='endpoint_retire', host_id='b', host_token='tb', endpoint_id='eb-new'))
+        self.h.db.execute("UPDATE endpoints SET last_heartbeat=0 WHERE endpoint_id='same'")
+        with self.assertRaises(HubError): self.h.dispatch(query)
+
     def tearDown(self): self.h.close(); self.tmp.cleanup()
     def reg(self,h,t,e,p,pid): return self.h.dispatch({"op":"endpoint_register","host_id":h,"host_token":t,"endpoint_id":e,"participant_id":p,"host_id":h,"session":"s","pane":"0","pid":pid,"pid_start":"x","runtime_id":"r","platform":"test"})
     def send(self,mid="m1",body="hello",target="cdx"):
