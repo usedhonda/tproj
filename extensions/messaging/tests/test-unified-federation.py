@@ -36,6 +36,45 @@ class FederationTests(unittest.TestCase):
         self.assertTrue(result['peers']['c']['available'])
         self.assertIn('native_continuity', result['peers']['c']['capabilities'])
 
+    def test_accepted_retry_preserves_result_after_recipient_revocation(self):
+        sender, recipient = self.hubs['a'], self.hubs['b']
+        original_remote = sender.remote
+        lost = [False]
+        def remote(owner, op, **args):
+            result = original_remote(owner, op, **args)
+            if op == 'accept' and not lost[0]:
+                lost[0] = True
+                raise HubError('host_unavailable', 'response lost after acceptance')
+            return result
+        sender.remote = remote
+        self.send('a', 'lost-result', 'b.cdx')
+        recipient.db.execute("UPDATE messages SET state='presented' WHERE message_id='lost-result'")
+        recipient.db.execute("UPDATE endpoints SET retired=1,platform='kai' WHERE endpoint_id='bcdx'")
+        row = sender._row("SELECT * FROM federated_outbox WHERE message_id='lost-result'")
+        result = sender.flush_one(row)
+        self.assertEqual(result['state'], 'presented')
+        self.assertNotEqual(sender._row("SELECT state FROM messages WHERE message_id='lost-result'")['state'], 'rejected')
+        self.assertEqual(recipient._row("SELECT state FROM messages WHERE message_id='lost-result'")['state'], 'presented')
+        payload = json.loads(row['payload']); payload['record']['body'] = 'changed'
+        with self.assertRaises(HubError) as error:
+            recipient.accept({'host_id': 'a', 'host_token': 'a-token', 'payload': payload})
+        self.assertEqual(error.exception.code, 'id_conflict')
+
+    def test_rotated_sender_diagnosis_preserves_remote_presented_evidence(self):
+        self.send('a', 'historical-diag', 'b.cdx')
+        self.hubs['b'].db.execute("UPDATE messages SET state='presented' WHERE message_id='historical-diag'")
+        current = self.rotate_native('a')
+        req = {'op': 'diagnose', 'host_id': 'a', 'host_token': 'a-token',
+               'endpoint_id': current, 'message_id': 'historical-diag', 'operator_diagnostic': True}
+        result = self.hubs['a'].dispatch(req)
+        self.assertEqual(result['state'], 'presented')
+        self.assertTrue(result['presentation_confirmed'])
+        self.assertEqual(result['diagnostic_host_id'], 'b')
+        proof = {'historical_endpoint': 'acc', 'current': {
+            'endpoint_id': current, 'host_id': 'a', 'participant_id': 'wrong', 'platform': 'cc'}}
+        with self.assertRaises(HubError):
+            self.hubs['b'].dispatch(dict(req, op='peer_diagnose', protocol=1, diagnostic_party=proof))
+
     def send(self,host,mid,target=None,reply=None,body='hello'):
         message=dict(message_id=mid,sender_endpoint=host+'cc',body=body,kind='chat')
         if target:message['target']=target

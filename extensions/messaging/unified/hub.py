@@ -482,7 +482,7 @@ class Hub:
                         (msg["message_id"], msg["state"], json.dumps({"delivery_reason": reason}), self._now()))
         return {"message_id": msg["message_id"], "state": msg["state"], "delivery_reason": reason}
 
-    def diagnose(self, req):
+    def diagnose(self, req, authenticated_party=None):
         host=self._auth(req)
         try:
             message=self._row('SELECT rowid AS sequence,message_id,state,sender_endpoint,recipient_endpoint,created_at,expires_at,adapter_received_at FROM messages WHERE message_id=?',(req.get('message_id'),))
@@ -492,7 +492,11 @@ class Hub:
             raise HubError('unavailable', 'delivery metadata unavailable') from None
         if not message:raise HubError('not_found','message not found')
         operator=req.get('operator_diagnostic') is True and host in self.config.get('diagnostic_hosts',[])
-        if not operator:
+        if authenticated_party is not None:
+            if (authenticated_party['host_id'] != host or authenticated_party['endpoint_id'] not in
+                    (message['sender_endpoint'], message['recipient_endpoint'])):
+                raise HubError('unauthorized', 'diagnostic proof is not a pinned party')
+        elif not operator:
             ep=self._host_endpoint(host,req.get('endpoint_id'))
             if not any(self._same_native_party(ep, party) for party in (message['sender_endpoint'], message['recipient_endpoint'])):
                 raise HubError('unauthorized','delivery metadata requires party or configured operator permission')

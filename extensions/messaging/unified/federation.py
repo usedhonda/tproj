@@ -410,7 +410,7 @@ class FederatedHub(Hub):
             self.db.execute("UPDATE federated_outbox SET state='expired' WHERE message_id=?", (row['message_id'],))
             return {'message_id': row['message_id'], 'state': 'expired'}
         try:
-            self.remote(row['host_id'], 'accept', payload=json.loads(row['payload']))
+            outcome = self.remote(row['host_id'], 'accept', payload=json.loads(row['payload']))
         except HubError as exc:
             if exc.code == 'stale_session':
                 # The authority proved this immutable envelope names a retired
@@ -424,7 +424,8 @@ class FederatedHub(Hub):
                 return {'message_id': row['message_id'], 'state': 'rejected', 'reason': exc.code}
             return {'message_id': row['message_id'], 'state': 'queued', 'delivery_pending': True}
         self.db.execute("UPDATE federated_outbox SET state='delivered' WHERE message_id=?", (row['message_id'],))
-        return {'message_id': row['message_id'], 'state': 'queued'}
+        return {'message_id': row['message_id'], 'state': outcome['state'],
+                **({'duplicate': True} if outcome.get('duplicate') else {})}
 
     def tick(self):
         for row in self.db.execute("SELECT * FROM federated_outbox WHERE state IN ('pending','cancel_pending') LIMIT 8").fetchall():
@@ -470,13 +471,18 @@ class FederatedHub(Hub):
             raise HubError('identity_rejected', 'message ownership mismatch')
         if record['sender_endpoint'] != sender['endpoint']['endpoint_id'] or record['recipient_endpoint'] != recipient['endpoint']['endpoint_id']:
             raise HubError('identity_rejected', 'message endpoint mismatch')
-        self.local_resolve(endpoint_id=record['recipient_endpoint'])
-        self.remember_evidence(sender, owner)
         old = self._row('SELECT * FROM messages WHERE message_id=?', (record['message_id'],))
         if old:
-            if old['payload_hash'] != record['payload_hash']:
-                raise HubError('id_conflict', 'message ID has different payload')
+            immutable = ('thread_id', 'in_reply_to', 'sender_endpoint', 'recipient_endpoint',
+                         'target_address', 'body', 'kind', 'created_at', 'expires_at', 'payload_hash')
+            if any(old[key] != record.get(key) for key in immutable):
+                raise HubError('id_conflict', 'message ID has different immutable payload')
+            saved_sender = self._row('SELECT host_id FROM endpoints WHERE endpoint_id=?', (old['sender_endpoint'],))
+            if not saved_sender or saved_sender['host_id'] != owner:
+                raise HubError('identity_rejected', 'recorded message owner mismatch')
             return {'message_id': old['message_id'], 'state': old['state'], 'duplicate': True}
+        self.local_resolve(endpoint_id=record['recipient_endpoint'])
+        self.remember_evidence(sender, owner)
         if self._maintenance() == 'stopped':
             raise HubError('maintenance', 'mailbox paused')
         body = record['body']
@@ -538,7 +544,23 @@ class FederatedHub(Hub):
             if op == 'peer_messaging_capabilities':
                 return {'capabilities': ['native_attest', 'native_continuity',
                                           'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted']}
-            if op == 'peer_diagnose': return super().diagnose(req)
+            if op == 'peer_diagnose':
+                proof = req.get('diagnostic_party')
+                if proof is None:
+                    return super().diagnose(req)
+                current = proof.get('current') if isinstance(proof, dict) else None
+                historical = self._row('SELECT * FROM endpoints WHERE endpoint_id=?',
+                                       (proof.get('historical_endpoint'),)) if isinstance(proof, dict) else None
+                message = self._row('SELECT * FROM messages WHERE message_id=?', (req.get('message_id'),))
+                if (not isinstance(current, dict) or not historical or not message
+                        or current.get('endpoint_id') != req.get('endpoint_id')
+                        or current.get('host_id') != owner or historical['host_id'] != owner
+                        or historical['endpoint_id'] not in (message['sender_endpoint'], message['recipient_endpoint'])
+                        or current.get('platform') not in ('cc', 'cdx')
+                        or any(current.get(k) != historical[k] for k in ('host_id', 'participant_id', 'platform'))):
+                    raise HubError('identity_rejected', 'invalid historical diagnostic party proof')
+                return super().diagnose(req, authenticated_party=historical)
+
             if op == 'peer_task_capabilities':
                 from task_transport import capabilities
                 return capabilities(self, req, peer=True)
@@ -587,6 +609,15 @@ class FederatedHub(Hub):
                 if len(authoritative)==1:return authoritative[0]
                 if len(matches)==1:return dict(matches[0],remote_state='unavailable')
                 raise HubError('ambiguous_diagnostic','multiple delivery owners responded')
+            current = self._row('SELECT * FROM endpoints WHERE endpoint_id=? AND host_id=? AND retired=0',
+                                (req.get('endpoint_id'), origin))
+            if current:
+                message = self._row('SELECT * FROM messages WHERE message_id=?', (req.get('message_id'),))
+                for pinned in (message['sender_endpoint'], message['recipient_endpoint']):
+                    if pinned != current['endpoint_id'] and self._same_native_party(current, pinned):
+                        fields['diagnostic_party'] = {'historical_endpoint': pinned, 'current': {
+                            k: current[k] for k in ('endpoint_id', 'host_id', 'participant_id', 'platform')}}
+                        break
             outbox=self.outbox_diagnostic(req.get('message_id'))
             local.update(outbox)
             destination=local.get('recipient_host_id')

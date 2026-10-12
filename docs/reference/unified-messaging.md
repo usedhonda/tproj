@@ -446,3 +446,23 @@ encounters an older hub's `unknown_op` for attestation, ordinary current-endpoin
 operations remain available, but no continuity evidence is created. Identity or
 other attestation errors are not ignored. Same-native continuation is unavailable
 in mixed-version deployments; complete both owner upgrades before relying on it.
+
+## Accepted-result continuity across endpoint revocation
+
+Federated ingress authenticates the enrolled sender owner and validates immutable
+recorded payload/parties before resolving a current recipient. An already
+accepted exact-ID envelope returns its recorded result without registration or
+new delivery, even after recipient generation revocation. A changed immutable
+payload conflicts; an unaccepted envelope still requires current destination
+validation. Sender retry responses preserve the recipient's recorded state
+rather than replacing it with a fresh queued result.
+
+Read-only cross-host diagnosis may carry an owner-verified historical-party
+attestation after the local host has authenticated current same-native
+continuity. The peer checks that the pinned party belongs to the authenticated
+owner, appears in the exact recorded message, and matches the current native
+participant/platform. This uses the existing enrolled host trust boundary, as
+historical replies do; aliases or caller assertions are not proof. The verified
+party is an internal argument, not a public operator flag, and does not register
+new endpoint/native evidence or authorize delivery. A forged/mismatched party is
+rejected.
