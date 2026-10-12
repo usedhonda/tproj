@@ -74,8 +74,9 @@ class UnifiedHostServicesTest(unittest.TestCase):
                  patch.object(host_mod, 'adopt_native_conversation', side_effect=lambda eps, _: eps), \
                  patch.object(host_mod, 'bind_caller', side_effect=lambda pid, uid, eps, **_: eps[0]):
                 result = host.dispatch({'op': 'diagnose', 'message_id': 'm1'}, 1, os.getuid())
+                self.assertEqual(host.caller_read_only(1, os.getuid(), {})['pid_start'], 2)
             self.assertEqual(result['state'], 'queued')
-            self.assertEqual(calls, ['diagnostic_identity', 'diagnose'])
+            self.assertEqual(calls, ['diagnostic_identity', 'diagnose', 'diagnostic_identity'])
             with self.assertRaises(sqlite3.OperationalError):
                 host.db.execute("INSERT INTO sentinel VALUES('forbidden')")
             host.db.close()

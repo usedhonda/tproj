@@ -253,6 +253,7 @@ class Host:
                 merged.update({key: matches[0].get(key) for key in
                                ('endpoint_id', 'host_id', 'participant_id', 'session', 'pane',
                                 'pid', 'pid_start', 'runtime_id', 'platform', 'incarnation')})
+                merged['pid_start'] = int(matches[0]['pid_start'])
                 reconciled.append(merged)
         native = {row['endpoint_id']: row for row in identity.get('endpoint_native', [])}
         for ep in reconciled:
