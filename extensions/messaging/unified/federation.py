@@ -41,8 +41,15 @@ class FederatedHub(Hub):
               message_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, payload TEXT NOT NULL,
               state TEXT NOT NULL DEFAULT 'pending', acceptance_state TEXT);
             ''')
-            if 'acceptance_state' not in {row['name'] for row in self.db.execute('PRAGMA table_info(federated_outbox)')}:
-                self.db.execute('ALTER TABLE federated_outbox ADD COLUMN acceptance_state TEXT')
+            self._tx()
+            try:
+                if 'acceptance_state' not in {row['name'] for row in self.db.execute('PRAGMA table_info(federated_outbox)')}:
+                    self.db.execute('ALTER TABLE federated_outbox ADD COLUMN acceptance_state TEXT')
+                self._commit()
+            except Exception:
+                self._rollback()
+                self.close()
+                raise
 
     def topology(self):
         path = self.config.get('topology_path')

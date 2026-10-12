@@ -475,3 +475,7 @@ state without contacting the recipient, rather than resetting it to queued.
 Pre-upgrade delivered rows lacking this evidence report host_unavailable; they do
 not fabricate a queued result or initiate new delivery. Read-only diagnosis remains
 available to inspect existing recipient evidence.
+
+Writable schema migration serializes its column check and ALTER in a write
+transaction; concurrent constructors recheck after obtaining that lock. Read-only
+constructors do not enter the migration or acquire a write transaction.

@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -27,6 +29,29 @@ class FederationTests(unittest.TestCase):
                 if owner in self.down:raise HubError('host_unavailable','offline')
                 return self.hubs[owner].dispatch(dict(args,op='peer_'+op,host_id=host,host_token=host+'-token',protocol=1))
             hub.remote=remote
+    def test_concurrent_writable_legacy_migration_is_serialized(self):
+        path = Path(self.tmp.name) / 'legacy.db'
+        cfg = {'host_id': 'legacy', 'hosts': {'legacy': 'fixture-token'}}
+        hub = FederatedHub(path, cfg)
+        hub.db.execute('DROP TABLE federated_outbox')
+        hub.db.execute("CREATE TABLE federated_outbox (message_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending')")
+        hub.close()
+        barrier = threading.Barrier(2)
+        begin = FederatedHub._tx
+        def synchronized_begin(instance):
+            barrier.wait(timeout=5)
+            begin(instance)
+        def construct():
+            instance = FederatedHub(path, cfg)
+            try:
+                return [row['name'] for row in instance.db.execute('PRAGMA table_info(federated_outbox)')]
+            finally:
+                instance.close()
+        with patch.object(FederatedHub, '_tx', synchronized_begin), ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: construct(), range(2)))
+        for columns in results:
+            self.assertEqual(columns.count('acceptance_state'), 1)
+
     def test_capability_probe_keeps_peer_without_transport_evidence(self):
         hub = self.hubs['a']
         hub.topology = lambda: {'mode': 'multi', 'hosts': [{'id': 'a'}, {'id': 'b', 'ssh_alias': ''}, {'id': 'c', 'ssh_alias': 'c'}]}
