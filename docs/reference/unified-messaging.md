@@ -322,6 +322,12 @@ with the same submission ID. Diagnosis is metadata-only and may itself be
 unavailable on a full disk. Preserve the stable ID and body; do not create a new
 send or automatically replay an uncertain outcome.
 
+Generation-enforcing host and generation-capable adapter updates belong to the
+same maintenance window. A legacy adapter that omits generation cannot operate
+between host enforcement and adapter activation; report that interval as service
+unavailable, not preserved legacy availability. If the compatible adapter is
+already active, verify its generation envelope before tightening the host.
+
 Dependent activation requires capabilities from running owner/backend sockets,
 then the running host, before installing the consumer. Imported source modules
 are not proof of loaded capability. Unsupported activation leaves current tools
