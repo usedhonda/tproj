@@ -1,9 +1,9 @@
 # KAI mailbox tool adapter
 
 `extensions/messaging/external/kai-mcp/mailbox_tools.py` contains the local
-adapter for the seven reviewed tool shapes: `tproj_list`,
+adapter for the reviewed tool shapes: `tproj_list`,
 `tproj_status`, `tproj_send`, `tproj_inbox`, `tproj_message`, `tproj_reply`,
-and `tproj_ack`.
+`tproj_ack`, and metadata-only `tproj_diagnose(submission_id)`.
 
 `extensions/messaging/external/kai-mcp/server.py` adds standard MCP stdio
 plumbing (`initialize`, `tools/list`, `tools/call`, `ping`, and notification
@@ -27,7 +27,7 @@ MCP event name, empty arguments, webhook mode, and delivery URL shape.
 `extensions/messaging/external/kai-mcp/runtime.py --config CONFIG` is the
 service entrypoint. The launchd-owned process calls the unified host's
 `service_whoami` with the configured service ID, address, and credential, then
-constructs the seven tools and mailbox event dispatcher from that live endpoint
+constructs the tools and mailbox event dispatcher from that live endpoint
 incarnation. The host's exact launchd-PID check remains authoritative.
 
 When a Secure MCP Tunnel starts a child stdio process, set `bridge_socket` in
@@ -56,7 +56,7 @@ IDs/outbox state rather than replacing the fixed subscription.
 
 The sibling `external-assistant-tools.json` is a distributed copy of the
 reviewed catalog, so a standalone deployment does not depend on the repository
-`docs/` tree. The server validates that all seven expected names are present;
+`docs/` tree. The server validates that all expected names are present;
 it never logs catalog contents, credentials, or callback secrets.
 
 The supported `bin/tproj-msg-reload` path distributes the complete KAI MCP
@@ -71,7 +71,8 @@ start a daemon. A host integration injects a host-socket call and a
 `FixedConnectionAuthorizer` from `connection.py`. That authorizer represents
 the enrolled KAI **service principal** (not a cryptographically asserted
 model persona): every call revalidates the host-derived service identity,
-endpoint incarnation, and exact fixed `allowed_addresses` scope. Missing,
+endpoint incarnation, and current host-derived policy revision. Outbound scope
+is authoritative at the host service list/status/send operations. Missing,
 rejected, stale, or mismatched authorization fails with `identity_rejected`
 before any host request. Caller arguments cannot provide identity selectors
 (`role`, `as`, `session`, conversation, PID, host, or endpoint fields).
@@ -86,7 +87,7 @@ used as the stable send/reply message ID when the host does not return one.
 Bodies are checked against the host's UTF-8 byte limit and terminal-control
 rule; inbox cursors and limits are bounded (`0..`, `1..100`).
 
-List/status use the existing read-only directory/status host primitives, then
+List/status use authenticated host service_list/service_status primitives, then
 filter and sanitize results to the contract.  They fail closed when the
 authorizer supplies no participant scope.  Directory visibility is not proof
 of enrollment, cloud conversation identity, delivery, or presentation.
@@ -146,3 +147,7 @@ Focused verification:
 python3 -m unittest extensions/messaging/external/kai-mcp/test_mailbox_tools.py
 python3 -m unittest extensions/messaging/external/kai-mcp/test_server.py
 ```
+
+Diagnosis bypasses mutating service_whoami preauthorization and authenticates on
+the host read-only service_diagnose path. It never changes the stable submission
+ID or retries delivery. Resource error metadata preserves acceptance=unknown.

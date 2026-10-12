@@ -36,8 +36,8 @@ class RuntimeConfigError(RuntimeError):
 
 
 BRIDGE_OPS = frozenset({
-    "list", "status", "service_send", "service_reply", "service_inbox",
-    "service_message", "service_ack", "service_begin_present", "service_whoami",
+    "service_list", "service_status", "service_send", "service_reply", "service_inbox",
+    "service_message", "service_ack", "service_begin_present", "service_diagnose", "service_whoami",
     "service_repo_list", "service_repo_tree", "service_repo_read", "service_repo_search",
     "service_repo_write", "service_repo_revert",
 })
@@ -63,7 +63,7 @@ class ServiceRuntime:
             _required(config.get("address"), "address"),
             _required(config.get("participant_id"), "participant_id"),
             _required(config.get("service_token"), "service_token"),
-            tuple(config.get("allowed_addresses", ())),
+            tuple(config.get("allowed_addresses") or ()),
             _required(config.get("binding_generation"), "binding_generation"),
         )
         self.binding = binding
@@ -78,7 +78,8 @@ class ServiceRuntime:
     def _request(self, request: Mapping[str, Any]) -> Any:
         req = dict(request)
         req.update({"service_id": self.binding.service_id, "service_token": self.binding.token,
-                    "address": self.binding.address})
+                    "address": self.binding.address,
+                    "binding_generation": self.binding.binding_generation})
         if self.bridge_socket:
             return _bridge_rpc(self.bridge_socket, {"op": "call", "request": req})
         return socket_rpc(str(self.host_socket), req)
@@ -88,14 +89,17 @@ class ServiceRuntime:
         if not isinstance(result, Mapping):
             raise ConnectionBindingError("service identity unavailable")
         observed = dict(result)
-        observed.setdefault("service_id", self.binding.service_id)
-        observed.setdefault("address", self.binding.address)
-        observed.setdefault("participant_id", self.binding.participant_id)
-        observed["allowed_addresses"] = list(self.binding.allowed_addresses)
+        for field in ("service_id", "address", "participant_id", "binding_generation", "incarnation"):
+            if not isinstance(observed.get(field), str) or not observed[field]:
+                raise ConnectionBindingError("service identity unavailable")
+        if (observed["service_id"] != self.binding.service_id or
+                observed["address"] != self.binding.address or
+                observed["participant_id"] != self.binding.participant_id or
+                observed["binding_generation"] != self.binding.binding_generation):
+            raise ConnectionBindingError("service enrollment mismatch")
         # Subscriptions belong to the enrolled service principal; an endpoint
         # incarnation fences stale delivery but does not create a new service.
-        observed["binding_id"] = observed.get("participant_id", self.binding.participant_id)
-        observed["binding_generation"] = self.binding.binding_generation
+        observed.setdefault("binding_id", observed.get("participant_id"))
         return observed
 
     def server(self) -> MCPServer:
@@ -180,7 +184,7 @@ def _bridge_rpc(path: Path, request: Mapping[str, Any]) -> Any:
         error = response.get("error") or {}
         if not isinstance(error, Mapping):
             raise MailboxToolError("unavailable", "service bridge rejected")
-        raise MailboxToolError(error.get("code", "unavailable"), error.get("message", "service bridge rejected"))
+        raise MailboxToolError(error.get("code", "unavailable"), error.get("message", "service bridge rejected"), error.get("details"))
     return response.get("result")
 
 
@@ -368,7 +372,10 @@ def bridge(config: Mapping[str, Any]) -> int:
                         result = _bridge_request(runtime, request)
                         response = {"ok": True, "result": result}
                     except MailboxToolError as exc:
-                        response = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+                        error = {"code": exc.code, "message": exc.message}
+                        if exc.details is not None:
+                            error["details"] = exc.details
+                        response = {"ok": False, "error": error}
                     except (ValueError, TypeError, UnicodeDecodeError):
                         response = _bridge_error("invalid_request", "invalid bridge request")
                     except Exception:

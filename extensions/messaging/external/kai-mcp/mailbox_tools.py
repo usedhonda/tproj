@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping
 
 MAX_LIMIT = 100
 WIRE_LIMIT = 262_144
+RESOURCE_STAGES = frozenset(("local_persistence", "authority_persistence", "authority_rpc", "outcome_query", "unknown"))
 CANCELLED_STATES = frozenset(("cancelled", "canceled", "expired", "terminal", "rejected", "stale_session"))
 # Project aliases may contain Unicode and internal dots, matching the hub's
 # qualified address contract. Enrolled service addresses use a conservative
@@ -29,10 +30,21 @@ FORBIDDEN_SELECTORS = {"role", "as", "session", "conversation", "conversation_id
 class MailboxToolError(Exception):
     """Structured adapter error retaining the host contract's error code."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, details: Mapping[str, Any] | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = self._safe_details(details)
+
+    @staticmethod
+    def _safe_details(details: Mapping[str, Any] | None) -> dict[str, str] | None:
+        if not isinstance(details, Mapping):
+            return None
+        stage = details.get("failure_stage")
+        acceptance = details.get("acceptance")
+        if stage in RESOURCE_STAGES and acceptance == "unknown":
+            return {"failure_stage": stage, "acceptance": "unknown"}
+        return None
 
 
 def disconnected_capabilities() -> dict[str, Any]:
@@ -61,20 +73,20 @@ def socket_rpc(socket_path: str, request: Mapping[str, Any]) -> Any:
         raise MailboxToolError("unavailable", "invalid host response") from exc
     if not response.get("ok"):
         error = response.get("error") or {}
-        raise MailboxToolError(error.get("code", "unavailable"), error.get("message", "host unavailable"))
+        raise MailboxToolError(error.get("code", "unavailable"), error.get("message", "host unavailable"), error.get("details"))
     return response.get("result")
 
 
 class MailboxTools:
     """Dispatcher for the seven reviewed tools.
 
-    ``authorizer`` is mandatory and must return a mapping containing a
-    trusted ``allowed_addresses`` sequence.  Its result is not caller input:
-    it is produced by the host-side conversation binding.  ``host_call`` is
+    ``authorizer`` is mandatory and must return a mapping containing host
+    policy evidence. Its result is not caller input: it is produced by the
+    host-side conversation binding. ``host_call`` is
     normally a ``socket_rpc`` partial; tests inject a recorder.
     """
 
-    TOOLS = ("tproj_capabilities", "tproj_list", "tproj_status", "tproj_send", "tproj_inbox", "tproj_message", "tproj_reply", "tproj_ack",
+    TOOLS = ("tproj_capabilities", "tproj_list", "tproj_status", "tproj_send", "tproj_inbox", "tproj_message", "tproj_reply", "tproj_ack", "tproj_diagnose",
              "tproj_repo_list", "tproj_repo_tree", "tproj_repo_read", "tproj_repo_search",
              "tproj_repo_write", "tproj_repo_revert")
 
@@ -111,6 +123,8 @@ class MailboxTools:
             if args:
                 raise MailboxToolError("invalid_request", "capabilities takes no arguments")
             return self.capabilities()
+        if name == "tproj_diagnose":
+            return self._diagnose(args)
         ctx = self._authorize(name, args)
         if name in self.REPO_TOOLS:
             return self._repo(name, args)
@@ -149,12 +163,15 @@ class MailboxTools:
         except Exception as exc:
             if getattr(type(exc), "transport_unavailable", False):
                 raise MailboxToolError("unavailable", "trusted conversation service unavailable") from exc
+            if getattr(exc, "code", None) in {"configuration_error", "scope_denied", "resource_exhausted", "not_found"}:
+                raise MailboxToolError(exc.code, str(exc), getattr(exc, "details", None)) from exc
             raise MailboxToolError("identity_rejected", "trusted conversation authorization failed") from exc
         if not isinstance(result, Mapping):
             raise MailboxToolError("identity_rejected", "trusted conversation authorization rejected")
         addresses = result.get("allowed_addresses")
-        if not isinstance(addresses, (list, tuple, set)) or not addresses or not all(isinstance(x, str) for x in addresses):
-            raise MailboxToolError("identity_rejected", "authorized participant scope is required")
+        if addresses is not None and (not isinstance(addresses, (list, tuple, set)) or
+                                      any(not isinstance(x, str) or not x for x in addresses)):
+            raise MailboxToolError("configuration_error", "authorized participant scope is invalid")
         return result
 
     @staticmethod
@@ -186,8 +203,6 @@ class MailboxTools:
                      or not (PROJECT_ADDRESS_RE.fullmatch(value) or SERVICE_ADDRESS_RE.fullmatch(value)))
         if malformed:
             raise MailboxToolError("unknown_target", "valid authorized target required")
-        if value not in set(ctx["allowed_addresses"]):
-            raise MailboxToolError("unknown_target", "target is outside authorized catalog")
         return value
 
     def _host(self, op: str, **extra: Any) -> Any:
@@ -203,8 +218,16 @@ class MailboxTools:
             code = getattr(exc, "code", None)
             message = getattr(exc, "message", None) or str(exc)
             if code:
-                raise MailboxToolError(str(code), message) from exc
+                raise MailboxToolError(str(code), message, getattr(exc, "details", None)) from exc
             raise MailboxToolError("unavailable", "host request failed") from exc
+
+    def _diagnose(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        self._keys(args, {"submission_id"})
+        sid = self._id(args["submission_id"], "submission ID")
+        result = self._host("service_diagnose", submission_id=sid)
+        if not isinstance(result, Mapping):
+            raise MailboxToolError("unavailable", "host returned an invalid diagnostic result")
+        return dict(result)
 
     def _repo(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
         op, required, optional = self.REPO_TOOLS[name]
@@ -227,11 +250,10 @@ class MailboxTools:
 
     def _list(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, set())
-        allowed = set(ctx["allowed_addresses"])
-        result = self._host("list") or {}
+        result = self._host("service_list") or {}
         participants = []
         for item in result.get("participants", []):
-            if not isinstance(item, Mapping) or item.get("address") not in allowed:
+            if not isinstance(item, Mapping):
                 continue
             participants.append({"address": item["address"], "kind": item.get("kind", "participant"),
                                  "available": bool(item.get("online", item.get("available", False)))})
@@ -240,7 +262,7 @@ class MailboxTools:
     def _status(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, {"target"})
         target = self._target(args, ctx)
-        result = self._host("status", target=target) or {}
+        result = self._host("service_status", target=target) or {}
         return {"target": target, "available": bool(result.get("online", result.get("available", False))),
                 **({"state": result["state"]} if "state" in result else {})}
 

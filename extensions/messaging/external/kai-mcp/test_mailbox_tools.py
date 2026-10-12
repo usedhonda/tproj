@@ -22,7 +22,7 @@ class MailboxToolsTest(unittest.TestCase):
         def host(req):
             self.calls.append(req)
             op = req["op"]
-            if op == "list":
+            if op == "service_list":
                 return {"participants": [{"address": "voyager.cc", "kind": "cc", "online": True},
                                           {"address": "secret.cc", "kind": "cc", "online": True}]}
             if op == "service_send":
@@ -34,6 +34,8 @@ class MailboxToolsTest(unittest.TestCase):
                         "sender_address": "voyager.cc", "body": "hello", "state": "queued"}
             if op == "service_inbox":
                 return {"messages": [], "next_cursor": req["cursor"]}
+            if op == "service_status":
+                return {"online": True}
             return {"state": "presented"}
 
         self.host = host
@@ -94,6 +96,21 @@ class MailboxToolsTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, "identity_rejected")
         self.assertEqual(self.calls, [])
 
+    def test_diagnose_is_metadata_only_and_bypasses_adapter_whoami(self):
+        seen = []
+        def host(req):
+            seen.append(req)
+            return {"submission_id": req["submission_id"], "state": "unknown",
+                    "failure_stage": "authority_rpc", "acceptance": "unknown"}
+        def should_not_attest(_name, _args):
+            raise AssertionError("diagnose must use authenticated service_diagnose directly")
+        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+                                    authorizer=should_not_attest, host_call=host)
+        result = tools.dispatch("tproj_diagnose", {"submission_id": "diag-1"})
+        self.assertEqual(result["failure_stage"], "authority_rpc")
+        self.assertEqual(seen[0]["op"], "service_diagnose")
+        self.assertNotIn("body", result)
+
     def test_nested_transport_unavailable_is_not_identity_rejection(self):
         binding = connection.KaiServiceBinding("kai", "kai", "kai.service", "secret", ("voyager.cc",), "gen-1")
         authorizer = connection.FixedConnectionAuthorizer(
@@ -131,19 +148,17 @@ class MailboxToolsTest(unittest.TestCase):
         self.assertNotIn("target", {"service_id", "service_token", "address"})
 
     def test_authorized_service_target_sends_once_and_rejects_out_of_scope_forms(self):
-        with self.assertRaises(module.MailboxToolError) as raised:
-            self.tools.dispatch("tproj_send", {"target": "kai", "body": "x", "submission_id": "kai-out"})
-        self.assertEqual(raised.exception.code, "unknown_target")
-        self.assertEqual(self.calls, [])
+        result = self.tools.dispatch("tproj_send", {"target": "kai", "body": "x", "submission_id": "kai-out"})
+        self.assertEqual(result["message_id"], "kai-out")
         self.tools.authorizer = lambda _name, _args: {"allowed_addresses": ["kai", "voyager.cc"]}
         result = self.tools.dispatch("tproj_send", {"target": "kai", "body": "x", "submission_id": "kai-1"})
         self.assertEqual(result["message_id"], "kai-1")
-        self.assertEqual([call["op"] for call in self.calls], ["service_send"])
-        for target in ("cc", "cdx", "not-authorized", "../kai", "kai\n", "kai\x01", "kai..service"):
+        self.assertEqual([call["op"] for call in self.calls], ["service_send", "service_send"])
+        for target in ("cc", "cdx", "../kai", "kai\n", "kai\x01", "kai..service"):
             with self.assertRaises(module.MailboxToolError) as raised:
                 self.tools.dispatch("tproj_send", {"target": target, "body": "x", "submission_id": "bad-" + str(len(self.calls))})
             self.assertEqual(raised.exception.code, "unknown_target")
-        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(len(self.calls), 2)
 
     def test_unicode_project_target_remains_compatible(self):
         self.tools.authorizer = lambda _name, _args: {"allowed_addresses": ["航海.cc"]}
@@ -158,17 +173,16 @@ class MailboxToolsTest(unittest.TestCase):
         sent = self.tools.dispatch("tproj_send", {"target": target, "body": "x", "submission_id": "unicode-dot-1"})
         self.assertEqual(status["target"], target)
         self.assertEqual(sent["message_id"], "unicode-dot-1")
-        self.assertEqual([call["op"] for call in self.calls], ["status", "service_send"])
+        self.assertEqual([call["op"] for call in self.calls], ["service_status", "service_send"])
         self.assertEqual(self.calls[0]["target"], target)
         self.assertEqual(self.calls[1]["target"], target)
 
-    def test_internal_dot_unicode_project_target_outside_allowlist_never_reaches_host(self):
+    def test_internal_dot_unicode_project_target_is_delegated_to_host_scope_policy(self):
         target = "航海.v2.cc"
         self.tools.authorizer = lambda _name, _args: {"allowed_addresses": ["航海.v3.cc"]}
-        with self.assertRaises(module.MailboxToolError) as raised:
-            self.tools.dispatch("tproj_send", {"target": target, "body": "x", "submission_id": "unicode-dot-out"})
-        self.assertEqual(raised.exception.code, "unknown_target")
-        self.assertEqual(self.calls, [])
+        result = self.tools.dispatch("tproj_send", {"target": target, "body": "x", "submission_id": "unicode-dot-out"})
+        self.assertEqual(result["message_id"], "unicode-dot-out")
+        self.assertEqual(self.calls[-1]["target"], target)
 
     def test_project_address_regex_rejects_long_dotted_nonmatching_target(self):
         self.assertIsNone(module.PROJECT_ADDRESS_RE.fullmatch(("a." * 25) + "x"))
@@ -218,9 +232,27 @@ class MailboxToolsTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, "unavailable")
         self.assertEqual(seen, ["service_message"])
 
+    def test_long_lived_adapter_uses_fresh_host_scope_and_reply_survives_empty_scope(self):
+        state = {"scope": ["voyager.cc"]}
+        calls = []
+
+        def authorizer(name, _args):
+            calls.append((name, list(state["scope"])))
+            return {"allowed_addresses": list(state["scope"])}
+
+        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+                                    authorizer=authorizer, host_call=self.host)
+        first = tools.dispatch("tproj_send", {"target": "voyager.cc", "body": "one", "submission_id": "long-1"})
+        self.assertEqual(first["message_id"], "long-1")
+        state["scope"] = []
+        reply = tools.dispatch("tproj_reply", {"message_id": "original", "body": "back", "submission_id": "long-2"})
+        self.assertEqual(reply["message_id"], "long-2")
+        self.assertEqual([name for name, _scope in calls], ["tproj_send", "tproj_reply"])
+
     def test_list_filters_to_authorized_scope(self):
         result = self.tools.dispatch("tproj_list", {})
-        self.assertEqual(result, {"participants": [{"address": "voyager.cc", "kind": "cc", "available": True}]})
+        self.assertEqual(result, {"participants": [{"address": "voyager.cc", "kind": "cc", "available": True},
+                                                     {"address": "secret.cc", "kind": "cc", "available": True}]})
 
     def test_inbox_hides_cancelled_envelopes(self):
         def cancelled_host(req):

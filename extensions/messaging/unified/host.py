@@ -11,16 +11,63 @@ import re
 import sys
 import socket
 import sqlite3
+import stat
 import subprocess
 import time
 import uuid
+from urllib.parse import quote
 
 from identity import (IdentityError, adopt_native_conversation, bind_caller, discover_endpoints, discover_tmux_endpoints,
                       peer_credentials, same_live_process_family)
-from protocol import HubError, success, failure
+from protocol import HubError, success, failure, resource_error
 from receipt import normalize_prompt
 
 WIRE_LIMIT = 262144
+
+
+def load_config_snapshot(path, strict=False):
+    """Validate and read the same opened private configuration object."""
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0))
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or before.st_mode & 0o022 or before.st_size > WIRE_LIMIT):
+            raise ValueError('unsafe snapshot')
+        with os.fdopen(fd, 'rb') as stream:
+            fd = None
+            raw = stream.read(WIRE_LIMIT + 1)
+            after = os.fstat(stream.fileno())
+        if (len(raw) > WIRE_LIMIT or (before.st_size, before.st_mtime_ns) !=
+                (after.st_size, after.st_mtime_ns)):
+            raise ValueError('unstable snapshot')
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ValueError('invalid snapshot')
+        if strict:
+            required = ('journal', 'socket', 'hub_socket', 'host_id', 'host_token')
+            if any(not isinstance(value.get(key), str) or not value[key] for key in required):
+                raise ValueError('incomplete snapshot')
+        return value
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise HubError('configuration_error', 'host configuration snapshot unavailable') from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def policy_scope(cfg):
+    scope = cfg.get('allowed_addresses')
+    if (not isinstance(scope, list) or any(not isinstance(x, str) or not x
+            or x in ('cc', 'cdx') or any(c.isspace() or ord(c) < 32 for c in x)
+            or '/' in x for x in scope) or len(set(scope)) != len(scope)):
+        raise HubError('configuration_error', 'service outbound policy unavailable')
+    return sorted(scope)
+
+
+def policy_revision(scope):
+    return hashlib.sha256(json.dumps(scope, ensure_ascii=False,
+                                    separators=(',', ':')).encode()).hexdigest()
 
 
 def paste_parts(platform, header, body):
@@ -41,25 +88,35 @@ def rpc(path, request):
         response = json.loads(raw)
         if not response.get('ok'):
             error = response.get('error', {})
-            raise HubError(error.get('code', 'unavailable'), error.get('message', 'hub unavailable'))
+            raise HubError(error.get('code', 'unavailable'), error.get('message', 'hub unavailable'),
+                           error.get('details') if isinstance(error.get('details'), dict) else None)
         return response.get('result')
 
 
 class Host:
-    def __init__(self, config, recover=True):
+    def __init__(self, config, recover=True, read_only=False):
         self.config = config
+        self.read_only = bool(read_only)
         self.endpoints = []
         self.refreshed = 0
-        self.db = sqlite3.connect(config['journal'])
+        try:
+            if self.read_only:
+                self.db = sqlite3.connect('file:' + quote(str(config['journal']), safe='/') + '?mode=ro', uri=True)
+            else:
+                self.db = sqlite3.connect(config['journal'])
+        except (OSError, sqlite3.Error) as exc:
+            classified = resource_error(exc, 'local_persistence')
+            raise classified or HubError('unavailable', 'host journal unavailable') from None
         self.db.row_factory = sqlite3.Row
-        self.db.executescript('''PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
+        if not self.read_only:
+            self.db.executescript('''PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
         CREATE TABLE IF NOT EXISTS deliveries(message_id TEXT PRIMARY KEY, endpoint_id TEXT NOT NULL,
         envelope TEXT NOT NULL, state TEXT NOT NULL, prompt_hash TEXT, updated REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS submissions(message_id TEXT PRIMARY KEY, endpoint_id TEXT NOT NULL,
         envelope TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS delivery_diagnostics(message_id TEXT PRIMARY KEY, reason TEXT NOT NULL);''')
         # A process exit in the injection window must never trigger another injection.
-        if recover:
+        if recover and not self.read_only:
             self.db.execute("INSERT OR REPLACE INTO delivery_diagnostics SELECT message_id,'adapter_interrupted' FROM deliveries WHERE state='dispatching'")
             self.db.execute("UPDATE deliveries SET state='uncertain' WHERE state='dispatching'")
             self.db.commit()
@@ -177,6 +234,38 @@ class Host:
         except IdentityError as exc:
             raise HubError('identity_rejected', str(exc)) from exc
 
+    def caller_read_only(self, pid, uid, req):
+        """Bind a live caller to persisted endpoint/native evidence without writes."""
+        if uid != os.getuid():
+            raise HubError('identity_rejected', 'local UID mismatch')
+        identity = self.hub('diagnostic_identity')
+        saved = identity.get('endpoints', [])
+        projects = identity.get('projects', [])
+        discovered = discover_endpoints(self.config.get('registry', str(Path.home()/'.cache/tproj-model-role')),
+                                        self.config['host_id'], projects)
+        discovered.extend(discover_tmux_endpoints(self.config['host_id'], projects, discovered))
+        active = [ep for ep in saved if not ep.get('retired')]
+        reconciled = []
+        for live in discovered:
+            matches = [old for old in active if same_live_process_family(old, live)]
+            if len(matches) == 1:
+                merged = dict(live)
+                merged.update({key: matches[0].get(key) for key in
+                               ('endpoint_id', 'host_id', 'participant_id', 'session', 'pane',
+                                'pid', 'pid_start', 'runtime_id', 'platform', 'incarnation')})
+                reconciled.append(merged)
+        native = {row['endpoint_id']: row for row in identity.get('endpoint_native', [])}
+        for ep in reconciled:
+            marker = native.get(ep['endpoint_id'])
+            if marker:
+                ep[marker['native_kind']] = marker['native_id']
+        try:
+            endpoints = adopt_native_conversation(reconciled, req.get('conversation') or {})
+            return bind_caller(pid, uid, endpoints, session=req.get('session'),
+                               claimed_alias=req.get('as'), conversation=req.get('conversation'))
+        except IdentityError as exc:
+            raise HubError('identity_rejected', str(exc)) from exc
+
     def _service_binding(self, req):
         """Return (stable service identity, config) without alias inference.
 
@@ -222,7 +311,8 @@ class Host:
                 if value:
                     seen[(field, value)] = service_id
 
-    def service(self, pid, uid, req):
+    def service(self, pid, uid, req, query_only=False):
+        query_only = query_only or getattr(self, '_query_only_service', False)
         self._validate_service_registry()
         service_id, cfg = self._service_binding(req)
         if not all(cfg.get(key) for key in ('token', 'address', 'participant_id')):
@@ -260,11 +350,25 @@ class Host:
         # then retain its mailbox across process restarts within one enrollment.
         # Rotating the operator-owned generation revokes this continuity.
         generation = cfg.get('binding_generation') if service_id == 'kai' else None
+        if (req.get('binding_generation') is not None and
+                req['binding_generation'] != generation):
+            raise HubError('stale_session', 'service enrollment generation revoked')
+        if query_only and service_id == 'kai' and req.get('binding_generation') != generation:
+            raise HubError('identity_rejected', 'current service enrollment evidence required')
         if generation:
             ep.update(endpoint_id=str(uuid.uuid5(uuid.NAMESPACE_URL,
                       f"{self.config['host_id']}:{service_id}:{cfg['participant_id']}:{generation}")),
                       pid=0, pid_start=0, runtime_id=f'kai:{generation}')
-        for old in self.hub('endpoints_list')['endpoints']:
+        identity = self.hub('diagnostic_identity') if query_only else None
+        previous = identity['endpoints'] if identity is not None else self.hub('endpoints_list')['endpoints']
+        if query_only:
+            matches = [old for old in previous if old['endpoint_id'] == ep['endpoint_id']
+                       and not old['retired'] and old['participant_id'] == ep['participant_id']]
+            if len(matches) != 1:
+                raise HubError('identity_rejected', 'registered service diagnostic evidence unavailable')
+            ep['incarnation'] = matches[0].get('incarnation')
+            return ep
+        for old in previous:
             if old['participant_id'] == ep['participant_id'] and old['endpoint_id'] != ep['endpoint_id'] and not old['retired']:
                 self.hub('endpoint_retire', endpoint_id=old['endpoint_id'])
         self.hub('endpoint_register', **ep)
@@ -273,6 +377,15 @@ class Host:
                 ep['incarnation'] = row.get('incarnation')
                 break
         return ep
+
+    def service_policy(self, req, target=None):
+        service_id, cfg = self._service_binding(req)
+        if service_id != 'kai' and 'allowed_addresses' not in cfg:
+            return None  # Preserve the independent legacy OpenClaw contract.
+        scope = policy_scope(cfg)
+        if target is not None and target not in scope:
+            raise HubError('scope_denied', 'target is outside authorized service policy')
+        return scope
 
     def submit(self, ep, req, reply=False):
         mid = req.get('submission_id')
@@ -287,12 +400,21 @@ class Host:
         else:
             envelope['target'] = req.get('target')
         serialized = json.dumps(envelope, sort_keys=True, ensure_ascii=False)
-        old = self.db.execute('SELECT * FROM submissions WHERE message_id=?', (mid,)).fetchone()
-        if old and (old['envelope'] != serialized or old['endpoint_id'] != ep['endpoint_id']):
-            raise HubError('id_conflict', 'submission ID has different payload or sender')
-        self.db.execute('INSERT OR IGNORE INTO submissions VALUES(?,?,?)', (mid, ep['endpoint_id'], serialized))
-        self.db.commit()
-        return self.hub('submit', message=envelope)
+        try:
+            old = self.db.execute('SELECT * FROM submissions WHERE message_id=?', (mid,)).fetchone()
+            if old and (old['envelope'] != serialized or old['endpoint_id'] != ep['endpoint_id']):
+                raise HubError('id_conflict', 'submission ID has different payload or sender')
+            self.db.execute('INSERT OR IGNORE INTO submissions VALUES(?,?,?)', (mid, ep['endpoint_id'], serialized))
+            self.db.commit()
+        except HubError:
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            classified = resource_error(exc, 'local_persistence')
+            raise classified or HubError('unavailable', 'host journal unavailable') from None
+        try:
+            return self.hub('submit', message=envelope)
+        except (OSError, sqlite3.Error) as exc:
+            raise resource_error(exc, 'authority_rpc') or HubError('unavailable', 'authority RPC unavailable') from None
 
     def delivery_status(self, endpoint_id, message_id, reason):
         """Record a nonterminal delivery diagnostic without changing state."""
@@ -437,11 +559,22 @@ class Host:
         op = req.get('op')
         if uid != os.getuid():
             raise HubError('identity_rejected', 'local UID mismatch')
+        if op == 'diagnostic_identity':
+            return self.hub('diagnostic_identity')
+        # Legacy service consumers must not take the public operator branch.
+        if op in ('list', 'status') and ('service_id' in req or 'service_token' in req):
+            op = 'service_' + op
+            req = dict(req, op=op)
         if op == 'runtime_capabilities':
             # UID authentication suffices for this operator-only read, not tasks.
             from task_host import runtime_capabilities
             return {'host_capabilities': runtime_capabilities(),
                     'task_master': self.hub('task_capabilities')}
+        if op == 'messaging_capabilities':
+            own = ['service_policy_v1', 'read_only_diagnose', 'diagnostic_identity', 'query_only_service',
+                   'resource_exhausted']
+            hub_caps = self.hub('messaging_capabilities')
+            return {'host_capabilities': own, 'messaging_owner': hub_caps}
         if op == 'status' and req.get('target'):
             target = req['target']
             participant_id = None
@@ -460,13 +593,44 @@ class Host:
         if op == 'directory-sync':
             return self.hub('directory_update', projects=req['projects'], expected_revision=req['expected_revision'])
         is_service = isinstance(op, str) and op.startswith('service_')
-        ep = self.service(pid, uid, req) if is_service else self.caller(pid, uid, req)
+        query_only_service = op == 'service_diagnose'
+        self._query_only_service = query_only_service
+        ep = self.service(pid, uid, req) if is_service else (
+            self.caller_read_only(pid, uid, req) if op == 'diagnose' else self.caller(pid, uid, req))
         if isinstance(op, str) and op.startswith('task_'):
             from task_host import dispatch
             return dispatch(self, ep, req)
         if op == 'service_whoami':
-            return {key: ep.get(key) for key in ('endpoint_id', 'participant_id', 'host_id', 'address',
+            result = {key: ep.get(key) for key in ('endpoint_id', 'participant_id', 'host_id', 'address',
                                                   'session', 'runtime_id', 'platform', 'incarnation')}
+            service_id, cfg = self._service_binding(req)
+            result.update(service_id=service_id, binding_generation=cfg.get('binding_generation'))
+            try:
+                scope = self.service_policy(req)
+                result.update(allowed_addresses=scope, policy_state='valid',
+                              policy_revision=policy_revision(scope) if scope is not None else None)
+            except HubError as exc:
+                if exc.code != 'configuration_error':
+                    raise
+                result.update(allowed_addresses=[], policy_state='invalid', policy_revision=None)
+            return result
+        if op == 'service_diagnose':
+            if not isinstance(req.get('submission_id'), str) or not req['submission_id']:
+                raise HubError('invalid_message', 'submission ID required')
+            return self.hub('diagnose', endpoint_id=ep['endpoint_id'], message_id=req['submission_id'])
+        if op in ('service_list', 'service_status'):
+            if op == 'service_status' and (not isinstance(req.get('target'), str) or not req['target']):
+                raise HubError('invalid_request', 'target required')
+            scope = self.service_policy(req, req.get('target') if op == 'service_status' else None)
+            directory = self.hub('directory_all' if self.config.get('federated') else 'directory_list')
+            participants = [p for p in directory['participants']
+                            if scope is None or p['address'] in scope]
+            if op == 'service_list':
+                return dict(directory, participants=participants, projects=[])
+            matches = [p for p in participants if p['address'] == req.get('target')]
+            if len(matches) != 1:
+                raise HubError('unknown_target', 'unknown or ambiguous target')
+            return matches[0]
         if op == 'service_begin_present':
             if not isinstance(req.get('message_id'), str) or not req['message_id']:
                 raise HubError('invalid_message', 'message ID required')
@@ -496,6 +660,8 @@ class Host:
                 raise HubError('invalid_message', 'message ID required')
             return self._retry_event(ep, req['message_id'])
         if op in ('send', 'reply', 'service_send', 'service_reply'):
+            if op == 'service_send':
+                self.service_policy(req, req.get('target'))
             return self.submit(ep, req, reply=op.endswith('reply'))
         if op == 'service_claim':
             return self.hub('claim', endpoint_id=ep['endpoint_id'], limit=min(int(req.get('limit', 8)), 32))
@@ -646,7 +812,7 @@ def main():
     parser = argparse.ArgumentParser(); parser.add_argument('--config', required=True)
     args = parser.parse_args()
     os.umask(0o077)
-    config = json.loads(Path(args.config).read_text())
+    config = load_config_snapshot(args.config, strict=True)
     path = Path(config['socket']); path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Lock prevents replacing a live adapter's socket during a mistaken launch.
     lock = open(str(path)+'.lock', 'a')
@@ -661,7 +827,6 @@ def main():
     def handle(conn):
         host = None
         try:
-            host = Host(json.loads(Path(args.config).read_text()), recover=False)
             with conn:
                 conn.settimeout(60)
                 pid, uid = peer_credentials(conn)
@@ -670,12 +835,20 @@ def main():
                     if len(raw) > WIRE_LIMIT or not raw.endswith(b'\n'):
                         raise HubError('invalid_request', 'request too large')
                     request = json.loads(raw)
-                    try: result = success(host.dispatch(request, pid, uid))
+                    read_only = False
+                    try:
+                        if not isinstance(request, dict):
+                            raise HubError('invalid_request', 'request object required')
+                        read_only = request.get('op') in ('diagnose', 'diagnostic_identity',
+                                                          'service_diagnose', 'messaging_capabilities')
+                        host = Host(load_config_snapshot(args.config, strict=True), recover=False, read_only=read_only)
+                        result = success(host.dispatch(request, pid, uid))
                     except (HubError, IdentityError) as exc:
                         result = failure(exc if isinstance(exc, HubError) else HubError('identity_rejected', str(exc)))
                     except Exception as exc:
                         print("host dispatch failure: " + type(exc).__name__, file=sys.stderr, flush=True)
-                        result = failure(HubError('unavailable', 'host operation failed'))
+                        result = failure(resource_error(exc, 'outcome_query' if read_only else 'local_persistence')
+                                         or HubError('unavailable', 'host operation failed'))
                     stream.write((json.dumps(result, ensure_ascii=False)+'\n').encode()); stream.flush()
         except (OSError, ValueError, HubError, IdentityError) as exc:
             print("host connection failure: " + type(exc).__name__, file=sys.stderr, flush=True)

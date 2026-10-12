@@ -199,7 +199,10 @@ class MCPServer:
                     }}
         if exc is None:
             exc = MailboxToolError("identity_rejected", "trusted conversation binding required")
-        structured = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+        error = {"code": exc.code, "message": exc.message}
+        if exc.details is not None:
+            error["details"] = exc.details
+        structured = {"ok": False, "error": error}
         return {"jsonrpc": "2.0", "id": req_id, "result": {
             "content": [{"type": "text", "text": json.dumps(structured, ensure_ascii=False, sort_keys=True)}],
             "structuredContent": structured,

@@ -46,6 +46,19 @@ class MCPServerTest(unittest.TestCase):
         self.assertTrue(all("inputSchema" in tool and "annotations" in tool for tool in listed["result"]["tools"]))
         self.assertNotIn("events", initialized["result"]["capabilities"])
 
+    def test_diagnose_preserves_sanitized_resource_details(self):
+        def host(_request):
+            raise server.MailboxToolError("resource_exhausted", "local messaging storage is exhausted",
+                                           {"failure_stage": "authority_rpc", "acceptance": "unknown"})
+        tools = server.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+                                    authorizer=lambda *_: (_ for _ in ()).throw(AssertionError("no whoami")),
+                                    host_call=host)
+        response = server.MCPServer(tools).handle({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": {"name": "tproj_diagnose", "arguments": {"submission_id": "diag-1"}}})
+        error = response["result"]["structuredContent"]["error"]
+        self.assertEqual(error["code"], "resource_exhausted")
+        self.assertEqual(error["details"]["acceptance"], "unknown")
+
     def test_catalog_target_patterns_match_runtime_for_status_and_send(self):
         expected = r"^(?:(?!cc$|cdx$)[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9][A-Za-z0-9_-]*)*|[^/\s]+\.(?:cc|cdx))$"
         catalogs = [

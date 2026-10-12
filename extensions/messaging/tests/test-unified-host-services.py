@@ -14,9 +14,91 @@ spec = importlib.util.spec_from_file_location("unified_host", ROOT / "unified" /
 host_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(host_mod)
 from protocol import HubError
+from service_policy_migrate import migrate
 
 
 class UnifiedHostServicesTest(unittest.TestCase):
+    def test_current_host_policy_controls_legacy_and_new_service_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self.host(tmp)
+            cfg = host.config['services']['kai']
+            cfg['allowed_addresses'] = ['voyager.cc']
+            ep = {'endpoint_id': 'kai-endpoint'}
+            host.service = lambda *a, **k: ep
+            calls = []
+            def hub(op, **args):
+                calls.append(op)
+                return {'participants': [{'address': 'voyager.cc'}, {'address': 'harbor.cdx'}], 'projects': []}
+            host.hub = hub
+            request = {'service_id': 'kai', 'op': 'list'}
+            self.assertEqual([p['address'] for p in host.dispatch(request, 1, os.getuid())['participants']], ['voyager.cc'])
+            cfg['allowed_addresses'] = []
+            self.assertEqual(host.dispatch(request, 1, os.getuid())['participants'], [])
+            with self.assertRaises(HubError) as error:
+                host.dispatch(dict(request, op='service_send', target='voyager.cc', submission_id='stable', body='test'), 1, os.getuid())
+            self.assertEqual(error.exception.code, 'scope_denied')
+            self.assertEqual(host.db.execute('SELECT count(*) FROM submissions').fetchone()[0], 0)
+            self.assertNotIn('submit', calls)
+            del cfg['allowed_addresses']
+            with self.assertRaises(HubError) as error:
+                host.dispatch(request, 1, os.getuid())
+            self.assertEqual(error.exception.code, 'configuration_error')
+            host.db.close()
+
+    def test_read_only_diagnose_uses_persisted_identity_without_registration(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {'journal': str(Path(tmp) / 'journal.db'), 'host_id': 'host-a'}
+            with self.assertRaises(HubError):
+                host_mod.Host(cfg, recover=False, read_only=True)
+            self.assertFalse(Path(cfg['journal']).exists())
+            import sqlite3
+            db = sqlite3.connect(cfg['journal']); db.execute('CREATE TABLE sentinel(value TEXT)'); db.commit(); db.close()
+            before = Path(cfg['journal']).read_bytes()
+            host = host_mod.Host(cfg, recover=False, read_only=True)
+            live = {'endpoint_id': 'ep-old', 'participant_id': 'p:cc', 'host_id': 'host-a',
+                    'session': 's', 'pane': '%1', 'pid': 1, 'pid_start': '2',
+                    'runtime_id': 'r', 'platform': 'cc', 'incarnation': 'inc'}
+            calls = []
+            def hub(op, **args):
+                calls.append(op)
+                if op == 'diagnostic_identity':
+                    return {'host_id': 'host-a', 'endpoints': [live], 'endpoint_native': [], 'projects': []}
+                if op == 'diagnose':
+                    return {'message_id': args['message_id'], 'state': 'queued'}
+                raise AssertionError(op)
+            host.hub = hub
+            with patch.object(host_mod, 'discover_endpoints', return_value=[dict(live)]), \
+                 patch.object(host_mod, 'discover_tmux_endpoints', return_value=[]), \
+                 patch.object(host_mod, 'same_live_process_family', return_value=True), \
+                 patch.object(host_mod, 'adopt_native_conversation', side_effect=lambda eps, _: eps), \
+                 patch.object(host_mod, 'bind_caller', side_effect=lambda pid, uid, eps, **_: eps[0]):
+                result = host.dispatch({'op': 'diagnose', 'message_id': 'm1'}, 1, os.getuid())
+            self.assertEqual(result['state'], 'queued')
+            self.assertEqual(calls, ['diagnostic_identity', 'diagnose'])
+            with self.assertRaises(sqlite3.OperationalError):
+                host.db.execute("INSERT INTO sentinel VALUES('forbidden')")
+            host.db.close()
+            self.assertEqual(Path(cfg['journal']).read_bytes(), before)
+
+    def test_private_snapshot_and_idempotent_scope_migration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host_path, consumer_path = Path(tmp)/'host.json', Path(tmp)/'consumer.json'
+            identity = {'address': 'kai', 'participant_id': 'kai-service', 'binding_generation': 'one'}
+            config = {'services': {'kai': dict(identity, token='fixture-token', launchd_label='com.example.kai')}}
+            consumer = dict(identity, service_id='kai', service_token='fixture-token', allowed_addresses=['voyager.cc'])
+            host_path.write_text(__import__('json').dumps(config)); consumer_path.write_text(__import__('json').dumps(consumer))
+            self.assertTrue(migrate(host_path, consumer_path)['changed'])
+            self.assertFalse(migrate(host_path, consumer_path)['changed'])
+            after = host_path.read_bytes()
+            consumer['allowed_addresses'] = ['harbor.cdx']
+            consumer_path.write_text(__import__('json').dumps(consumer))
+            with self.assertRaises(HubError): migrate(host_path, consumer_path)
+            self.assertEqual(host_path.read_bytes(), after)
+            link = Path(tmp)/'linked'; link.symlink_to(host_path)
+            with self.assertRaises(HubError): host_mod.load_config_snapshot(link)
+            host_path.chmod(0o666)
+            with self.assertRaises(HubError): host_mod.load_config_snapshot(host_path)
     def host(self, tmp, **extra):
         config = {
             "journal": str(Path(tmp) / "journal.db"),

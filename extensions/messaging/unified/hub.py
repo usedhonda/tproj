@@ -12,15 +12,16 @@ import socket
 import sqlite3
 import stat
 import time
+from urllib.parse import quote
 import uuid
 from pathlib import Path
 from typing import Any
 
 try:
-    from .protocol import HubError, MAX_REQUEST, MAX_TTL, serve_socket, success
+    from .protocol import HubError, MAX_REQUEST, MAX_TTL, serve_socket, success, resource_error
     from .policy import check_policy
 except ImportError:  # allow the installed single-file entrypoint to be invoked directly
-    from protocol import HubError, MAX_REQUEST, MAX_TTL, serve_socket, success
+    from protocol import HubError, MAX_REQUEST, MAX_TTL, serve_socket, success, resource_error
     from policy import check_policy
 
 
@@ -41,16 +42,35 @@ CREATE INDEX IF NOT EXISTS message_recipient ON messages(recipient_endpoint, sta
 
 
 class Hub:
-    def __init__(self, db_path: str | os.PathLike, config: dict | str | os.PathLike | None = None):
+    def __init__(self, db_path: str | os.PathLike, config: dict | str | os.PathLike | None = None,
+                 read_only: bool = False):
         self.db_path = str(db_path)
+        self.read_only = bool(read_only)
         self.config = self._load_config(config)
         self.host_tokens = self.config.get("hosts", {})
         self.admin_token = self.config.get("admin_token")
-        self.db = sqlite3.connect(self.db_path, isolation_level=None, check_same_thread=False)
+        try:
+            if self.read_only:
+                self.db = sqlite3.connect('file:' + quote(self.db_path, safe='/') + '?mode=ro', uri=True,
+                                          isolation_level=None, check_same_thread=False)
+            else:
+                self.db = sqlite3.connect(self.db_path, isolation_level=None, check_same_thread=False)
+        except (OSError, sqlite3.Error) as exc:
+            classified = resource_error(exc, 'authority_persistence')
+            if classified:
+                raise classified from None
+            raise HubError('unavailable', 'local messaging storage is unavailable') from None
         self.db.row_factory = sqlite3.Row
-        self.db.executescript(SCHEMA)
-        self.db.execute("INSERT OR IGNORE INTO metadata(key,value) VALUES('directory_revision','0')")
-        self.db.execute("INSERT OR IGNORE INTO metadata(key,value) VALUES('maintenance','open')")
+        if not self.read_only:
+            try:
+                self.db.executescript(SCHEMA)
+                self.db.execute("INSERT OR IGNORE INTO metadata(key,value) VALUES('directory_revision','0')")
+                self.db.execute("INSERT OR IGNORE INTO metadata(key,value) VALUES('maintenance','open')")
+            except (OSError, sqlite3.Error) as exc:
+                classified = resource_error(exc, 'authority_persistence')
+                if classified:
+                    raise classified from None
+                raise HubError('unavailable', 'local messaging storage is unavailable') from None
 
     @staticmethod
     def _load_config(config):
@@ -464,12 +484,17 @@ class Hub:
 
     def diagnose(self, req):
         host=self._auth(req)
-        message=self._row('SELECT rowid AS sequence,message_id,state,sender_endpoint,recipient_endpoint,created_at,expires_at,adapter_received_at FROM messages WHERE message_id=?',(req.get('message_id'),))
+        try:
+            message=self._row('SELECT rowid AS sequence,message_id,state,sender_endpoint,recipient_endpoint,created_at,expires_at,adapter_received_at FROM messages WHERE message_id=?',(req.get('message_id'),))
+        except (OSError, sqlite3.Error) as exc:
+            classified = resource_error(exc, 'outcome_query')
+            if classified: raise classified from None
+            raise HubError('unavailable', 'delivery metadata unavailable') from None
         if not message:raise HubError('not_found','message not found')
         operator=req.get('operator_diagnostic') is True and host in self.config.get('diagnostic_hosts',[])
         if not operator:
             ep=self._host_endpoint(host,req.get('endpoint_id'))
-            if ep['endpoint_id'] not in (message['sender_endpoint'],message['recipient_endpoint']):
+            if not any(self._same_native_party(ep, party) for party in (message['sender_endpoint'], message['recipient_endpoint'])):
                 raise HubError('unauthorized','delivery metadata requires party or configured operator permission')
         result=dict(message)
         result['diagnostic_host_id']=self.config.get('host_id',host)
@@ -488,8 +513,32 @@ class Hub:
         result['recipient_online']=bool(endpoint and not endpoint['retired'] and self._now()-endpoint['last_heartbeat']<=30)
         return result
 
+    def diagnostic_identity(self, req):
+        """Read-only host-owned endpoint/native evidence for process continuity checks."""
+        host = self._auth(req)
+        try:
+            endpoints = [dict(row) for row in self.db.execute(
+                'SELECT endpoint_id,participant_id,host_id,session,pane,pid,pid_start,runtime_id,platform,incarnation,last_heartbeat,retired '
+                'FROM endpoints WHERE host_id=? ORDER BY endpoint_id', (host,))]
+            native = [dict(row) for row in self.db.execute(
+                'SELECT n.endpoint_id,n.native_kind,n.native_id FROM endpoint_native n '
+                'JOIN endpoints e ON e.endpoint_id=n.endpoint_id WHERE e.host_id=? ORDER BY n.endpoint_id', (host,))]
+            projects = [dict(row) for row in self.db.execute(
+                'SELECT project_id,alias,host_id,path FROM projects WHERE host_id=? ORDER BY project_id', (host,))]
+        except (OSError, sqlite3.Error) as exc:
+            classified = resource_error(exc, 'outcome_query')
+            if classified: raise classified from None
+            raise HubError('unavailable', 'diagnostic identity unavailable') from None
+        return {'host_id': host, 'endpoints': endpoints, 'endpoint_native': native, 'projects': projects}
+
     def dispatch(self, req):
         op=req.get("op")
+        if op in ('messaging_capabilities', 'peer_messaging_capabilities'):
+            self._auth(req)
+            return {'capabilities': ['native_attest', 'native_continuity',
+                                     'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted'],
+                    'peers': {}}
+        if op == 'diagnostic_identity': return self.diagnostic_identity(req)
         if op == "task_capabilities":
             self._auth(req)
             from tasks import task_capabilities
@@ -559,13 +608,19 @@ def main(argv=None):
         factory = FederatedHub
     s=socket.socket(socket.AF_UNIX); s.bind(args.socket); s.listen(16); os.chmod(args.socket,0o600)
     if factory is Hub:
-        hub=Hub(args.db,config)
-        try: serve_socket(s,hub.dispatch)
-        finally: hub.close(); s.close()
+        import threading
+        def dispatch(req):
+            ro = req.get('op') in ('diagnose', 'peer_diagnose', 'diagnostic_identity', 'messaging_capabilities', 'peer_messaging_capabilities')
+            instance=factory(args.db,args.config, read_only=ro)
+            try: return instance.dispatch(req)
+            finally: instance.close()
+        try: serve_socket(s,dispatch)
+        finally: s.close()
     else:
         import threading
         def dispatch(req):
-            instance=factory(args.db,args.config)
+            ro = req.get('op') in ('diagnose', 'peer_diagnose', 'diagnostic_identity', 'messaging_capabilities', 'peer_messaging_capabilities')
+            instance=factory(args.db,args.config, read_only=ro)
             try: return instance.dispatch(req)
             finally: instance.close()
         def retry_loop():

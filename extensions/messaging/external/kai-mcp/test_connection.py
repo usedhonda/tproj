@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import hashlib
+import json
 
 ROOT = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("kai_connection", ROOT / "connection.py")
@@ -14,7 +16,9 @@ class ConnectionAuthorizerTest(unittest.TestCase):
             "binding_id": "endpoint-1", "incarnation": "inc-1",
             "service_id": "kai", "address": "kai",
             "participant_id": "kai.service", "allowed_addresses": ["voyager.cc"],
+            "binding_generation": "gen-1", "policy_state": "valid",
         }
+        self.observed["policy_revision"] = hashlib.sha256(json.dumps(["voyager.cc"], separators=(",", ":")).encode()).hexdigest()
         binding = module.KaiServiceBinding("kai", "kai", "kai.service", "secret", ("voyager.cc",), "gen-1")
         self.authorizer = module.FixedConnectionAuthorizer(binding, lambda: dict(self.observed))
 
@@ -25,7 +29,7 @@ class ConnectionAuthorizerTest(unittest.TestCase):
         self.assertEqual(result["incarnation"], "inc-1")
 
     def test_scope_or_enrollment_mismatch_fails_closed(self):
-        self.observed["allowed_addresses"] = ["secret.cc"]
+        self.observed["binding_generation"] = "gen-2"
         with self.assertRaises(module.ConnectionBindingError):
             self.authorizer.authorize()
 
@@ -60,6 +64,7 @@ class ConnectionAuthorizerTest(unittest.TestCase):
         resumed = event_auth.authorize()
         self.assertEqual(first.binding_id, resumed.binding_id)
         self.authorizer.binding.binding_generation = "gen-2"
+        self.observed["binding_generation"] = "gen-2"
         rotated = event_auth.authorize()
         self.assertNotEqual(first.binding_id, rotated.binding_id)
 

@@ -273,27 +273,46 @@ def compatibility_errors(home: Path) -> list[str]:
         path = host.get('socket') or client.get('socket')
         if not isinstance(path, str) or not path:
             raise ValueError('configured host socket is missing')
-        with socket.socket(socket.AF_UNIX) as sock:
-            sock.settimeout(55)
-            sock.connect(path)
-            sock.sendall(b'{"op":"runtime_capabilities"}\n')
-            with sock.makefile('rb') as stream:
-                raw = stream.readline(262145)
-        if not raw.endswith(b'\n') or len(raw) > 262144:
-            raise ValueError('invalid capability response')
-        response = json.loads(raw)
-        if response.get('ok') is not True:
-            raise ValueError('live backend capability discovery unavailable')
-        result = response['result']
+        def live_capabilities(op: str) -> dict:
+            with socket.socket(socket.AF_UNIX) as sock:
+                sock.settimeout(55)
+                sock.connect(path)
+                sock.sendall((json.dumps({'op': op}) + '\n').encode())
+                with sock.makefile('rb') as stream:
+                    raw = stream.readline(262145)
+            if not raw.endswith(b'\n') or len(raw) > 262144:
+                raise ValueError('invalid capability response')
+            response = json.loads(raw)
+            if response.get('ok') is not True:
+                raise ValueError('live backend capability discovery unavailable')
+            return response['result']
+
+        result = live_capabilities('runtime_capabilities')
         host_caps = result.get('host_capabilities', [])
         master_caps = result.get('task_master', {}).get('capabilities', [])
         if not all(cap in host_caps for cap in ('task_retired_operation', 'task_binding_status')):
             raise ValueError('live host lacks required task capabilities')
         if not all(cap in master_caps for cap in ('task_cancelled_release_check', 'task_binding_release_check')):
             raise ValueError('authoritative task master lacks required release capabilities')
+        messaging = live_capabilities('messaging_capabilities')
+        host_required = ('service_policy_v1', 'read_only_diagnose', 'query_only_service', 'resource_exhausted')
+        owner_required = ('native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted')
+        if not all(cap in messaging.get('host_capabilities', []) for cap in host_required):
+            raise ValueError('live host lacks required messaging capabilities')
+        owner = messaging.get('messaging_owner', {})
+        if not all(cap in owner.get('capabilities', []) for cap in owner_required):
+            raise ValueError('live messaging owner lacks required capabilities')
+        peers = owner.get('peers')
+        if not isinstance(peers, dict):
+            raise ValueError('live messaging peer capability discovery unavailable')
+        for peer in peers.values():
+            if peer.get('available') is False:
+                return ['compatibility blocked: messaging peer unavailable; no installed files changed. Restore peer availability before dependent activation; existing tools and diagnostics remain untouched.']
+            if not all(cap in peer.get('capabilities', []) for cap in owner_required):
+                raise ValueError('live messaging peer lacks required capabilities')
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         # Never include credentials, response payloads, or private paths here.
-        return ['compatibility blocked: live host/task master unavailable or missing required capabilities; '
+        return ['compatibility blocked: live host/task master/messaging owner unavailable or missing required capabilities; '
                 'no installed files changed. Stage unified backend code first, explicitly reload backend '
                 'services, then retry. Existing tools and binding-status diagnostics remain untouched.']
     return []

@@ -21,9 +21,18 @@ sys.path.insert(0, str(ROOT / 'extensions/messaging/unified'))
 
 class CompatibilityTests(unittest.TestCase):
     def test_enrolled_rejection_preserves_tools_and_diagnostics(self):
+        task_ok = {'ok': True, 'result': {'host_capabilities': ['task_retired_operation', 'task_binding_status'],
+                                           'task_master': {'capabilities': ['task_cancelled_release_check', 'task_binding_release_check']}}}
+        required = ['service_policy_v1', 'read_only_diagnose', 'query_only_service', 'resource_exhausted']
+        owner_required = ['native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted']
         responses = [None, {'ok': False, 'error': {'code': 'unknown_op'}},
                      {'ok': True, 'result': {'host_capabilities': ['task_retired_operation', 'task_binding_status'],
-                                            'task_master': {'capabilities': ['task_binding_release_check']}}}]
+                                            'task_master': {'capabilities': ['task_binding_release_check']}}},
+                     [task_ok, {'ok': False, 'error': {'code': 'unknown_op'}}],
+                     [task_ok, {'ok': True, 'result': {'host_capabilities': required,
+                                                     'messaging_owner': {'capabilities': owner_required[:-1], 'peers': {}}}}],
+                     [task_ok, {'ok': True, 'result': {'host_capabilities': required[:-1],
+                                                     'messaging_owner': {'capabilities': owner_required, 'peers': {}}}}]]
         for response in responses:
             with self.subTest(response=response), tempfile.TemporaryDirectory() as temp:
                 home = Path(temp); config = home / '.config/tproj'; config.mkdir(parents=True)
@@ -38,11 +47,13 @@ class CompatibilityTests(unittest.TestCase):
                 if response is not None:
                     server = socket.socket(socket.AF_UNIX); server.bind(path); server.listen()
                     def answer():
-                        conn, _ = server.accept()
-                        with conn:
-                            request = json.loads(conn.makefile('rb').readline())
-                            self.assertEqual(request, {'op': 'runtime_capabilities'})
-                            conn.sendall((json.dumps(response) + '\n').encode())
+                        replies = response if isinstance(response, list) else [response]
+                        for op, reply in zip(('runtime_capabilities', 'messaging_capabilities'), replies):
+                            conn, _ = server.accept()
+                            with conn:
+                                request = json.loads(conn.makefile('rb').readline())
+                                self.assertEqual(request, {'op': op})
+                                conn.sendall((json.dumps(reply) + '\n').encode())
                     thread = threading.Thread(target=answer); thread.start()
                 result = subprocess.run([str(INSTALLER), '--home', str(home), '--skip-codex-trust'], capture_output=True, text=True)
                 if server is not None:
@@ -51,6 +62,33 @@ class CompatibilityTests(unittest.TestCase):
                 self.assertIn('binding-status diagnostics remain untouched', result.stderr)
                 after = {p.relative_to(home): (p.read_bytes(), p.stat().st_mode) for p in home.rglob('*') if p.is_file()}
                 self.assertEqual(before, after)
+
+    def test_supported_live_messaging_owner_passes_preflight(self):
+        loader = importlib.machinery.SourceFileLoader('runtime_installer', str(INSTALLER))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec); loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp); config = home / '.config/tproj'; config.mkdir(parents=True)
+            path = str(home / 'host.sock')
+            (config / 'msg-client.json').write_text(json.dumps({'active': True, 'socket': path}))
+            caps = ['service_policy_v1', 'read_only_diagnose', 'query_only_service', 'resource_exhausted']
+            owner_caps = ['native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted']
+            results = [
+                {'host_capabilities': ['task_retired_operation', 'task_binding_status'],
+                 'task_master': {'capabilities': ['task_cancelled_release_check', 'task_binding_release_check']}},
+                {'host_capabilities': caps, 'messaging_owner': {'capabilities': owner_caps,
+                                                          'peers': {'remote': {'capabilities': owner_caps}}}}]
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(path); server.listen()
+                def answer():
+                    for op, result in zip(('runtime_capabilities', 'messaging_capabilities'), results):
+                        conn, _ = server.accept()
+                        with conn:
+                            self.assertEqual(json.loads(conn.makefile('rb').readline()), {'op': op})
+                            conn.sendall((json.dumps({'ok': True, 'result': result}) + '\n').encode())
+                thread = threading.Thread(target=answer); thread.start()
+                self.assertEqual(module.compatibility_errors(home), [])
+                thread.join()
 
     def test_new_host_does_not_claim_capabilities_of_old_task_module(self):
         from host import Host

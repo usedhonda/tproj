@@ -33,6 +33,8 @@ class RuntimeTest(unittest.TestCase):
             runtime._request = lambda req: {
                 "endpoint_id": "ep-1", "participant_id": "kai.service",
                 "address": "kai", "incarnation": "inc-1", "service_id": "kai",
+                "binding_generation": "gen-1", "allowed_addresses": ["voyager.cc"],
+                "policy_state": "valid", "policy_revision": "bedae4adef88af75695c8b54b827ac939cdf0d321c13358e3681c2e2734d30b1",
             } if req["op"] == "service_whoami" else {"messages": [], "next_cursor": req.get("cursor", 0)}
             observed = runtime._attest()
             self.assertEqual(observed["binding_id"], "kai.service")
@@ -46,8 +48,10 @@ class RuntimeTest(unittest.TestCase):
             def host(req):
                 if req["op"] == "service_whoami":
                     return {"endpoint_id": "ep-1", "participant_id": "kai.service",
-                            "address": "kai", "incarnation": "inc-1", "service_id": "kai"}
-                if req["op"] == "list":
+                            "address": "kai", "incarnation": "inc-1", "service_id": "kai",
+                            "binding_generation": "gen-1", "allowed_addresses": ["voyager.cc"],
+                            "policy_state": "valid", "policy_revision": "bedae4adef88af75695c8b54b827ac939cdf0d321c13358e3681c2e2734d30b1"}
+                if req["op"] == "service_list":
                     return {"participants": [{"address": "voyager.cc", "online": True}]}
                 return {"messages": [], "next_cursor": req.get("cursor", 0)}
             runtime._request = host

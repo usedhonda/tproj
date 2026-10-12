@@ -52,6 +52,18 @@ class FederationTests(unittest.TestCase):
         result = self.hubs['a'].dispatch(dict(op='query', host_id='a', host_token='a-token', endpoint_id=new, message_id='rotation-original'))
         self.assertEqual(result['sender_endpoint'], 'acc')
 
+    def test_proven_stale_session_tombstones_outbox_without_retry(self):
+        original = self.hubs['a'].remote
+        def stale(owner, op, **args):
+            if owner == 'b' and op == 'accept':
+                raise HubError('stale_session', 'retired')
+            return original(owner, op, **args)
+        self.hubs['a'].remote = stale
+        result = self.send('a', 'stale-wire', 'b.cc')
+        self.assertEqual(result['state'], 'stale_session')
+        self.assertEqual(self.hubs['a']._row("SELECT state FROM messages WHERE message_id='stale-wire'")[0], 'stale_session')
+        self.assertEqual(self.hubs['a']._row("SELECT state FROM federated_outbox WHERE message_id='stale-wire'")[0], 'rejected')
+
     def test_rotated_recipient_remote_reply_owner_attestation(self):
         self.send('a', 'recipient-original', 'b.cc')
         new = self.rotate_native('b')

@@ -17,7 +17,7 @@ import threading
 import time
 
 from hub import Hub
-from protocol import HubError, MAX_REQUEST
+from protocol import HubError, MAX_REQUEST, resource_error
 from policy import check_policy
 
 
@@ -32,14 +32,15 @@ PROTOCOL = 1
 
 
 class FederatedHub(Hub):
-    def __init__(self, db_path, config):
-        super().__init__(db_path, config)
+    def __init__(self, db_path, config, read_only=False):
+        super().__init__(db_path, config, read_only=read_only)
         self.local_id = self.config['host_id']
-        self.db.executescript('''
-        CREATE TABLE IF NOT EXISTS federated_outbox (
-          message_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, payload TEXT NOT NULL,
-          state TEXT NOT NULL DEFAULT 'pending');
-        ''')
+        if not self.read_only:
+            self.db.executescript('''
+            CREATE TABLE IF NOT EXISTS federated_outbox (
+              message_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, payload TEXT NOT NULL,
+              state TEXT NOT NULL DEFAULT 'pending');
+            ''')
 
     def topology(self):
         path = self.config.get('topology_path')
@@ -112,12 +113,14 @@ class FederatedHub(Hub):
                 raise ValueError('invalid response envelope')
             if not response.get('ok'):
                 e = response.get('error', {})
-                raise HubError(e.get('code', 'host_unavailable'), e.get('message', 'remote request failed'))
+                raise HubError(e.get('code', 'host_unavailable'), e.get('message', 'remote request failed'),
+                                e.get('details') if isinstance(e.get('details'), dict) else None)
             return response['result']
         except subprocess.TimeoutExpired:
             raise HubError('host_unavailable', 'remote messaging request timed out') from None
-        except (OSError, subprocess.SubprocessError):
-            raise HubError('host_unavailable', 'remote transport could not run') from None
+        except (OSError, subprocess.SubprocessError) as exc:
+            classified = resource_error(exc, 'authority_rpc')
+            raise classified or HubError('host_unavailable', 'remote transport could not run') from None
         except (ValueError, KeyError, TypeError, AttributeError):
             raise HubError('host_unavailable', 'remote messaging response is invalid') from None
 
@@ -141,8 +144,9 @@ class FederatedHub(Hub):
                                      'PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" '
                                      'python3 "$HOME/lib/tproj-msg-unified/federation.py" --rpc'],
                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        except OSError:
-            raise HubError('host_unavailable', 'remote transport could not run') from None
+        except OSError as exc:
+            classified = resource_error(exc, 'authority_rpc')
+            raise classified or HubError('host_unavailable', 'remote transport could not run') from None
         timer = threading.Timer(timeout, proc.kill)
         timer.start()
         try:
@@ -161,7 +165,8 @@ class FederatedHub(Hub):
                 raise ValueError('invalid response envelope')
             if not response.get('ok'):
                 e = response.get('error', {})
-                raise HubError(e.get('code', 'host_unavailable'), e.get('message', 'remote request failed'))
+                raise HubError(e.get('code', 'host_unavailable'), e.get('message', 'remote request failed'),
+                                e.get('details') if isinstance(e.get('details'), dict) else None)
             return response['result']
         except (ValueError, KeyError, TypeError, AttributeError, UnicodeDecodeError):
             raise HubError('host_unavailable', 'remote messaging response is invalid') from None
@@ -407,7 +412,13 @@ class FederatedHub(Hub):
         try:
             self.remote(row['host_id'], 'accept', payload=json.loads(row['payload']))
         except HubError as exc:
-            if exc.code in ('stale_session', 'no_recipient', 'identity_rejected', 'policy_blocked', 'id_conflict', 'invalid_message', 'request_too_large'):
+            if exc.code == 'stale_session':
+                # The authority proved this immutable envelope names a retired
+                # generation. Tombstone it once; never replay the same envelope.
+                self.db.execute("UPDATE federated_outbox SET state='rejected' WHERE message_id=?", (row['message_id'],))
+                self.db.execute("UPDATE messages SET state='stale_session' WHERE message_id=?", (row['message_id'],))
+                return {'message_id': row['message_id'], 'state': 'stale_session', 'reason': exc.code}
+            if exc.code in ('no_recipient', 'identity_rejected', 'policy_blocked', 'id_conflict', 'invalid_message', 'request_too_large'):
                 self.db.execute("UPDATE federated_outbox SET state='rejected' WHERE message_id=?", (row['message_id'],))
                 self.db.execute("UPDATE messages SET state='rejected' WHERE message_id=?", (row['message_id'],))
                 return {'message_id': row['message_id'], 'state': 'rejected', 'reason': exc.code}
@@ -524,6 +535,9 @@ class FederatedHub(Hub):
                 if op == 'peer_manage_update': return self.manage_update(req['request'], origin=owner)
                 return {'peer_directory_prepare': prepare, 'peer_directory_commit': commit,
                         'peer_directory_status': status, 'peer_directory_abort': abort}[op](self, req)
+            if op == 'peer_messaging_capabilities':
+                return {'capabilities': ['native_attest', 'native_continuity',
+                                          'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted']}
             if op == 'peer_diagnose': return super().diagnose(req)
             if op == 'peer_task_capabilities':
                 from task_transport import capabilities
@@ -563,9 +577,12 @@ class FederatedHub(Hub):
                 for peer_id in self.peers():
                     try:matches.append(self.remote(peer_id,'diagnose',**fields))
                     except HubError as error:
-                        if error.code != 'not_found':failures.append(error.code)
+                        if error.code != 'not_found':failures.append(error)
                 if not matches:
-                    raise HubError(failures[0] if failures else 'not_found','delivery metadata unavailable')
+                    if any(error.code == 'resource_exhausted' for error in failures):
+                        error = next(error for error in failures if error.code == 'resource_exhausted')
+                        raise HubError('resource_exhausted', 'delivery metadata unavailable', error.details)
+                    raise HubError(failures[0].code if failures else 'not_found','delivery metadata unavailable')
                 authoritative=[m for m in matches if m.get('recipient_host_id') == m.get('diagnostic_host_id')]
                 if len(authoritative)==1:return authoritative[0]
                 if len(matches)==1:return dict(matches[0],remote_state='unavailable')
@@ -580,6 +597,19 @@ class FederatedHub(Hub):
         if op == 'task_capabilities':
             from task_transport import capabilities
             return capabilities(self, req)
+        if op == 'messaging_capabilities':
+            self._auth(req)
+            result = {'capabilities': ['native_attest', 'native_continuity',
+                                       'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted'],
+                      'peers': {}}
+            for ident in self.peers():
+                try:
+                    caps = self.remote(ident, 'messaging_capabilities')
+                    result['peers'][ident] = {'available': True, 'capabilities': caps.get('capabilities', []) if isinstance(caps, dict) else []}
+                except HubError as exc:
+                    result['peers'][ident] = {'available': False, 'capabilities': [],
+                                              'error': exc.code}
+            return result
         if op.startswith('task_'):
             from task_transport import dispatch
             return dispatch(self, req)

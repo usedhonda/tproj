@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import errno
 import os
+import sqlite3
 import socket
 import sys
 from typing import Any, BinaryIO
@@ -11,10 +13,33 @@ MAX_TTL = 24 * 60 * 60
 MAX_REQUEST = 256 * 1024
 
 
+RESOURCE_STAGES = frozenset({'local_persistence', 'authority_persistence', 'authority_rpc', 'outcome_query', 'unknown'})
+
+
 class HubError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, details: dict | None = None):
         super().__init__(message)
-        self.code, self.message = code, message
+        clean = None
+        if isinstance(details, dict):
+            stage = details.get('failure_stage')
+            acceptance = details.get('acceptance')
+            if stage in RESOURCE_STAGES and acceptance == 'unknown':
+                clean = {'failure_stage': stage, 'acceptance': 'unknown'}
+        self.code, self.message, self.details = code, message, clean
+
+
+def resource_error(exc: BaseException, stage: str = 'unknown') -> HubError | None:
+    """Classify only durable-storage exhaustion; never inspect error text."""
+    if stage not in RESOURCE_STAGES:
+        stage = 'unknown'
+    full = isinstance(exc, OSError) and getattr(exc, 'errno', None) in (errno.ENOSPC, errno.EDQUOT)
+    if isinstance(exc, sqlite3.Error):
+        code = getattr(exc, 'sqlite_errorcode', None)
+        full = full or (isinstance(code, int) and (code & 0xff) == sqlite3.SQLITE_FULL)
+    if not full:
+        return None
+    return HubError('resource_exhausted', 'local messaging storage is exhausted',
+                    {'failure_stage': stage, 'acceptance': 'unknown'})
 
 
 def success(result: Any = None) -> dict:
@@ -22,7 +47,10 @@ def success(result: Any = None) -> dict:
 
 
 def failure(exc: HubError) -> dict:
-    return {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+    error = {"code": exc.code, "message": exc.message}
+    if exc.details:
+        error['details'] = dict(exc.details)
+    return {"ok": False, "error": error}
 
 
 def read_json_lines(stream: BinaryIO):
@@ -76,7 +104,8 @@ def serve_socket(sock: socket.socket, handler, idle=None, concurrent=False) -> N
                     except HubError as exc: write_json_line(stream, failure(exc))
                     except Exception as exc:
                         _report_internal_error(exc)
-                        write_json_line(stream, failure(HubError("internal", "hub internal error")))
+                        classified = resource_error(exc, 'unknown')
+                        write_json_line(stream, failure(classified or HubError("internal", "hub internal error")))
                     break
             except (OSError, HubError, ValueError): pass
             finally:

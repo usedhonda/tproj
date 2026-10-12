@@ -7,11 +7,17 @@ its participant scope.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Callable, Mapping
 
 
 class ConnectionBindingError(RuntimeError):
     """Raised when the host cannot prove the configured KAI binding."""
+
+    def __init__(self, message: str, code: str | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 class ConnectionTransportUnavailable(ConnectionBindingError):
@@ -39,11 +45,13 @@ class KaiServiceBinding:
                              (token, "service credential"),
                              (binding_generation, "binding generation")):
             _text(value, label)
+        if allowed_addresses is None:
+            allowed_addresses = ()
         if isinstance(allowed_addresses, (str, bytes)):
             raise ConnectionBindingError("authorized participant scope is required")
         scope = tuple(allowed_addresses)
-        if not scope or any(not isinstance(value, str) or not value for value in scope):
-            raise ConnectionBindingError("authorized participant scope is required")
+        if any(not isinstance(value, str) or not value for value in scope):
+            raise ConnectionBindingError("invalid authorized participant scope", "configuration_error")
         if len(set(scope)) != len(scope):
             raise ConnectionBindingError("authorized participant scope is ambiguous")
         self.service_id = service_id
@@ -59,8 +67,9 @@ class FixedConnectionAuthorizer:
 
     ``attestor`` is trusted host code.  It must return the endpoint evidence
     for this process, including ``binding_id`` and ``incarnation``.  The
-    returned scope is compared to the fixed enrollment rather than accepted
-    from the caller.
+    returned identity and generation are compared to the enrollment; current
+    participant scope is host policy evidence and is never taken from caller
+    input or constrained by stale startup scope.
     """
 
     def __init__(self, binding: KaiServiceBinding,
@@ -75,29 +84,52 @@ class FixedConnectionAuthorizer:
         try:
             observed = self.attestor()
         except Exception as exc:
+            if getattr(exc, "code", None) in {"configuration_error", "scope_denied", "resource_exhausted", "not_found"}:
+                raise
             if getattr(exc, "code", None) == "unavailable" or isinstance(exc, (OSError, TimeoutError, ConnectionError)):
                 raise ConnectionTransportUnavailable("host service unavailable") from exc
             raise ConnectionBindingError("host service attestation rejected") from exc
         if not isinstance(observed, Mapping):
             raise ConnectionBindingError("host service attestation rejected")
-        for field in ("binding_id", "incarnation", "service_id", "address", "participant_id"):
+        for field in ("binding_id", "incarnation", "service_id", "address", "participant_id", "binding_generation"):
             _text(observed.get(field), field)
         if (observed["service_id"] != self.binding.service_id or
                 observed["address"] != self.binding.address or
                 observed["participant_id"] != self.binding.participant_id):
             raise ConnectionBindingError("service enrollment mismatch")
+        if observed["binding_generation"] != self.binding.binding_generation:
+            raise ConnectionBindingError("service enrollment mismatch")
         scope = observed.get("allowed_addresses")
-        if not isinstance(scope, (list, tuple)) or tuple(scope) != self.binding.allowed_addresses:
-            raise ConnectionBindingError("authorized participant scope mismatch")
+        scoped = _operation in {"tproj_list", "tproj_status", "tproj_send"}
+        policy_state = observed.get("policy_state")
+        if scoped and policy_state != "valid":
+            raise ConnectionBindingError("authorized participant scope is unavailable", "configuration_error")
+        if scoped and not isinstance(scope, (list, tuple)):
+            raise ConnectionBindingError("authorized participant scope is unavailable", "configuration_error")
+        if scope is not None and (not isinstance(scope, (list, tuple)) or
+                                  any(not isinstance(value, str) or not value for value in scope) or
+                                  len(set(scope)) != len(scope)):
+            if scoped:
+                raise ConnectionBindingError("invalid authorized participant scope", "configuration_error")
+            scope = []
+        if scoped:
+            revision = observed.get("policy_revision")
+            expected = hashlib.sha256(json.dumps(sorted(scope), ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+            if not isinstance(revision, str) or revision != expected:
+                raise ConnectionBindingError("authorized participant scope revision is invalid", "configuration_error")
+        if scope is None:
+            scope = []
         return {
             "principal": "kai-service",
             "service_id": self.binding.service_id,
             "address": self.binding.address,
             "participant_id": self.binding.participant_id,
-            "binding_generation": self.binding.binding_generation,
+            "binding_generation": observed["binding_generation"],
             "binding_id": observed["binding_id"],
             "incarnation": observed["incarnation"],
-            "allowed_addresses": list(self.binding.allowed_addresses),
+            "allowed_addresses": list(scope),
+            "policy_revision": observed.get("policy_revision"),
+            "policy_state": policy_state,
         }
 
     def event_authorizer(self, reader: Callable[[int], Mapping[str, Any]]):

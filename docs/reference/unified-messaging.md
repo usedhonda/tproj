@@ -254,6 +254,24 @@ does not lose replies. Changing that generation creates a different endpoint;
 old KAI endpoints are not forwarded to the new enrollment. This continuity does
 not borrow OpenClaw identity or attest a cloud persona.
 
+The host-owned `services.kai.allowed_addresses` is the outbound policy authority.
+Each host connection reads one validated, bounded, no-follow configuration file
+snapshot. Service list/status and actual send admission use that snapshot; the
+consumer cache never grants access. Empty scope is valid (empty list and
+`scope_denied` outbound requests). Missing or invalid scope is
+`configuration_error`. Inbound reads and exact-party replies do not acquire an
+outbound scope requirement. Invalid whole host configuration does not fall back
+to old credentials. `service_policy_migrate.py` copies only an already approved
+consumer scope into the matching existing enrollment, once and idempotently;
+identity, token and generation are preserved, and competing edits or differing
+existing policies reject without replacement.
+
+Enrollment generation rotation is revocation, not native continuity. Old
+unpresented pending work becomes `stale_session`; dispatching or externally
+accepted work remains uncertain and is never replayed. Policy revocation at host
+admission rejects an unissued send, but cannot retroactively cancel an issued
+request whose outcome is unknown.
+
 The private KAI bridge admits only a bounded number of connections and handles
 each admitted connection independently. A slow host RPC therefore cannot hold
 the serial accept loop hostage; once capacity is full, a new caller receives a
@@ -284,6 +302,30 @@ remote evidence without claiming the sender-side copy is current.
 The integer `sequence` is the message's local hub row sequence, matching the
 `inbox` event cursor on that hub. For recipient cursor diagnosis, use the
 recipient host's record; sender and recipient hub sequences are not interchangeable.
+
+The native `diagnose` and service `service_diagnose` paths include authentication
+and database opening in their read-only boundary. They do not initialize schema,
+change pragmas, recover queues, register/retire identities or attest native IDs.
+SQLite is opened with `mode=ro` (not `immutable=1`) so committed WAL records remain
+visible. Missing/corrupt database or unreadable WAL evidence returns unavailable
+or unknown; normal initialization is never a fallback. Current live native
+process evidence must match saved endpoint/native evidence; aliases alone do not
+grant historical access. Service diagnosis checks the current enrollment
+generation and launchd process without registering it.
+
+Only ENOSPC, EDQUOT and SQLite SQLITE_FULL classify as `resource_exhausted`.
+Its optional metadata contains a bounded `failure_stage` and `acceptance=unknown`;
+even a locally failed attempt cannot disprove acceptance of an earlier attempt
+with the same submission ID. Diagnosis is metadata-only and may itself be
+unavailable on a full disk. Preserve the stable ID and body; do not create a new
+send or automatically replay an uncertain outcome.
+
+Dependent activation requires capabilities from running owner/backend sockets,
+then the running host, before installing the consumer. Imported source modules
+are not proof of loaded capability. Unsupported activation leaves current tools
+and diagnostic paths unchanged. Messaging compatibility is independent of task
+master capability checks; neither a successful probe nor status proves recipient
+consumption.
 
 Inbox/claim pages retain the conservative 200000-byte message budget. An
 individually larger first message is returned alone when its complete success

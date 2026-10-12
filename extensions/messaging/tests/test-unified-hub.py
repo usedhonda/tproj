@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-import contextlib, io, json, pathlib, socket, sys, tempfile, unittest
+import contextlib, io, json, pathlib, socket, sys, tempfile, unittest, errno
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 from extensions.messaging.unified import Hub, HubError
-from extensions.messaging.unified.protocol import MAX_REQUEST, MAX_TTL, serve_socket, success
+from extensions.messaging.unified.protocol import MAX_REQUEST, MAX_TTL, serve_socket, success, resource_error
 
 class ProtocolTest(unittest.TestCase):
+    def test_resource_error_is_errno_classified_and_sanitized(self):
+        err = resource_error(OSError(errno.ENOSPC, 'private path'), 'local_persistence')
+        self.assertEqual(err.code, 'resource_exhausted')
+        self.assertEqual(err.details, {'failure_stage': 'local_persistence', 'acceptance': 'unknown'})
+        self.assertIsNone(resource_error(OSError(errno.EIO, 'full word is not enough'), 'local_persistence'))
+        self.assertIsNone(HubError('internal', 'x', {'secret': 'nope'}).details)
+
     def test_internal_error_reports_only_type_and_locations(self):
         server, client = socket.socketpair()
         class Listener:
@@ -46,6 +53,29 @@ class HubTest(unittest.TestCase):
     def attest(self, host, endpoint, native='native-thread'):
         return self.h.dispatch(dict(op='native_attest', host_id=host, host_token='t'+host,
                                     endpoint_id=endpoint, native_kind='thread_id', native_id=native))
+
+    def test_read_only_hub_does_not_initialize_schema_and_reports_capabilities(self):
+        path = pathlib.Path(self.tmp.name) / 'ro.db'
+        import sqlite3
+        sqlite3.connect(path).close()
+        ro = Hub(path, {'admin_token': 'adm', 'hosts': {'a': 'ta'}}, read_only=True)
+        self.addCleanup(ro.close)
+        self.assertEqual(ro.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'ta'})['capabilities'],
+                         ['native_attest', 'native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted'])
+        self.assertEqual(ro.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'ta'})['peers'], {})
+        with self.assertRaises(HubError) as caught:
+            ro.dispatch({'op': 'diagnose', 'host_id': 'a', 'host_token': 'ta', 'message_id': 'missing'})
+        self.assertEqual(caught.exception.code, 'unavailable')
+        self.assertEqual(sqlite3.connect(path).execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(), [])
+
+    def test_diagnostic_identity_is_host_scoped_and_excludes_message_bodies(self):
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
+        self.attest('b', 'eb')
+        result = self.h.dispatch({'op': 'diagnostic_identity', 'host_id': 'b', 'host_token': 'tb'})
+        self.assertEqual(result['host_id'], 'b')
+        self.assertEqual([row['endpoint_id'] for row in result['endpoints']], ['eb'])
+        self.assertEqual(result['endpoint_native'][0]['native_id'], 'native-thread')
+        self.assertNotIn('body', str(result))
 
     def test_same_native_rotation_preserves_exact_query_and_reply(self):
         self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
