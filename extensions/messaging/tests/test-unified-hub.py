@@ -1,8 +1,41 @@
 #!/usr/bin/env python3
-import json, pathlib, sys, tempfile, unittest
+import contextlib, io, json, pathlib, socket, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 from extensions.messaging.unified import Hub, HubError
-from extensions.messaging.unified.protocol import MAX_REQUEST, MAX_TTL, success
+from extensions.messaging.unified.protocol import MAX_REQUEST, MAX_TTL, serve_socket, success
+
+class ProtocolTest(unittest.TestCase):
+    def test_internal_error_reports_only_type_and_locations(self):
+        server, client = socket.socketpair()
+        class Listener:
+            def __init__(self): self.accepted = False
+            def accept(self):
+                if self.accepted: raise StopIteration
+                self.accepted = True
+                return server, None
+        calls = []
+        def secret_handler(request):
+            calls.append(request)
+            raise RuntimeError('secret-exception-message ' + request['body'] + request['token'])
+        output = io.StringIO()
+        with client:
+            client.sendall(b'{"body":"secret-body","token":"secret-token"}\n')
+            with contextlib.redirect_stderr(output), self.assertRaises(StopIteration):
+                serve_socket(Listener(), secret_handler)
+            response = json.loads(client.recv(4096))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(response, {'ok': False, 'error': {'code': 'internal', 'message': 'hub internal error'}})
+        diagnostic = json.loads(output.getvalue())
+        self.assertEqual(set(diagnostic), {'error', 'type', 'frames'})
+        self.assertEqual(diagnostic['type'], 'RuntimeError')
+        self.assertEqual(diagnostic['error'], 'hub_internal_error')
+        self.assertEqual([frame['file'] for frame in diagnostic['frames']], ['protocol.py', pathlib.Path(__file__).name])
+        for frame in diagnostic['frames']:
+            self.assertEqual(set(frame), {'file', 'line'})
+            self.assertIsInstance(frame['line'], int)
+            self.assertGreater(frame['line'], 0)
+        for forbidden in ('secret-exception-message', 'secret-body', 'secret-token', 'raise RuntimeError', str(pathlib.Path(__file__).parent)):
+            self.assertNotIn(forbidden, output.getvalue())
 
 class HubTest(unittest.TestCase):
     def setUp(self):

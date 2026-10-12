@@ -8,6 +8,12 @@ only when the local client configuration exists at
 legacy routes remain authoritative only on never-enrolled installations.
 An enrolled installation never automatically returns to those routes.
 
+Unexpected socket-handler exceptions retain the generic client response
+`internal: hub internal error`. Server stderr records only the exception class
+and traceback file basenames and line numbers. It must not contain exception
+messages, source lines, locals, request bodies, or authentication tokens. This
+diagnostic does not retry or duplicate the request.
+
 ## Directory and identity
 
 Each execution host owns its project aliases, endpoints, and durable mailbox.

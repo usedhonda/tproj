@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
+import sys
 from typing import Any, BinaryIO
 
 MAX_TTL = 24 * 60 * 60
@@ -45,6 +47,21 @@ def write_json_line(stream: BinaryIO, value: dict) -> None:
     stream.flush()
 
 
+def _report_internal_error(exc: Exception) -> None:
+    """Report locations only; never format exception values or source lines."""
+    frames = []
+    trace = exc.__traceback__
+    while trace is not None:
+        frames.append({"file": os.path.basename(trace.tb_frame.f_code.co_filename),
+                       "line": trace.tb_lineno})
+        trace = trace.tb_next
+    try:
+        print(json.dumps({"error": "hub_internal_error", "type": type(exc).__name__,
+                          "frames": frames}), file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
 def serve_socket(sock: socket.socket, handler, idle=None, concurrent=False) -> None:
     """One bounded request per connection; idle clients cannot hold the broker."""
     import threading
@@ -57,7 +74,9 @@ def serve_socket(sock: socket.socket, handler, idle=None, concurrent=False) -> N
                 for request in read_json_lines(stream):
                     try: write_json_line(stream, success(handler(request)))
                     except HubError as exc: write_json_line(stream, failure(exc))
-                    except Exception: write_json_line(stream, failure(HubError("internal", "hub internal error")))
+                    except Exception as exc:
+                        _report_internal_error(exc)
+                        write_json_line(stream, failure(HubError("internal", "hub internal error")))
                     break
             except (OSError, HubError, ValueError): pass
             finally:
