@@ -452,6 +452,10 @@ class Hub:
 
     def dispatch(self, req):
         op=req.get("op")
+        if op == "task_capabilities":
+            self._auth(req)
+            from tasks import task_capabilities
+            return {"capabilities": task_capabilities()}
         if op == "directory_update":
             self._auth(req)
             if "expected_revision" not in req:

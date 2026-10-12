@@ -68,6 +68,34 @@ verify a real operation in the same native conversation. Do not toggle safeguard
 off or remove trust records merely to provoke a reload. A separate installer or
 app-server process cannot prove that another running conversation reloaded.
 
+## Backend compatibility before hook activation
+
+The messaging runtime installer probes an enrolled/configured live host before
+changing any installed files, skills, hook configuration, trust, or database.
+The same-UID authenticated `runtime_capabilities` read reports the loaded host
+implementation and requests host-authenticated `task_capabilities` from the
+selected authoritative task master. Federation uses authenticated
+`peer_task_capabilities`; a non-master rejects this request. No native endpoint,
+assignment, task transition, operation token, or database schema is created by
+these capability reads. A protocol version or matching disk copy alone is not
+proof of live compatibility.
+
+Activation requires host `task_retired_operation` and `task_binding_status`,
+and master `task_cancelled_release_check` and `task_binding_release_check`.
+Old, unavailable, or incompatible backends reject installation without changing
+existing tools or the formal `binding-status` diagnostic path. Dry-run and check
+retain their existing offline semantics; unenrolled fixture installs remain
+supported.
+
+Deploy backend first: use the code-only `unified/install.py` distribution path
+on all relevant hosts, explicitly reload the authoritative hub/master and local
+host services through the supported runtime lifecycle, then run the messaging
+runtime installer. That installer probes the running chain before activating
+dependent hooks. Backend staging does not activate hooks or restart services;
+the installer neither automatically restarts services/agents nor changes
+credentials, topology, or task data to bypass compatibility. Native hook reload
+and actual operation verification remain separate from installation.
+
 ## Approval and retry identity
 
 Approval binds the exact native user instruction (without prescribed wording),

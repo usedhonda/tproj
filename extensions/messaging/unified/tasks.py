@@ -64,6 +64,11 @@ _STATUSES = {"submitted", "accepted", "in_progress", "done", "blocked", "verifie
 _MUTATING = {"ack", "progress", "done", "block", "verify", "report"}
 
 
+def task_capabilities():
+    """Read-only declaration of this loaded authority implementation."""
+    return ["task_" + name[4:] for name in vars(TaskAuthority) if name.startswith("_op_")]
+
+
 def _hash(value: Any) -> str:
     if isinstance(value, str) and len(value) == 64:
         return value

@@ -21,6 +21,24 @@ def master(hub):
     return selected
 
 
+def capabilities(hub, req, peer=False):
+    """Authenticate and ask the selected live master without creating task state."""
+    from tasks import task_capabilities
+    origin = hub._auth(req)
+    selected = master(hub)
+    if peer:
+        if selected != hub.local_id:
+            raise HubError('task_master_mismatch', 'this host is not the task master')
+    elif origin != hub.local_id:
+        raise HubError('unauthorized', 'capability discovery requires local host ingress')
+    elif selected != hub.local_id:
+        result = hub.remote(selected, 'task_capabilities')
+        if not isinstance(result, dict) or result.get('master_host_id') != selected:
+            raise HubError('incompatible_peer', 'task master capability identity mismatch')
+        return result
+    return {'master_host_id': selected, 'capabilities': task_capabilities()}
+
+
 def _attest_binding_release(hub, evidence, body):
     """Bind historical release proof to this host's enrolled endpoint directory."""
     previous = body.get('previous')

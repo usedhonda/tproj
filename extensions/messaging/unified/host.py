@@ -424,6 +424,10 @@ class Host:
         op = req.get('op')
         if uid != os.getuid():
             raise HubError('identity_rejected', 'local UID mismatch')
+        if op == 'runtime_capabilities':
+            # UID authentication suffices for this operator-only read, not tasks.
+            return {'host_capabilities': ['task_retired_operation', 'task_binding_status'],
+                    'task_master': self.hub('task_capabilities')}
         if op == 'status' and req.get('target'):
             target = req['target']
             participant_id = None

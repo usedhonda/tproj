@@ -259,7 +259,53 @@ def check(args: argparse.Namespace, home: Path) -> int:
     return 0
 
 
+def compatibility_errors(home: Path) -> list[str]:
+    """Fence dependent activation, not backend-only staging or offline fixtures."""
+    config_dir = home / '.config/tproj'
+    client = load_json(config_dir / 'msg-client.json')
+    host = load_json(config_dir / 'msg-host.json')
+    enrolled = (client.get('active') is True or (config_dir / 'msg-client.enrolled').exists()
+                or bool(host.get('socket')))
+    if not enrolled:
+        return []
+    import socket
+    try:
+        path = host.get('socket') or client.get('socket')
+        if not isinstance(path, str) or not path:
+            raise ValueError('configured host socket is missing')
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.settimeout(55)
+            sock.connect(path)
+            sock.sendall(b'{"op":"runtime_capabilities"}\n')
+            with sock.makefile('rb') as stream:
+                raw = stream.readline(262145)
+        if not raw.endswith(b'\n') or len(raw) > 262144:
+            raise ValueError('invalid capability response')
+        response = json.loads(raw)
+        if response.get('ok') is not True:
+            raise ValueError('live backend capability discovery unavailable')
+        result = response['result']
+        host_caps = result.get('host_capabilities', [])
+        master_caps = result.get('task_master', {}).get('capabilities', [])
+        if not all(cap in host_caps for cap in ('task_retired_operation', 'task_binding_status')):
+            raise ValueError('live host lacks required task capabilities')
+        if not all(cap in master_caps for cap in ('task_cancelled_release_check', 'task_binding_release_check')):
+            raise ValueError('authoritative task master lacks required release capabilities')
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        # Never include credentials, response payloads, or private paths here.
+        return ['compatibility blocked: live host/task master unavailable or missing required capabilities; '
+                'no installed files changed. Stage unified backend code first, explicitly reload backend '
+                'services, then retry. Existing tools and binding-status diagnostics remain untouched.']
+    return []
+
+
 def install(args: argparse.Namespace, home: Path) -> int:
+    if not args.dry_run:
+        errors = compatibility_errors(home)
+        if errors:
+            for error in errors:
+                print(error, file=sys.stderr)
+            return 1
     changed = False
     unified_runtime(args, home)
     for source, dest_name in runtime_sources():

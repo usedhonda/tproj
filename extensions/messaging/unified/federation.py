@@ -511,6 +511,9 @@ class FederatedHub(Hub):
                 return {'peer_directory_prepare': prepare, 'peer_directory_commit': commit,
                         'peer_directory_status': status, 'peer_directory_abort': abort}[op](self, req)
             if op == 'peer_diagnose': return super().diagnose(req)
+            if op == 'peer_task_capabilities':
+                from task_transport import capabilities
+                return capabilities(self, req, peer=True)
             if op == 'peer_task':
                 from task_transport import dispatch
                 return dispatch(self, req, peer=True)
@@ -560,6 +563,9 @@ class FederatedHub(Hub):
                 try:return dict(self.remote(destination,'diagnose',**fields), **outbox)
                 except HubError as exc:return dict(local,remote_state='unavailable',remote_error=exc.code)
             return local
+        if op == 'task_capabilities':
+            from task_transport import capabilities
+            return capabilities(self, req)
         if op.startswith('task_'):
             from task_transport import dispatch
             return dispatch(self, req)

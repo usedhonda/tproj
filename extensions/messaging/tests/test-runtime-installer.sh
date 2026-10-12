@@ -111,5 +111,7 @@ second_rc=0
 after_digest="$(state_digest "$home_root")"
 check "second installer run is idempotent" test "$second_rc" -eq 0 -a "$before_digest" = "$after_digest"
 
+check "live backend compatibility preserves installed diagnostics" python3 "$REPO/extensions/messaging/tests/test-runtime-compatibility.py"
+
 printf '%s\n' "----" "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
