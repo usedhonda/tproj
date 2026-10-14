@@ -148,6 +148,39 @@ class UnifiedHostServicesTest(unittest.TestCase):
                 with self.assertRaises(HubError): host.caller(1, 1, {})
             host.db.close()
 
+    def test_equal_native_session_thread_preserves_existing_attestation(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self.host(tmp)
+            ep = {'endpoint_id': 'native', 'thread_id': 'verified-native', 'session_id': 'verified-native'}
+            host.endpoints = [ep]
+            host.refreshed = time.monotonic()
+            marker = {'endpoint_id': 'native', 'native_kind': 'session_id', 'native_id': 'verified-native'}
+            calls = []
+            def hub(op, **args):
+                calls.append((op, args))
+                if op == 'diagnostic_identity':
+                    return {'endpoint_native': [dict(marker)]}
+                if op == 'native_attest':
+                    if any(args[k] != marker[k] for k in ('endpoint_id', 'native_kind', 'native_id')):
+                        raise HubError('identity_rejected', 'endpoint native identity is immutable')
+                    return {'endpoint_id': args['endpoint_id']}
+                self.fail(op)
+            host.hub = hub
+            with patch.object(host_mod, 'adopt_native_conversation', return_value=[ep]), \
+                 patch.object(host_mod, 'bind_caller', return_value=ep):
+                self.assertEqual(host.caller(1, 1, {}), ep)
+                self.assertEqual(calls[-1][1]['native_kind'], 'session_id')
+                self.assertEqual(marker['native_kind'], 'session_id')
+                marker['native_id'] = 'different-native'
+                with self.assertRaises(HubError) as error:
+                    host.caller(1, 1, {})
+                self.assertEqual(error.exception.code, 'identity_rejected')
+                marker.update(native_id='verified-native', endpoint_id='different-endpoint')
+                with self.assertRaises(HubError):
+                    host.caller(1, 1, {})
+            host.db.close()
+
     def test_service_registry_binds_identity_platform_and_incarnation(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)

@@ -221,6 +221,20 @@ class Host:
             # Native fields come from authenticated registry/catalog adoption,
             # not the public request's selectors. Persist before any messaging.
             kind = 'thread_id' if ep.get('thread_id') else 'session_id'
+            if ep.get('thread_id') and ep.get('thread_id') == ep.get('session_id'):
+                # Catalog adoption can add a thread label to an already-attested
+                # equal session ID. Keep that endpoint's immutable label; this
+                # is not permission to replace its native identity.
+                try:
+                    identity = self.hub('diagnostic_identity')
+                    marker = next((row for row in identity.get('endpoint_native', [])
+                                   if row.get('endpoint_id') == ep['endpoint_id']), None)
+                    if (marker and marker.get('native_kind') in ('thread_id', 'session_id')
+                            and marker.get('native_id') == ep['thread_id']):
+                        kind = marker['native_kind']
+                except HubError as exc:
+                    if exc.code != 'unknown_op':
+                        raise
             if ep.get(kind):
                 try:
                     self.hub('native_attest', endpoint_id=ep['endpoint_id'],

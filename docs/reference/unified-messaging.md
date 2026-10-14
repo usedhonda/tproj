@@ -289,6 +289,13 @@ live ancestor/descendant chain with the same participant, host, session, pane,
 and platform.  Alias, runtime labels, and pane tags alone never authorize this
 continuity; a restart or ambiguous lineage remains a new or rejected identity.
 
+Native catalog adoption can annotate an existing endpoint with a `thread_id`
+identical to its authenticated `session_id`. In that exact case the host reads
+its existing endpoint-native attestation and retains the stored kind when its
+ID matches both authenticated fields. The hub's immutable native record is not
+rewritten, and different IDs still fail closed. This is not general equivalence
+between session and thread namespaces or authority to rebind another endpoint.
+
 ## Bounded delivery diagnostics
 
 `tproj-msg diagnose MESSAGE_ID` is a read-only metadata query. Message parties
