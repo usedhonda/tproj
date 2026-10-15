@@ -148,7 +148,7 @@ class Host:
         # endpoint may be replaced by a registry record for a child process;
         # preserve the original immutable endpoint ID when live lineage proves
         # this is the same process family.
-        previous = self.hub('endpoints_list')['endpoints']
+        previous = self.hub('endpoints_list', active_only=True)['endpoints']
         discovered = discover_endpoints(self.config.get('registry', str(Path.home()/'.cache/tproj-model-role')),
                                         self.config['host_id'], directory['projects'])
         # Public standalone installs may have no model-role registry. Keep
@@ -374,7 +374,7 @@ class Host:
                       f"{self.config['host_id']}:{service_id}:{cfg['participant_id']}:{generation}")),
                       pid=0, pid_start=0, runtime_id=f'kai:{generation}')
         identity = self.hub('diagnostic_identity') if query_only else None
-        previous = identity['endpoints'] if identity is not None else self.hub('endpoints_list')['endpoints']
+        previous = identity['endpoints'] if identity is not None else self.hub('endpoints_list', active_only=True)['endpoints']
         if query_only:
             matches = [old for old in previous if old['endpoint_id'] == ep['endpoint_id']
                        and not old['retired'] and old['participant_id'] == ep['participant_id']]
@@ -386,7 +386,7 @@ class Host:
             if old['participant_id'] == ep['participant_id'] and old['endpoint_id'] != ep['endpoint_id'] and not old['retired']:
                 self.hub('endpoint_retire', endpoint_id=old['endpoint_id'])
         self.hub('endpoint_register', **ep)
-        for row in self.hub('endpoints_list')['endpoints']:
+        for row in self.hub('endpoints_list', active_only=True)['endpoints']:
             if row.get('endpoint_id') == ep['endpoint_id']:
                 ep['incarnation'] = row.get('incarnation')
                 break
@@ -443,7 +443,7 @@ class Host:
         cfg = services.get('kai') if isinstance(services, dict) else None
         if not isinstance(cfg, dict) or not cfg.get('event_bridge_socket'):
             raise HubError('unavailable', 'KAI event bridge unavailable')
-        endpoints = self.hub('endpoints_list')['endpoints']
+        endpoints = self.hub('endpoints_list', active_only=True)['endpoints']
         directory = self.hub('directory_list')['participants']
         if not any(p.get('participant_id') == cfg.get('participant_id')
                    and p.get('address') == cfg.get('address')

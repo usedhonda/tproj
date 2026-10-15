@@ -54,6 +54,20 @@ class HubTest(unittest.TestCase):
         return self.h.dispatch(dict(op='native_attest', host_id=host, host_token='t'+host,
                                     endpoint_id=endpoint, native_kind='thread_id', native_id=native))
 
+    def test_active_endpoint_list_excludes_large_retired_history_without_deletion(self):
+        for n in range(1000):
+            self.reg("a", "ta", "retired-" + str(n), "p:cc", n + 10)
+            self.h.db.execute("UPDATE endpoints SET retired=1 WHERE endpoint_id=?", ("retired-" + str(n),))
+        req = dict(op="endpoints_list", host_id="a", host_token="ta")
+        full = self.h.dispatch(req)
+        active = self.h.dispatch(dict(req, active_only=True))
+        self.assertGreater(len(json.dumps(full).encode()), MAX_REQUEST)
+        self.assertLess(len(json.dumps(active).encode()), MAX_REQUEST)
+        self.assertEqual([e["endpoint_id"] for e in active["endpoints"]], ["ea"])
+        self.assertEqual(len(self.h.dispatch(req)["endpoints"]), 1001)
+        with self.assertRaises(HubError):
+            self.h.dispatch(dict(req, active_only=True, host_token="wrong"))
+
     def test_read_only_hub_does_not_initialize_schema_and_reports_capabilities(self):
         path = pathlib.Path(self.tmp.name) / 'ro.db'
         import sqlite3

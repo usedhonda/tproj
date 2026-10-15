@@ -495,3 +495,13 @@ selectors for that attempt; omitted options retain their saved values. The host
 still authenticates the current caller and enforces sender/idempotency checks.
 The saved submission is not rewritten. `--session` selects the workspace session,
 not a native thread/session UUID returned by `whoami`.
+
+### Live endpoint discovery versus retained history
+
+Host discovery, service attestation and event retry lookup request the
+authenticated host-local `endpoints_list` with `active_only: true`. Retired
+endpoint history remains stored and available to the unfiltered diagnostic
+query, but is not serialized into live discovery responses. Historical growth
+must not prevent current KAI attestation by exceeding the wire frame limit.
+The filter does not revive endpoints, extend liveness, change enrollment or
+relax caller authentication.

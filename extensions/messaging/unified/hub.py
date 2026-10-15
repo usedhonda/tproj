@@ -560,7 +560,12 @@ class Hub:
         if op=="endpoint_register": return self.register(req)
         if op=="endpoint_retire":
             host=self._auth(req); self._host_endpoint(host,req["endpoint_id"]); self.db.execute("UPDATE endpoints SET retired=1 WHERE endpoint_id=?",(req["endpoint_id"],)); self.db.execute("UPDATE messages SET state='stale_session' WHERE recipient_endpoint=? AND state IN ('accepted','queued','adapter_received')",(req["endpoint_id"],)); return {"retired":req["endpoint_id"]}
-        if op=="endpoints_list": self._auth(req); return {"endpoints":[dict(x) for x in self.db.execute("SELECT * FROM endpoints WHERE host_id=?", (req.get("host_id"),))]}
+        if op == "endpoints_list":
+            host = self._auth(req)
+            sql = "SELECT * FROM endpoints WHERE host_id=?"
+            if req.get("active_only") is True:
+                sql += " AND retired=0"
+            return {"endpoints": [dict(x) for x in self.db.execute(sql, (host,))]}
         if op=="directory_retire": return self.directory_retire(req)
         if op=="submit": return self._submit_redirected(req)
         if op=="inbox": return self.inbox(req)
