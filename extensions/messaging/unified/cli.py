@@ -105,7 +105,10 @@ def submission(request: dict, *, spool: Path | None = None, retry: str | None = 
                 raise ClientError(f"unknown submission ID: {retry}")
             # Keep the durable message ID and body, but rebind the caller to
             # the currently active native conversation after a restart.
+            selectors = {key: request[key] for key in ("session", "as")
+                         if request.get(key) is not None}
             request = dict(prior)
+            request.update(selectors)
             context = native_conversation_context()
             if context:
                 request["conversation"] = context
@@ -178,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = config()
         if args.retry:
-            req, _ = submission({}, retry=args.retry)
+            req, _ = submission({"session": args.session, "as": args.claimed_alias}, retry=args.retry)
             result = rpc(cfg["socket"], req)
         elif args.list or args.status:
             request = {"op": "list" if args.list else "status"}

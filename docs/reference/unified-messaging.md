@@ -486,3 +486,12 @@ available to inspect existing recipient evidence.
 Writable schema migration serializes its column check and ALTER in a write
 transaction; concurrent constructors recheck after obtaining that lock. Read-only
 constructors do not enter the migration or acquire a write transaction.
+
+### Explicit caller selectors on same-ID retry
+
+`--retry SUBMISSION_ID` preserves the stored operation, destination, body and
+submission ID. Explicit `--session` and `--as` options replace only the caller
+selectors for that attempt; omitted options retain their saved values. The host
+still authenticates the current caller and enforces sender/idempotency checks.
+The saved submission is not rewritten. `--session` selects the workspace session,
+not a native thread/session UUID returned by `whoami`.

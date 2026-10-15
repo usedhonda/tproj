@@ -82,6 +82,23 @@ class CliTest(unittest.TestCase):
             self.assertEqual(seen[1]["submission_id"], first)
             thread.join(1)
 
+    def test_retry_corrects_explicit_selectors_without_changing_saved_payload(self):
+        with tempfile.TemporaryDirectory() as raw:
+            spool = Path(raw) / "spool.json"
+            prior = {"op": "send", "target": "proj.cc", "body": "original",
+                     "submission_id": "stable-id", "session": "wrong-native-id",
+                     "as": "proj.cdx"}
+            cli.write_spool(spool, {"stable-id": prior})
+            with patch.object(cli, "DEFAULT_SPOOL", spool), patch.object(cli, "config", return_value={"socket": "fake"}), patch.object(cli, "rpc", return_value={}) as rpc:
+                self.assertEqual(cli.main(["--session", "workspace", "--as", "proj.cdx", "--retry", "stable-id"]), 0)
+            self.assertEqual(rpc.call_args.args[1]["session"], "workspace")
+            for key in ("op", "target", "body", "submission_id", "as"):
+                self.assertEqual(rpc.call_args.args[1][key], prior[key])
+            self.assertEqual(cli.read_spool(spool)["stable-id"], prior)
+            with patch.object(cli, "native_conversation_context", return_value={}):
+                req, _ = cli.submission({}, spool=spool, retry="stable-id")
+            self.assertEqual(req, prior)
+
     def test_missing_config_is_explicit(self):
         with patch.object(cli, "DEFAULT_CONFIG", Path("/definitely/missing/msg-client.json")):
             self.assertEqual(cli.main(["proj.cc", "hello"]), 2)
