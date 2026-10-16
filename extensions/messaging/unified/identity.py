@@ -493,6 +493,14 @@ def discover_tmux_endpoints(host_id: str, projects: Iterable[Mapping[str, Any]],
             except (IdentityError, OSError, ValueError, KeyError):
                 continue
             command = str(info.get("command", "")).lower()
+            try:
+                executable = Path(shlex.split(command)[0]).name
+            except (ValueError, IndexError):
+                continue
+            # A shell's -c argument can mention the agent without being one.
+            # Bind the actual child instead, never its launcher wrapper.
+            if executable in {'sh', 'bash', 'zsh', 'dash', 'fish', 'ksh', 'csh', 'tcsh'}:
+                continue
             if info.get("uid") != os.getuid() or any(token in command for token in ("ssh ", "ssh-", "proxycommand")):
                 continue
             needles = ("claude", "anthropic") if platform == "cc" else ("codex", "openai")
@@ -622,6 +630,13 @@ def same_live_process_family(existing: Mapping[str, Any], candidate: Mapping[str
     if (old_info.get("pid_start") != old_start or new_info.get("pid_start") != new_start
             or old_info.get("uid") != os.getuid() or new_info.get("uid") != os.getuid()):
         return False
+    for info in (old_info, new_info):
+        try:
+            executable = Path(shlex.split(str(info.get('command', '')))[0]).name
+        except (ValueError, IndexError):
+            return False
+        if executable in {'sh', 'bash', 'zsh', 'dash', 'fish', 'ksh', 'csh', 'tcsh'}:
+            return False
     if old_pid == new_pid:
         return old_start == new_start
     if old_info.get("uid") != new_info.get("uid"):

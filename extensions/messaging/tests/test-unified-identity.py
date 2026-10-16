@@ -370,6 +370,19 @@ class UnifiedIdentityTest(unittest.TestCase):
         self.assertEqual(identity.discover_tmux_endpoints("host-a", self.projects,
                     panes=lambda: [pane], descendants=lambda pid: [], inspect_process=inspect), [])
 
+    def test_tmux_shell_command_mentioning_codex_is_not_an_agent(self):
+        pane = {"role": "codex-p1", "pane_pid": "10", "alias": "demo",
+                "current_path": str(self.project), "session": "sess", "pane": "%1"}
+        processes = {
+            10: dict(ppid=1, pid_start=77, uid=os.getuid(), command='sh -c /usr/local/bin/codex resume --last || exec /usr/local/bin/codex'),
+            11: dict(ppid=10, pid_start=78, uid=os.getuid(), command='/usr/local/bin/codex resume --last'),
+        }
+        self.assertEqual(identity.discover_tmux_endpoints('host-a', self.projects,
+            panes=lambda: [pane], descendants=lambda pid: [], inspect_process=processes.__getitem__), [])
+        found = identity.discover_tmux_endpoints('host-a', self.projects,
+            panes=lambda: [pane], descendants=lambda pid: [11], inspect_process=processes.__getitem__)
+        self.assertEqual([item['pid'] for item in found], [11])
+
     def test_tmux_fallback_requires_live_agent_descendant_and_deduplicates_registry(self):
         panes = lambda: [
             {"session": "sess", "pane": "%1", "pane_pid": "10", "project": str(self.project),
@@ -430,6 +443,8 @@ class UnifiedIdentityTest(unittest.TestCase):
         unrelated = dict(registry, pid=103, pid_start=90)
         processes[103] = {"ppid": 1, "pid_start": 90, "uid": 501, "command": "codex"}
         self.assertFalse(identity.same_live_process_family(fallback, unrelated, inspect_process=inspect))
+        processes[101]['command'] = 'sh -c codex resume --last'
+        self.assertFalse(identity.same_live_process_family(fallback, registry, inspect_process=inspect))
 
 
 if __name__ == "__main__":

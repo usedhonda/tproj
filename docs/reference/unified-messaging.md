@@ -527,3 +527,7 @@ Native caller binding requests `diagnostic_identity` with `active_only=true`,
 filtering both endpoint and native-marker rows to current endpoints on the
 authenticated host. Retired history remains stored and available through the
 existing unfiltered diagnostic operation; it is not sent on every caller bind.
+
+Pane fallback discovery skips shell executables even when their `-c` arguments
+mention Claude or Codex. A launcher wrapper is not an agent endpoint; discovery
+continues to its live same-UID agent descendants with their own PID incarnation.
