@@ -109,8 +109,13 @@ def serve_socket(sock: socket.socket, handler, idle=None, concurrent=False) -> N
                     break
             except (OSError, HubError, ValueError): pass
             finally:
-                stream.close()
-                if concurrent: slots.release()
+                try:
+                    stream.close()
+                except OSError:
+                    # A disconnected peer can fail the final buffered flush.
+                    pass
+                finally:
+                    if concurrent: slots.release()
     if idle: sock.settimeout(1)
     while True:
         try: conn, _ = sock.accept()

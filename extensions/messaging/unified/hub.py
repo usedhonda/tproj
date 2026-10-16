@@ -520,13 +520,16 @@ class Hub:
     def diagnostic_identity(self, req):
         """Read-only host-owned endpoint/native evidence for process continuity checks."""
         host = self._auth(req)
+        active_only = req.get('active_only') is True
+        active_filter = ' AND retired=0' if active_only else ''
+        native_filter = ' AND e.retired=0' if active_only else ''
         try:
             endpoints = [dict(row) for row in self.db.execute(
                 'SELECT endpoint_id,participant_id,host_id,session,pane,pid,pid_start,runtime_id,platform,incarnation,last_heartbeat,retired '
-                'FROM endpoints WHERE host_id=? ORDER BY endpoint_id', (host,))]
+                'FROM endpoints WHERE host_id=?' + active_filter + ' ORDER BY endpoint_id', (host,))]
             native = [dict(row) for row in self.db.execute(
                 'SELECT n.endpoint_id,n.native_kind,n.native_id FROM endpoint_native n '
-                'JOIN endpoints e ON e.endpoint_id=n.endpoint_id WHERE e.host_id=? ORDER BY n.endpoint_id', (host,))]
+                'JOIN endpoints e ON e.endpoint_id=n.endpoint_id WHERE e.host_id=?' + native_filter + ' ORDER BY n.endpoint_id', (host,))]
             projects = [dict(row) for row in self.db.execute(
                 'SELECT project_id,alias,host_id,path FROM projects WHERE host_id=? ORDER BY project_id', (host,))]
         except (OSError, sqlite3.Error) as exc:

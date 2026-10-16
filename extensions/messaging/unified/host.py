@@ -236,7 +236,7 @@ class Host:
                 # equal session ID. Keep that endpoint's immutable label; this
                 # is not permission to replace its native identity.
                 try:
-                    identity = self.hub('diagnostic_identity')
+                    identity = self.hub('diagnostic_identity', active_only=True)
                     marker = next((row for row in identity.get('endpoint_native', [])
                                    if row.get('endpoint_id') == ep['endpoint_id']), None)
                     if (marker and marker.get('native_kind') in ('thread_id', 'session_id')
@@ -262,7 +262,7 @@ class Host:
         """Bind a live caller to persisted endpoint/native evidence without writes."""
         if uid != os.getuid():
             raise HubError('identity_rejected', 'local UID mismatch')
-        identity = self.hub('diagnostic_identity')
+        identity = self.hub('diagnostic_identity', active_only=True)
         saved = identity.get('endpoints', [])
         projects = identity.get('projects', [])
         discovered = discover_endpoints(self.config.get('registry', str(Path.home()/'.cache/tproj-model-role')),
@@ -383,7 +383,7 @@ class Host:
             ep.update(endpoint_id=str(uuid.uuid5(uuid.NAMESPACE_URL,
                       f"{self.config['host_id']}:{service_id}:{cfg['participant_id']}:{generation}")),
                       pid=0, pid_start=0, runtime_id=f'kai:{generation}')
-        identity = self.hub('diagnostic_identity') if query_only else None
+        identity = self.hub('diagnostic_identity', active_only=True) if query_only else None
         previous = identity['endpoints'] if identity is not None else self.hub('endpoints_list', active_only=True)['endpoints']
         if query_only:
             matches = [old for old in previous if old['endpoint_id'] == ep['endpoint_id']

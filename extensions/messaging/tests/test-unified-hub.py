@@ -91,6 +91,20 @@ class HubTest(unittest.TestCase):
         self.assertEqual(result['endpoint_native'][0]['native_id'], 'native-thread')
         self.assertNotIn('body', str(result))
 
+    def test_active_identity_stays_bounded_without_deleting_history(self):
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
+        self.attest('b', 'eb')
+        for number in range(800):
+            endpoint = 'retired-' + str(number)
+            self.h.db.execute("INSERT INTO endpoints SELECT ?,participant_id,host_id,session,pane,pid,pid_start,runtime_id,platform,incarnation,last_heartbeat,1 FROM endpoints WHERE endpoint_id='eb'", (endpoint,))
+            self.h.db.execute("INSERT INTO endpoint_native VALUES(?,?,?)", (endpoint, 'thread_id', 'retired-native'))
+        req = dict(op='diagnostic_identity', host_id='b', host_token='tb')
+        result = self.h.dispatch(dict(req, active_only=True))
+        self.assertEqual([row['endpoint_id'] for row in result['endpoints']], ['eb'])
+        self.assertEqual([row['endpoint_id'] for row in result['endpoint_native']], ['eb'])
+        self.assertLess(len(json.dumps(success(result)).encode()), MAX_REQUEST)
+        self.assertEqual(len(self.h.dispatch(req)['endpoints']), 801)
+
     def test_same_native_rotation_preserves_exact_query_and_reply(self):
         self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
         self.attest('b', 'eb')

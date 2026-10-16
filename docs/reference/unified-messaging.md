@@ -515,3 +515,15 @@ A rejected retired endpoint registration is isolated to that candidate. Discover
 continues for independent live participants. Retired identities are never revived
 and no replacement identity is invented to bypass retirement. Registering an
 actually new agent process still follows normal authenticated discovery.
+
+### Disconnected broker clients
+
+Each concurrent socket request releases its processing slot even if closing the
+buffered response stream fails after a client disconnect. Repeated disconnects
+must not leave a live broker permanently rejecting all new connections. This
+cleanup does not acknowledge delivery or retry an uncertain message.
+
+Native caller binding requests `diagnostic_identity` with `active_only=true`,
+filtering both endpoint and native-marker rows to current endpoints on the
+authenticated host. Retired history remains stored and available through the
+existing unfiltered diagnostic operation; it is not sent on every caller bind.
