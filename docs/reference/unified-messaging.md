@@ -505,3 +505,13 @@ query, but is not serialized into live discovery responses. Historical growth
 must not prevent current KAI attestation by exceeding the wire frame limit.
 The filter does not revive endpoints, extend liveness, change enrollment or
 relax caller authentication.
+
+Live tmux fallback inspects both the pane root process and its descendants. A
+pane that directly execs the agent remains discoverable after an advisory model
+registry entry expires. Each candidate must still pass the same live PID/start,
+UID and agent executable checks; a shell or pane tag alone proves no identity.
+
+A rejected retired endpoint registration is isolated to that candidate. Discovery
+continues for independent live participants. Retired identities are never revived
+and no replacement identity is invented to bypass retirement. Registering an
+actually new agent process still follows normal authenticated discovery.

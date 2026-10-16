@@ -356,6 +356,20 @@ class UnifiedIdentityTest(unittest.TestCase):
                          ("remote", thread, str(self.project), "cli", 1.0))
         self.assertEqual(identity.native_thread_metadata(thread, db, Path(self.tmp.name) / "sessions"), [])
 
+    def test_tmux_direct_agent_root_survives_expired_registry(self):
+        pane = {"role": "claude-p1", "pane_pid": "10", "alias": "demo",
+                "current_path": str(self.project), "session": "sess", "pane": "%1"}
+        def inspect(pid):
+            return {"ppid": 1, "pid_start": 77, "uid": os.getuid(),
+                    "command": "claude" if pid == 10 else "sh"}
+        found = identity.discover_tmux_endpoints("host-a", self.projects,
+                    panes=lambda: [pane], descendants=lambda pid: [], inspect_process=inspect)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["pid"], 10)
+        pane["pane_pid"] = "20"
+        self.assertEqual(identity.discover_tmux_endpoints("host-a", self.projects,
+                    panes=lambda: [pane], descendants=lambda pid: [], inspect_process=inspect), [])
+
     def test_tmux_fallback_requires_live_agent_descendant_and_deduplicates_registry(self):
         panes = lambda: [
             {"session": "sess", "pane": "%1", "pane_pid": "10", "project": str(self.project),

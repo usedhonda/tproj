@@ -14,6 +14,22 @@ import identity
 
 
 class UnifiedHostIdentityTest(unittest.TestCase):
+    def test_retired_candidate_does_not_block_other_live_discovery(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            h = host_mod.Host({"journal":str(Path(tmp)/"journal.db"),"host_id":"host-a","host_token":"token"},recover=False)
+            def hub(op, **args):
+                if op=="directory_list":return {"projects":[]}
+                if op=="endpoints_list":return {"endpoints":[]}
+                if op=="endpoint_register":
+                    if args["endpoint_id"]=="retired":raise host_mod.HubError("stale_session","retired endpoint cannot be revived")
+                    return {"endpoint_id":"live","incarnation":"new"}
+                return {}
+            h.hub=hub
+            entries=[dict(endpoint_id=n,participant_id=n,platform="cc") for n in ("retired","live")]
+            with patch.object(host_mod,"discover_endpoints",return_value=entries),patch.object(host_mod,"discover_tmux_endpoints",return_value=[]):h.refresh()
+            self.assertEqual([e["endpoint_id"] for e in h.endpoints],["live"])
+
     def test_refresh_keeps_fallback_id_and_rejects_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
             old = {"endpoint_id": "fallback", "participant_id": "demo:cdx", "project_id": "demo",

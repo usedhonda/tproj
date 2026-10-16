@@ -485,7 +485,9 @@ def discover_tmux_endpoints(host_id: str, projects: Iterable[Mapping[str, Any]],
             root_pid = int(pane.get("pane_pid", 0))
         except (TypeError, ValueError):
             continue
-        for pid in descendants(root_pid):
+        # A pane can exec the agent directly; its root is not always a shell.
+        # Apply the same UID/start/executable checks to root and descendants.
+        for pid in dict.fromkeys([root_pid, *descendants(root_pid)]):
             try:
                 info = dict(inspect_process(int(pid)))
             except (IdentityError, OSError, ValueError, KeyError):

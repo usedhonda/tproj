@@ -176,14 +176,24 @@ class Host:
             else:
                 reconciled.append(ep)
         discovered = reconciled
+        registered_endpoints = []
         for ep in discovered:
-            registered = self.hub('endpoint_register', **ep)
+            try:
+                registered = self.hub('endpoint_register', **ep)
+            except HubError as exc:
+                if exc.code != 'stale_session':
+                    raise
+                # A retired identity stays retired, but cannot poison discovery
+                # and authentication for independent live participants.
+                continue
             if (registered.get('endpoint_id') != ep['endpoint_id'] or
                     not isinstance(registered.get('incarnation'), str) or not registered['incarnation']):
                 raise HubError('identity_rejected', 'hub did not confirm endpoint incarnation')
             # Registry/process evidence authenticates the caller; the hub alone
             # issues the durable incarnation used by formal task fences.
             ep['incarnation'] = registered['incarnation']
+            registered_endpoints.append(ep)
+        discovered = registered_endpoints
         # A disappeared process is not inferred from an alias. Retire only after
         # a matching participant has a proven different live incarnation.
         live_ids = {ep['endpoint_id'] for ep in discovered}
