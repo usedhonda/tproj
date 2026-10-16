@@ -143,8 +143,7 @@ Formal task records do not override Solo/Assist/Collab roles or inject an
 old-task-only directive into the native conversation. The task context helper
 provides sanitized record diagnostics; task status and availability do not grant
 or revoke local editing authority. Ordinary messages never authorize task work.
-Independent user-scope, identity, secret, destructive-operation, and model-role
-controls remain in force.
+Independent user-scope, identity, secret, destructive-operation, controls remain in force. Model-role labels are advisory and never deny tools.
 
 A native tool ID alone is not proof that a tool belongs to a task. Ordinary
 native tools must not be admitted against whichever task is currently bound.
@@ -234,3 +233,21 @@ open-operation detail. Other native tool types (including server-side tools)
 are intentionally outside this witness contract.
 
 Host capabilities are declared by the loaded task-host implementation. A new host wrapper with an old task module cannot report compatibility; missing declaration is an unavailable response, not permission to activate dependent hooks.
+
+## Approval evidence without wording gates
+
+Intent is a nonempty audit description, not a literal substring of the user's
+instruction. Existing single-record `--evidence-hash` remains supported. Approval
+also accepts `--evidence-file`: an ordered JSON list of up to 32 distinct SHA256
+hashes of native direct user records in the same authenticated transcript. Scope
+must equal those exact records joined with two newlines. Missing, repeated,
+reordered, injected or scope-expanded evidence is rejected before registration.
+The stored evidence hash is SHA256 of the compact JSON hash list. Normalized
+intent never changes scope. Existing approval IDs carry the same approved scope
+through task handoff; ordinary messages cannot manufacture approval.
+
+Role defaults and task bookkeeping do not add permission gates to authorized
+ordinary work. Goal continuation, missing display claims and old unrelated task
+markers cannot require another user "continue". Explicit task cancellation and
+freeze still protect that task; unknown effects still require resource-specific
+completion evidence or isolation, not a conversation-wide ban.

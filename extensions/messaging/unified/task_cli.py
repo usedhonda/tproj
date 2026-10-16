@@ -50,7 +50,9 @@ def parser() -> argparse.ArgumentParser:
     a.add_argument("--approval-id", default=None)
     a.add_argument("--intent", required=True)
     a.add_argument("--scope-file", required=True, help="file containing the exact approved scope text")
-    a.add_argument("--evidence-hash", required=True)
+    evidence = a.add_mutually_exclusive_group(required=True)
+    evidence.add_argument("--evidence-hash")
+    evidence.add_argument("--evidence-file", help="JSON ordered native user-record SHA256 list; scope is records joined by two newlines")
     s = sub.add_parser("submit", help="submit a task packet")
     s.add_argument("target", nargs="?")
     s.add_argument("--intent", required=True)
@@ -95,8 +97,14 @@ def main(argv: list[str] | None = None) -> int:
                 scope = Path(args.scope_file).read_text(encoding="utf-8")
             except OSError as exc:
                 raise cli.ClientError(f"cannot read scope file: {exc}", "invalid_argument") from exc
+            extra = {}
+            if args.evidence_file:
+                try:
+                    extra["evidence_records"] = json.loads(Path(args.evidence_file).read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    raise cli.ClientError("evidence file must contain an ordered JSON hash list", "invalid_argument") from exc
             result = request("approval", approval_id=args.approval_id or str(uuid.uuid4()),
-                             intent=args.intent, scope=scope, evidence_hash=args.evidence_hash)
+                             intent=args.intent, scope=scope, evidence_hash=args.evidence_hash, **extra)
         elif args.command == "submit":
             if not args.target:
                 raise cli.ClientError("submit requires target", "invalid_argument")
