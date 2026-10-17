@@ -531,3 +531,10 @@ existing unfiltered diagnostic operation; it is not sent on every caller bind.
 Pane fallback discovery skips shell executables even when their `-c` arguments
 mention Claude or Codex. A launcher wrapper is not an agent endpoint; discovery
 continues to its live same-UID agent descendants with their own PID incarnation.
+
+Registry process ancestry does not prove a Codex thread belongs to a pane's
+project: a shared daemon may retain the launching pane's environment. When
+host-local native thread metadata contradicts a registry record's project,
+discovery rejects that record rather than letting it suppress live tmux fallback.
+The existing native catalog/rollout, unique-project adoption and live process
+checks still apply. A conflicting thread in the same project is not replaced.

@@ -389,6 +389,15 @@ def discover_endpoints(registry_root: str | os.PathLike[str], host_id: str,
         needles = ("claude", "anthropic") if platform == "cc" else ("codex", "openai")
         if not any(token in command for token in needles):
             continue
+        if platform == 'cdx':
+            native_id = next((str(record[key]) for key in ('thread_id', 'conversation_id', 'session_id')
+                              if record.get(key) and _NATIVE_THREAD_ID.fullmatch(str(record[key]))), None)
+            metadata = native_thread_metadata(native_id) if native_id else []
+            if metadata and {_canonical(row['cwd']) for row in metadata if row.get('cwd')} != {_canonical(project['path'])}:
+                # A shared daemon can inherit a different pane's environment.
+                # Contradictory native evidence invalidates that registry row;
+                # it cannot suppress independent live tmux discovery.
+                continue
         runtime = _runtime(record, session)
         found.append({
             "endpoint_id": _endpoint_id(host_id, runtime, session, start),

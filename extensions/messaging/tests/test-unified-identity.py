@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "unified" / "identity.py"
 spec = importlib.util.spec_from_file_location("unified_identity", SOURCE)
@@ -42,6 +43,28 @@ class UnifiedIdentityTest(unittest.TestCase):
         self.assertEqual(one[0]["address"], "demo.cc")
         self.assertEqual(one[0]["endpoint_id"], identity.discover_endpoints(
             self.registry, "host-a", self.projects, now=100, inspect_process=self.live)[0]["endpoint_id"])
+
+    def test_cross_project_native_registry_does_not_poison_fallback(self):
+        native = '11111111-1111-4111-8111-111111111111'
+        record = dict(self.record, alias='demo.cdx', session='shared', session_id=native)
+        (self.registry / 'demo.cc.json').unlink()
+        (self.registry / 'demo.cdx.json').write_text(json.dumps(record))
+        process = lambda pid: dict(ppid=1, pid_start=77, uid=os.getuid(), command='codex app-server --stdio')
+        metadata = [dict(thread_id=native, cwd=str(self.project / 'unrelated'), source_kind='cli')]
+        with patch.object(identity, 'native_thread_metadata', return_value=metadata):
+            rejected = identity.discover_endpoints(self.registry, 'host-a', self.projects, now=100, inspect_process=process)
+        self.assertEqual(rejected, [])
+        pane = dict(role='codex-p1', pane_pid='101', alias='demo', project=str(self.project), session='shared', pane='%1')
+        found = identity.discover_tmux_endpoints('host-a', self.projects, rejected, panes=lambda: [pane], descendants=lambda pid: [], inspect_process=process)
+        context = dict(thread_id='current-native', session_id='current-native', platform='cdx')
+        adopted = identity.adopt_native_conversation(found, context, [dict(thread_id='current-native', cwd=str(self.project), source_kind='cli')])
+        self.assertEqual(adopted[0]['thread_id'], 'current-native')
+        metadata[0]['cwd'] = str(self.project)
+        with patch.object(identity, 'native_thread_metadata', return_value=metadata):
+            preserved = identity.discover_endpoints(self.registry, 'host-a', self.projects, now=100, inspect_process=process)
+        self.assertEqual(preserved[0]['session_id'], native)
+        # A real same-project competing thread remains fenced, not overwritten.
+        self.assertEqual(identity.adopt_native_conversation(preserved, context, [dict(thread_id='current-native', cwd=str(self.project))])[0]['session_id'], native)
 
     def test_stale_and_pid_reuse_and_proxy_are_rejected(self):
         self.assertEqual(identity.discover_endpoints(self.registry, "host-a", self.projects,
