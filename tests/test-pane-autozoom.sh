@@ -76,8 +76,8 @@ run_case() {
 
 # The reported bug: a 40-row pane in a 73-row window never grew, because the
 # target was the constant 40. Two panes share the column, so the active one
-# should take two of three shares.
-run_case "a pane already at the old fixed target still grows" 73 40 48
+# should take four of five shares (default ACTIVE_SHARES=4).
+run_case "a pane already at the old fixed target still grows" 73 40 57
 
 # TPROJ_AUTOZOOM_H_MIN keeps its documented meaning as a floor: when the window is
 # short enough that the proportional share falls below it, the floor still wins.

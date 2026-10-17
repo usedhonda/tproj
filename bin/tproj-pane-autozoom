@@ -27,20 +27,20 @@ declare -F tproj_layout_unlock >/dev/null || tproj_layout_unlock() { tmux wait-f
 # - active column = BUDGET * ACTIVE_SHARES / TOTAL_SHARES
 # - other columns = BUDGET / TOTAL_SHARES (each)
 #   where BUDGET = W - (N-1) borders, TOTAL_SHARES = ACTIVE_SHARES + (N-1)
-# Defaults: ACTIVE_SHARES=2 -> active is twice as wide as each other column.
+# Defaults: ACTIVE_SHARES=4 -> active is four times as wide as each other column.
 # Caps:
 # - TPROJ_AUTOZOOM_W_MAX / W_MIN (default 120): upper bound on active width
 # - TPROJ_AUTOZOOM_H_MIN (default 40): minimum active pane height (vertical)
 # Tuning:
-# - TPROJ_AUTOZOOM_ACTIVE_SHARES (default 2): how many "shares" the active
-#   column gets relative to each other column. Active = 2x non-active by default.
+# - TPROJ_AUTOZOOM_ACTIVE_SHARES (default 4): how many "shares" the active
+#   column gets relative to each other column. Active = 4x non-active by default.
 # Debug:     TPROJ_AUTOZOOM_DEBUG=1 enables /tmp/tproj-pane-autozoom.log
 
 set -euo pipefail
 
 FLAG_DIR="${TPROJ_STATE_DIR:-$HOME/.config/tproj}"
 FLAG="$FLAG_DIR/auto-zoom.enabled"
-ACTIVE_SHARES="${TPROJ_AUTOZOOM_ACTIVE_SHARES:-2}"
+ACTIVE_SHARES="${TPROJ_AUTOZOOM_ACTIVE_SHARES:-4}"
 TARGET_W_CAP="${TPROJ_AUTOZOOM_W_MAX:-${TPROJ_AUTOZOOM_W_MIN:-120}}"
 TARGET_H="${TPROJ_AUTOZOOM_H_MIN:-${TPROJ_AUTOZOOM_H_MAX:-40}}"
 DEBUG_LOG="/tmp/tproj-pane-autozoom.log"
