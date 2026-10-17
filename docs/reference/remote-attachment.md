@@ -53,3 +53,18 @@ migrated. Explicit startup remains separate from recovery.
 
 Focused proof: `bash tests/test-remote-client-tty.sh` and
 `bash tests/test-remote-reattach.sh`. No real network outage is needed.
+
+## Optional mosh transport
+
+A line `HOST mosh` in `~/.config/tproj/remote-transport` on the attaching Mac
+selects mosh for that host when `mosh` is on the local PATH. Without the line,
+or without local mosh, attachment uses the SSH supervisor above unchanged.
+mosh echoes typing locally and keeps the session across latency spikes, address
+changes and sleep, so the supervisor neither reaps nor retries it. The remote
+command runs as `/bin/sh -c` with `mosh-server` resolved from the Homebrew
+paths and a UTF-8 locale. A nonzero mosh exit within 30 seconds (for example a
+missing `mosh-server` or blocked UDP) falls back once to the SSH supervisor
+with the same command; a later exit or a forwarded signal is final. Terminal
+mode reset and termios restore on exit are the same as for SSH.
+
+Focused proof: `bash tests/test-remote-client-mosh.sh`.

@@ -73,6 +73,14 @@ if [[ -n "$alias" ]]; then
   remote_command+=" --alias $alias_arg"
 fi
 if [[ "$action" == attach || "$action" == reattach ]]; then
+  # Per-host opt-in: "HOST mosh" in ~/.config/tproj/remote-transport selects mosh
+  # (local echo, survives high-latency or roaming links). Anything else is ssh.
+  transport=ssh
+  transport_cfg="$HOME/.config/tproj/remote-transport"
+  if [[ -r "$transport_cfg" ]] && command -v mosh >/dev/null 2>&1 \
+     && awk -v h="$host" '$1 == h && $2 == "mosh" { f = 1 } END { exit !f }' "$transport_cfg"; then
+    transport=mosh
+  fi
   # Keep a local supervisor: SSH restores termios, but a lost connection cannot
   # ask the remote application to turn off terminal-emulator input modes.
   # Python is already required by the peer-ledger refresh above.
@@ -165,6 +173,28 @@ try:
     retrying = "tproj-remote-host reattach" in command
     announced = False
     signature = network_signature() if saved is not None else None
+    if sys.argv[3] == "mosh":
+        # mosh reconnects by itself, so no reap/retry loop. A quick failure
+        # (no mosh-server, UDP blocked) falls back to the ssh supervisor below.
+        env = dict(os.environ)
+        if not any("UTF-8" in env.get(k, "").upper() for k in ("LC_ALL", "LC_CTYPE", "LANG")):
+            env["LC_CTYPE"] = "en_US.UTF-8"
+        server = "PATH=/opt/homebrew/bin:/usr/local/bin:$PATH LANG=en_US.UTF-8 mosh-server"
+        started = time.monotonic()
+        child = subprocess.Popen(["mosh", "--server=" + server, sys.argv[1], "--",
+                                  "/bin/sh", "-c", command], env=env)
+        while child.poll() is None and pending_signal is None:
+            time.sleep(0.1)
+        if pending_signal is not None:
+            reap_transport()
+        else:
+            status = child.wait()
+            status = status if status >= 0 else 128 - status
+            if status != 0 and time.monotonic() - started < 30:
+                print("\r\ntproj: mosh failed (status " + str(status) + "); using ssh", file=sys.stderr)
+            else:
+                pending_signal = -1
+        child = None
     while pending_signal is None:
         quiet = announced
         batch = ["-o", "BatchMode=yes"] if retrying else []
@@ -214,7 +244,7 @@ try:
         announced = True
         # Subsequent transports must not ensure/start a server-side agent.
         command = sys.argv[2].replace("tproj-remote-host attach", "tproj-remote-host reattach", 1)
-    if pending_signal is not None:
+    if pending_signal is not None and pending_signal > 0:
         status = 128 + pending_signal
 
 except OSError as error:
@@ -235,7 +265,7 @@ finally:
             pass
         os.close(tty)
 sys.exit(status)
-' "$host" "$remote_command"
+' "$host" "$remote_command" "$transport"
 else
   exec ssh -o BatchMode=yes -o ConnectTimeout=5 -T -- "$host" "$remote_command"
 fi
