@@ -11,6 +11,27 @@ def digest(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
+def project_directory(path):
+    """Resolve a directory to its nearest repository, including worktrees."""
+    path = Path(path).resolve()
+    return next((parent for parent in (path, *path.parents)
+                 if (parent / '.git').exists()), None)
+
+
+def matches_project(cwd, project):
+    if not isinstance(cwd, str) or not cwd:
+        return False
+    bound = Path(project).resolve()
+    observed = Path(cwd).resolve()
+    root = project_directory(bound) or bound
+    # A cwd change is not a new conversation, but sibling/nested repositories
+    # must not borrow approval from this project.
+    if observed != root and root not in observed.parents:
+        return False
+    observed_root = project_directory(observed)
+    return observed_root is None or observed_root == root
+
+
 def texts(record, platform):
     if platform == 'cdx':
         if record.get('type') != 'response_item': return None
@@ -101,13 +122,13 @@ def attest(ep, req, home=None):
             if platform == 'cdx':
                 header = next(records, {})
                 meta = header.get('payload') or {}
-                if header.get('type') != 'session_meta' or meta.get('id') != tid or not meta.get('cwd') or Path(meta['cwd']).resolve() != Path(project).resolve():
+                if header.get('type') != 'session_meta' or meta.get('id') != tid or not matches_project(meta.get('cwd'), project):
                     raise HubError('approval_unattested','native transcript header does not match bound conversation')
             else:
                 def bound_records(source):
                     for row in source:
                         if row.get('type') in ('user','assistant'):
-                            if row.get('sessionId') != tid or not row.get('cwd') or Path(row['cwd']).resolve() != Path(project).resolve():
+                            if row.get('sessionId') != tid or not matches_project(row.get('cwd'), project):
                                 raise HubError('approval_unattested','native transcript record does not match bound conversation')
                         yield row
                 records = bound_records(records)

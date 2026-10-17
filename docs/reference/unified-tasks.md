@@ -101,6 +101,13 @@ and actual operation verification remain separate from installation.
 Approval binds the exact native user instruction (without prescribed wording),
 or the exact proposed plan confirmed by the next direct user instruction. Native
 transcript conversation and project must match the authenticated endpoint.
+Changing cwd within that same project does not invalidate the conversation's
+approval evidence. The host resolves the bound project and transcript cwd to
+the nearest repository root (including a worktree's `.git` file); repository
+subdirectories are equivalent, but sibling or nested repositories are not.
+For a project without repository metadata, cwd must remain within the bound
+project directory. Native transcript IDs, exact evidence/scope matching, and
+transport-injection exclusions remain mandatory.
 Transport-injected messages and internal continuation blocks are not approvals.
 Identical approval wording can occur more than once. A nonmatching earlier
 candidate does not stop the search for an exact scope/intent/evidence match.
