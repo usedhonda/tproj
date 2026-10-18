@@ -121,16 +121,20 @@ class DetachTests(unittest.TestCase):
   host=Host()
   with tempfile.TemporaryDirectory() as d,patch.dict(os.environ,{'TPROJ_TASK_BINDING_DIR':d}):
    host_dispatch(host,old,{'op':'task_ack','task_id':tid,'expected_epoch':0})
+   # Detach recovers an actual legacy binding; new ACK deliberately creates none.
+   host.db.execute('INSERT INTO formal_task_binding VALUES(?,?,?,?,?)',('old','old1',tid,0,'native-old'))
+   marker=binding_marker('native-old');marker.parent.mkdir(parents=True,exist_ok=True);marker.touch()
+   host.db.commit()
    for actor,op in ((owner,'prepare_handoff'),(old,'release_handoff'),(new,'accept_handoff'),(owner,'commit_handoff')):
     authority.dispatch({'op':op,'task_id':tid,'expected_epoch':0,'target':new},actor)
    authority.dispatch({'op':'begin_operation','task_id':tid,'expected_epoch':1,'tool_use_id':'new-work'},new)
-   self.assertFalse(host_dispatch(host,old,{'op':'task_context'})['can_mutate'])
+   self.assertFalse(host_dispatch(host,old,{'op':'task_context'})['assigned'])
    with self.assertRaises(HubError):host_dispatch(host,old,{'op':'task_detach','task_id':'wrong','expected_epoch':0})
    self.assertTrue(host_dispatch(host,old,{'op':'task_detach','task_id':tid,'expected_epoch':0})['detached'])
    self.assertFalse(binding_marker('native-old').exists())
 
 class AssignedLifecycleTests(unittest.TestCase):
- def test_host_to_master_lifecycle_and_offline_fence(self):
+ def test_task_lifecycle_fences_ledger_not_ordinary_tools(self):
   import tempfile, os
   from unittest.mock import patch
   from task_host import dispatch as host_dispatch, binding_marker
@@ -154,16 +158,21 @@ class AssignedLifecycleTests(unittest.TestCase):
    r=host_dispatch(host,owner,{'op':'task_submit','intent':'repair','scope':'repair scope','approval_id':'approval-one','idempotency_key':'one','executor':'other.cdx'})
    tid=r['task']['task_id']
    host_dispatch(host,executor,{'op':'task_ack','task_id':tid,'expected_epoch':0})
-   self.assertTrue(binding_marker('native-executor').exists())
-   self.assertTrue(host_dispatch(host,executor,{'op':'task_context'})['can_mutate'])
+   self.assertFalse(binding_marker('native-executor').exists())
+   self.assertFalse(host_dispatch(host,executor,{'op':'task_context'})['assigned'])
    host.offline=True
-   with self.assertRaises(HubError):host_dispatch(host,executor,{'op':'task_guard_begin','tool_use_id':'u1'})
+   self.assertFalse(host_dispatch(host,executor,{'op':'task_guard_begin','tool_use_id':'ordinary-u1'})['assigned'])
+   with self.assertRaises(HubError):host_dispatch(host,executor,{'op':'task_progress','task_id':tid,'expected_epoch':0})
    host.offline=False
    host_dispatch(host,executor,{'op':'task_progress','task_id':tid,'expected_epoch':0})
-   host_dispatch(host,executor,{'op':'task_guard_begin','tool_use_id':'u1'})
-   host_dispatch(host,executor,{'op':'task_guard_end','tool_use_id':'u1'})
+   before=authority.db.total_changes
+   host_dispatch(host,executor,{'op':'task_guard_begin','tool_use_id':'ordinary-u1'})
+   host_dispatch(host,executor,{'op':'task_guard_end','tool_use_id':'ordinary-u1'})
+   self.assertEqual(authority.db.total_changes,before)
+   operation=host.hub('task_begin_operation',endpoint_id=executor['endpoint_id'],task_id=tid,expected_epoch=0,tool_use_id='scoped-u1')
+   host.hub('task_end_operation',endpoint_id=executor['endpoint_id'],token=operation['token'])
    host_dispatch(host,executor,{'op':'task_done','task_id':tid,'expected_epoch':0})
-   self.assertFalse(host_dispatch(host,executor,{'op':'task_context'})['can_mutate'])
+   self.assertFalse(host_dispatch(host,executor,{'op':'task_context'})['assigned'])
    host_dispatch(host,owner,{'op':'task_verify','task_id':tid,'expected_epoch':0})
    host_dispatch(host,owner,{'op':'task_report','task_id':tid,'expected_epoch':0})
    host_dispatch(host,executor,{'op':'task_detach','task_id':tid,'expected_epoch':0})

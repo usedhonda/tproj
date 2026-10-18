@@ -58,9 +58,14 @@ Host-authenticated native approval evidence, task epoch, executor incarnation,
 and durable operation boundaries fence mutations. A local assignment marker
 only restricts execution; it cannot grant authority while the master is offline.
 
-Before activation, finish native approval binding, role-router integration,
-capability negotiation, and live isolated host acceptance. Source and fixture
-success alone do not establish that these deployment gates are satisfied.
+Before activation, verify native approval attestation, loaded capability
+negotiation, and live isolated host acceptance. Role labels are advisory; a
+formal ACK records acceptance but does not create a conversation-wide binding
+or grant/revoke ordinary editing. Master unavailability blocks the affected
+ledger operation, not unrelated native tools. Legacy bindings remain explicit
+recovery evidence. Source and fixture success alone do not establish live host
+acceptance; use the current unified-task contract rather than restoring old
+role-based activation requirements.
 
 ## Minimum acceptance evidence (future)
 
