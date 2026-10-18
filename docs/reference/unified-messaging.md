@@ -33,6 +33,8 @@ Each ordinary send resolves one registered recipient. Identical text sent to
 separately named recipients is not evidence of an unauthorized broadcast and
 is not rejected by a cross-recipient similarity or time-window heuristic.
 No additional approval token or recipient grant is required by this transport.
+Authentication does not expand the sender's existing user-authorized recipients
+or sharing scope.
 Explicit broadcast targets and forged sender/control/task markers remain
 forbidden; ordinary messages do not create user authorization or task authority.
 The hub's immutable submission ID, not body similarity, identifies a retry:
@@ -52,7 +54,9 @@ The states are distinct:
 Transport health, a socket write, or a model run does not collapse these states.
 Body-free `diagnose` metadata exposes `receipt_state` (recorded receipt state or
 null), `reply_count`, and up to 20 `reply_message_ids` ordered by creation time
-and ID. These linked replies were authenticated on submission. They let callers
+and ID. The list is bounded, while `reply_count` reports the total; absence
+from the first 20 IDs is not evidence that a particular reply does not exist.
+These linked replies were authenticated on submission. They let callers
 inspect an exact response without interpreting absent ACK as non-consumption.
 They do not change the original transport state, assert an explicit ACK, or
 prove the requested work completed; callers must inspect the actual answer.
