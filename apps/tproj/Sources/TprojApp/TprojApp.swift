@@ -3072,7 +3072,8 @@ final class AppViewModel: ObservableObject {
         if let host = hostForColumn(column) {
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_host", host])
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_path", column.projectPath])
-            let remoteCmd = "ssh -t \(shellSingleQuote(host)) \"cd \(shellDoubleQuote(column.projectPath)) && exec \\$SHELL -l\""
+            let remoteClient = shellSingleQuote(NSHomeDirectory() + "/bin/tproj-remote-client")
+            let remoteCmd = "\(remoteClient) shell \(shellSingleQuote(host)) \(shellSingleQuote(column.projectPath))"
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, remoteCmd, "C-m"])
         } else {
             let localDir = column.projectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? NSHomeDirectory() : column.projectPath

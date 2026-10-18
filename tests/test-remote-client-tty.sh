@@ -148,7 +148,7 @@ print("RESULT=" + json.dumps([status, before == after, queued]), flush=True)
                 assert b"tproj-remote-host reattach" in output and b"--role " + role.encode() in output, output
                 assert b"REPLAY=False" in output, output
                 assert b"BatchMode=yes" in output, output
-                assert b"ServerAliveInterval=2" in output and b"ServerAliveCountMax=2" in output and b"ConnectTimeout=3" in output, output
+                assert b"ServerAliveInterval=15" in output and b"ServerAliveCountMax=3" in output and b"ConnectTimeout=10" in output, output
             if retry_status:
                 assert b"remote attachment exited with status 17" in output, output
             if second_outage:

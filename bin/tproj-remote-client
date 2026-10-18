@@ -3,13 +3,14 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: tproj-remote-client sync|list|cache-status HOST | status|identity|ensure|attach|reattach|stop HOST REMOTE_PATH cc|cdx | register|unregister HOST REMOTE_PATH [--alias NAME] | cache-set HOST REMOTE_PATH cc|cdx HOURS | mode-status HOST REMOTE_PATH | mode-set HOST REMOTE_PATH collab|assist|solo cc|cdx|derived" >&2
+  echo "usage: tproj-remote-client shell HOST REMOTE_PATH | sync|list|cache-status HOST | status|identity|ensure|attach|reattach|stop HOST REMOTE_PATH cc|cdx | register|unregister HOST REMOTE_PATH [--alias NAME] | cache-set HOST REMOTE_PATH cc|cdx HOURS | mode-status HOST REMOTE_PATH | mode-set HOST REMOTE_PATH collab|assist|solo cc|cdx|derived" >&2
   exit 2
 fi
 
 action="$1" host="$2" remote_path="${3:-}" role="${4:-}" alias="" hours="${5:-}"
 case "$action" in
   sync|list|cache-status) [[ $# -eq 2 ]] || exit 2 ;;
+  shell) [[ $# -eq 3 ]] || exit 2 ;;
   status|identity|ensure|attach|reattach|stop) [[ $# -eq 4 ]] || exit 2; case "$role" in cc|cdx) ;; *) echo "invalid role: $role" >&2; exit 2 ;; esac ;;
   register)
     if [[ $# -eq 5 && "$4" == --alias ]]; then alias="$5"
@@ -48,7 +49,10 @@ if [[ "$action" == ensure || "$action" == attach || "$action" == register ]]; th
   sync_peer_ledger || exit 1
 fi
 
-if [[ "$action" == mode-status || "$action" == mode-set ]]; then
+if [[ "$action" == shell ]]; then
+  printf -v path_arg '%q' "$remote_path"
+  remote_command="cd $path_arg && exec \"\$SHELL\" -l"
+elif [[ "$action" == mode-status || "$action" == mode-set ]]; then
   printf -v path_arg '%q' "$remote_path"
   remote_command='PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" "$HOME/bin/model-role-router" mode'
   if [[ "$action" == mode-set ]]; then
@@ -60,7 +64,7 @@ elif [[ "$action" == cache-status || "$action" == cache-set ]]; then
 else
   remote_command="\$HOME/bin/tproj-remote-host $action"
 fi
-if [[ "$action" != list && "$action" != cache-status && "$action" != mode-status && "$action" != mode-set ]]; then
+if [[ "$action" != list && "$action" != cache-status && "$action" != mode-status && "$action" != mode-set && "$action" != shell ]]; then
   printf -v path_arg '%q' "$remote_path"
   remote_command+=" --path $path_arg"
 fi
@@ -72,7 +76,7 @@ if [[ -n "$alias" ]]; then
   printf -v alias_arg '%q' "$alias"
   remote_command+=" --alias $alias_arg"
 fi
-if [[ "$action" == attach || "$action" == reattach ]]; then
+if [[ "$action" == attach || "$action" == reattach || "$action" == shell ]]; then
   # Per-host opt-in: "HOST mosh" in ~/.config/tproj/remote-transport selects mosh
   # (local echo, survives high-latency or roaming links). Anything else is ssh.
   transport=ssh
@@ -198,8 +202,8 @@ try:
     while pending_signal is None:
         quiet = announced
         batch = ["-o", "BatchMode=yes"] if retrying else []
-        child = subprocess.Popen(["ssh", *batch, "-o", "ServerAliveInterval=2",
-                                  "-o", "ServerAliveCountMax=2", "-o", "ConnectTimeout=3",
+        child = subprocess.Popen(["ssh", *batch, "-o", "ServerAliveInterval=15",
+                                  "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10",
                                   "-tt", "--", sys.argv[1], command],
                                  stderr=subprocess.DEVNULL if quiet else None)
         previous_wall = time.time()
