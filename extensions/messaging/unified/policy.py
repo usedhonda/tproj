@@ -4,28 +4,17 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
-from typing import Any
 
 try:
     from .protocol import HubError
 except ImportError:
     from protocol import HubError
 
-TTL = 600
 RECOVERY_TTL = 86400
 
 
 def _normal(body: str) -> str:
     return " ".join(body.split())
-
-
-def _family(address: str) -> str:
-    role = address.rsplit(".", 1)[-1].lower()
-    if role in ("cc", "claude") or role.startswith("claude-p"):
-        return "cc"
-    if role in ("cdx", "codex") or role.startswith("codex-p"):
-        return "cdx"
-    return ""
 
 
 def _recovery_fingerprint(sender: str, target: str, body: str) -> str:
@@ -66,17 +55,6 @@ def check_policy(db: sqlite3.Connection, sender_endpoint: str, target_address: s
         raise HubError("policy_blocked", reason)
     if in_reply_to:
         return
-    family = _family(target_address)
-    if family:
-        rows = db.execute(
-            "SELECT target_address, body, created_at FROM messages "
-            "WHERE sender_endpoint=? AND created_at>=? ORDER BY created_at DESC",
-            (sender_endpoint, float(now) - TTL),
-        )
-        normalized = _normal(body)
-        for row in rows:
-            if _family(row[0]) == family and row[0] != target_address and _normal(row[1]) == normalized:
-                raise HubError("policy_blocked", "potential fan-out")
     # Recovery replay is intentionally independent of target family and has no
     # bypass flag in the unified API. Only recovery-shaped gate sends qualify.
     if lower == "gate" or lower.startswith("gate:"):

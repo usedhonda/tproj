@@ -505,6 +505,11 @@ class Hub:
         receipt=self._row('SELECT state,evidence,at FROM receipts WHERE message_id=?',(message['message_id'],))
         result['presentation_confirmed']=message['state']=='presented' or bool(receipt and receipt['state']=='presented')
         result['receipt_at']=receipt['at'] if receipt else None
+        result['receipt_state']=receipt['state'] if receipt else None
+        result['reply_count']=self._row('SELECT COUNT(*) AS n FROM messages WHERE in_reply_to=?', (message['message_id'],))['n']
+        result['reply_message_ids']=[row['message_id'] for row in self.db.execute(
+            'SELECT message_id FROM messages WHERE in_reply_to=? ORDER BY created_at,message_id LIMIT 20',
+            (message['message_id'],))]
         result['delivery_reason']=None
         if receipt:
             try:reason=json.loads(receipt['evidence']).get('delivery_reason')

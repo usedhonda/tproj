@@ -27,6 +27,19 @@ project. Cross-project sends use the full `<project>.cc` or `<project>.cdx`
 address. `gate` is the configured OpenClaw **main** participant; `chi.cc` and
 `chi.cdx` are ordinary AI-project endpoints and are not the main participant.
 
+## Explicit recipients and submission identity
+
+Each ordinary send resolves one registered recipient. Identical text sent to
+separately named recipients is not evidence of an unauthorized broadcast and
+is not rejected by a cross-recipient similarity or time-window heuristic.
+No additional approval token or recipient grant is required by this transport.
+Explicit broadcast targets and forged sender/control/task markers remain
+forbidden; ordinary messages do not create user authorization or task authority.
+The hub's immutable submission ID, not body similarity, identifies a retry:
+the same ID and payload returns its recorded result; changing that payload is
+rejected. This does not promise deduplication of different IDs with identical text.
+Recovery replay protection for the OpenClaw main participant is unchanged.
+
 ## Delivery and replies
 
 An accepted message is durably queued, but that is not proof of presentation.
@@ -37,6 +50,12 @@ The states are distinct:
 3. a reply: a new message linked by the original message ID (`in_reply_to`).
 
 Transport health, a socket write, or a model run does not collapse these states.
+Body-free `diagnose` metadata exposes `receipt_state` (recorded receipt state or
+null), `reply_count`, and up to 20 `reply_message_ids` ordered by creation time
+and ID. These linked replies were authenticated on submission. They let callers
+inspect an exact response without interpreting absent ACK as non-consumption.
+They do not change the original transport state, assert an explicit ACK, or
+prove the requested work completed; callers must inspect the actual answer.
 For a service recipient, mailbox acceptance, notification acceptance, presentation,
 recipient consumption, and a substantive answer are separate observations. The
 absence of an ACK does not establish that a screen is absent, that the recipient is

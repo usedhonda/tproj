@@ -170,6 +170,23 @@ class HubTest(unittest.TestCase):
         self.assertFalse(result['presentation_confirmed'])
         self.assertIsNone(result['delivery_reason'])
 
+    def test_diagnosis_keeps_linked_reply_separate_from_receipt(self):
+        self.send()
+        self.h.dispatch({'op':'submit','host_id':'b','host_token':'tb','message':{
+            'message_id':'reply-1','in_reply_to':'m1','sender_endpoint':'eb',
+            'body':'private-reply-sentinel','kind':'chat'}})
+        self.h.db.execute("UPDATE messages SET state='uncertain' WHERE message_id='m1'")
+        before = self.h.db.total_changes
+        result = self.h.dispatch({'op':'diagnose','host_id':'a','host_token':'ta',
+                                  'endpoint_id':'ea','message_id':'m1'})
+        self.assertEqual(self.h.db.total_changes, before)
+        self.assertEqual(result['state'], 'uncertain')
+        self.assertFalse(result['presentation_confirmed'])
+        self.assertIsNone(result['receipt_state'])
+        self.assertEqual(result['reply_count'], 1)
+        self.assertEqual(result['reply_message_ids'], ['reply-1'])
+        self.assertNotIn('private-reply-sentinel', str(result))
+
     def test_durable_idempotency_and_relative_route(self):
         self.assertEqual(self.send(), {"message_id":"m1","state":"queued"})
         self.assertTrue(self.send()["duplicate"])
