@@ -482,10 +482,21 @@ class Hub:
                         (msg["message_id"], msg["state"], json.dumps({"delivery_reason": reason}), self._now()))
         return {"message_id": msg["message_id"], "state": msg["state"], "delivery_reason": reason}
 
+    def response_evidence(self, message):
+        # A linked row alone is not proof of a response by the pinned recipient.
+        args = (message['message_id'], message['recipient_endpoint'],
+                message['sender_endpoint'], message['thread_id'])
+        where = 'in_reply_to=? AND sender_endpoint=? AND recipient_endpoint=? AND thread_id=?'
+        count = self._row('SELECT COUNT(*) AS n FROM messages WHERE ' + where, args)['n']
+        ids = [row['message_id'] for row in self.db.execute(
+            'SELECT message_id FROM messages WHERE ' + where + ' ORDER BY created_at,message_id LIMIT 20', args)]
+        return {'recipient_reply_count': count, 'recipient_reply_message_ids': ids,
+                'response_state': 'recipient_replied' if count else 'unconfirmed'}
+
     def diagnose(self, req, authenticated_party=None):
         host=self._auth(req)
         try:
-            message=self._row('SELECT rowid AS sequence,message_id,state,sender_endpoint,recipient_endpoint,created_at,expires_at,adapter_received_at FROM messages WHERE message_id=?',(req.get('message_id'),))
+            message=self._row('SELECT rowid AS sequence,message_id,thread_id,state,sender_endpoint,recipient_endpoint,created_at,expires_at,adapter_received_at FROM messages WHERE message_id=?',(req.get('message_id'),))
         except (OSError, sqlite3.Error) as exc:
             classified = resource_error(exc, 'outcome_query')
             if classified: raise classified from None
@@ -501,6 +512,7 @@ class Hub:
             if not any(self._same_native_party(ep, party) for party in (message['sender_endpoint'], message['recipient_endpoint'])):
                 raise HubError('unauthorized','delivery metadata requires party or configured operator permission')
         result=dict(message)
+        result.update(self.response_evidence(message))
         result['diagnostic_host_id']=self.config.get('host_id',host)
         receipt=self._row('SELECT state,evidence,at FROM receipts WHERE message_id=?',(message['message_id'],))
         result['presentation_confirmed']=message['state']=='presented' or bool(receipt and receipt['state']=='presented')
@@ -595,6 +607,7 @@ class Hub:
             # Same resolved sender the inbox and claim views carry: a reader that fetches
             # one message by ID must not have to trust the name written in its body.
             result = self.message_views([m], response_kind="query")[0]
+            result.update(self.response_evidence(m))
             result["reader_is_recipient"] = self._same_native_party(ep, m["recipient_endpoint"])
             receipt = self._row("SELECT evidence,at FROM receipts WHERE message_id=?", (m["message_id"],))
             if receipt and m["state"] in ("accepted", "queued", "adapter_received", "uncertain"):

@@ -60,6 +60,16 @@ These linked replies were authenticated on submission. They let callers
 inspect an exact response without interpreting absent ACK as non-consumption.
 They do not change the original transport state, assert an explicit ACK, or
 prove the requested work completed; callers must inspect the actual answer.
+Message query and diagnosis also expose `response_state` (`recipient_replied`
+or `unconfirmed`), `recipient_reply_count`, and up to 20
+`recipient_reply_message_ids`. These require the exact original recipient as
+sender, original sender as recipient, and the same thread and `in_reply_to`.
+They conservatively leave endpoint-successor cases unconfirmed. Unlike the
+broader linked-reply exploration fields, these identify pinned-recipient response
+evidence. An uncertain transport with `recipient_replied` must be described as
+"recipient replied; presentation receipt unconfirmed", not as undelivered.
+Neither these fields nor a reply synthesize an explicit ACK or task completion.
+Old consumers may omit these additive fields; missing fields mean unknown.
 For a service recipient, mailbox acceptance, notification acceptance, presentation,
 recipient consumption, and a substantive answer are separate observations. The
 absence of an ACK does not establish that a screen is absent, that the recipient is
@@ -134,6 +144,12 @@ the entire envelope in one paste, because paste coalescing can discard preceding
 literal keystrokes. Exact prompt
 receipts normalize only the known single native paste wrapper. A matching bound
 Claude session transcript may resolve an uncertain write without reinjection.
+For Codex CLI, the host may likewise recover presentation from a unique native
+rollout pinned to the endpoint thread and project. Only a top-level live user
+message with the exact normalized delivery prompt hash counts; compaction
+histories, event mirrors, replies, other threads/projects and partial matches do
+not. The bounded tail may leave older evidence unknown. This records observed
+presentation, not an explicit recipient ACK or requested-work completion.
 Observer running state, selection screens and independent draft measurement
 block injection; terminal write success is never a presentation receipt.
 

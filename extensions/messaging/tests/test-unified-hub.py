@@ -185,6 +185,18 @@ class HubTest(unittest.TestCase):
         self.assertIsNone(result['receipt_state'])
         self.assertEqual(result['reply_count'], 1)
         self.assertEqual(result['reply_message_ids'], ['reply-1'])
+        self.assertEqual(result['response_state'], 'recipient_replied')
+        self.assertEqual(result['recipient_reply_message_ids'], ['reply-1'])
+        self.assertEqual(result['recipient_reply_count'], 1)
+        self.h.db.execute("UPDATE messages SET thread_id='other-thread' WHERE message_id='reply-1'")
+        wrong = self.h.dispatch({'op':'diagnose','host_id':'a','host_token':'ta',
+                                'endpoint_id':'ea','message_id':'m1'})
+        self.assertEqual(wrong['response_state'], 'unconfirmed')
+        self.h.db.execute("UPDATE messages SET thread_id='m1',sender_endpoint='ea' WHERE message_id='reply-1'")
+        wrong = self.h.dispatch({'op':'diagnose','host_id':'a','host_token':'ta',
+                                'endpoint_id':'ea','message_id':'m1'})
+        self.assertEqual(wrong['recipient_reply_count'], 0)
+
         self.assertNotIn('private-reply-sentinel', str(result))
 
     def test_durable_idempotency_and_relative_route(self):

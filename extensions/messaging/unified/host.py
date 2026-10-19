@@ -20,7 +20,7 @@ from urllib.parse import quote
 from identity import (IdentityError, adopt_native_conversation, bind_caller, discover_endpoints, discover_tmux_endpoints,
                       peer_credentials, same_live_process_family)
 from protocol import HubError, success, failure, resource_error
-from receipt import normalize_prompt
+from receipt import normalize_prompt, codex_transcript_presented
 
 WIRE_LIMIT = 262144
 
@@ -745,6 +745,27 @@ class Host:
                                 (mid, ep['endpoint_id'], json.dumps(msg), 'received', None, time.time()))
                 self.db.commit()
                 row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
+                receipt_ep = ep
+                if (row['state'] in ('dispatching', 'uncertain') and ep['platform'] == 'cdx'
+                        and not (ep.get('thread_id') or ep.get('session_id'))):
+                    # Standalone tmux discovery intentionally has no native ID.
+                    # Read the hub's existing attestation for this exact immutable
+                    # endpoint, never infer a conversation from pane/project labels.
+                    try:
+                        native_rows = self.hub('diagnostic_identity', active_only=True).get('endpoint_native', [])
+                        markers = [n for n in native_rows if n.get('endpoint_id') == ep['endpoint_id']
+                                   and n.get('native_kind') in ('thread_id', 'session_id')]
+                        if len(markers) == 1:
+                            receipt_ep = dict(ep, thread_id=markers[0]['native_id'])
+                    except HubError:
+                        pass  # older/unavailable hub leaves presentation unknown
+                if (row['state'] in ('dispatching', 'uncertain') and ep['platform'] == 'cdx'
+                        and codex_transcript_presented(receipt_ep, row['prompt_hash'])):
+                    self.db.execute("UPDATE deliveries SET state='presented' WHERE message_id=?", (mid,))
+                    self.db.commit()
+                    self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid,
+                             state='presented', evidence='bound Codex transcript exact prompt hash')
+                    row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
                 if row['state'] in ('dispatching', 'uncertain') and ep['platform'] == 'cc':
                     observed_runtime = ep.get('observed_runtime_id') or ep['runtime_id']
                     for transcript in (Path.home()/'.claude/projects').glob('*/'+observed_runtime+'.jsonl'):
