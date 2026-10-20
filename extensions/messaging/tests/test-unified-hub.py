@@ -158,6 +158,39 @@ class HubTest(unittest.TestCase):
     def reg(self,h,t,e,p,pid): return self.h.dispatch({"op":"endpoint_register","host_id":h,"host_token":t,"endpoint_id":e,"participant_id":p,"host_id":h,"session":"s","pane":"0","pid":pid,"pid_start":"x","runtime_id":"r","platform":"test"})
     def send(self,mid="m1",body="hello",target="cdx"):
         return self.h.dispatch({"op":"submit","host_id":"a","host_token":"ta","message":{"message_id":mid,"thread_id":"t","sender_endpoint":"ea","target":target,"body":body,"kind":"chat"}})
+    def test_claim_sequence_passes_old_pending_and_wraps_without_replay(self):
+        self.send('old')
+        self.send('new')
+        receiver = dict(op='claim', host_id='b', host_token='tb', endpoint_id='eb', limit=1)
+        first = self.h.dispatch(dict(receiver, after_sequence=0))
+        second = self.h.dispatch(dict(receiver, after_sequence=first['next_sequence']))
+        self.assertEqual([m['message_id'] for m in first['messages']], ['old'])
+        self.assertEqual([m['message_id'] for m in second['messages']], ['new'])
+        empty = self.h.dispatch(dict(receiver, after_sequence=second['next_sequence']))
+        self.assertEqual(empty, {'messages': [], 'next_sequence': 0})
+        self.assertEqual(self.h.dispatch(dict(receiver, after_sequence=0))['messages'][0]['message_id'], 'old')
+        # Claim is adapter custody, never presentation or permission to replay.
+        self.assertEqual(self.h.db.execute("SELECT state FROM messages WHERE message_id='old'").fetchone()[0], 'adapter_received')
+        before = self.h.db.total_changes
+        for invalid in (True, -1, '1', [], 2**63):
+            with self.assertRaises(HubError): self.h.dispatch(dict(receiver, after_sequence=invalid))
+        self.assertEqual(self.h.db.total_changes, before)
+        with self.assertRaises(HubError):
+            self.h.dispatch(dict(receiver, host_id='a', host_token='ta', after_sequence=0))
+
+    def test_claim_probe_filtered_page_is_not_scan_end(self):
+        self.send('excluded')
+        self.send('allowed')
+        self.h.config['probe_message_ids'] = ['allowed']
+        self.h.db.execute("UPDATE metadata SET value='probe' WHERE key='maintenance'")
+        self.h.db.commit()
+        receiver = dict(op='claim', host_id='b', host_token='tb', endpoint_id='eb', limit=1)
+        first = self.h.dispatch(dict(receiver, after_sequence=0))
+        self.assertEqual(first['messages'], [])
+        self.assertGreater(first['next_sequence'], 0)
+        second = self.h.dispatch(dict(receiver, after_sequence=first['next_sequence']))
+        self.assertEqual([m['message_id'] for m in second['messages']], ['allowed'])
+
     def test_diagnosis_is_metadata_only_and_operator_permission_is_explicit(self):
         self.send(body='private-body-sentinel')
         self.h.dispatch({'op':'directory_import','admin_token':'adm','projects':[{'project_id':'support','alias':'support','host_id':'a','path':'/support'}]})

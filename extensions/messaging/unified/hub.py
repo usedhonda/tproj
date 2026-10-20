@@ -398,17 +398,29 @@ class Hub:
         host=self._auth(req)
         if self._maintenance() == "stopped": raise HubError("maintenance", "hub delivery is paused")
         ep=self._host_endpoint(host,req.get("endpoint_id")); now=self._now()
+        after = req.get('after_sequence')
+        if after is not None and (type(after) is not int or after < 0 or after > 9223372036854775807):
+            raise HubError('invalid_request', 'invalid claim sequence')
         self._tx()
         try:
             limit=min(max(int(req.get("limit",100)),1),1000)
-            rows=self.db.execute("SELECT m.* FROM messages m WHERE m.recipient_endpoint=? AND m.expires_at>? AND m.state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages reply WHERE reply.in_reply_to=m.message_id AND reply.sender_endpoint=m.recipient_endpoint) ORDER BY m.created_at,m.message_id LIMIT ?",(ep["endpoint_id"],now,limit)).fetchall()
+            # Optional keyset scan on the existing immutable insertion sequence.
+            # Default callers retain their historical created-at ordering.
+            boundary = ' AND m.rowid>?' if after is not None else ''
+            order = 'm.rowid' if after is not None else 'm.created_at,m.message_id'
+            params = (ep['endpoint_id'], now) + ((after,) if after is not None else ()) + (limit,)
+            rows=self.db.execute("SELECT m.rowid AS sequence,m.* FROM messages m WHERE m.recipient_endpoint=? AND m.expires_at>? AND m.state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages reply WHERE reply.in_reply_to=m.message_id AND reply.sender_endpoint=m.recipient_endpoint)" + boundary + " ORDER BY " + order + " LIMIT ?", params).fetchall()
+            scanned_sequence = rows[-1]['sequence'] if rows else 0
             if self._maintenance() == "probe": rows=[r for r in rows if r["message_id"] in set(self.config.get("probe_message_ids", []))]
             rows=self.message_views(rows)
             for r in rows: self.db.execute("UPDATE messages SET state='adapter_received',adapter_received_at=? WHERE message_id=?",(now,r["message_id"]))
             self._commit()
         except Exception:
             self._rollback(); raise
-        return {"messages":rows}
+        result = {"messages": rows}
+        if after is not None:
+            result['next_sequence'] = rows[-1]['sequence'] if rows else scanned_sequence
+        return result
 
     def receipt(self, req):
         host=self._auth(req); msg=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),));

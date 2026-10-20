@@ -99,6 +99,7 @@ class Host:
         self.read_only = bool(read_only)
         self.endpoints = []
         self.refreshed = 0
+        self.claim_sequences = {}
         try:
             if self.read_only:
                 self.db = sqlite3.connect('file:' + quote(str(config['journal']), safe='/') + '?mode=ro', uri=True)
@@ -750,7 +751,12 @@ class Host:
             ep = self._current_delivery_endpoint(ep['endpoint_id'])
             if ep is None:
                 continue
-            claims = self.hub('claim', endpoint_id=ep['endpoint_id'], limit=1)['messages']
+            page = self.hub('claim', endpoint_id=ep['endpoint_id'], limit=1,
+                            after_sequence=self.claim_sequences.get(ep['endpoint_id'], 0))
+            claims = page['messages']
+            # SQL end wraps on the next tick (filtered empty need not). Restart resets only this scan
+            # hint; durable local presentation/unknown ownership never resets.
+            self.claim_sequences[ep['endpoint_id']] = page['next_sequence']
             claimed_ids = {m['message_id'] for m in claims}
             for pending in self.db.execute("SELECT envelope,message_id FROM deliveries WHERE endpoint_id=? AND state IN ('dispatching','uncertain')", (ep['endpoint_id'],)):
                 if pending['message_id'] not in claimed_ids:

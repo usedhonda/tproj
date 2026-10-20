@@ -18,6 +18,30 @@ from service_policy_migrate import migrate
 
 
 class UnifiedHostServicesTest(unittest.TestCase):
+    def test_delivery_scan_advances_and_wraps_pending_without_terminal_replay(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            host = host_mod.Host({'journal': str(Path(tmp) / 'journal.db'),
+                                  'delivery_enabled': True}, recover=False)
+            ep = {'endpoint_id': 'ep', 'platform': 'cdx'}
+            host.endpoints = [ep]
+            host.refreshed = time.monotonic()
+            host._current_delivery_endpoint = lambda _: ep
+            seen = []
+            def hub(op, **args):
+                self.assertEqual(op, 'claim')
+                seen.append(args['after_sequence'])
+                seq = args['after_sequence']
+                return {'messages': [{'message_id': 'm'+str(seq+1)}] if seq < 2 else [],
+                        'next_sequence': seq+1 if seq < 2 else 0}
+            host.hub = hub
+            with patch('native_consumer.owns', return_value=True):
+                for _ in range(4): host.delivery_tick()
+            self.assertEqual(seen, [0, 1, 2, 0])
+            self.assertEqual(host.db.execute('SELECT count(*) FROM deliveries').fetchone()[0], 2)
+            self.assertEqual({r[0] for r in host.db.execute('SELECT state FROM deliveries')}, {'received'})
+            host.db.close()
+
     def test_current_host_policy_controls_legacy_and_new_service_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)

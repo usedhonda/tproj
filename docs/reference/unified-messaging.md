@@ -820,3 +820,18 @@ expiry. Ineligible originals stop new publication; unknown attempts remain
 read-only queue reconciliation. A child-job exception is isolated, removed and
 recorded unknown under its matching attempt/generation, so it cannot remain a
 phantom live job or stop collecting other jobs.
+
+### Bounded fair claim scan
+
+The existing authenticated recipient `claim` accepts optional nonnegative integer
+`after_sequence` (signed 64-bit). This uses the existing messages row sequence,
+not a new queue. It returns `next_sequence` for the last returned row, or zero
+only at SQL end. A probe-filtered empty page advances to the raw scanned
+sequence instead of wrapping; a size-bounded nonempty page advances only through
+returned rows. The Host visits one row per endpoint per tick and wraps on
+the tick after SQL end, so an old adapter-received message cannot
+permanently hide later messages. Default callers retain created-at ordering.
+The cursor is a volatile scheduling hint, not consumption, notification-drain
+completion, cancellation permission, or a no-lost-wake guarantee. Restart may
+scan old rows again, but existing durable presentation/unknown fences remain
+authoritative; claiming never authorizes replay.
