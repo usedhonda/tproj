@@ -54,6 +54,56 @@ class HubTest(unittest.TestCase):
         return self.h.dispatch(dict(op='native_attest', host_id=host, host_token='t'+host,
                                     endpoint_id=endpoint, native_kind='thread_id', native_id=native))
 
+    def test_sqlite_full_never_acknowledges_uncommitted_admission(self):
+        import sqlite3
+        import threading
+        self.send('retained')
+        retained = tuple(self.h.db.execute("SELECT * FROM messages WHERE message_id='retained'").fetchone())
+        pages = self.h.db.execute('PRAGMA page_count').fetchone()[0]
+        self.h.db.execute('PRAGMA max_page_count=' + str(pages))
+        request = dict(op='submit', host_id='a', host_token='ta', message=dict(
+            message_id='capacity-original', thread_id='t', sender_endpoint='ea',
+            target='cdx', body='x' * 100000, kind='chat'))
+        server, client = socket.socketpair()
+        class Listener:
+            accepted = False
+            def accept(inner):
+                if inner.accepted: raise StopIteration
+                inner.accepted = True
+                return server, None
+        def serve_once():
+            try: serve_socket(Listener(), self.h.dispatch)
+            except StopIteration: pass
+        worker = threading.Thread(target=serve_once, daemon=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            worker.start()
+            with client:
+                client.settimeout(5)
+                client.sendall(json.dumps(request).encode() + b'\n')
+                response = json.loads(client.recv(4096))
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(response['ok'])
+        if sys.version_info >= (3, 11):
+            self.assertEqual(response['error']['code'], 'resource_exhausted')
+            self.assertEqual(response['error']['details']['acceptance'], 'unknown')
+        else:
+            # Older sqlite3 exceptions expose no numeric error code. Do not
+            # infer exhaustion from text or misreport successful acceptance.
+            self.assertEqual(response['error']['code'], 'internal')
+        self.assertFalse(self.h.db.in_transaction)
+        # A separate connection sees only the durable pre-existing original.
+        with sqlite3.connect(self.h.db_path) as reader:
+            self.assertEqual(reader.execute('SELECT message_id FROM messages').fetchall(), [('retained',)])
+            self.assertEqual(reader.execute("SELECT * FROM messages WHERE message_id='retained'").fetchone(), retained)
+        # Capacity recovery keeps the immutable ID; a repeated request cannot
+        # duplicate acceptance even when the preceding success response is lost.
+        self.h.db.execute('PRAGMA max_page_count=' + str(pages + 1000))
+        self.assertEqual(self.h.dispatch(request), {'message_id': 'capacity-original', 'state': 'queued'})
+        self.assertTrue(self.h.dispatch(request)['duplicate'])
+        with sqlite3.connect(self.h.db_path) as reader:
+            self.assertEqual(reader.execute("SELECT count(*) FROM messages WHERE message_id='capacity-original'").fetchone()[0], 1)
+
     def test_active_endpoint_list_excludes_large_retired_history_without_deletion(self):
         for n in range(1000):
             self.reg("a", "ta", "retired-" + str(n), "p:cc", n + 10)

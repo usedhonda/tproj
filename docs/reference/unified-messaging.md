@@ -362,7 +362,13 @@ grant historical access. Service diagnosis checks the current enrollment
 generation and launchd process without registering it.
 
 Only ENOSPC, EDQUOT and SQLite SQLITE_FULL classify as `resource_exhausted`.
-Its optional metadata contains a bounded `failure_stage` and `acceptance=unknown`;
+SQLite classification requires the exception's numeric error code (available
+in Python 3.11 and later). Older runtimes return a generic failure when that
+code is unavailable; error text is not used to infer exhaustion. Neither
+failure acknowledges an uncommitted message. Existing committed originals
+remain intact, and capacity recovery preserves the original submission ID.
+The `resource_exhausted` response's optional metadata contains a bounded
+`failure_stage` and `acceptance=unknown`;
 even a locally failed attempt cannot disprove acceptance of an earlier attempt
 with the same submission ID. Diagnosis is metadata-only and may itself be
 unavailable on a full disk. Preserve the stable ID and body; do not create a new
