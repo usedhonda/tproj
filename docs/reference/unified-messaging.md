@@ -627,3 +627,11 @@ only after an entire backlog. A refresh that removes an endpoint stops further
 processing for that immutable endpoint. This does not relax heartbeat freshness,
 create a second scheduler, replay unknown deliveries, or guarantee progress during
 a single blocked operation longer than the heartbeat TTL.
+
+An authenticated native endpoint need not have a tmux pane. Terminal delivery
+requires a nonempty pane string; otherwise the original remains pending with
+`endpoint_unavailable`, without terminal access, presentation claim, input
+mutation, endpoint retirement, or replay. Other endpoints continue through the
+same worker. Existing historical receipt recovery remains available separately.
+This is an unavailable terminal surface, not proof of an invalid native identity
+or a completed native ingress implementation.

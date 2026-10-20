@@ -808,6 +808,12 @@ class Host:
                     if time.time() - row['updated'] > 30:
                         self.mark_uncertain(mid, 'receipt_timeout')
                     continue
+                # Native identity can exist without a tmux surface. Keep its
+                # pending message intact; one unavailable pane must not kill
+                # the shared delivery/heartbeat worker for all endpoints.
+                if not isinstance(ep.get('pane'), str) or not ep['pane']:
+                    self.delivery_status(ep['endpoint_id'], mid, 'endpoint_unavailable')
+                    continue
                 # Revalidate this exact process incarnation immediately before terminal access.
                 from identity import _process_info
                 try:

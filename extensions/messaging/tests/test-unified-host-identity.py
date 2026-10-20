@@ -68,6 +68,37 @@ class UnifiedHostIdentityTest(unittest.TestCase):
                 self.assertEqual(len(ages), 1 if retire else 4)
                 h.db.close()
 
+    def test_missing_pane_preserves_message_and_does_not_crash_other_endpoint(self):
+        import json
+        import time
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            h = host_mod.Host({'journal': str(Path(tmp)/'journal.db'), 'delivery_enabled': True}, recover=False)
+            h.endpoints = [dict(endpoint_id='no-pane', platform='cdx', pane=None,
+                                pid=1, pid_start=1, runtime_id='native'),
+                           dict(endpoint_id='other', platform='cdx', thread_id='other-native')]
+            h.refreshed = time.monotonic()
+            calls = []
+            def hub(op, **args):
+                calls.append((op, args))
+                if op == 'claim':
+                    return {'messages': [{'message_id': 'pending'}] if args['endpoint_id'] == 'no-pane' else []}
+                return {}
+            h.hub = hub
+            h.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                         ('old', 'other', json.dumps({'message_id': 'old'}), 'uncertain', 'hash', 0))
+            h.db.commit()
+            with patch.object(identity, '_process_info', return_value={'pid_start': 1}), \
+                 patch.object(host_mod, 'codex_transcript_presented', return_value=False), \
+                 patch.object(host_mod.subprocess, 'run') as terminal:
+                h.delivery_tick()
+                terminal.assert_not_called()
+            self.assertEqual(h.db.execute("SELECT state FROM deliveries WHERE message_id='pending'").fetchone()[0], 'received')
+            self.assertIn(('delivery_status', {'endpoint_id': 'no-pane', 'message_id': 'pending', 'reason': 'endpoint_unavailable'}), calls)
+            self.assertTrue(any(op == 'receipt' and args['endpoint_id'] == 'other' for op, args in calls))
+            self.assertFalse(any(op == 'begin_present' for op, args in calls))
+            h.db.close()
+
     def test_refresh_keeps_fallback_id_and_rejects_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
             old = {"endpoint_id": "fallback", "participant_id": "demo:cdx", "project_id": "demo",
