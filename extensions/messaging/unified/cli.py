@@ -17,6 +17,11 @@ try:
 except ImportError:
     from identity import native_conversation_context
 
+try:
+    from .protocol import NATIVE_CONTEXT_LIMIT
+except ImportError:
+    from protocol import NATIVE_CONTEXT_LIMIT
+
 WIRE_LIMIT = 262144
 DEFAULT_CONFIG = Path.home() / ".config/tproj/msg-client.json"
 DEFAULT_SPOOL = Path.home() / ".local/state/tproj-msg-unified/submissions.json"
@@ -42,16 +47,17 @@ def config(path: Path | None = None) -> dict:
 
 
 def rpc(socket_path: str, request: dict) -> object:
+    response_limit = NATIVE_CONTEXT_LIMIT if request.get('op') == 'native_resolve' else WIRE_LIMIT
     try:
         with socket.socket(socket.AF_UNIX) as sock:
             sock.settimeout(60)
             sock.connect(socket_path)
             sock.sendall((json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n").encode())
             with sock.makefile("rb") as stream:
-                raw = stream.readline(WIRE_LIMIT + 1)
+                raw = stream.readline(response_limit + 1)
     except OSError as exc:
         raise ClientError(f"unified messaging unavailable: {exc}") from exc
-    if len(raw) > WIRE_LIMIT or not raw.endswith(b"\n"):
+    if len(raw) > response_limit or not raw.endswith(b"\n"):
         raise ClientError("invalid host response")
     try:
         response = json.loads(raw)

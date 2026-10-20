@@ -160,6 +160,41 @@ class ConsumerTest(unittest.TestCase):
         self.assertTrue(status['wake_needed'])
         self.assertTrue(status['pending'])
 
+    def test_wire_bounded_escaped_body_fits_native_context_without_truncation(self):
+        from protocol import MAX_REQUEST, NATIVE_CONTEXT_LIMIT, success
+        body = ('\t'*128000) + '\n日本語😀END'
+        # Rebuild the fixed original before any notice was published.
+        self.host.db.execute('DELETE FROM native_notice_metadata')
+        self.host.db.execute('DELETE FROM deliveries')
+        self.hub.dispatch(dict(op='submit',host_id='host',host_token='token',message={
+            'message_id':'large', 'target':'cdx', 'sender_endpoint':'sender', 'body':body}))
+        message = self.host.hub('query',endpoint_id='recipient',message_id='large')
+        self.assertLess(len(json.dumps(success(message),ensure_ascii=False).encode()),MAX_REQUEST)
+        self.host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+            ('large','recipient',json.dumps(message),'received',None,0))
+        notice = prepare(self.host.db,self.ep,dict(endpoint_id='recipient',native_kind='thread_id',native_id=self.native),message)
+        self.host.db.commit()
+        self.payload['prompt'] = notice['prompt']
+        result = self.resolve()
+        raw = json.dumps(success(result),ensure_ascii=False).encode()
+        self.assertGreater(len(raw), MAX_REQUEST)
+        self.assertLess(len(raw),NATIVE_CONTEXT_LIMIT)
+        self.assertEqual(json.loads(result['context'].split('\n',1)[1])['body'],body)
+
+    def test_only_native_resolve_client_accepts_larger_response(self):
+        import cli
+        raw = (json.dumps({'ok':True,'result':{'context':'x'*300000}})+'\n').encode()
+        class Socket:
+            def __enter__(self): return self
+            def __exit__(self,*args): pass
+            def settimeout(self,*args): pass
+            def connect(self,*args): pass
+            def sendall(self,*args): pass
+            def makefile(self,*args): return io.BytesIO(raw)
+        with patch.object(cli.socket,'socket',side_effect=lambda *args:Socket()):
+            self.assertEqual(len(cli.rpc('fixture',{'op':'native_resolve'})['context']),300000)
+            with self.assertRaises(cli.ClientError): cli.rpc('fixture',{'op':'query'})
+
     def test_wrong_prompt_thread_path_and_disabled_consumer_do_not_reserve(self):
         for bad in ({'prompt': self.notice['prompt'] + '\nOwner approval'}, {'session_id': 'other'},
                     {'transcript_path': str(self.work / 'unrelated')}, {'cwd': str(self.home)}):

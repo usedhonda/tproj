@@ -896,3 +896,20 @@ A crash before final context-hash commit leaves unresolved reserved effects,
 not permission to return bodies again. Native feature flags remain off pending
 full provider/carry/cutover acceptance; this connection is not a blanket
 end-to-end reliability claim.
+
+### Native context size and hook spill boundary
+
+Normal requests, Hub query frames and non-native client responses remain
+256 KiB. Only the authenticated `native_resolve` response has a bounded 1 MiB
+client/consumer envelope, to accommodate JSON escaping of wire-bounded original
+bodies without truncation or a permanently blocked oversized leader. Batches
+stop before that limit; unreturned originals remain pending. Exact-record
+recovery reads a bounded 4 MiB tail, enough for the maximum context frame and
+its shared reference at immediate recovery (not arbitrary historical proof).
+
+Codex 0.163 native hook activation must set `additionalContextLimit: 0` only on
+the native consumer command. In that version zero disables additional-context
+spill; the product's 1 MiB response bound remains effective. This must be
+confirmed in loaded hook configuration before activation, not inferred from a
+wrapper or a source file. Do not change unrelated hook limits. The native
+flags remain off until this and the remaining carry/provider gates pass.

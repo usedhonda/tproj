@@ -9,7 +9,7 @@ import re
 import time
 
 from native_notice import content_digest, prepare, verify, verify_record
-from protocol import HubError, success
+from protocol import HubError, success, NATIVE_CONTEXT_LIMIT
 
 BACKEND_VERSION = 1
 
@@ -113,7 +113,7 @@ def resolve(host, ep, req):
         if candidate != mid and not original.get('delivery_summary', {}).get('new_presentation_eligible'):
             continue
         trial = result_for(selected + [original])
-        if len((json.dumps(success(trial), ensure_ascii=False) + '\n').encode()) > 262144:
+        if len((json.dumps(success(trial), ensure_ascii=False) + '\n').encode()) > NATIVE_CONTEXT_LIMIT:
             if candidate == mid:
                 raise HubError('unavailable', 'native context exceeds wire limit')
             break  # Leave the full, untruncated original for a later notification.
@@ -186,10 +186,10 @@ def recover(host, ep, message_id):
     verify(host.db, ep, native, message_id, own_notice['token'])
     with path.open('rb') as f:
         end = f.seek(0, os.SEEK_END)
-        start = max(0, end - 1048576)
+        start = max(0, end - 4 * NATIVE_CONTEXT_LIMIT)
         f.seek(start)
         if start: f.readline()
-        raw = f.read(1048576)
+        raw = f.read(4 * NATIVE_CONTEXT_LIMIT)
     records = []
     for line in raw.splitlines():
         try: record = json.loads(line)
