@@ -1030,3 +1030,40 @@ reservations and unknown effects are not reset. A failed reopen stops that tick;
 the next tick must reopen before job maintenance or recipient processing. Missing
 or schema-damaged journals are not silently replaced by a blank ledger. This is
 local SQLite recovery, not a new messaging connection or authority grant.
+
+### Observed waiting reason and age
+
+Query and diagnose compute the same `delivery_summary`, without updating rows.
+For status `waiting`, `pending_age_seconds` is nonnegative elapsed time since
+that original was accepted, not time spent busy or an answer deadline. Otherwise
+it is null. `reason_observed_at` dates a recognized adapter observation only
+when its receipt state still matches; stale-state, malformed or future observations
+do not override the summary. Terminal, presentation, reply and TTL precedence is
+unchanged. An observed `busy` is not a fresh proof of what a model is doing.
+
+`native_queue_accepted` records the past add ACK; `native_queue_pending` records
+a positive list match at the observation time. Neither is model receipt, proof of
+current queue contents after that time, or a claim that a tool is busy. `native_publication_unknown` means notification
+publication/reconciliation was not confirmed. `native_retry_pending` means only a
+reference wake may be retried under the existing eligibility and one-shot fences.
+These optional diagnostic writes cannot block publication on transport failure.
+
+Only the authenticated recipient-native `native_pending` view returns
+`oldest_pending_age_seconds` over its existing raw pending candidate set; empty
+is null. It is not presentation permission and is not returned to an original's
+sender as cross-message metadata. CLI and KAI preserve the same per-original
+summary; schemas admit its additive age/observation fields. Hub generation 2
+identifies this projection; existing native feature flags remain unchanged.
+
+Wait observations are bound to the reporting endpoint incarnation. Native
+observations also retain the immutable notice binding and publication attempt/
+generation, checked against current native attestation. Old-incarnation or
+old-native observations do not become current reasons merely because the message
+state is unchanged. Older unbound evidence remains historical diagnostic data.
+Host generation 5 includes this optional reporting path; it does not enable native
+publication or consumer features.
+
+Within the same summary, an authenticated reply takes precedence over a
+presentation receipt, while `presentation_confirmed` remains true as independent
+evidence. Cancellation/expiry/rejection lifecycle precedence is unchanged. A
+reply still does not establish task completion.

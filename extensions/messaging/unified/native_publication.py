@@ -12,6 +12,7 @@ import uuid
 from native_notice import prepare, verify, content_digest
 from native_consumer import _hook_binding, owns
 from native_queue import LIMIT, QueueError, _queued
+from protocol import HubError
 
 KEY = '_native_publication'
 
@@ -109,6 +110,17 @@ def store(host, row, value):
     return count == 1
 
 
+def report_wait(host, row, value, notice, operation):
+    """Optional observed notification status, never a body/model receipt."""
+    reason = {'queued': 'native_queue_accepted' if operation == 'publish' else 'native_queue_pending', 'unknown': 'native_publication_unknown',
+              'reference_absent': 'native_retry_pending', 'ready': 'native_retry_pending'}.get(value.get('state'))
+    if reason and row['state'] == 'received':
+        observed = {k: notice[k] for k in ('incarnation', 'native_kind', 'native_id')}
+        observed.update(attempt=value['attempt'], generation=value['generation'])
+        try: host.delivery_status(row['endpoint_id'], row['message_id'], reason, native_observation=observed)
+        except (HubError, OSError, ValueError): pass
+
+
 class Publisher:
     def __init__(self):
         self.generation = str(uuid.uuid4())
@@ -150,7 +162,8 @@ class Publisher:
                         or any(not _queued(x) for x in page['data'])
                         or 'nextCursor' not in page
                         or (page['nextCursor'] is not None and not isinstance(page['nextCursor'], str))):
-                    store(host, latest, dict(value, state='unknown', reason='invalid_worker_result'))
+                    value.update(state='unknown', reason='invalid_worker_result')
+                    if store(host, latest, value): report_wait(host, latest, value, notice, job.packet['op'])
                     continue
                 matches = [x for x in page['data'] if x.get('clientUserMessageId') == notice['client_id']
                     and len(x.get('input', [])) == 1 and x['input'][0].get('type') == 'text'
@@ -165,7 +178,7 @@ class Publisher:
                     value.update(state='reference_absent' if absent else 'unknown', cursor=page['nextCursor'],
                                  reason='reference_not_pending' if absent else
                                      ('queue_page_incomplete' if page['nextCursor'] is not None else 'publication_unconfirmed'))
-            store(host, latest, value)
+            if store(host, latest, value): report_wait(host, latest, value, notice, job.packet['op'])
 
     def tick(self, host, ep, message_id):
         """One pinned claimed row; scheduler integration remains a separate step."""

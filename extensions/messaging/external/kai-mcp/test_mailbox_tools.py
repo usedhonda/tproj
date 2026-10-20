@@ -47,7 +47,8 @@ class MailboxToolsTest(unittest.TestCase):
         item = {'message_id':'original','thread_id':'thread','target_address':'voyager.cc',
                 'body':'example','state':'uncertain','response_state':'recipient_replied',
                 'recipient_reply_count':1,'recipient_reply_message_ids':['reply'],
-                'delivery_summary':{'status':'recipient_replied','lifecycle':'ttl_elapsed'}}
+                'delivery_summary':{'status':'recipient_replied','lifecycle':'ttl_elapsed',
+                                    'pending_age_seconds':None,'reason_observed_at':None}}
         out = module.MailboxTools._view(item)
         self.assertEqual(out['state'], 'uncertain')
         self.assertEqual(out['response_state'], 'recipient_replied')

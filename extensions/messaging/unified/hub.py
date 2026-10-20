@@ -27,7 +27,19 @@ except ImportError:  # allow the installed single-file entrypoint to be invoked 
     from native_notice import content_digest
 
 
-HUB_NATIVE_VERSION = 1
+HUB_NATIVE_VERSION = 2
+
+WAIT_REASONS = ('waiting_input', 'busy', 'draft_protected', 'endpoint_unavailable', 'adapter_error', 'auth_required',
+                'native_queue_accepted', 'native_queue_pending', 'native_publication_unknown', 'native_retry_pending')
+DIAGNOSTIC_REASONS = WAIT_REASONS + ('receipt_timeout', 'dispatch_error', 'adapter_interrupted')
+
+
+def _receipt_reason(receipt):
+    if not receipt: return None
+    try: reason = json.loads(receipt['evidence']).get('delivery_reason')
+    except (ValueError, TypeError, AttributeError): return None
+    return reason if reason in DIAGNOSTIC_REASONS else None
+
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -417,8 +429,10 @@ class Hub:
                 raise HubError('identity_rejected', 'pending native binding mismatch')
             generation = self._row('SELECT COALESCE(MAX(rowid),0) FROM messages WHERE recipient_endpoint=?',
                                    (ep['endpoint_id'],))[0]
-            pending = bool(self._row("SELECT 1 FROM messages m WHERE recipient_endpoint=? AND expires_at>? AND state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.in_reply_to=m.message_id AND r.sender_endpoint=m.recipient_endpoint) LIMIT 1",
-                                     (ep['endpoint_id'], self._now())))
+            now = self._now()
+            oldest = self._row("SELECT MIN(created_at) FROM messages m WHERE recipient_endpoint=? AND expires_at>? AND state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.in_reply_to=m.message_id AND r.sender_endpoint=m.recipient_endpoint)",
+                               (ep['endpoint_id'], now))[0]
+            pending = oldest is not None
             key = 'native_drained:' + ep['endpoint_id']
             saved = self._row('SELECT value FROM metadata WHERE key=?', (key,))
             drained_generation = int(saved[0]) if saved else 0
@@ -431,7 +445,8 @@ class Hub:
                 drained_generation = generation
                 cleared = True
             result = dict(generation=generation, drained_generation=drained_generation,
-                          pending=pending, wake_needed=pending and generation > drained_generation)
+                          pending=pending, wake_needed=pending and generation > drained_generation,
+                          oldest_pending_age_seconds=max(0.0, now - oldest) if pending else None)
             if drain: result['cleared'] = cleared
             self._commit()
             return result
@@ -550,12 +565,24 @@ class Hub:
         if msg["recipient_endpoint"] != ep["endpoint_id"]:
             raise HubError("unauthorized", "only recipient may report delivery status")
         reason = req.get("reason")
-        if reason not in ("waiting_input", "busy", "draft_protected", "endpoint_unavailable", "adapter_error", "auth_required"):
+        if reason not in WAIT_REASONS:
             raise HubError("invalid_status", "invalid delivery reason")
         if msg["state"] not in ("accepted", "queued", "adapter_received"):
             return {"message_id": msg["message_id"], "state": msg["state"]}
+        evidence = dict(delivery_reason=reason, endpoint_id=ep['endpoint_id'], incarnation=ep['incarnation'])
+        native = req.get('native_observation')
+        if reason.startswith('native_'):
+            marker = self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (ep['endpoint_id'],))
+            if (not isinstance(native, dict) or not marker
+                    or native.get('incarnation') != ep['incarnation']
+                    or any(native.get(k) != marker[k] for k in ('native_kind', 'native_id'))
+                    or any(not isinstance(native.get(k), str) or not 1 <= len(native[k]) <= 128
+                           for k in ('attempt', 'generation'))):
+                raise HubError('identity_rejected', 'native diagnostic binding mismatch')
+            evidence['native_observation'] = {k: native[k] for k in
+                ('incarnation', 'native_kind', 'native_id', 'attempt', 'generation')}
         self.db.execute("INSERT OR REPLACE INTO receipts(message_id,state,evidence,at) VALUES(?,?,?,?)",
-                        (msg["message_id"], msg["state"], json.dumps({"delivery_reason": reason}), self._now()))
+                        (msg["message_id"], msg["state"], json.dumps(evidence), self._now()))
         return {"message_id": msg["message_id"], "state": msg["state"], "delivery_reason": reason}
 
     def response_evidence(self, message):
@@ -572,9 +599,10 @@ class Hub:
     def delivery_summary(self, message, response):
         """Read-only lifecycle projection; never rewrite uncertain delivery effects."""
         state = message['state']
-        elapsed = message['expires_at'] <= self._now()
-        receipt = self._row('SELECT state FROM receipts WHERE message_id=?', (message['message_id'],))
-        endpoint = self._row('SELECT retired FROM endpoints WHERE endpoint_id=?', (message['recipient_endpoint'],))
+        now = self._now()
+        elapsed = message['expires_at'] <= now
+        receipt = self._row('SELECT state,evidence,at FROM receipts WHERE message_id=?', (message['message_id'],))
+        endpoint = self._row('SELECT retired,incarnation FROM endpoints WHERE endpoint_id=?', (message['recipient_endpoint'],))
         presented = state == 'presented' or bool(receipt and receipt['state'] == 'presented')
         replied = response['response_state'] == 'recipient_replied'
         terminal = state in ('cancelled', 'expired', 'rejected', 'stale_session')
@@ -584,10 +612,10 @@ class Hub:
                         and not presented and not replied)
         if terminal:
             status, reason = 'action_required', state + ('_with_reply' if replied else '')
-        elif presented:
-            status, reason = 'presentation_confirmed', 'receipt_confirmed'
         elif replied:
             status, reason = 'recipient_replied', 'ttl_elapsed_with_reply' if elapsed else 'recipient_replied'
+        elif presented:
+            status, reason = 'presentation_confirmed', 'receipt_confirmed'
         elif elapsed:
             status = 'action_required'
             reason = ('ttl_elapsed_outcome_unknown' if state in ('dispatching', 'uncertain')
@@ -598,7 +626,25 @@ class Hub:
             status, reason = 'action_required', 'presentation_outcome_unknown'
         else:
             status, reason = 'waiting', 'presentation_in_progress' if state == 'dispatching' else 'pending'
+        observed_at = None
+        if status == 'waiting' and receipt and receipt['state'] == state and receipt['at'] <= now:
+            observed = _receipt_reason(receipt)
+            try: evidence = json.loads(receipt['evidence'])
+            except (ValueError, TypeError): evidence = {}
+            bound = (isinstance(evidence, dict) and endpoint
+                     and evidence.get('endpoint_id') == message['recipient_endpoint']
+                     and evidence.get('incarnation') == endpoint['incarnation'])
+            if bound and observed and observed.startswith('native_'):
+                marker = self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (message['recipient_endpoint'],))
+                native = evidence.get('native_observation')
+                bound = bool(marker and isinstance(native, dict)
+                             and native.get('incarnation') == endpoint['incarnation']
+                             and all(native.get(k) == marker[k] for k in ('native_kind', 'native_id')))
+            if bound and observed in WAIT_REASONS:
+                reason, observed_at = observed, receipt['at']
         return {'status': status, 'lifecycle': lifecycle, 'reason': reason,
+                'pending_age_seconds': max(0.0, now - message['created_at']) if status == 'waiting' else None,
+                'reason_observed_at': observed_at,
                 'ttl_elapsed': elapsed, 'presentation_confirmed': presented,
                 'new_presentation_eligible': eligible}
 
@@ -633,12 +679,9 @@ class Hub:
         result['reply_message_ids']=[row['message_id'] for row in self.db.execute(
             'SELECT message_id FROM messages WHERE in_reply_to=? ORDER BY created_at,message_id LIMIT 20',
             (message['message_id'],))]
-        result['delivery_reason']=None
-        if receipt:
-            try:reason=json.loads(receipt['evidence']).get('delivery_reason')
-            except (ValueError,TypeError,AttributeError):reason=None
-            if reason in ('waiting_input','busy','draft_protected','endpoint_unavailable','adapter_error','auth_required','receipt_timeout','dispatch_error','adapter_interrupted'):
-                result['delivery_reason']=reason
+        result['delivery_reason'] = _receipt_reason(receipt)
+        if result['delivery_reason'] is not None:
+            result['delivery_checked_at'] = receipt['at']
         endpoint=self._row('SELECT host_id,retired,last_heartbeat FROM endpoints WHERE endpoint_id=?',(message['recipient_endpoint'],))
         result['recipient_host_id']=endpoint['host_id'] if endpoint else None
         result['recipient_retired']=bool(endpoint['retired']) if endpoint else None
@@ -741,9 +784,8 @@ class Hub:
             result["reader_is_recipient"] = self._same_native_party(ep, m["recipient_endpoint"])
             receipt = self._row("SELECT evidence,at FROM receipts WHERE message_id=?", (m["message_id"],))
             if receipt and m["state"] in ("accepted", "queued", "adapter_received", "uncertain"):
-                try: reason = json.loads(receipt["evidence"]).get("delivery_reason")
-                except (ValueError, TypeError, AttributeError): reason = None
-                if reason: result.update(delivery_reason=reason, delivery_checked_at=receipt["at"])
+                reason = _receipt_reason(receipt)
+                if reason: result.update(delivery_reason=reason, delivery_checked_at=receipt['at'])
             self._check_message_response(result)
             return result
         if op=="maintenance":

@@ -22,7 +22,7 @@ from identity import (IdentityError, adopt_native_conversation, bind_caller, dis
 from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
 from receipt import normalize_prompt, codex_transcript_presented
 
-HOST_BACKEND_VERSION = 4
+HOST_BACKEND_VERSION = 5
 WIRE_LIMIT = 262144
 
 
@@ -444,10 +444,11 @@ class Host:
         except (OSError, sqlite3.Error) as exc:
             raise resource_error(exc, 'authority_rpc') or HubError('unavailable', 'authority RPC unavailable') from None
 
-    def delivery_status(self, endpoint_id, message_id, reason):
+    def delivery_status(self, endpoint_id, message_id, reason, *, native_observation=None):
         """Record a nonterminal delivery diagnostic without changing state."""
         try:
-            return self.hub('delivery_status', endpoint_id=endpoint_id, message_id=message_id, reason=reason)
+            return self.hub('delivery_status', endpoint_id=endpoint_id, message_id=message_id, reason=reason,
+                            native_observation=native_observation)
         except HubError:
             return None
 

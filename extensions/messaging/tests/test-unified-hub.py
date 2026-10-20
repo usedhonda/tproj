@@ -192,6 +192,7 @@ class HubTest(unittest.TestCase):
         self.assertEqual([m['message_id'] for m in second['messages']], ['allowed'])
 
     def test_native_pending_insert_between_empty_and_drain_and_restart(self):
+        self.h._now = lambda: 1000.0
         self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
         self.attest('b', 'eb')
         ep = self.h._row("SELECT * FROM endpoints WHERE endpoint_id='eb'")
@@ -200,10 +201,12 @@ class HubTest(unittest.TestCase):
         self.send('first')
         first = self.h.dispatch(dict(req, op='native_pending'))
         self.assertTrue(first['wake_needed'])
+        self.assertEqual(first['oldest_pending_age_seconds'], 0.0)
         self.assertFalse(self.h.dispatch(dict(req, op='native_drain', generation=first['generation']))['cleared'])
         self.h.db.execute("UPDATE messages SET state='dispatching' WHERE message_id='first'")
         empty = self.h.dispatch(dict(req, op='native_pending'))
         self.assertFalse(empty['pending'])
+        self.assertIsNone(empty['oldest_pending_age_seconds'])
         self.send('second')
         stale = self.h.dispatch(dict(req, op='native_drain', generation=empty['generation']))
         self.assertFalse(stale['cleared'])
@@ -211,6 +214,7 @@ class HubTest(unittest.TestCase):
         # A new Hub connection represents consumer crash/restart; wake survives.
         reopened = Hub(self.h.db_path, self.h.config)
         try:
+            reopened._now = self.h._now
             self.assertEqual(reopened.dispatch(dict(req, op='native_pending')), {k:v for k,v in stale.items() if k!='cleared'})
             reopened.db.execute("UPDATE messages SET state='dispatching' WHERE message_id='second'")
             cleared = reopened.dispatch(dict(req, op='native_drain', generation=stale['generation']))
@@ -230,7 +234,7 @@ class HubTest(unittest.TestCase):
     def test_native_capabilities_are_authenticated_and_read_only(self):
         before = self.h.db.total_changes
         result = self.h.dispatch(dict(op='messaging_capabilities', host_id='b', host_token='tb'))
-        self.assertEqual(result['native_runtime'], {'hub_version': 1})
+        self.assertEqual(result['native_runtime'], {'hub_version': 2})
         self.assertTrue({'native_begin_present', 'native_pending', 'native_drain'} <= set(result['capabilities']))
         with self.assertRaises(HubError):
             self.h.dispatch(dict(op='messaging_capabilities', host_id='b', host_token='wrong'))
@@ -259,7 +263,59 @@ class HubTest(unittest.TestCase):
         self.assertFalse(result['presentation_confirmed'])
         self.assertIsNone(result['delivery_reason'])
 
+    def test_waiting_summary_uses_observed_reason_and_own_age_without_writes(self):
+        now = [1000.0]
+        self.h._now = lambda: now[0]
+        self.send('wait-age')
+        now[0] = 1007.0
+        self.h.dispatch(dict(op='delivery_status', host_id='b', host_token='tb',
+                             endpoint_id='eb', message_id='wait-age', reason='busy'))
+        now[0] = 1020.0
+        request = dict(host_id='a', host_token='ta', endpoint_id='ea', message_id='wait-age')
+        before = self.h.db.total_changes
+        message = self.h.dispatch(dict(request, op='query'))
+        diagnostic = self.h.dispatch(dict(request, op='diagnose'))
+        self.assertEqual(message['delivery_summary'], diagnostic['delivery_summary'])
+        summary = message['delivery_summary']
+        self.assertEqual((summary['reason'], summary['pending_age_seconds'], summary['reason_observed_at']),
+                         ('busy', 20.0, 1007.0))
+        self.assertNotIn('oldest_pending_age_seconds', summary, 'sender must not learn other senders activity')
+        self.assertEqual(self.h.db.total_changes, before)
+        now[0] = 1021.0
+        self.h.dispatch(dict(op='delivery_status', host_id='b', host_token='tb',
+                             endpoint_id='eb', message_id='wait-age', reason='busy'))
+        self.assertEqual(self.h.dispatch(dict(request, op='query'))['delivery_summary']['pending_age_seconds'], 21.0)
+        self.h.db.execute("UPDATE endpoints SET incarnation='replacement' WHERE endpoint_id='eb'")
+        stale = self.h.dispatch(dict(request, op='query'))['delivery_summary']
+        self.assertEqual(stale['reason'], 'pending')
+        self.assertIsNone(stale['reason_observed_at'])
+        self.h.db.execute("UPDATE messages SET state='uncertain' WHERE message_id='wait-age'")
+        unknown = self.h.dispatch(dict(request, op='query'))['delivery_summary']
+        self.assertEqual(unknown['reason'], 'presentation_outcome_unknown')
+        self.assertIsNone(unknown['pending_age_seconds'])
+        self.assertIsNone(unknown['reason_observed_at'])
+
+    def test_native_wait_observation_requires_current_binding(self):
+        self.h._now = lambda: 1000.0
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
+        self.attest('b', 'eb')
+        self.send('native-status')
+        ep = self.h._row("SELECT * FROM endpoints WHERE endpoint_id='eb'")
+        observed = dict(incarnation=ep['incarnation'], native_kind='thread_id', native_id='native-thread',
+                        attempt='publication-attempt', generation='publisher-generation')
+        req = dict(op='delivery_status', host_id='b', host_token='tb', endpoint_id='eb',
+                   message_id='native-status', reason='native_queue_accepted', native_observation=observed)
+        self.h.dispatch(req)
+        reader = dict(op='query', host_id='a', host_token='ta', endpoint_id='ea', message_id='native-status')
+        self.assertEqual(self.h.dispatch(reader)['delivery_summary']['reason'], 'native_queue_accepted')
+        self.h.db.execute("UPDATE endpoint_native SET native_id='replacement-thread' WHERE endpoint_id='eb'")
+        self.assertEqual(self.h.dispatch(reader)['delivery_summary']['reason'], 'pending')
+        before = self.h.db.total_changes
+        with self.assertRaises(HubError): self.h.dispatch(req)
+        self.assertEqual(self.h.db.total_changes, before)
+
     def test_delivery_summary_preserves_expired_unknown_and_late_evidence(self):
+        self.h._now = lambda: 1000.0
         cases = [
             ('dispatching', True, True, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_outcome_unknown'),
             ('uncertain', True, False, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_outcome_unknown'),
@@ -268,6 +324,8 @@ class HubTest(unittest.TestCase):
             ('queued', True, False, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_before_presentation'),
             ('adapter_received', True, False, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_before_presentation'),
             ('accepted', False, False, True, 'recipient_replied', 'active', 'recipient_replied'),
+            ('presented', False, False, True, 'recipient_replied', 'active', 'recipient_replied'),
+            ('presented', True, False, True, 'recipient_replied', 'ttl_elapsed', 'ttl_elapsed_with_reply'),
             ('accepted', False, True, False, 'action_required', 'active', 'pinned_recipient_unavailable'),
             ('cancelled', False, False, True, 'action_required', 'cancelled', 'cancelled_with_reply'),
             ('expired', True, False, True, 'action_required', 'expired', 'expired_with_reply'),
@@ -296,7 +354,7 @@ class HubTest(unittest.TestCase):
                 self.assertEqual((summary['status'], summary['lifecycle'], summary['reason']),
                                  (status, lifecycle, reason))
                 self.assertEqual(summary['ttl_elapsed'], elapsed)
-                self.assertFalse(summary['presentation_confirmed'])
+                self.assertEqual(summary['presentation_confirmed'], state == 'presented')
                 self.assertEqual(summary['new_presentation_eligible'],
                                  state == 'accepted' and not elapsed and not retired and not replied)
                 self.assertEqual(message['recipient_reply_count'], int(replied))

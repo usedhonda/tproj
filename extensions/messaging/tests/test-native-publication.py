@@ -59,11 +59,25 @@ class PublicationTest(unittest.TestCase):
         jobs[0].result = self.success(jobs[0])
         publisher.tick(self.host, self.ep, 'original')
         self.assertEqual(pub.metadata(self.row())['state'], 'queued')
+        current = self.host.hub('query', endpoint_id=self.ep['endpoint_id'], message_id='original')
+        self.assertEqual(current['delivery_summary']['reason'], 'native_queue_accepted')
+        self.assertEqual(current['delivery_summary']['status'], 'waiting')
         self.assertEqual(self.row()['state'], 'received')
         clock[0] += 60
         pub.Publisher().tick(self.host, self.ep, 'original')
         self.assertEqual([j.packet['op'] for j in jobs], ['publish', 'pending'])
         self.assertEqual(json.loads(self.row()['envelope'])['body'], self.original['body'])
+
+    def test_wait_diagnostic_failure_cannot_wedge_publication(self):
+        _, jobs = self.fixture()
+        publisher = pub.Publisher()
+        publisher.tick(self.host, self.ep, 'original')
+        jobs[0].result = self.success(jobs[0])
+        with patch.object(self.host, 'delivery_status', side_effect=OSError('fixture diagnostic transport loss')):
+            publisher.maintain(self.host)
+        self.assertFalse(publisher.jobs)
+        self.assertEqual(pub.metadata(self.row())['state'], 'queued')
+        self.assertEqual(self.row()['state'], 'received')
 
     def test_unknown_result_reconciles_pages_without_republication(self):
         clock, jobs = self.fixture()
