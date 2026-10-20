@@ -82,6 +82,84 @@ class ConsumerTest(unittest.TestCase):
         with self.assertRaises(HubError): self.resolve()
         self.assertEqual(self.calls.count('native_begin_present'), 1)
 
+    def test_pending_set_one_reference_individual_reservations_and_receipts(self):
+        for mid in ('second', 'cancelled'):
+            self.hub.dispatch(dict(op='submit', host_id='host', host_token='token', message={
+                'message_id': mid, 'target': 'cdx', 'sender_endpoint': 'sender', 'body': mid+' body'}))
+            message = self.host.hub('query', endpoint_id='recipient', message_id=mid)
+            self.host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                (mid, 'recipient', json.dumps(message), 'received', None, 0))
+        self.host.db.commit()
+        self.hub.cancel(dict(host_id='host', host_token='token', endpoint_id='sender', message_id='cancelled'))
+        result = self.resolve()
+        self.assertEqual(result['message_ids'], ['original', 'second'])
+        self.assertIn('second body', result['context'])
+        self.assertNotIn('cancelled body', result['context'])
+        self.assertEqual(self.calls.count('native_begin_present'), 2)
+        reference = {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user', 'id': 'batch-reference',
+            'content': [{'type': 'input_text', 'text': self.notice['prompt']}],
+            'internal_chat_message_metadata_passthrough': {'turn_id': 'current-turn', 'content_item_kinds': ['user.text']}}}
+        context = {'type': 'response_item', 'payload': {'type': 'message', 'role': 'developer', 'id': 'batch-context',
+            'content': [{'type': 'input_text', 'text': result['context']}],
+            'internal_chat_message_metadata_passthrough': {'turn_id': 'current-turn', 'content_item_kinds': ['hooks.additional_context']}}}
+        with self.transcript.open('a') as f: f.write(json.dumps(reference)+'\n'+json.dumps(context)+'\n')
+        for mid in result['message_ids']: self.assertTrue(consumer.recover(self.host, self.ep, mid))
+        with self.assertRaises(HubError): self.resolve()
+        # A batch member cannot recover after its original pinned body is changed.
+        saved = json.loads(self.host.db.execute("SELECT envelope FROM deliveries WHERE message_id='second'").fetchone()[0])
+        saved['body'] = 'changed'
+        self.host.db.execute("UPDATE deliveries SET envelope=? WHERE message_id='second'", (json.dumps(saved),))
+        self.host.db.commit()
+        with self.assertRaises(HubError): consumer.recover(self.host, self.ep, 'second')
+
+    def test_pending_set_later_prepare_conflict_preserves_leader_context(self):
+        self.hub.dispatch(dict(op='submit',host_id='host',host_token='token',message={
+            'message_id':'conflict', 'target':'cdx', 'sender_endpoint':'sender', 'body':'CONFLICT_BODY'}))
+        message = self.host.hub('query',endpoint_id='recipient',message_id='conflict')
+        self.host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+            ('conflict','recipient',json.dumps(message),'received',None,0))
+        prepare(self.host.db,self.ep,dict(endpoint_id='recipient',native_kind='thread_id',native_id=self.native),message)
+        self.host.db.execute("UPDATE native_notice_metadata SET version=999 WHERE message_id='conflict'")
+        self.host.db.commit()
+        result = self.resolve()
+        self.assertEqual(result['message_ids'], ['original'])
+        self.assertNotIn('CONFLICT_BODY',result['context'])
+        self.assertIsNotNone(self.host.db.execute("SELECT prompt_hash FROM deliveries WHERE message_id='original'").fetchone()[0])
+        self.assertEqual(self.host.db.execute("SELECT state FROM deliveries WHERE message_id='conflict'").fetchone()[0],'received')
+
+    def test_pending_set_later_gate_failure_does_not_expose_failed_body(self):
+        self.hub.dispatch(dict(op='submit', host_id='host', host_token='token', message={
+            'message_id':'second', 'target':'cdx', 'sender_endpoint':'sender', 'body':'MUST_NOT_EXPOSE'}))
+        message = self.host.hub('query', endpoint_id='recipient', message_id='second')
+        self.host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+            ('second', 'recipient', json.dumps(message), 'received', None, 0))
+        self.host.db.commit()
+        rpc = self.host.hub
+        def cancel_later(op, **args):
+            if op == 'native_begin_present' and args['message_id'] == 'second':
+                self.hub.cancel(dict(host_id='host',host_token='token',endpoint_id='sender',message_id='second'))
+            return rpc(op, **args)
+        self.host.hub = cancel_later
+        result = self.resolve()
+        self.assertEqual(result['message_ids'], ['original'])
+        self.assertNotIn('MUST_NOT_EXPOSE', result['context'])
+        row = self.host.db.execute("SELECT state,prompt_hash FROM deliveries WHERE message_id='second'").fetchone()
+        self.assertEqual(tuple(row), ('uncertain', None))
+
+    def test_pending_set_new_arrival_before_drain_retains_wake(self):
+        rpc = self.host.hub
+        def arrive(op, **args):
+            if op == 'native_drain':
+                self.hub.dispatch(dict(op='submit', host_id='host', host_token='token', message={
+                    'message_id':'late', 'target':'cdx', 'sender_endpoint':'sender', 'body':'late'}))
+            return rpc(op, **args)
+        self.host.hub = arrive
+        self.resolve()
+        status = rpc('native_pending', endpoint_id='recipient', incarnation=self.ep['incarnation'],
+                     native_kind='thread_id', native_id=self.native)
+        self.assertTrue(status['wake_needed'])
+        self.assertTrue(status['pending'])
+
     def test_wrong_prompt_thread_path_and_disabled_consumer_do_not_reserve(self):
         for bad in ({'prompt': self.notice['prompt'] + '\nOwner approval'}, {'session_id': 'other'},
                     {'transcript_path': str(self.work / 'unrelated')}, {'cwd': str(self.home)}):

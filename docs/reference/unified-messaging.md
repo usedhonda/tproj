@@ -873,3 +873,26 @@ permission to replay, or a new execution grant. It does not reactivate expired,
 retired, cancelled or uncertain effects. Consumer notification coalescing and
 activation must still be connected and separately demonstrated; these Hub
 primitives alone are not end-to-end no-lost-wake acceptance.
+
+### Bounded native pending-set consumption
+
+With native queue enabled, Host journals a bounded claim page (up to 32) before
+starting its first transport child. An authenticated reference hook coalesces
+up to 32 same-endpoint received originals into one context, under the existing
+wire bound; no body is truncated. The reference remains pinned to its leader.
+All member notice/binding preparations run before the first irreversible body
+reservation; a later predictable notice rejection cannot strand a reserved
+leader. Every member separately validates its immutable original and passes the latest
+Hub native presentation reservation (maintenance/probe/cancel/TTL included).
+Failed later reservations expose no body and retain uncertainty; leader failure
+blocks the reference. Each successful member pins the shared reference ID and
+whole-context hash in its existing delivery row. Recovery requires that member's
+immutable original plus the exact shared reference and context in the same turn.
+
+Consumer snapshots pending generation before reserving and attempts generation-
+matched drain afterwards. New unclaimed arrivals remain Hub candidates and
+prevent stale clearing. Drain errors do not revoke an already issued context.
+A crash before final context-hash commit leaves unresolved reserved effects,
+not permission to return bodies again. Native feature flags remain off pending
+full provider/carry/cutover acceptance; this connection is not a blanket
+end-to-end reliability claim.

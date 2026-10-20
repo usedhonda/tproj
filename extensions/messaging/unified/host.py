@@ -756,7 +756,8 @@ class Host:
             ep = self._current_delivery_endpoint(ep['endpoint_id'])
             if ep is None:
                 continue
-            page = self.hub('claim', endpoint_id=ep['endpoint_id'], limit=1,
+            page = self.hub('claim', endpoint_id=ep['endpoint_id'],
+                            limit=32 if ep.get('platform') == 'cdx' and self.config.get('native_queue_enabled') is True else 1,
                             after_sequence=self.claim_sequences.get(ep['endpoint_id'], 0))
             claims = page['messages']
             # SQL end wraps on the next tick (filtered empty need not). Restart resets only this scan
@@ -766,6 +767,12 @@ class Host:
             for pending in self.db.execute("SELECT envelope,message_id FROM deliveries WHERE endpoint_id=? AND state IN ('dispatching','uncertain')", (ep['endpoint_id'],)):
                 if pending['message_id'] not in claimed_ids:
                     claims.append(json.loads(pending['envelope']))
+            # Journal the bounded claim page before starting its first native
+            # child, so a fast hook can coalesce the whole already-claimed set.
+            for msg in claims:
+                self.db.execute('INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?)',
+                    (msg['message_id'], ep['endpoint_id'], json.dumps(msg), 'received', None, time.time()))
+            self.db.commit()
             for msg in claims:
                 ep = self._current_delivery_endpoint(ep['endpoint_id'])
                 if ep is None:
