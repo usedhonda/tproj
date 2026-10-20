@@ -19,9 +19,10 @@ from urllib.parse import quote
 
 from identity import (IdentityError, adopt_native_conversation, bind_caller, discover_endpoints, discover_tmux_endpoints,
                       peer_credentials, same_live_process_family)
-from protocol import HubError, success, failure, resource_error
+from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
 from receipt import normalize_prompt, codex_transcript_presented
 
+HOST_BACKEND_VERSION = 2
 WIRE_LIMIT = 262144
 
 
@@ -602,6 +603,9 @@ class Host:
             hub_caps = self.hub('messaging_capabilities')
             from native_consumer import BACKEND_VERSION
             return {'host_capabilities': own, 'messaging_owner': hub_caps,
+                    'native_runtime': {'host_version': HOST_BACKEND_VERSION,
+                                       'consumer_version': BACKEND_VERSION,
+                                       'context_response_limit': NATIVE_CONTEXT_LIMIT},
                     'native_consumer': {'backend_version': BACKEND_VERSION,
                                         'enabled': self.config.get('native_consumer_enabled') is True}}
         if op == 'status' and req.get('target'):

@@ -913,3 +913,25 @@ spill; the product's 1 MiB response bound remains effective. This must be
 confirmed in loaded hook configuration before activation, not inferred from a
 wrapper or a source file. Do not change unrelated hook limits. The native
 flags remain off until this and the remaining carry/provider gates pass.
+
+### Runtime generation and concurrent consumers
+
+Existing runtime setup records `_native_runtime_expected` in the existing Host
+configuration. A contract-version change participates in the existing changed/
+LaunchAgent reload decision; unchanged setup does not reload again. It does not
+turn on either native feature flag. Expected configuration is not loaded proof.
+
+`messaging_capabilities.native_runtime` reports the loaded Host version, loaded
+consumer version and native response limit independently of that expected field.
+Version 2 identifies the Host's pinned/batched native routing and the consumer's
+coalesced, preflighted, large-frame path. Compare these plus installed artifacts
+and actual behavior before activation. Hook trust/no-spill and Goal carry still
+require their own direct evidence; version numbers do not grant authority.
+
+Two concurrent hook consumers share the existing per-original received-state
+CAS and latest Hub reservation. Exactly one can return that original body; the
+loser remains rejected rather than reopening effects. Publisher attempt and
+generation fences remain separate from endpoint incarnation/native identity
+and from this build-contract version. An adapter's existing exclusive startup
+lock prevents simultaneous delivery schedulers on its socket. No new lease,
+mailbox, scheduler or permission registry is introduced.

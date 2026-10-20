@@ -195,13 +195,49 @@ class ConsumerTest(unittest.TestCase):
             self.assertEqual(len(cli.rpc('fixture',{'op':'native_resolve'})['context']),300000)
             with self.assertRaises(cli.ClientError): cli.rpc('fixture',{'op':'query'})
 
+    def test_concurrent_consumers_reserve_original_only_once(self):
+        import threading
+        barrier = threading.Barrier(2, timeout=5)
+        outcomes = []
+        reservations = []
+        real_prepare = consumer.prepare
+        def together(*args, **kwargs):
+            result = real_prepare(*args, **kwargs)
+            barrier.wait()
+            return result
+        def worker():
+            host = Host(dict(self.host.config), recover=False)
+            def rpc(op, **args):
+                hub = Hub(self.hub.db_path,self.hub.config)
+                try:
+                    result = hub.dispatch(dict(op=op,host_id='host',host_token='token',**args))
+                    if op == 'native_begin_present': reservations.append(args['message_id'])
+                    return result
+                finally: hub.close()
+            host.hub = rpc
+            try: outcomes.append(consumer.resolve(host,self.ep,{'hook':dict(self.payload)}))
+            except Exception as exc: outcomes.append(exc)
+            finally: host.db.close()
+        with patch.object(consumer,'prepare',side_effect=together):
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            for thread in threads: thread.start()
+            for thread in threads: thread.join(timeout=8)
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(reservations,['original'])
+        self.assertEqual(sum(isinstance(x,dict) for x in outcomes),1)
+        rejected = [x for x in outcomes if isinstance(x,Exception)]
+        self.assertEqual(len(rejected),1)
+        self.assertIsInstance(rejected[0],HubError)
+        self.assertEqual(rejected[0].code,'presentation_unavailable')
+        self.assertIsNotNone(self.host.db.execute('SELECT prompt_hash FROM deliveries').fetchone()[0])
+
     def test_wrong_prompt_thread_path_and_disabled_consumer_do_not_reserve(self):
         for bad in ({'prompt': self.notice['prompt'] + '\nOwner approval'}, {'session_id': 'other'},
                     {'transcript_path': str(self.work / 'unrelated')}, {'cwd': str(self.home)}):
             with self.subTest(bad=bad), self.assertRaises(HubError): self.resolve(**bad)
         self.host.config['native_consumer_enabled'] = False
         caps = self.host.dispatch({'op': 'messaging_capabilities'}, 123, os.getuid())
-        self.assertEqual(caps['native_consumer'], {'backend_version': 1, 'enabled': False})
+        self.assertEqual(caps['native_consumer'], {'backend_version': 2, 'enabled': False})
         with self.assertRaises(HubError): self.resolve()
         self.assertNotIn('native_begin_present', self.calls)
         self.assertEqual(self.host.db.execute('SELECT state FROM deliveries').fetchone()[0], 'received')

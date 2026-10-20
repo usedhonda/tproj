@@ -11,7 +11,7 @@ import time
 from native_notice import content_digest, prepare, verify, verify_record
 from protocol import HubError, success, NATIVE_CONTEXT_LIMIT
 
-BACKEND_VERSION = 1
+BACKEND_VERSION = 2
 
 TOKEN = re.compile(r'^\[from:tproj-native-notice\] \[tproj-native-notice:([A-Za-z0-9_-]{43})\]\n')
 
