@@ -83,8 +83,7 @@ class Job:
             self.process.kill()
             try: self.process.wait(timeout=.2)
             except subprocess.TimeoutExpired: pass
-            self._finish(None)
-            raise
+            return self._finish({'ok': False, 'code': 'publication_unknown' if self.packet['op'] == 'publish' else 'transport_unavailable'})
 
     def _finish(self, result):
         self.done = True
@@ -119,7 +118,7 @@ class Publisher:
         """Drain every owned child on each existing scheduler tick, even off-path."""
         for mid, (job, attempt, notice) in list(self.jobs.items()):
             try: result = job.poll()
-            except (OSError, ValueError, subprocess.SubprocessError, QueueError):
+            except Exception:
                 result = {'ok': False, 'code': 'publication_unknown' if job.packet['op'] == 'publish' else 'transport_unavailable'}
             if result is None: continue
             del self.jobs[mid]
@@ -194,7 +193,7 @@ class Publisher:
         if value.get('state') == 'publishing':
             store(host, row, dict(value, state='unknown', generation=self.generation, reason='publisher_interrupted', checked_at=time.time()))
             return True
-        if value.get('state') == 'queued': return True
+        if value.get('state') in ('queued', 'not_eligible'): return True
         if time.time() - float(value.get('checked_at', 0)) < 30: return True
         # Serialize new notices within this native endpoint. New arrivals remain
         # durable Hub rows and are found by the next normal scheduler scan.
@@ -204,6 +203,16 @@ class Publisher:
                 return True
         attempt = str(uuid.uuid4())
         operation = 'pending' if value.get('state') == 'unknown' else 'publish'
+        if operation == 'publish':
+            # Includes known-unsubmitted retries: ownership of a prepared token
+            # never carries yesterday's cancellation/expiry decision forward.
+            current = host.hub('query', endpoint_id=ep['endpoint_id'], message_id=message_id)
+            if (current.get('recipient_endpoint') != ep['endpoint_id']
+                    or content_digest(current) != content_digest(message)):
+                raise QueueError('invalid_notice')
+            if not current.get('delivery_summary', {}).get('new_presentation_eligible'):
+                store(host, row, dict(value, state='not_eligible', reason='latest_hub_ineligible', checked_at=time.time()))
+                return True
         packet = dict(op=operation, socket=host.config.get('native_queue_socket'), native_id=native['native_id'])
         if operation == 'publish': packet['notice'] = notice
         else: packet['cursor'] = value.get('cursor')

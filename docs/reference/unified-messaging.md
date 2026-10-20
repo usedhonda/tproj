@@ -812,3 +812,11 @@ This controller is not yet the provider-wide scheduler cutover: fair claim
 pagination, complete no-lost-wake acceptance, conversation-level pending-set drain,
 crash/history convergence, hook/carry activation and CC ingress remain incomplete.
 Neither queue nor consumer flags are enabled by installing these modules.
+
+Every new add attempt, including a known-unsubmitted retry, rechecks the latest
+Hub eligibility and immutable original immediately before committing its attempt.
+A prepared reference is not a cached permission to notify after cancellation or
+expiry. Ineligible originals stop new publication; unknown attempts remain
+read-only queue reconciliation. A child-job exception is isolated, removed and
+recorded unknown under its matching attempt/generation, so it cannot remain a
+phantom live job or stop collecting other jobs.

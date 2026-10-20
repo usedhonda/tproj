@@ -122,10 +122,23 @@ class PublicationTest(unittest.TestCase):
         _, jobs = self.fixture()
         publisher = pub.Publisher()
         publisher.tick(self.host, self.ep, 'original')
+        # Another recipient's already-running job must still be collected.
+        notice = dict(jobs[0].packet['notice'], client_id='other-correlation', prompt='other-reference')
+        packet = dict(jobs[0].packet, notice=notice)
+        other_job = type(jobs[0])(packet, self.home)
+        other_job.result = self.success(other_job)
+        publisher.jobs['other-original'] = (other_job, 'other-attempt', notice)
+        envelope = dict(self.original, message_id='other-original')
+        envelope[pub.KEY] = {'attempt': 'other-attempt', 'generation': publisher.generation, 'state': 'publishing'}
+        self.host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+            ('other-original', 'other-recipient', json.dumps(envelope), 'received', None, 0))
+        self.host.db.commit()
         with patch.object(jobs[0], 'poll', side_effect=OSError('fixture pipe error')):
             publisher.maintain(self.host)
         self.assertFalse(publisher.jobs)
         self.assertEqual(pub.metadata(self.row())['state'], 'unknown')
+        other = self.host.db.execute("SELECT * FROM deliveries WHERE message_id='other-original'").fetchone()
+        self.assertEqual(pub.metadata(other)['state'], 'queued')
 
     def test_only_known_prepublication_failure_is_eligible_for_later_attempt(self):
         clock, jobs = self.fixture()
@@ -139,6 +152,26 @@ class PublicationTest(unittest.TestCase):
         publisher.tick(self.host, self.ep, 'original')
         self.assertEqual(len(jobs), 2)
         self.assertEqual(jobs[0].packet['notice']['token'], jobs[1].packet['notice']['token'])
+
+    def _known_failure_then_ineligible(self, expired):
+        clock, jobs = self.fixture()
+        publisher = pub.Publisher()
+        publisher.tick(self.host, self.ep, 'original')
+        jobs[0].result = {'ok': False, 'code': 'dependency_unavailable'}
+        publisher.tick(self.host, self.ep, 'original')
+        if expired:
+            self.hub._now = lambda: self.original['expires_at'] + 1
+        else:
+            self.hub.cancel(dict(host_id='host', host_token='token', endpoint_id='sender', message_id='original'))
+        clock[0] += 31
+        publisher.tick(self.host, self.ep, 'original')
+        self.assertEqual(len(jobs), 1, 'ineligible original generated another reference add')
+
+    def test_known_unqueued_failure_then_cancel_prevents_new_publication(self):
+        self._known_failure_then_ineligible(False)
+
+    def test_known_unqueued_failure_then_expiry_prevents_new_publication(self):
+        self._known_failure_then_ineligible(True)
 
     def test_historical_unknown_is_not_converted_or_replayed(self):
         _, jobs = self.fixture()
