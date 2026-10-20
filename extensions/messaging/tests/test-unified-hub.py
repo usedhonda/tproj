@@ -442,6 +442,42 @@ class HubTest(unittest.TestCase):
         self.reg("b","tb","eb2","p:cdx",3)
         with self.assertRaisesRegex(HubError,"ambiguous"): self.send("amb")
 
+    def test_native_reservation_binds_original_and_generation_and_remains_one_shot(self):
+        from extensions.messaging.unified.native_notice import content_digest
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
+        self.attest('b', 'eb')
+        self.send('native')
+        ep = self.h._row("SELECT * FROM endpoints WHERE endpoint_id='eb'")
+        msg = dict(self.h._row("SELECT * FROM messages WHERE message_id='native'"))
+        request = dict(op='native_begin_present', host_id='b', host_token='tb', endpoint_id='eb',
+                       message_id='native', incarnation=ep['incarnation'], native_kind='thread_id',
+                       native_id='native-thread', content_hash=content_digest(msg))
+        before = self.h.db.total_changes
+        for field, bad in [('incarnation', 'old'), ('native_id', 'foreign'), ('native_kind', 'session_id'),
+                           ('content_hash', 'wrong'), ('host_token', 'wrong')]:
+            with self.subTest(field=field), self.assertRaises(HubError):
+                self.h.dispatch(dict(request, **{field: bad}))
+        self.assertEqual(self.h.db.total_changes, before)
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='native'")[0], 'accepted')
+        result = self.h.dispatch(request)
+        self.assertEqual(result['content_hash'], request['content_hash'])
+        self.assertEqual(result['incarnation'], ep['incarnation'])
+        self.assertEqual(result['native_id'], 'native-thread')
+        with self.assertRaises(HubError): self.h.dispatch(request)
+        with self.assertRaises(HubError):
+            self.h.cancel(dict(host_id='a', host_token='ta', endpoint_id='ea', message_id='native'))
+        for mid, terminal in [('native-cancel', 'cancelled'), ('native-expire', 'expired')]:
+            self.send(mid)
+            current = dict(self.h._row("SELECT * FROM messages WHERE message_id=?", (mid,)))
+            current_request = dict(request, message_id=mid, content_hash=content_digest(current))
+            if terminal == 'cancelled':
+                self.h.cancel(dict(host_id='a', host_token='ta', endpoint_id='ea', message_id=mid))
+            else:
+                self.h._now = lambda: current['expires_at'] + 1
+            with self.assertRaises(HubError): self.h.dispatch(current_request)
+            self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id=?", (mid,))[0],
+                             'cancelled' if terminal == 'cancelled' else 'accepted')
+
     def test_sender_cancel_fences_presentation_and_is_not_task_cancellation(self):
         self.send('cancel')
         owner=dict(host_id='a',host_token='ta',endpoint_id='ea',message_id='cancel')

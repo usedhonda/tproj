@@ -7,7 +7,10 @@ import re
 import secrets
 import sqlite3
 import uuid
-from protocol import HubError
+try:
+    from .protocol import HubError
+except ImportError:
+    from protocol import HubError
 
 VERSION = 1
 IDENTITY = ('endpoint_id', 'incarnation', 'native_kind', 'native_id')
@@ -18,6 +21,11 @@ CONTENT = ('message_id', 'thread_id', 'sender_endpoint', 'recipient_endpoint', '
 def _hash(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
                                      ensure_ascii=False).encode()).hexdigest()
+
+
+def content_digest(message):
+    """Canonical immutable original shared by host reference and Hub reservation."""
+    return _hash({key: message.get(key) for key in CONTENT})
 
 
 def _binding(endpoint, native):
@@ -72,11 +80,11 @@ def prepare(db, endpoint, native, message):
     keys = ('message_id',) + IDENTITY + ('version', 'token', 'content_hash', 'client_id', 'prompt_hash')
     existing = db.execute('SELECT ' + ','.join(keys) + ' FROM native_notice_metadata WHERE message_id=?', (mid,)).fetchone()
     row = dict(zip(keys, existing)) if existing else dict(message_id=mid, **binding,
-        version=VERSION, token=secrets.token_urlsafe(32), content_hash=_hash(content),
+        version=VERSION, token=secrets.token_urlsafe(32), content_hash=content_digest(message),
         client_id=str(uuid.uuid5(uuid.NAMESPACE_URL, 'tproj-native-notice:' + _hash([mid, binding, VERSION]))))
     if not existing:
         row['prompt_hash'] = hashlib.sha256(_prompt(row).encode()).hexdigest()
-    if any(row[k] != binding[k] for k in IDENTITY) or row['version'] != VERSION or row['content_hash'] != _hash(content) or row['prompt_hash'] != hashlib.sha256(_prompt(row).encode()).hexdigest():
+    if any(row[k] != binding[k] for k in IDENTITY) or row['version'] != VERSION or row['content_hash'] != content_digest(message) or row['prompt_hash'] != hashlib.sha256(_prompt(row).encode()).hexdigest():
         raise HubError('notice_conflict', 'native notice identity or content is immutable')
     if not existing:
         db.execute('INSERT INTO native_notice_metadata VALUES(?,?,?,?,?,?,?,?,?,?)', tuple(row[k] for k in keys))
@@ -103,7 +111,7 @@ def verify(db, endpoint, native, message_id, token):
         raise HubError('identity_rejected', 'native notice does not match current binding')
     try:
         original = json.loads(row[8])
-        matches = row[7] == binding['endpoint_id'] and row[6] == _hash({key: original.get(key) for key in CONTENT})
+        matches = row[7] == binding['endpoint_id'] and row[6] == content_digest(original)
     except (ValueError, TypeError, AttributeError):
         matches = False
     if not matches:

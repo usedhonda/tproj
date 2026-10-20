@@ -20,9 +20,11 @@ from typing import Any
 try:
     from .protocol import HubError, MAX_REQUEST, MAX_TTL, serve_socket, success, resource_error
     from .policy import check_policy
+    from .native_notice import content_digest
 except ImportError:  # allow the installed single-file entrypoint to be invoked directly
     from protocol import HubError, MAX_REQUEST, MAX_TTL, serve_socket, success, resource_error
     from policy import check_policy
+    from native_notice import content_digest
 
 
 SCHEMA = """
@@ -426,16 +428,29 @@ class Hub:
         except Exception: self._rollback(); raise
         return {"message_id":msg["message_id"],"state":state}
 
-    def begin_present(self, req):
+    def begin_present(self, req, *, native=False):
         """Serialize irreversible adapter presentation against sender cancellation."""
         host = self._auth(req)
-        ep = self._host_endpoint(host, req.get("endpoint_id"))
         self._tx()
         try:
+            ep = self._host_endpoint(host, req.get("endpoint_id"))
             msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
             if not msg: raise HubError("not_found", "message not found")
             if msg["recipient_endpoint"] != ep["endpoint_id"]:
                 raise HubError("unauthorized", "only recipient may begin presentation")
+            if native:
+                marker = self._row("SELECT * FROM endpoint_native WHERE endpoint_id=?", (ep["endpoint_id"],))
+                if (ep["platform"] != "cdx" or not marker
+                        or any(not isinstance(req.get(k), str) or not req[k]
+                               for k in ("incarnation", "native_kind", "native_id", "content_hash"))
+                        or req["incarnation"] != ep["incarnation"]
+                        or req["native_kind"] != marker["native_kind"]
+                        or req["native_id"] != marker["native_id"]
+                        or req["content_hash"] != content_digest(dict(msg))):
+                    raise HubError("identity_rejected", "native presentation binding or content mismatch")
+                mode = self._maintenance()
+                if mode == "stopped" or (mode == "probe" and msg["message_id"] not in set(self.config.get("probe_message_ids", []))):
+                    raise HubError("maintenance", "native presentation is paused")
             if msg["state"] not in ("accepted", "queued", "adapter_received"):
                 raise HubError("presentation_unavailable", "message is terminal or presentation has already begun")
             if msg["expires_at"] <= self._now():
@@ -444,7 +459,11 @@ class Hub:
                 raise HubError("presentation_unavailable", "recipient already replied to message")
             self.db.execute("UPDATE messages SET state='dispatching' WHERE message_id=?", (msg["message_id"],))
             self._commit()
-            return {"message_id": msg["message_id"], "state": "dispatching"}
+            result = {"message_id": msg["message_id"], "state": "dispatching"}
+            if native:
+                result.update(content_hash=req["content_hash"], endpoint_id=ep["endpoint_id"],
+                              incarnation=ep["incarnation"], native_kind=marker["native_kind"], native_id=marker["native_id"])
+            return result
         except Exception:
             self._rollback(); raise
 
@@ -638,6 +657,7 @@ class Hub:
         if op=="claim": return self.claim(req)
         if op=="receipt": return self.receipt(req)
         if op=="begin_present": return self.begin_present(req)
+        if op=="native_begin_present": return self.begin_present(req, native=True)
         if op=="cancel": return self.cancel(req)
         if op=="delivery_status": return self.delivery_status(req)
         if op=="diagnose": return self.diagnose(req)

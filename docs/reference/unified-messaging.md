@@ -668,3 +668,24 @@ scope/cancellation check. The primitive alone does not implement that consumer,
 queue idempotency, coalescing, generation fencing or native delivery. A stable
 client ID is a correlation key, not provider deduplication. Normal historical
 message queries and established authorized carry are unchanged.
+
+### Native presentation reservation (consumer integration pending)
+
+`native_begin_present` is the owner-host authenticated, one-shot presentation
+reservation for the prepared native reference. In the same transaction as the
+existing `dispatching` transition it checks the current non-retired recipient,
+Codex platform, persisted native attestation, exact endpoint incarnation and
+canonical immutable original content digest. It also checks maintenance, current
+cancellation/terminal state, expiry and prior recipient reply. A mismatched or
+missing binding fails without advancing the message. The returned binding is a
+presentation permission for that exact original, not a user approval, task grant,
+body-consumption receipt or execution permission. Current authenticated host and
+service scope restrictions remain independent; this operation creates no sharing
+grant. Legacy `begin_present` remains unchanged for existing consumers.
+
+Duplicate requests after reservation fail rather than re-expose the body. An
+unknown reservation result requires existing-state reconciliation, never blind
+re-enqueue or presentation retry. Later cancellation retains existing too-late
+semantics; the execution side must still validate its scope/cancellation before
+external effects. This primitive does not prove automatic consumer integration,
+crash recovery, queue generation fencing, lost-wake prevention or any receipt.
