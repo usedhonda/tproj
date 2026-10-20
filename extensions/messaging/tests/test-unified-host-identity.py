@@ -30,6 +30,44 @@ class UnifiedHostIdentityTest(unittest.TestCase):
             with patch.object(host_mod,"discover_endpoints",return_value=entries),patch.object(host_mod,"discover_tmux_endpoints",return_value=[]):h.refresh()
             self.assertEqual([e["endpoint_id"] for e in h.endpoints],["live"])
 
+    def test_historical_receipt_scan_keeps_heartbeats_fresh_and_stops_retired_endpoint(self):
+        import json
+        from unittest.mock import patch
+        for retire in (False, True):
+            with self.subTest(retire=retire), tempfile.TemporaryDirectory() as tmp:
+                h = host_mod.Host({'journal': str(Path(tmp)/'journal.db'), 'delivery_enabled': True}, recover=False)
+                ep = {'endpoint_id': 'current', 'platform': 'cdx', 'thread_id': 'native'}
+                h.endpoints = [ep]
+                clock = [100.0]
+                h.refreshed = clock[0]
+                ages = []
+                def refresh():
+                    h.refreshed = clock[0]
+                    if retire:
+                        h.endpoints = []
+                h.refresh = refresh
+                def hub(op, **args):
+                    if op == 'claim':
+                        return {'messages': []}
+                    if op == 'receipt':
+                        ages.append(clock[0] - h.refreshed)
+                    return {}
+                h.hub = hub
+                for i in range(4):
+                    h.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                                 (str(i), 'current', json.dumps({'message_id': str(i)}), 'uncertain', 'hash', 0))
+                h.db.commit()
+                def inspect(*args):
+                    clock[0] += 12
+                    return False
+                with patch.object(host_mod.time, 'monotonic', side_effect=lambda: clock[0]), \
+                     patch.object(host_mod, 'codex_transcript_presented', side_effect=inspect):
+                    h.delivery_tick()
+                self.assertTrue(ages)
+                self.assertLess(max(ages), 30, 'historical receipt scan starved heartbeat')
+                self.assertEqual(len(ages), 1 if retire else 4)
+                h.db.close()
+
     def test_refresh_keeps_fallback_id_and_rejects_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
             old = {"endpoint_id": "fallback", "participant_id": "demo:cdx", "project_id": "demo",

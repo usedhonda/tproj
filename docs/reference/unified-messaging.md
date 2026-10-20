@@ -620,3 +620,10 @@ instead of fetching an ever-growing retired-endpoint inventory.
 This bounds selected endpoint count, not the entire response size: host-owned
 project metadata and individual field sizes still contribute. Oversized responses
 remain explicit failures; never silently truncate or retry without selectors.
+
+The existing delivery worker refreshes endpoint/process evidence at message
+boundaries, including during historical uncertain-receipt recovery, rather than
+only after an entire backlog. A refresh that removes an endpoint stops further
+processing for that immutable endpoint. This does not relax heartbeat freshness,
+create a second scheduler, replay unknown deliveries, or guarantee progress during
+a single blocked operation longer than the heartbeat TTL.

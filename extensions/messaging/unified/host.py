@@ -728,18 +728,31 @@ class Host:
             return self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=row['message_id'], state='presented', evidence='bound UserPromptSubmit exact prompt hash')
         raise HubError('unknown_op', 'unsupported host operation')
 
+    def _current_delivery_endpoint(self, endpoint_id):
+        # Historical receipt recovery can outlast the heartbeat TTL. Refresh at
+        # message boundaries, and never continue on an incarnation retired by it.
+        if time.monotonic() - self.refreshed >= 10:
+            self.refresh()
+        return next((ep for ep in self.endpoints if ep['endpoint_id'] == endpoint_id), None)
+
     def delivery_tick(self):
         if time.monotonic() - self.refreshed >= 10:
             self.refresh()
         if not self.config.get('delivery_enabled', False):
             return
-        for ep in self.endpoints:
+        for ep in list(self.endpoints):
+            ep = self._current_delivery_endpoint(ep['endpoint_id'])
+            if ep is None:
+                continue
             claims = self.hub('claim', endpoint_id=ep['endpoint_id'], limit=1)['messages']
             claimed_ids = {m['message_id'] for m in claims}
             for pending in self.db.execute("SELECT envelope,message_id FROM deliveries WHERE endpoint_id=? AND state IN ('dispatching','uncertain')", (ep['endpoint_id'],)):
                 if pending['message_id'] not in claimed_ids:
                     claims.append(json.loads(pending['envelope']))
             for msg in claims:
+                ep = self._current_delivery_endpoint(ep['endpoint_id'])
+                if ep is None:
+                    break
                 mid = msg['message_id']
                 self.db.execute('INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?)',
                                 (mid, ep['endpoint_id'], json.dumps(msg), 'received', None, time.time()))
