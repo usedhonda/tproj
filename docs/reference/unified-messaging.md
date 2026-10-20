@@ -744,3 +744,37 @@ state first: an already matching receipt closes the local row without another
 receipt call; otherwise valid native context evidence can synchronize the receipt.
 Neither path returns the body again. Local context recording must not prematurely
 remove a Hub-unconfirmed row from reconciliation.
+
+### Existing-socket Codex queue transport (scheduler integration pending)
+
+`native_queue` uses only one existing owner-private Unix control socket and the
+provider's `initialize`, `thread/queue/add` and bounded `thread/queue/list` RPCs.
+It never starts a daemon, resumes/starts a thread, invokes a model or retries an
+operation. The caller must supply independently authenticated native binding and
+an immutable prepared reference, and durably record its publication attempt first.
+The normal control-socket symlink is allowed only when owned by the caller and
+resolving to a same-owner socket with no group/other permissions.
+
+The optional Python `websockets.sync.client` dependency must be available in the
+actual runtime. Missing dependency/socket/transport is explicit unavailability,
+not successful delivery; it does not affect core tmux startup. Version 16.0 is
+covered by the isolated installed-runtime fixture, not an all-host assumption.
+
+Stable client IDs are correlation only: Codex does not deduplicate them. After an
+add may have been sent, missing/malformed results and generic provider errors are
+`publication_unknown`; only explicit method-not-found/invalid-params errors are
+known rejection. No exception triggers replay, a different socket, runtime spawn
+or a new client ID. Oversized frames fail explicitly rather than truncating queue
+history. This transport primitive alone does not implement durable publication,
+queue/history reconciliation, cutover fencing, no-lost-wake or provider acceptance.
+
+Response validation follows the pinned Codex App Server profile (`rpc.rs`):
+`jsonrpc` is intentionally absent in native responses; if explicitly present it
+must be `2.0`. Response IDs have the exact requested type/value, result/error are
+exclusive, and an error requires integer code plus string message. Malformed
+post-send envelopes never establish known rejection. Add success additionally
+requires the returned queued ID, exact correlation ID and original text input;
+list results retain the opaque `nextCursor`, so absence on one 32-item page is
+never proof of absence from the whole queue. Incoming unrelated messages do not
+reset the per-RPC response deadline. The caller must also isolate potentially
+blocking transport I/O from heartbeat scheduling before production integration.

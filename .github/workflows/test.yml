@@ -28,6 +28,7 @@ jobs:
         run: |
           python3 extensions/messaging/tests/test-native-notice.py
           python3 extensions/messaging/tests/test-native-consumer.py
+          python3 extensions/messaging/tests/test-native-queue.py
       - name: Role handoff
         run: bash extensions/messaging/tests/test-role-handoff.sh
       - name: Desktop mailbox
