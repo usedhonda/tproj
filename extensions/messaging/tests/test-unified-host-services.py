@@ -82,6 +82,16 @@ class UnifiedHostServicesTest(unittest.TestCase):
             host.db.close()
             self.assertEqual(Path(cfg['journal']).read_bytes(), before)
 
+    def test_identity_diagnostic_forwards_only_bounded_selectors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self.host(tmp)
+            calls = []
+            host.hub = lambda op, **args: calls.append((op, args)) or {}
+            host.dispatch({'op': 'diagnostic_identity', 'endpoint_ids': ['old', 'new'],
+                           'active_only': False, 'host_id': 'other'}, 1, os.getuid())
+            self.assertEqual(calls, [('diagnostic_identity', {'endpoint_ids': ['old', 'new'], 'active_only': False})])
+            host.db.close()
+
     def test_private_snapshot_and_idempotent_scope_migration(self):
         with tempfile.TemporaryDirectory() as tmp:
             host_path, consumer_path = Path(tmp)/'host.json', Path(tmp)/'consumer.json'

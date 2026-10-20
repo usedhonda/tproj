@@ -584,7 +584,7 @@ class Host:
         if uid != os.getuid():
             raise HubError('identity_rejected', 'local UID mismatch')
         if op == 'diagnostic_identity':
-            return self.hub('diagnostic_identity')
+            return self.hub('diagnostic_identity', **{key: req[key] for key in ('active_only', 'endpoint_ids') if key in req})
         # Legacy service consumers must not take the public operator branch.
         if op in ('list', 'status') and ('service_id' in req or 'service_token' in req):
             op = 'service_' + op

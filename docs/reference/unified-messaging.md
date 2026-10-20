@@ -610,3 +610,13 @@ rejected by party authorization. Query does not persist an `expired` state for
 accepted/queued/adapter_received rows: both views project ttl_elapsed from the
 same stored state. Delivery admission still checks TTL independently in claim
 and begin_present, so a stale stored state is not permission to deliver.
+
+Owner-host identity diagnostics accept optional `endpoint_ids` (1–32 nonempty IDs,
+at most 128 characters each) alongside `active_only`. Both endpoint and native
+evidence rows are filtered within the authenticated host, including retired rows
+when requested. Cross-host IDs return no rows; selectors never grant message
+access or change identity. Use this bounded view for historical continuity
+instead of fetching an ever-growing retired-endpoint inventory.
+This bounds selected endpoint count, not the entire response size: host-owned
+project metadata and individual field sizes still contribute. Oversized responses
+remain explicit failures; never silently truncate or retry without selectors.

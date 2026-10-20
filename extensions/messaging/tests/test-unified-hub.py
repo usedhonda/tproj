@@ -104,6 +104,17 @@ class HubTest(unittest.TestCase):
         self.assertEqual([row['endpoint_id'] for row in result['endpoint_native']], ['eb'])
         self.assertLess(len(json.dumps(success(result)).encode()), MAX_REQUEST)
         self.assertEqual(len(self.h.dispatch(req)['endpoints']), 801)
+        before = self.h.db.total_changes
+        scoped = self.h.dispatch(dict(req, endpoint_ids=['eb', 'retired-1', 'ea']))
+        self.assertEqual([row['endpoint_id'] for row in scoped['endpoints']], ['eb', 'retired-1'])
+        self.assertEqual([row['endpoint_id'] for row in scoped['endpoint_native']], ['eb', 'retired-1'])
+        self.assertLess(len(json.dumps(success(scoped)).encode()), MAX_REQUEST)
+        active = self.h.dispatch(dict(req, endpoint_ids=['eb', 'retired-1'], active_only=True))
+        self.assertEqual([row['endpoint_id'] for row in active['endpoints']], ['eb'])
+        for invalid in ([], ['x'] * 33, 'eb', [None]):
+            with self.assertRaises(HubError):
+                self.h.dispatch(dict(req, endpoint_ids=invalid))
+        self.assertEqual(self.h.db.total_changes, before)
 
     def test_same_native_rotation_preserves_exact_query_and_reply(self):
         self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
