@@ -22,7 +22,7 @@ from identity import (IdentityError, adopt_native_conversation, bind_caller, dis
 from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
 from receipt import normalize_prompt, codex_transcript_presented
 
-HOST_BACKEND_VERSION = 3
+HOST_BACKEND_VERSION = 4
 WIRE_LIMIT = 262144
 
 
@@ -102,6 +102,7 @@ class Host:
         self.refreshed = 0
         self.claim_sequences = {}
         self.native_publisher = None
+        self._journal_needs_reopen = False
         try:
             if self.read_only:
                 self.db = sqlite3.connect('file:' + quote(str(config['journal']), safe='/') + '?mode=ro', uri=True)
@@ -747,7 +748,26 @@ class Host:
             self.refresh()
         return next((ep for ep in self.endpoints if ep['endpoint_id'] == endpoint_id), None)
 
+    def _reopen_delivery_journal(self):
+        """Discard a suspect connection; never recreate or recover delivery rows."""
+        self.db.close()
+        mode = 'ro' if self.read_only else 'rw'
+        db = sqlite3.connect('file:' + quote(str(self.config['journal']), safe='/') + '?mode=' + mode, uri=True)
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute('PRAGMA synchronous=FULL')
+            # Missing/schema-damaged journals fail closed, not a new blank ledger.
+            for table in ('deliveries', 'submissions', 'delivery_diagnostics'):
+                db.execute('SELECT message_id FROM ' + table + ' LIMIT 0')
+        except Exception:
+            db.close()
+            raise
+        self.db = db
+        self._journal_needs_reopen = False
+
     def delivery_tick(self):
+        if self._journal_needs_reopen:
+            self._reopen_delivery_journal()
         # Collect all owned transport children, even if their endpoint vanished,
         # delivery was disabled, or this tick visits a different claim page.
         if self.native_publisher is not None:
@@ -763,7 +783,9 @@ class Host:
                 # Roll back only uncommitted local work. Durable reservation and
                 # unknown-effect fences survive; other recipients still run.
                 try: self.db.rollback()
-                except sqlite3.Error: pass
+                except sqlite3.Error:
+                    self._journal_needs_reopen = True
+                    self._reopen_delivery_journal()
                 print('delivery endpoint failure: ' + type(exc).__name__, file=sys.stderr, flush=True)
 
     def _deliver_endpoint(self, ep):

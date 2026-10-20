@@ -14,7 +14,7 @@ MAX_REQUEST = 256 * 1024
 # Native context JSON nests already wire-bounded originals. Response-only limit;
 # normal requests, Hub queries and all other client responses stay unchanged.
 NATIVE_CONTEXT_LIMIT = 4 * MAX_REQUEST
-NATIVE_RUNTIME_CONTRACT = {"host_version": 3, "consumer_version": 2,
+NATIVE_RUNTIME_CONTRACT = {"host_version": 4, "consumer_version": 2,
                            "context_response_limit": NATIVE_CONTEXT_LIMIT}
 
 

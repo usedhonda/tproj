@@ -45,25 +45,79 @@ class UnifiedHostServicesTest(unittest.TestCase):
 
     def test_endpoint_failure_rolls_back_partial_work_not_committed_reservations(self):
         import time
+        import sqlite3
+        for rollback_fails in (False, True):
+            with self.subTest(rollback_fails=rollback_fails), tempfile.TemporaryDirectory() as tmp:
+                host = host_mod.Host({'journal': str(Path(tmp) / 'journal.db'),
+                                      'delivery_enabled': True}, recover=False)
+                self.addCleanup(lambda host=host: host.db.close())
+                host.endpoints = [{'endpoint_id': x} for x in ('faulted', 'healthy')]
+                host.refreshed = time.monotonic()
+                host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                    ('reserved', 'faulted', '{}', 'dispatching', None, 0))
+                host.db.commit()
+                if rollback_fails:
+                    connection = host.db
+                    class FailedRollback:
+                        def __getattr__(self, key): return getattr(connection, key)
+                        def rollback(self): raise sqlite3.OperationalError('fixture rollback failure')
+                    host.db = FailedRollback()
+                def endpoint(ep):
+                    if ep['endpoint_id'] == 'faulted':
+                        host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                            ('partial', 'faulted', '{}', 'received', None, 0))
+                        raise OSError('fixture failure with open transaction')
+                    host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                        ('healthy', 'healthy', '{}', 'received', None, 0))
+                    host.db.commit()
+                host._deliver_endpoint = endpoint
+                host.delivery_tick()
+                self.assertEqual(dict(host.db.execute('SELECT message_id,state FROM deliveries')),
+                                 {'reserved': 'dispatching', 'healthy': 'received'})
+
+    def test_failed_journal_reopen_never_recreates_ledger_or_runs_later_work(self):
+        import time
+        import sqlite3
+        from unittest.mock import Mock
         with tempfile.TemporaryDirectory() as tmp:
-            host = host_mod.Host({'journal': str(Path(tmp) / 'journal.db'),
-                                  'delivery_enabled': True}, recover=False)
-            self.addCleanup(host.db.close)
-            host.endpoints = [{'endpoint_id': x} for x in ('faulted', 'healthy')]
-            host.refreshed = time.monotonic()
+            path = Path(tmp) / 'journal.db'
+            saved = path.with_suffix('.saved')
+            host = host_mod.Host({'journal': str(path), 'delivery_enabled': True}, recover=False)
+            self.addCleanup(lambda: host.db.close())
             host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
                 ('reserved', 'faulted', '{}', 'dispatching', None, 0))
             host.db.commit()
+            connection = host.db
+            class FailedRollback:
+                def __getattr__(self, key): return getattr(connection, key)
+                def rollback(self):
+                    connection.close()  # Discard partial work, preserve the durable journal.
+                    path.rename(saved)  # Temporary loss of the original journal path.
+                    raise sqlite3.OperationalError('fixture rollback failure')
+            host.db = FailedRollback()
+            publisher = host.native_publisher = Mock()
+            host.endpoints = [{'endpoint_id': x} for x in ('faulted', 'healthy')]
+            host.refreshed = time.monotonic()
+            seen = []
             def endpoint(ep):
-                if ep['endpoint_id'] == 'faulted':
+                seen.append(ep['endpoint_id'])
+                if ep['endpoint_id'] == 'faulted' and len(seen) == 1:
                     host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
                         ('partial', 'faulted', '{}', 'received', None, 0))
-                    raise OSError('fixture failure with open transaction')
-                host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
-                    ('healthy', 'healthy', '{}', 'received', None, 0))
-                host.db.commit()
+                    raise OSError('fixture failure before rollback')
+                if ep['endpoint_id'] == 'healthy':
+                    host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                        ('healthy', 'healthy', '{}', 'received', None, 0))
+                    host.db.commit()
             host._deliver_endpoint = endpoint
+            for _ in range(2):
+                with self.assertRaises(sqlite3.OperationalError): host.delivery_tick()
+                self.assertFalse(path.exists(), 'reopen created a blank ledger')
+                self.assertEqual(seen, ['faulted'])
+                publisher.maintain.assert_called_once_with(host)
+            saved.rename(path)
             host.delivery_tick()
+            self.assertEqual(seen, ['faulted', 'faulted', 'healthy'])
             self.assertEqual(dict(host.db.execute('SELECT message_id,state FROM deliveries')),
                              {'reserved': 'dispatching', 'healthy': 'received'})
 

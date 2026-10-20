@@ -1023,3 +1023,10 @@ original. Only uncommitted local work is rolled back. Already committed body
 reservations, uncertain effects, receipts, and publication attempts are retained.
 Global refresh/authority failures remain global and are not treated as delivery
 permission. Unexpected programming errors are not reclassified as normal delivery.
+
+Host generation 4 also discards a connection whose rollback fails, then opens
+the same existing journal without startup recovery or schema creation. Committed
+reservations and unknown effects are not reset. A failed reopen stops that tick;
+the next tick must reopen before job maintenance or recipient processing. Missing
+or schema-damaged journals are not silently replaced by a blank ledger. This is
+local SQLite recovery, not a new messaging connection or authority grant.
