@@ -42,6 +42,38 @@ class UnifiedHostServicesTest(unittest.TestCase):
             self.assertEqual({r[0] for r in host.db.execute('SELECT state FROM deliveries')}, {'received'})
             host.db.close()
 
+    def test_native_scheduler_maintains_off_path_and_never_falls_back(self):
+        import time
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as tmp:
+            host = host_mod.Host({'journal': str(Path(tmp) / 'journal.db'),
+                'delivery_enabled': False, 'native_queue_enabled': True,
+                'native_consumer_enabled': True}, recover=False)
+            publisher = Mock()
+            host.native_publisher = publisher
+            host.refreshed = time.monotonic()
+            host.delivery_tick()
+            publisher.maintain.assert_called_once_with(host)
+            host.config['delivery_enabled'] = True
+            ep = {'endpoint_id': 'ep', 'platform': 'cdx'}
+            host.endpoints = [ep]
+            host.refreshed = time.monotonic()
+            host._current_delivery_endpoint = lambda _: ep
+            host.hub = Mock(return_value={'messages': [{'message_id': 'native'}], 'next_sequence': 1})
+            publisher.tick.side_effect = HubError('identity_rejected', 'fixture')
+            with patch.object(host_mod.subprocess, 'run', side_effect=AssertionError('terminal access')):
+                host.delivery_tick()
+                publisher.tick.assert_called_once_with(host, ep, 'native')
+                host.config['native_consumer_enabled'] = False
+                host.delivery_tick()
+                self.assertEqual(publisher.tick.call_count, 1)
+            self.assertEqual(host.db.execute('SELECT state FROM deliveries').fetchone()[0], 'received')
+            # A vanished endpoint/empty scan still drains already running jobs.
+            host.endpoints = []
+            host.delivery_tick()
+            self.assertEqual(publisher.maintain.call_count, 4)
+            host.db.close()
+
     def test_current_host_policy_controls_legacy_and_new_service_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)

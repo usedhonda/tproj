@@ -835,3 +835,17 @@ The cursor is a volatile scheduling hint, not consumption, notification-drain
 completion, cancellation permission, or a no-lost-wake guarantee. Restart may
 scan old rows again, but existing durable presentation/unknown fences remain
 authoritative; claiming never authorizes replay.
+
+### Native publication scheduler connection (inactive by default)
+
+Host uses its existing delivery tick, not a second scheduler. Every tick first
+maintains all owned publication jobs, including when delivery is disabled or
+the original endpoint/claim row is not visited. With `native_queue_enabled`
+true, fresh received Codex rows select native routing before any terminal
+operation. Missing consumer enablement, failed identity or transport leaves
+the row pending with an adapter diagnostic; it never falls back to paste.
+Previously native-owned rows retain their receipt-recovery path even with flags
+off. Historical legacy uncertain/dispatching rows are not re-published. This
+connection alone does not prove conversation notification coalescing, durable
+pending generations, no-lost-wake, Goal carry, or provider acceptance. Both
+native flags remain false until those activation prerequisites are proved.

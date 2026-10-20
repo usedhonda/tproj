@@ -100,6 +100,7 @@ class Host:
         self.endpoints = []
         self.refreshed = 0
         self.claim_sequences = {}
+        self.native_publisher = None
         try:
             if self.read_only:
                 self.db = sqlite3.connect('file:' + quote(str(config['journal']), safe='/') + '?mode=ro', uri=True)
@@ -743,6 +744,10 @@ class Host:
         return next((ep for ep in self.endpoints if ep['endpoint_id'] == endpoint_id), None)
 
     def delivery_tick(self):
+        # Collect all owned transport children, even if their endpoint vanished,
+        # delivery was disabled, or this tick visits a different claim page.
+        if self.native_publisher is not None:
+            self.native_publisher.maintain(self)
         if time.monotonic() - self.refreshed >= 10:
             self.refresh()
         if not self.config.get('delivery_enabled', False):
@@ -771,7 +776,26 @@ class Host:
                 self.db.commit()
                 row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
                 from native_consumer import owns, recover
-                if owns(self.db, mid):
+                native_owned = owns(self.db, mid)
+                native_selected = (ep.get('platform') == 'cdx'
+                                   and self.config.get('native_queue_enabled') is True
+                                   and row['state'] == 'received')
+                if native_selected:
+                    # Route selection precedes any terminal/composer operation.
+                    # Missing consumer/identity/transport cannot fall back to paste.
+                    if self.config.get('native_consumer_enabled') is True:
+                        from native_publication import Publisher
+                        from native_queue import QueueError
+                        if self.native_publisher is None:
+                            self.native_publisher = Publisher()
+                        try:
+                            self.native_publisher.tick(self, ep, mid)
+                        except (HubError, QueueError, OSError, ValueError):
+                            self.delivery_status(ep['endpoint_id'], mid, 'adapter_error')
+                    else:
+                        self.delivery_status(ep['endpoint_id'], mid, 'adapter_error')
+                    native_owned = owns(self.db, mid)
+                if native_owned or native_selected:
                     # A native reference is not the original body. Never run the
                     # terminal path or legacy user-prompt receipt for its row.
                     if row['state'] in ('dispatching', 'uncertain'):
