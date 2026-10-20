@@ -29,6 +29,45 @@ address. `gate` is the configured OpenClaw **main** participant; `chi.cc` and
 
 ## Delivery and replies
 
+### Telegram relay (opt-in; live acceptance not established)
+
+`unified/telegram_ingress.py` provides a deterministic transport core and
+`telegram_runtime.py` a dedicated-bot long-poll adapter. Neither creates a bot,
+enrolls an owner or starts itself. A separately enrolled `telegram` service must
+use existing credential + launchd PID authentication and a stable service
+generation. Its `service_telegram_ingress` operation validates raw updates under
+the host's approved bot/user/private-chat/target binding, never caller-provided
+`external_origin`. The polling process verifies bot identity via TLS `getMe`;
+polling is separate from webhook-header authentication and does not synthesize
+a webhook header. No arbitrary RPC caller gains authority by claiming a bot ID.
+
+The core preserves input and KAI output text without a model. It reserves each
+input and correlated output in an owner-private SQLite journal before invoking
+an adapter. Duplicate, interrupted, and uncertain sends are not automatically
+sent again. This favors visible uncertainty over duplicate execution; a future
+adapter must reconcile receipts rather than invent new IDs. Outputs are pinned
+to the original request and configured KAI endpoint; continuing outputs use
+distinct mailbox IDs. A changed, revoked, or expired binding prevents new effects,
+but does not undo an already-started callback.
+
+The hub independently pins the attesting host and participant to an explicitly
+configured `telegram_ingress_bindings` entry. It commits the origin in the same
+message INSERT and payload identity. KAI message/inbox tools project only the
+version-1 schema and `origin_binding_active`, recalculated from current hub
+binding configuration on each read. A revoked binding preserves historical
+origin but returns inactive; absent/false is not owner authorization. Normal
+host submit rejects origin-assertion keys. Old binding generations cannot send
+replies into a previously registered owner's chat.
+
+The dedicated adapter does not invoke Chi or alter the existing KAI event pump.
+Before live use, operator enrollment, private configuration, staged installation,
+and real phone-to-existing-KAI receive/reply/continuing-output acceptance remain
+necessary. The current MVP supports private plain text and outputs up to 4096
+characters; media, long-output splitting, automated unknown-send reconciliation
+and public enrollment are not implemented. An uncertain send stops rather than
+replaying it. Fake-adapter and synthetic-auth tests do not establish live
+authentication or phone acceptance. See `telegram-kai-route.md` for configuration.
+
 An accepted message is durably queued, but that is not proof of presentation.
 The states are distinct:
 

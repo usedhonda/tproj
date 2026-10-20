@@ -64,6 +64,14 @@ class Hub:
         if not self.read_only:
             try:
                 self.db.executescript(SCHEMA)
+                columns = {row[1] for row in self.db.execute('PRAGMA table_info(messages)')}
+                if 'external_origin_json' not in columns:
+                    try:
+                        self.db.execute('ALTER TABLE messages ADD COLUMN external_origin_json TEXT')
+                    except sqlite3.OperationalError:
+                        # Concurrent request constructors may race this additive migration.
+                        if 'external_origin_json' not in {r[1] for r in self.db.execute('PRAGMA table_info(messages)')}:
+                            raise
                 self.db.execute("INSERT OR IGNORE INTO metadata(key,value) VALUES('directory_revision','0')")
                 self.db.execute("INSERT OR IGNORE INTO metadata(key,value) VALUES('maintenance','open')")
             except (OSError, sqlite3.Error) as exc:
@@ -276,7 +284,14 @@ class Hub:
         mid, target = msg.get("message_id"), msg.get("target")
         if not mid or (not target and not msg.get("in_reply_to")): raise HubError("invalid_message", "message_id and target required")
         if mode == "probe" and mid not in set(self.config.get("probe_message_ids", [])): raise HubError("maintenance", "only configured probe messages are allowed")
-        canonical = json.dumps({k: msg.get(k) for k in ("thread_id","in_reply_to","sender_endpoint","target","body","kind","ttl_sec")}, sort_keys=True, separators=(",",":"))
+        origin = msg.get('external_origin')
+        if 'external_origin' in msg:
+            if not self._telegram_origin_active(origin, msg, sender):
+                raise HubError('identity_rejected', 'external origin is not authorized')
+        identity = {k: msg.get(k) for k in ("thread_id","in_reply_to","sender_endpoint","target","body","kind","ttl_sec")}
+        if origin is not None:
+            identity['external_origin'] = origin
+        canonical = json.dumps(identity, sort_keys=True, separators=(",",":"))
         ph = hashlib.sha256(canonical.encode()).hexdigest(); existing = self._row("SELECT * FROM messages WHERE message_id=?", (mid,))
         if existing:
             if existing["payload_hash"] != ph: raise HubError("id_conflict", "message ID has different payload")
@@ -298,7 +313,7 @@ class Hub:
             recipient = self._endpoint_for_send(self._participant(target))
         check_policy(self.db, sender["endpoint_id"], target, body, self._now(), msg.get("in_reply_to"))
         created = self._now(); expires = created + ttl
-        self.db.execute("INSERT INTO messages(message_id,thread_id,in_reply_to,sender_endpoint,target_address,recipient_endpoint,body,kind,created_at,expires_at,payload_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (mid,msg.get("thread_id") or mid,msg.get("in_reply_to"),sender["endpoint_id"],target,recipient["endpoint_id"],body,msg.get("kind","chat"),created,expires,ph))
+        self.db.execute("INSERT INTO messages(message_id,thread_id,in_reply_to,sender_endpoint,target_address,recipient_endpoint,body,kind,created_at,expires_at,payload_hash,external_origin_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (mid,msg.get("thread_id") or mid,msg.get("in_reply_to"),sender["endpoint_id"],target,recipient["endpoint_id"],body,msg.get("kind","chat"),created,expires,ph,json.dumps(origin,sort_keys=True) if origin is not None else None))
         return {"message_id": mid, "state": "queued"}
 
     def inbox(self, req):
@@ -379,6 +394,16 @@ class Hub:
         size = 0
         for row in rows:
             item = dict(row)
+            encoded_origin = item.pop('external_origin_json', None)
+            if encoded_origin is not None:
+                try:
+                    origin = json.loads(encoded_origin)
+                    sender = self._row('SELECT * FROM endpoints WHERE endpoint_id=?', (item['sender_endpoint'],))
+                    active = self._telegram_origin_active(origin, item, sender)
+                    item['external_origin'] = origin
+                    item['origin_binding_active'] = active
+                except (ValueError, TypeError, KeyError):
+                    item['origin_binding_active'] = False
             q = self._row("SELECT p.address FROM participants p JOIN endpoints e ON e.participant_id=p.participant_id WHERE e.endpoint_id=?", (item["sender_endpoint"],))
             item["sender_address"] = q[0] if q else None
             encoded = len(json.dumps(item, ensure_ascii=False).encode())
@@ -391,6 +416,24 @@ class Hub:
                 break
             out.append(item); size += encoded
         return out
+
+    def _telegram_origin_active(self, origin, message, sender):
+        try:
+            try:
+                from .telegram_ingress import TelegramOwnerBinding, validate_origin
+            except ImportError:
+                from telegram_ingress import TelegramOwnerBinding, validate_origin
+            if not sender or not isinstance(origin, dict):
+                return False
+            settings = self.config.get('telegram_ingress_bindings', {}).get(origin.get('binding_id'))
+            if (not isinstance(settings, dict) or settings.get('host_id') != sender['host_id']
+                    or settings.get('participant_id') != sender['participant_id']):
+                return False
+            binding = TelegramOwnerBinding(**settings['owner_binding'])
+            validate_origin(origin, message, binding, now=self._now())
+            return True
+        except (ValueError, TypeError, KeyError):
+            return False
 
     def claim(self, req):
         host=self._auth(req)

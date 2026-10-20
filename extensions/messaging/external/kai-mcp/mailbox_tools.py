@@ -340,4 +340,16 @@ class MailboxTools:
                "body": item["body"], "state": item["state"]}
         for source, dest in (("in_reply_to", "in_reply_to"), ("sender_address", "sender_address")):
             if item.get(source) is not None: out[dest] = item[source]
+        if 'external_origin' in item or 'origin_binding_active' in item:
+            origin = item.get('external_origin')
+            fields = {'version', 'channel', 'binding_id', 'owner_id', 'bot_id', 'user_id',
+                      'chat_id', 'message_id', 'update_id', 'generation', 'target', 'kind',
+                      'mailbox_message_id', 'body_sha256'}
+            if (not isinstance(origin, dict) or set(origin) != fields
+                    or origin.get('version') != 1 or origin.get('channel') != 'telegram'
+                    or origin.get('mailbox_message_id') != item['message_id']
+                    or type(item.get('origin_binding_active')) is not bool):
+                raise MailboxToolError('unavailable', 'host returned invalid external origin')
+            out['external_origin'] = {key: origin[key] for key in fields}
+            out['origin_binding_active'] = item['origin_binding_active']
         return out

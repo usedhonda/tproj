@@ -374,7 +374,7 @@ class Host:
         # persona. Authenticate the current launchd process above on every call,
         # then retain its mailbox across process restarts within one enrollment.
         # Rotating the operator-owned generation revokes this continuity.
-        generation = cfg.get('binding_generation') if service_id == 'kai' else None
+        generation = cfg.get('binding_generation') if service_id in ('kai', 'telegram') else None
         if generation and req.get('binding_generation') != generation:
             raise HubError('stale_session', 'service enrollment generation revoked')
         if query_only and service_id == 'kai' and req.get('binding_generation') != generation:
@@ -382,7 +382,7 @@ class Host:
         if generation:
             ep.update(endpoint_id=str(uuid.uuid5(uuid.NAMESPACE_URL,
                       f"{self.config['host_id']}:{service_id}:{cfg['participant_id']}:{generation}")),
-                      pid=0, pid_start=0, runtime_id=f'kai:{generation}')
+                      pid=0, pid_start=0, runtime_id=f'{service_id}:{generation}')
         identity = self.hub('diagnostic_identity', active_only=True) if query_only else None
         previous = identity['endpoints'] if identity is not None else self.hub('endpoints_list', active_only=True)['endpoints']
         if query_only:
@@ -411,11 +411,16 @@ class Host:
             raise HubError('scope_denied', 'target is outside authorized service policy')
         return scope
 
-    def submit(self, ep, req, reply=False):
+    def submit(self, ep, req, reply=False, *, trusted_origin=None):
+        if any(key in ('origin', 'external_origin', 'provenance', 'host_attested', 'verified')
+               or key.startswith('origin_') for key in req):
+            raise HubError('invalid_message', 'caller-supplied origin is not supported')
         mid = req.get('submission_id')
         if not isinstance(mid, str) or not mid or len(mid) > 128:
             raise HubError('invalid_message', 'persisted submission_id required')
         envelope = dict(message_id=mid, sender_endpoint=ep['endpoint_id'], body=req.get('body', ''), kind='chat')
+        if trusted_origin is not None:
+            envelope['external_origin'] = trusted_origin
         if reply:
             original = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
             if not original.get('reader_is_recipient', original['recipient_endpoint'] == ep['endpoint_id']):
@@ -621,6 +626,30 @@ class Host:
         self._query_only_service = query_only_service
         ep = self.service(pid, uid, req) if is_service else (
             self.caller_read_only(pid, uid, req) if op == 'diagnose' else self.caller(pid, uid, req))
+        if op == 'service_telegram_ingress':
+            from telegram_ingress import TelegramOwnerBinding, TelegramIngressAuthority, TelegramIngressError
+            service_id, cfg = self._service_binding(req)
+            if service_id != 'telegram':
+                raise HubError('identity_rejected', 'dedicated Telegram service required')
+            settings = cfg.get('telegram_ingress')
+            try:
+                if not isinstance(settings, dict):
+                    raise ValueError()
+                binding = TelegramOwnerBinding(**settings['owner_binding'])
+                if settings.get('mode') != 'long_poll' or not cfg.get('binding_generation'):
+                    raise ValueError()
+                authority = TelegramIngressAuthority(binding)
+                raw = req.get('raw_update')
+                if not isinstance(raw, str):
+                    raise ValueError()
+                intent = authority.admit_authenticated_poll(raw.encode('utf-8'),
+                    verified_bot_id=req.get('verified_bot_id'), now=time.time())
+            except (ValueError, TypeError, KeyError, UnicodeError):
+                raise HubError('identity_rejected', 'Telegram ingress validation failed') from None
+            self.service_policy(req, intent.target)
+            return self.submit(ep, {'submission_id': intent.message_id,
+                                   'target': intent.target, 'body': intent.body},
+                               trusted_origin=intent.envelope()['external_origin'])
         if isinstance(op, str) and op.startswith('task_'):
             from task_host import dispatch
             return dispatch(self, ep, req)
