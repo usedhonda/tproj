@@ -635,3 +635,36 @@ mutation, endpoint retirement, or replay. Other endpoints continue through the
 same worker. Existing historical receipt recovery remains available separately.
 This is an unavailable terminal surface, not proof of an invalid native identity
 or a completed native ingress implementation.
+
+### Native peer reference provenance (preparation only)
+
+The native-notice primitive is not an enabled ingress adapter. It prepares a
+small reference, never a copy of the original body, from an existing pinned
+`deliveries` row. The same host journal retains only its token, immutable content
+digest, native ID/kind, endpoint/incarnation and stable client ID in
+`native_notice_metadata`. This metadata has no message body, pending list, cursor
+or scheduler and is not another mailbox or an approval source.
+
+The host supplies independently authenticated endpoint/native attestations, not
+selectors from a peer body. Same-original preparation must preserve content and
+binding or fail with conflict. The exact generated prompt digest is retained.
+Verification is read-only, checks the stored
+original and current binding, and rejects a changed token, thread, incarnation or
+endpoint. Its result establishes peer provenance only, never user approval,
+presentation, execution permission, cancellation success or expiry eligibility.
+
+Native queue records may otherwise look like ordinary `user.text`. The queued
+reference keeps the peer marker and excludes the original's authority claims;
+existing approval and role classifiers must still reject it as direct user input.
+The consumer must read the actual live record from the pinned transcript, check
+its header/project binding, and use entire-record reference verification. Token
+verification alone does not attest the full received text; appended, mixed or
+changed content fails without direct-user fallback. Local journal/transcript
+correlation retains the existing same-OS-user trust level, not provider-signed
+attestation.
+Body retrieval must separately recheck the authoritative original's latest
+cancellation, TTL and sharing scope; later effects require the existing execution
+scope/cancellation check. The primitive alone does not implement that consumer,
+queue idempotency, coalescing, generation fencing or native delivery. A stable
+client ID is a correlation key, not provider deduplication. Normal historical
+message queries and established authorized carry are unchanged.
