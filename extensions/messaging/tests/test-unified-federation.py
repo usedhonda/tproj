@@ -60,6 +60,9 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(result['peers']['b']['error'], 'configuration_error')
         self.assertTrue(result['peers']['c']['available'])
         self.assertIn('native_continuity', result['peers']['c']['capabilities'])
+        self.assertEqual(result['native_runtime'], {'hub_version': 1})
+        self.assertEqual(result['peers']['c']['native_runtime'], {'hub_version': 1})
+        self.assertIn('native_pending', result['peers']['c']['capabilities'])
 
     def test_accepted_retry_preserves_result_after_recipient_revocation(self):
         sender, recipient = self.hubs['a'], self.hubs['b']

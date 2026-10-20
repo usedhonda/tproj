@@ -982,3 +982,17 @@ fallback or permission to publish. Without an adjacent wheel, the existing
 optional installed-library path remains compatible. Provisioning does not
 enable native consumer/queue flags or prove remote Codex/provider acceptance.
 Pinned package metadata: https://pypi.org/project/websockets/15.0.1/ .
+
+### Loaded Hub native capability
+
+Authenticated local and peer capability views share the same Hub implementation
+and report `native_runtime.hub_version` plus the native reservation/pending/drain
+operations. Federation preserves a valid peer Hub version instead of reporting
+only disk placement or dropping that generation. An older peer with no version
+remains unknown; ordinary core messaging is not disabled. These read-only
+capabilities neither claim successful native presentation nor grant authority.
+
+After distributing Hub/Federation changes, reload only the existing Hub service,
+keeping Host native flags off. Match loaded capability readback to the installed
+version; preserve all mailbox rows and unknown effects. No old-message replay,
+TTL extension, identity reassignment or provider restart belongs to this step.

@@ -27,6 +27,8 @@ except ImportError:  # allow the installed single-file entrypoint to be invoked 
     from native_notice import content_digest
 
 
+HUB_NATIVE_VERSION = 1
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=FULL;
@@ -674,13 +676,17 @@ class Hub:
             raise HubError('unavailable', 'diagnostic identity unavailable') from None
         return {'host_id': host, 'endpoints': endpoints, 'endpoint_native': native, 'projects': projects}
 
+    def messaging_capabilities(self, req):
+        self._auth(req)
+        return {'capabilities': ['native_attest', 'native_continuity',
+                                'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted',
+                                'native_begin_present', 'native_pending', 'native_drain'],
+                'native_runtime': {'hub_version': HUB_NATIVE_VERSION}, 'peers': {}}
+
     def dispatch(self, req):
         op=req.get("op")
         if op in ('messaging_capabilities', 'peer_messaging_capabilities'):
-            self._auth(req)
-            return {'capabilities': ['native_attest', 'native_continuity',
-                                     'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted'],
-                    'peers': {}}
+            return self.messaging_capabilities(req)
         if op == 'diagnostic_identity': return self.diagnostic_identity(req)
         if op == "task_capabilities":
             self._auth(req)

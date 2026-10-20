@@ -75,7 +75,7 @@ class HubTest(unittest.TestCase):
         ro = Hub(path, {'admin_token': 'adm', 'hosts': {'a': 'ta'}}, read_only=True)
         self.addCleanup(ro.close)
         self.assertEqual(ro.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'ta'})['capabilities'],
-                         ['native_attest', 'native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted'])
+                         ['native_attest', 'native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted', 'native_begin_present', 'native_pending', 'native_drain'])
         self.assertEqual(ro.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'ta'})['peers'], {})
         with self.assertRaises(HubError) as caught:
             ro.dispatch({'op': 'diagnose', 'host_id': 'a', 'host_token': 'ta', 'message_id': 'missing'})
@@ -226,6 +226,15 @@ class HubTest(unittest.TestCase):
             with self.assertRaises(HubError): reopened.dispatch(dict(req, op='native_drain', host_id='a', host_token='ta', generation=stale['generation']))
             self.assertEqual(reopened.db.total_changes, before)
         finally: reopened.close()
+
+    def test_native_capabilities_are_authenticated_and_read_only(self):
+        before = self.h.db.total_changes
+        result = self.h.dispatch(dict(op='messaging_capabilities', host_id='b', host_token='tb'))
+        self.assertEqual(result['native_runtime'], {'hub_version': 1})
+        self.assertTrue({'native_begin_present', 'native_pending', 'native_drain'} <= set(result['capabilities']))
+        with self.assertRaises(HubError):
+            self.h.dispatch(dict(op='messaging_capabilities', host_id='b', host_token='wrong'))
+        self.assertEqual(self.h.db.total_changes, before)
 
     def test_diagnosis_is_metadata_only_and_operator_permission_is_explicit(self):
         self.send(body='private-body-sentinel')

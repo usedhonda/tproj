@@ -559,8 +559,7 @@ class FederatedHub(Hub):
                 return {'peer_directory_prepare': prepare, 'peer_directory_commit': commit,
                         'peer_directory_status': status, 'peer_directory_abort': abort}[op](self, req)
             if op == 'peer_messaging_capabilities':
-                return {'capabilities': ['native_attest', 'native_continuity',
-                                          'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted']}
+                return super().messaging_capabilities(req)
             if op == 'peer_diagnose':
                 proof = req.get('diagnostic_party')
                 if proof is None:
@@ -646,10 +645,7 @@ class FederatedHub(Hub):
             from task_transport import capabilities
             return capabilities(self, req)
         if op == 'messaging_capabilities':
-            self._auth(req)
-            result = {'capabilities': ['native_attest', 'native_continuity',
-                                       'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted'],
-                      'peers': {}}
+            result = super().messaging_capabilities(req)
             top = self.topology()
             hosts = top.get('hosts', []) if top.get('mode') == 'multi' else []
             if not isinstance(hosts, list):
@@ -668,6 +664,10 @@ class FederatedHub(Hub):
                 try:
                     caps = self.remote(ident, 'messaging_capabilities')
                     result['peers'][ident] = {'available': True, 'capabilities': caps.get('capabilities', []) if isinstance(caps, dict) else []}
+                    runtime = caps.get('native_runtime') if isinstance(caps, dict) else None
+                    if (isinstance(runtime, dict) and type(runtime.get('hub_version')) is int
+                            and runtime['hub_version'] > 0):
+                        result['peers'][ident]['native_runtime'] = {'hub_version': runtime['hub_version']}
                 except HubError as exc:
                     result['peers'][ident] = {'available': False, 'capabilities': [],
                                               'error': exc.code}
