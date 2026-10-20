@@ -493,6 +493,39 @@ class Hub:
         return {'recipient_reply_count': count, 'recipient_reply_message_ids': ids,
                 'response_state': 'recipient_replied' if count else 'unconfirmed'}
 
+    def delivery_summary(self, message, response):
+        """Read-only lifecycle projection; never rewrite uncertain delivery effects."""
+        state = message['state']
+        elapsed = message['expires_at'] <= self._now()
+        receipt = self._row('SELECT state FROM receipts WHERE message_id=?', (message['message_id'],))
+        endpoint = self._row('SELECT retired FROM endpoints WHERE endpoint_id=?', (message['recipient_endpoint'],))
+        presented = state == 'presented' or bool(receipt and receipt['state'] == 'presented')
+        replied = response['response_state'] == 'recipient_replied'
+        terminal = state in ('cancelled', 'expired', 'rejected', 'stale_session')
+        lifecycle = state if terminal else ('ttl_elapsed' if elapsed else 'active')
+        eligible = bool(endpoint and not endpoint['retired'] and not elapsed
+                        and state in ('accepted', 'queued', 'adapter_received')
+                        and not presented and not replied)
+        if terminal:
+            status, reason = 'action_required', state + ('_with_reply' if replied else '')
+        elif presented:
+            status, reason = 'presentation_confirmed', 'receipt_confirmed'
+        elif replied:
+            status, reason = 'recipient_replied', 'ttl_elapsed_with_reply' if elapsed else 'recipient_replied'
+        elif elapsed:
+            status = 'action_required'
+            reason = ('ttl_elapsed_outcome_unknown' if state in ('dispatching', 'uncertain')
+                      else 'ttl_elapsed_before_presentation')
+        elif not endpoint or endpoint['retired']:
+            status, reason = 'action_required', 'pinned_recipient_unavailable'
+        elif state == 'uncertain':
+            status, reason = 'action_required', 'presentation_outcome_unknown'
+        else:
+            status, reason = 'waiting', 'presentation_in_progress' if state == 'dispatching' else 'pending'
+        return {'status': status, 'lifecycle': lifecycle, 'reason': reason,
+                'ttl_elapsed': elapsed, 'presentation_confirmed': presented,
+                'new_presentation_eligible': eligible}
+
     def diagnose(self, req, authenticated_party=None):
         host=self._auth(req)
         try:
@@ -512,7 +545,9 @@ class Hub:
             if not any(self._same_native_party(ep, party) for party in (message['sender_endpoint'], message['recipient_endpoint'])):
                 raise HubError('unauthorized','delivery metadata requires party or configured operator permission')
         result=dict(message)
-        result.update(self.response_evidence(message))
+        response = self.response_evidence(message)
+        result.update(response)
+        result['delivery_summary'] = self.delivery_summary(message, response)
         result['diagnostic_host_id']=self.config.get('host_id',host)
         receipt=self._row('SELECT state,evidence,at FROM receipts WHERE message_id=?',(message['message_id'],))
         result['presentation_confirmed']=message['state']=='presented' or bool(receipt and receipt['state']=='presented')
@@ -607,7 +642,9 @@ class Hub:
             # Same resolved sender the inbox and claim views carry: a reader that fetches
             # one message by ID must not have to trust the name written in its body.
             result = self.message_views([m], response_kind="query")[0]
-            result.update(self.response_evidence(m))
+            response = self.response_evidence(m)
+            result.update(response)
+            result['delivery_summary'] = self.delivery_summary(m, response)
             result["reader_is_recipient"] = self._same_native_party(ep, m["recipient_endpoint"])
             receipt = self._row("SELECT evidence,at FROM receipts WHERE message_id=?", (m["message_id"],))
             if receipt and m["state"] in ("accepted", "queued", "adapter_received", "uncertain"):

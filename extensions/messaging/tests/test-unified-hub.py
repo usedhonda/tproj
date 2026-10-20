@@ -170,6 +170,57 @@ class HubTest(unittest.TestCase):
         self.assertFalse(result['presentation_confirmed'])
         self.assertIsNone(result['delivery_reason'])
 
+    def test_delivery_summary_preserves_expired_unknown_and_late_evidence(self):
+        cases = [
+            ('dispatching', True, True, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_outcome_unknown'),
+            ('uncertain', True, False, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_outcome_unknown'),
+            ('accepted', False, False, False, 'waiting', 'active', 'pending'),
+            ('accepted', False, False, True, 'recipient_replied', 'active', 'recipient_replied'),
+            ('accepted', False, True, False, 'action_required', 'active', 'pinned_recipient_unavailable'),
+            ('cancelled', False, False, True, 'action_required', 'cancelled', 'cancelled_with_reply'),
+            ('expired', True, False, True, 'action_required', 'expired', 'expired_with_reply'),
+            ('dispatching', True, False, True, 'recipient_replied', 'ttl_elapsed', 'ttl_elapsed_with_reply'),
+        ]
+        for i, (state, elapsed, retired, replied, status, lifecycle, reason) in enumerate(cases):
+            with self.subTest(state=state, elapsed=elapsed, retired=retired, replied=replied):
+                self.h.db.execute("UPDATE endpoints SET retired=0 WHERE endpoint_id='eb'")
+                mid = 'summary-' + str(i)
+                self.send(mid)
+                if replied:
+                    self.h.dispatch({'op':'submit','host_id':'b','host_token':'tb','message':{
+                        'message_id':'reply-' + mid,'in_reply_to':mid,'sender_endpoint':'eb',
+                        'body':'reply','kind':'chat'}})
+                self.h.db.execute('UPDATE messages SET state=?,expires_at=? WHERE message_id=?',
+                                  (state, self.h._now() + (-10 if elapsed else 100), mid))
+                self.h.db.execute("UPDATE endpoints SET retired=? WHERE endpoint_id='eb'", (int(retired),))
+                before = self.h.db.total_changes
+                req = {'host_id':'a','host_token':'ta','endpoint_id':'ea','message_id':mid}
+                diagnostic = self.h.dispatch(dict(req, op='diagnose'))
+                message = self.h.dispatch(dict(req, op='query'))
+                self.assertEqual(self.h.db.total_changes, before)
+                self.assertEqual(message['state'], state)
+                self.assertEqual(diagnostic['delivery_summary'], message['delivery_summary'])
+                summary = message['delivery_summary']
+                self.assertEqual((summary['status'], summary['lifecycle'], summary['reason']),
+                                 (status, lifecycle, reason))
+                self.assertEqual(summary['ttl_elapsed'], elapsed)
+                self.assertFalse(summary['presentation_confirmed'])
+                self.assertEqual(summary['new_presentation_eligible'],
+                                 state == 'accepted' and not elapsed and not retired and not replied)
+                self.assertEqual(message['recipient_reply_count'], int(replied))
+        self.h.db.execute("UPDATE endpoints SET retired=0 WHERE endpoint_id='eb'")
+        self.send('late')
+        recipient = {'host_id':'b','host_token':'tb','endpoint_id':'eb','message_id':'late'}
+        self.h.dispatch(dict(recipient, op='begin_present'))
+        self.h.db.execute("UPDATE messages SET expires_at=0 WHERE message_id='late'")
+        self.h.dispatch(dict(recipient, op='receipt', state='presented', evidence='fixture'))
+        message = self.h.dispatch({'op':'query','host_id':'a','host_token':'ta',
+                                   'endpoint_id':'ea','message_id':'late'})
+        self.assertEqual(message['state'], 'presented')
+        self.assertEqual(message['delivery_summary']['status'], 'presentation_confirmed')
+        self.assertEqual(message['delivery_summary']['lifecycle'], 'ttl_elapsed')
+        self.assertFalse(message['delivery_summary']['new_presentation_eligible'])
+
     def test_diagnosis_keeps_linked_reply_separate_from_receipt(self):
         self.send()
         self.h.dispatch({'op':'submit','host_id':'b','host_token':'tb','message':{

@@ -46,12 +46,14 @@ class MailboxToolsTest(unittest.TestCase):
     def test_message_preserves_response_evidence_without_synthesizing_ack(self):
         item = {'message_id':'original','thread_id':'thread','target_address':'voyager.cc',
                 'body':'example','state':'uncertain','response_state':'recipient_replied',
-                'recipient_reply_count':1,'recipient_reply_message_ids':['reply']}
+                'recipient_reply_count':1,'recipient_reply_message_ids':['reply'],
+                'delivery_summary':{'status':'recipient_replied','lifecycle':'ttl_elapsed'}}
         out = module.MailboxTools._view(item)
         self.assertEqual(out['state'], 'uncertain')
         self.assertEqual(out['response_state'], 'recipient_replied')
         self.assertEqual(out['recipient_reply_message_ids'], ['reply'])
         self.assertNotIn('ack', out)
+        self.assertEqual(out['delivery_summary'], item['delivery_summary'])
 
     def test_repo_tools_send_only_declared_fields_to_the_service_ops(self):
         seen = []

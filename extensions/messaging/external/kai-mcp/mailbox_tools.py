@@ -340,6 +340,6 @@ class MailboxTools:
                "body": item["body"], "state": item["state"]}
         for source, dest in (("in_reply_to", "in_reply_to"), ("sender_address", "sender_address")):
             if item.get(source) is not None: out[dest] = item[source]
-        for key in ('response_state', 'recipient_reply_count', 'recipient_reply_message_ids'):
+        for key in ('response_state', 'recipient_reply_count', 'recipient_reply_message_ids', 'delivery_summary'):
             if key in item: out[key] = item[key]
         return out

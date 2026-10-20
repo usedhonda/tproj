@@ -577,3 +577,30 @@ host-local native thread metadata contradicts a registry record's project,
 discovery rejects that record rather than letting it suppress live tmux fallback.
 The existing native catalog/rollout, unique-project adoption and live process
 checks still apply. A conflicting thread in the same project is not replaced.
+
+### Delivery summary without rewriting evidence
+
+Exact message/query and metadata-only diagnose return the same optional
+`delivery_summary` object; the KAI message projection preserves it. It is a
+read-only projection, not a delivery action or a new authorization gate. Existing
+`state`, receipt/ACK evidence and authenticated recipient reply evidence remain
+unchanged. Older consumers may ignore this additive field.
+
+`status` is waiting, presentation_confirmed, recipient_replied or action_required.
+`lifecycle` independently retains active, ttl_elapsed or the recorded terminal
+state. `reason` explains their combination. `ttl_elapsed` is a clock observation,
+not proof that a prior presentation did not happen. `new_presentation_eligible`
+means only lifecycle eligibility (active pinned endpoint, unused presentation
+state, unelapsed TTL), never sender authorization or permission to retry.
+
+A deadline-past dispatching/uncertain message without presentation evidence has
+reason ttl_elapsed_outcome_unknown, action_required, and false new-presentation
+eligibility; it is not rewritten to expired or replayed. A late valid receipt
+can still confirm the presentation under the existing receipt contract. Exact
+recipient replies remain separate from presentation/ACK and work completion.
+Explicit cancelled/expired/rejected/stale_session states take summary priority,
+including a _with_reply reason if a late reply exists. A reply does not hide
+cancellation or expiry. A deadline-past confirmed presentation still reports
+presentation_confirmed with lifecycle ttl_elapsed; the deadline does not erase
+the existing evidence. The summary never extends TTL, changes pinned endpoints,
+synthesizes receipts, or starts a delivery.
