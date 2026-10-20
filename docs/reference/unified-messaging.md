@@ -778,3 +778,37 @@ list results retain the opaque `nextCursor`, so absence on one 32-item page is
 never proof of absence from the whole queue. Incoming unrelated messages do not
 reset the per-RPC response deadline. The caller must also isolate potentially
 blocking transport I/O from heartbeat scheduling before production integration.
+
+### Durable publication controller (scheduler cutover pending)
+
+`native_publication.Publisher` records reference-publication metadata under the
+reserved `_native_publication` member of the existing private delivery envelope.
+It does not change original content-digest fields, delivery/receipt state, create
+a mailbox, introduce a second scheduler, or store an original body elsewhere.
+The attempt ID and controller generation are committed before any queue I/O;
+metadata updates use an envelope compare-and-swap and cannot reset body state.
+
+One bounded, non-AI Python child handles each queue add/list request on the
+existing socket. Private request files contain reference metadata, not the peer
+body. The controller drains bounded stdout without waiting for network I/O;
+its 15-second child deadline kills only that owned child and retains publication
+unknown. Children never resume a thread or start a provider. Existing scheduler
+integration must call `maintain` each tick, including ticks not visiting that row.
+
+A process restart fences interrupted publication into a new generation and
+`unknown`, not `ready`. Late results cannot overwrite a new attempt/generation
+or a body-reserved reference. The publication label `body_reserved` means only
+that the original local body-reservation/receipt path has started; it does not
+claim queue consumption or model consumption. Historical unknown terminal
+injections are never converted to new native references. A new reference needs
+the latest Hub presentation-eligible original. Known pre-add failures may be retried with the exact same
+reference after backoff. Unknown results use only paginated queue inspection:
+CID plus entire reference text must match. An incomplete page or an absent entry
+remains unknown and never triggers another add. A queue ACK is not a body receipt.
+The existing native consumer still owns the one-shot body reservation and context
+recording evidence.
+
+This controller is not yet the provider-wide scheduler cutover: fair claim
+pagination, complete no-lost-wake acceptance, conversation-level pending-set drain,
+crash/history convergence, hook/carry activation and CC ingress remain incomplete.
+Neither queue nor consumer flags are enabled by installing these modules.

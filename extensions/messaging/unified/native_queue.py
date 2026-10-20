@@ -165,3 +165,29 @@ def pending(path, native_id, cursor=None):
             or (result['nextCursor'] is not None and not isinstance(result['nextCursor'], str))):
         raise QueueError('invalid_response')
     return result
+
+
+def worker_main():
+    """Private one-shot transport worker; parent owns its deadline and journal."""
+    import sys
+    try:
+        if len(sys.argv) != 3 or sys.argv[1] != '--worker': raise QueueError('invalid_request')
+        with open(sys.argv[2], 'rb') as f: raw = f.read(LIMIT + 1)
+        if len(raw) > LIMIT: raise QueueError('request_too_large')
+        packet = json.loads(raw)
+        if packet['op'] == 'publish':
+            result = publish(packet['socket'], packet['native_id'], packet['notice'])
+        elif packet['op'] == 'pending':
+            result = pending(packet['socket'], packet['native_id'], packet.get('cursor'))
+        else: raise QueueError('unsupported_operation')
+        output = {'ok': True, 'result': result}
+    except QueueError as exc:
+        output = {'ok': False, 'code': exc.code}
+    except Exception:
+        output = {'ok': False, 'code': 'publication_unknown'}
+    raw = json.dumps(output, ensure_ascii=False)
+    if len(raw.encode()) > LIMIT: raw = json.dumps({'ok': False, 'code': 'publication_unknown'})
+    print(raw, flush=True)
+
+
+if __name__ == '__main__': worker_main()
