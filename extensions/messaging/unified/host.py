@@ -777,9 +777,20 @@ class Host:
                 row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
                 from native_consumer import owns, recover
                 native_owned = owns(self.db, mid)
-                native_selected = (ep.get('platform') == 'cdx'
-                                   and self.config.get('native_queue_enabled') is True
-                                   and row['state'] == 'received')
+                local_envelope = json.loads(row['envelope'])
+                pinned_native = local_envelope.get('_native_route') == 'native-v1'
+                native_selected = (row['state'] == 'received' and (pinned_native or
+                                   (ep.get('platform') == 'cdx'
+                                    and self.config.get('native_queue_enabled') is True)))
+                if native_selected and not pinned_native:
+                    # Persist route ownership before identity/prepare/I/O. Turning
+                    # the feature off later is never permission for terminal paste.
+                    local_envelope['_native_route'] = 'native-v1'
+                    changed = self.db.execute('UPDATE deliveries SET envelope=? WHERE message_id=? AND envelope=?',
+                        (json.dumps(local_envelope), mid, row['envelope'])).rowcount
+                    self.db.commit()
+                    if changed != 1:
+                        continue
                 if native_selected:
                     # Route selection precedes any terminal/composer operation.
                     # Missing consumer/identity/transport cannot fall back to paste.

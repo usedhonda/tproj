@@ -844,6 +844,9 @@ the original endpoint/claim row is not visited. With `native_queue_enabled`
 true, fresh received Codex rows select native routing before any terminal
 operation. Missing consumer enablement, failed identity or transport leaves
 the row pending with an adapter diagnostic; it never falls back to paste.
+Route selection is pinned as `_native_route=native-v1` in the existing local
+delivery envelope before prepare/identity/I/O. This pin survives restart and
+flag disablement; neither makes terminal delivery eligible again.
 Previously native-owned rows retain their receipt-recovery path even with flags
 off. Historical legacy uncertain/dispatching rows are not re-published. This
 connection alone does not prove conversation notification coalescing, durable

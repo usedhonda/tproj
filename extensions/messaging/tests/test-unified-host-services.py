@@ -74,6 +74,33 @@ class UnifiedHostServicesTest(unittest.TestCase):
             self.assertEqual(publisher.maintain.call_count, 4)
             host.db.close()
 
+    def test_native_route_survives_flag_off_and_host_restart_before_prepare(self):
+        import time
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {'journal': str(Path(tmp) / 'journal.db'), 'delivery_enabled': True,
+                   'native_queue_enabled': True, 'native_consumer_enabled': False}
+            ep = {'endpoint_id': 'ep', 'platform': 'cdx'}
+            def setup(host):
+                host.refreshed = time.monotonic()
+                host.endpoints = [ep]
+                host._current_delivery_endpoint = lambda _: ep
+                host.hub = Mock(return_value={'messages': [{'message_id': 'native'}], 'next_sequence': 1})
+            host = host_mod.Host(cfg, recover=False)
+            setup(host)
+            with patch.object(host_mod.subprocess, 'run', side_effect=AssertionError('terminal fallback')):
+                host.delivery_tick()
+                host.db.close()
+                cfg['native_queue_enabled'] = False
+                host = host_mod.Host(cfg, recover=True)
+                setup(host)
+                host.delivery_tick()
+            import json
+            row = host.db.execute('SELECT * FROM deliveries').fetchone()
+            self.assertEqual(json.loads(row['envelope'])['_native_route'], 'native-v1')
+            self.assertEqual(row['state'], 'received')
+            host.db.close()
+
     def test_current_host_policy_controls_legacy_and_new_service_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)
