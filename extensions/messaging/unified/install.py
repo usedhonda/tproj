@@ -58,13 +58,58 @@ def check(home: Path) -> int:
     print("ok: unified mailbox client matches repo source"); return 0
 
 
+def native_queue_dependency(home: Path, *, dry_run=False, check_only=False):
+    """Explicit optional component only. Never pip-install into global Python."""
+    from native_queue import WHEEL_NAME, WHEEL_URL, WHEEL_SHA256
+    target = home / 'lib/tproj-msg-unified' / WHEEL_NAME
+    if target.parent.exists():
+        parent = target.parent.stat()
+        if parent.st_uid != os.getuid() or parent.st_mode & 0o022:
+            raise RuntimeError('native queue dependency directory is not owner controlled')
+    if target.is_file() and not target.is_symlink() and digest(target) == WHEEL_SHA256:
+        info = target.stat()
+        if info.st_uid == os.getuid() and not info.st_mode & 0o022:
+            return False
+    if check_only: raise RuntimeError('native queue dependency missing or mismatched')
+    if target.exists() or target.is_symlink():
+        raise RuntimeError('native queue dependency conflicts; existing artifact preserved')
+    if dry_run:
+        print('WOULD INSTALL hash-pinned optional native queue wheel')
+        return True
+    import urllib.request
+    with urllib.request.urlopen(WHEEL_URL, timeout=20) as response:
+        data = response.read(1048577)
+    if len(data) > 1048576 or hashlib.sha256(data).hexdigest() != WHEEL_SHA256:
+        raise RuntimeError('native queue dependency digest mismatch')
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(prefix='.native-wheel-', dir=target.parent)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data); stream.flush(); os.fsync(stream.fileno())
+        os.chmod(temporary, 0o644)
+        # No concurrent writer or pre-existing artifact may be overwritten.
+        os.link(temporary, target)
+        directory = os.open(target.parent, os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+    finally:
+        os.unlink(temporary)
+    return True
+
+
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(); p.add_argument("--check", action="store_true"); p.add_argument("--dry-run", action="store_true")
+    p = argparse.ArgumentParser(); p.add_argument("--check", action="store_true"); p.add_argument("--dry-run", action="store_true"); p.add_argument("--native-queue-dependency", action="store_true")
     args = p.parse_args(argv); home = Path.home()
-    if args.check: return check(home)
+    if args.check:
+        result = check(home)
+        if args.native_queue_dependency:
+            native_queue_dependency(home, check_only=True)
+        return result
     changed = False
     for source, target, mode in expected(home):
         changed |= atomic_copy(source, target, mode, args.dry_run)
+    if args.native_queue_dependency:
+        changed |= native_queue_dependency(home, dry_run=args.dry_run)
     if not args.dry_run: print("installed unified mailbox client" if changed else "unified mailbox client already current")
     return 0
 

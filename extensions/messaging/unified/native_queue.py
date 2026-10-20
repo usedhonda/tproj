@@ -5,6 +5,8 @@ retry. Caller owns authenticated native binding and durable publication state.
 """
 from __future__ import annotations
 import json
+import hashlib
+import sys
 import os
 from pathlib import Path
 import stat
@@ -12,6 +14,10 @@ import time
 import uuid
 
 LIMIT = 262144
+WHEEL_NAME = 'websockets-15.0.1-py3-none-any.whl'
+WHEEL_SHA256 = 'f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f'
+WHEEL_URL = 'https://files.pythonhosted.org/packages/fa/a8/5b41e0da817d64113292ab1f8247140aac61cbf6cfd085d6a0fa77f4984f/' + WHEEL_NAME
+
 
 
 class QueueError(Exception):
@@ -34,6 +40,30 @@ def private_socket(path):
         return str(target)
     except (OSError, ValueError, RuntimeError):
         raise QueueError('socket_unavailable') from None
+
+
+def queue_client():
+    """Prefer the verified private pure-Python wheel; no install or network here."""
+    wheel = Path(__file__).with_name(WHEEL_NAME)
+    if wheel.exists() or wheel.is_symlink():
+        try:
+            info = wheel.lstat()
+            parent = wheel.parent.stat()
+            if (parent.st_uid != os.getuid() or parent.st_mode & 0o022 or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o022 or info.st_size > 1048576
+                    or hashlib.sha256(wheel.read_bytes()).hexdigest() != WHEEL_SHA256):
+                raise ValueError('invalid wheel')
+            loaded = sys.modules.get('websockets')
+            if loaded is not None and not str(getattr(loaded, '__file__', '')).startswith(str(wheel) + '/'):
+                raise ValueError('different WebSocket package already loaded')
+            if str(wheel) not in sys.path: sys.path.insert(0, str(wheel))
+        except (OSError, ValueError):
+            raise QueueError('dependency_unavailable') from None
+    try:
+        from websockets.sync.client import unix_connect
+        return unix_connect
+    except ImportError:
+        raise QueueError('dependency_unavailable') from None
 
 
 def _integer(value):
@@ -75,10 +105,7 @@ def request(path, method, params):
     if len(json.dumps(params, ensure_ascii=False).encode()) > LIMIT - 2048:
         raise QueueError('request_too_large')
     target = private_socket(path)
-    try:
-        from websockets.sync.client import unix_connect
-    except ImportError:
-        raise QueueError('dependency_unavailable') from None
+    unix_connect = queue_client()
     sent_add = False
     try:
         with unix_connect(target, uri='ws://localhost', open_timeout=3, close_timeout=1,

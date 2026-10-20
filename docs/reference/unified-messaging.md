@@ -965,3 +965,20 @@ at use, including KAI carry and external effects. The public task approval
 path is unchanged: it must not persist this reader output as a permanent grant
 without current-setter revocation checks. Production native ingress remains
 off until that integration is proved without blocking valid existing carry.
+
+### Optional native queue dependency
+
+The unified installer accepts `--native-queue-dependency` to provision only the
+optional queue library in its private module directory, using the universal
+websockets 15.0.1 wheel and the pinned PyPI SHA-256. This release supports
+Python 3.9; no global pip installation, package setup script, native extension
+or OS permission change is involved. Default core installation remains offline
+and unchanged. `--check --native-queue-dependency` verifies that artifact.
+
+The transport prefers this adjacent owner-controlled wheel via zip import,
+verifying its hash and ownership before any socket I/O. Conflicting/tampered
+artifacts or an already loaded different library are unavailable, not silent
+fallback or permission to publish. Without an adjacent wheel, the existing
+optional installed-library path remains compatible. Provisioning does not
+enable native consumer/queue flags or prove remote Codex/provider acceptance.
+Pinned package metadata: https://pypi.org/project/websockets/15.0.1/ .

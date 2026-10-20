@@ -33,6 +33,21 @@ class QueueTest(unittest.TestCase):
         self.native = '11111111-1111-4111-8111-111111111111'
         self.notice = dict(native_id=self.native, prompt='fixture reference', client_id='stable-correlation')
 
+    def test_conflicting_private_wheel_cannot_silently_fall_back_to_global(self):
+        wheel = Path(self.tmp.name) / queue.WHEEL_NAME
+        wheel.write_bytes(b'not the pinned package')
+        with patch.object(queue,'__file__',str(Path(self.tmp.name)/'native_queue.py')):
+            with self.assertRaises(queue.QueueError) as error: queue.queue_client()
+        self.assertEqual(error.exception.code,'dependency_unavailable')
+
+    def test_dependency_install_digest_failure_preserves_absence(self):
+        import importlib.util, io
+        spec=importlib.util.spec_from_file_location('queue_install_fixture',Path(queue.__file__).with_name('install.py'))
+        installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
+        with patch('urllib.request.urlopen',return_value=io.BytesIO(b'tampered wheel')):
+            with self.assertRaises(RuntimeError):installer.native_queue_dependency(Path(self.tmp.name))
+        self.assertFalse((Path(self.tmp.name)/'lib/tproj-msg-unified'/queue.WHEEL_NAME).exists())
+
     def fake(self, response):
         sent = []
         class WS:
