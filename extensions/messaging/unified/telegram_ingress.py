@@ -85,6 +85,33 @@ class TelegramIngressIntent:
                 "external_origin": json.loads(self.origin_json)}
 
 
+def validate_origin(origin, message, binding, *, now):
+    """Check a host-minted origin against a hub-approved current binding.
+
+    A caller must additionally pin the configured attesting host/participant.
+    This structural check is not itself ingress process authentication.
+    """
+    if not isinstance(origin, dict):
+        raise TelegramIngressError('invalid_origin')
+    synthetic = {'update_id': origin.get('update_id'), 'message': {
+        'message_id': origin.get('message_id'),
+        'from': {'id': origin.get('user_id'), 'is_bot': False},
+        'chat': {'id': origin.get('chat_id'), 'type': 'private'},
+        'text': message.get('body')}}
+    # Private synthetic reconstruction checks the exact schema, body digest,
+    # deterministic ID, recipient, kind, generation and approved tuple.
+    key = 'internal_reconstruction_only'
+    expected = TelegramIngressAuthority(binding, key).admit(
+        json.dumps(synthetic).encode(), key, now=now)
+    if (origin != expected.envelope()['external_origin']
+            or message.get('message_id') != expected.message_id
+            or message.get('target', message.get('target_address')) != binding.target
+            or message.get('thread_id') not in (None, expected.message_id)
+            or message.get('kind', 'chat') != 'chat' or message.get('in_reply_to')):
+        raise TelegramIngressError('invalid_origin')
+    return dict(origin)
+
+
 class TelegramIngressAuthority:
     """Validate raw private-text webhook input under a fixed approved binding.
 
@@ -93,10 +120,10 @@ class TelegramIngressAuthority:
     this class; the future host adapter must enforce its process/transport gate.
     """
 
-    def __init__(self, binding: TelegramOwnerBinding, webhook_secret: str):
+    def __init__(self, binding: TelegramOwnerBinding, webhook_secret: str | None = None):
         if not isinstance(binding, TelegramOwnerBinding):
             raise TelegramIngressError("invalid_binding")
-        if (not isinstance(webhook_secret, str) or not 16 <= len(webhook_secret) <= 256
+        if webhook_secret is not None and (not isinstance(webhook_secret, str) or not 16 <= len(webhook_secret) <= 256
                 or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
                        for c in webhook_secret)):
             raise TelegramIngressError("invalid_webhook_configuration")
@@ -104,10 +131,25 @@ class TelegramIngressAuthority:
         self._webhook_secret = webhook_secret
 
     def admit(self, raw_body: bytes, secret_header: str, *, now: float) -> TelegramIngressIntent:
-        if (not isinstance(secret_header, str)
+        if (self._webhook_secret is None or not isinstance(secret_header, str)
                 or not secret_header.isascii() or len(secret_header) > 256
                 or not secrets.compare_digest(secret_header, self._webhook_secret)):
             raise TelegramIngressError("webhook_authentication_failed")
+        return self._admit(raw_body, now=now)
+
+    def admit_authenticated_poll(self, raw_body, *, verified_bot_id, now):
+        """Only the pinned polling process may invoke this trusted-code entry.
+
+        Its TLS Telegram getMe/getUpdates client must establish the bot identity;
+        an arbitrary RPC carrying this integer is NOT authentication. The host
+        must first enforce dedicated-service credentials, launchd PID and config.
+        No synthetic webhook header is used for polling.
+        """
+        if type(verified_bot_id) is not int or verified_bot_id != self.binding.bot_id:
+            raise TelegramIngressError('bot_identity_mismatch')
+        return self._admit(raw_body, now=now)
+
+    def _admit(self, raw_body, *, now):
         binding = self.binding
         if (type(now) not in (int, float) or not 0 < now < float("inf")
                 or binding.revoked or now >= binding.expires_at):
@@ -260,6 +302,11 @@ class TelegramIngressJournal:
         self.db.execute("UPDATE telegram_replies SET state=? WHERE message_id=? "
                         "AND state!='accepted'", (outcome, message_id))
 
+    def reply_state(self, message_id: str) -> str | None:
+        row = self.db.execute("SELECT state FROM telegram_replies WHERE message_id=?",
+                              (message_id,)).fetchone()
+        return row[0] if row else None
+
     def close(self) -> None:
         self.db.close()
 
@@ -288,8 +335,11 @@ class TelegramMailboxRelay:
                 or type(now) not in (int, float) or not 0 < now < current.expires_at):
             raise TelegramIngressError("binding_inactive")
 
-    def receive(self, raw_body, secret_header, *, now):
-        intent = self.authority.admit(raw_body, secret_header, now=now)
+    def receive(self, raw_body, secret_header=None, *, now, authenticated_poll_bot_id=None):
+        intent = (self.authority.admit(raw_body, secret_header, now=now)
+                  if authenticated_poll_bot_id is None else
+                  self.authority.admit_authenticated_poll(raw_body,
+                    verified_bot_id=authenticated_poll_bot_id, now=now))
         self._active(now)
         if not self.journal.reserve(intent):
             return {"message_id": intent.message_id, "duplicate": True,
@@ -326,10 +376,15 @@ class TelegramMailboxRelay:
                 or any(0xD800 <= ord(c) <= 0xDFFF for c in body)):
             raise TelegramIngressError("unsupported_reply")
         origin = original["external_origin"]
+        try:
+            validate_origin(origin, original, self.authority.binding, now=now)
+        except (ValueError, TypeError, KeyError):
+            raise TelegramIngressError('reply_binding_mismatch') from None
         payload = {"chat_id": origin["chat_id"], "text": body,
                    "reply_to_message_id": origin["message_id"]}
         if not self.journal.reserve_reply(mid, payload):
-            return {"message_id": mid, "duplicate": True}
+            return {"message_id": mid, "duplicate": True,
+                    "state": self.journal.reply_state(mid)}
         try:
             self._active(now)
             receipt = self.send_text(payload)

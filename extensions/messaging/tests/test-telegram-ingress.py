@@ -124,6 +124,22 @@ class TelegramIngressTest(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             journal.close()
 
+    def test_old_generation_reply_cannot_escape_to_previous_owner_chat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = TelegramIngressJournal(str(Path(tmp) / 'journal.db'))
+            old = self.admit()
+            journal.reserve(old)
+            new_binding = replace(self.binding, user_id=303, chat_id=303, generation=2)
+            sends = []
+            relay = TelegramMailboxRelay(TelegramIngressAuthority(new_binding), journal,
+                        lambda: new_binding, None, sends.append, kai_endpoint='kai-ep')
+            reply = {'message_id': 'old-reply', 'in_reply_to': old.message_id,
+                     'thread_id': old.message_id, 'sender_endpoint': 'kai-ep', 'body': 'private reply'}
+            with self.assertRaisesRegex(TelegramIngressError, 'reply_binding_mismatch'):
+                relay.deliver_reply(reply, now=1000)
+            self.assertEqual(sends, [])
+            journal.close()
+
 
 if __name__ == '__main__':
     unittest.main()
