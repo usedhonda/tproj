@@ -191,6 +191,42 @@ class HubTest(unittest.TestCase):
         second = self.h.dispatch(dict(receiver, after_sequence=first['next_sequence']))
         self.assertEqual([m['message_id'] for m in second['messages']], ['allowed'])
 
+    def test_native_pending_insert_between_empty_and_drain_and_restart(self):
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
+        self.attest('b', 'eb')
+        ep = self.h._row("SELECT * FROM endpoints WHERE endpoint_id='eb'")
+        req = dict(host_id='b', host_token='tb', endpoint_id='eb', incarnation=ep['incarnation'],
+                   native_kind='thread_id', native_id='native-thread')
+        self.send('first')
+        first = self.h.dispatch(dict(req, op='native_pending'))
+        self.assertTrue(first['wake_needed'])
+        self.assertFalse(self.h.dispatch(dict(req, op='native_drain', generation=first['generation']))['cleared'])
+        self.h.db.execute("UPDATE messages SET state='dispatching' WHERE message_id='first'")
+        empty = self.h.dispatch(dict(req, op='native_pending'))
+        self.assertFalse(empty['pending'])
+        self.send('second')
+        stale = self.h.dispatch(dict(req, op='native_drain', generation=empty['generation']))
+        self.assertFalse(stale['cleared'])
+        self.assertTrue(stale['wake_needed'])
+        # A new Hub connection represents consumer crash/restart; wake survives.
+        reopened = Hub(self.h.db_path, self.h.config)
+        try:
+            self.assertEqual(reopened.dispatch(dict(req, op='native_pending')), {k:v for k,v in stale.items() if k!='cleared'})
+            reopened.db.execute("UPDATE messages SET state='dispatching' WHERE message_id='second'")
+            cleared = reopened.dispatch(dict(req, op='native_drain', generation=stale['generation']))
+            self.assertTrue(cleared['cleared'])
+            self.assertEqual(cleared['generation'], cleared['drained_generation'])
+            # The other ordering: arrival immediately after a committed drain.
+            self.send('third')
+            after_clear = reopened.dispatch(dict(req, op='native_pending'))
+            self.assertTrue(after_clear['wake_needed'])
+            self.assertGreater(after_clear['generation'], after_clear['drained_generation'])
+            before = reopened.db.total_changes
+            with self.assertRaises(HubError): reopened.dispatch(dict(req, op='native_drain', native_id='other', generation=stale['generation']))
+            with self.assertRaises(HubError): reopened.dispatch(dict(req, op='native_drain', host_id='a', host_token='ta', generation=stale['generation']))
+            self.assertEqual(reopened.db.total_changes, before)
+        finally: reopened.close()
+
     def test_diagnosis_is_metadata_only_and_operator_permission_is_explicit(self):
         self.send(body='private-body-sentinel')
         self.h.dispatch({'op':'directory_import','admin_token':'adm','projects':[{'project_id':'support','alias':'support','host_id':'a','path':'/support'}]})

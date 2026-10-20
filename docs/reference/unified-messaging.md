@@ -852,3 +852,24 @@ off. Historical legacy uncertain/dispatching rows are not re-published. This
 connection alone does not prove conversation notification coalescing, durable
 pending generations, no-lost-wake, Goal carry, or provider acceptance. Both
 native flags remain false until those activation prerequisites are proved.
+
+### Native pending generation and drain
+
+`native_pending` and `native_drain` require the authenticated owner host, active
+endpoint, immutable incarnation, and exact persisted native kind/ID. The
+generation is MAX existing message insertion sequence for that endpoint: the
+message insert itself advances it atomically, without another mailbox/table or
+separate generation update. The methods return metadata only, never bodies.
+
+`native_drain(generation)` uses the existing Hub BEGIN IMMEDIATE transaction.
+It records a drained generation in existing metadata only when that generation
+is still current and no unexpired, unanswered, new-presentation candidate
+remains. Insert after an empty snapshot therefore prevents stale clearing.
+Insert after clearing advances the sequence and restores wake_needed. Crash
+before drain leaves the same pending generation discoverable on restart.
+
+This is notification bookkeeping, not receipt, consumption, completion,
+permission to replay, or a new execution grant. It does not reactivate expired,
+retired, cancelled or uncertain effects. Consumer notification coalescing and
+activation must still be connected and separately demonstrated; these Hub
+primitives alone are not end-to-end no-lost-wake acceptance.

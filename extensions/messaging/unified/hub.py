@@ -394,6 +394,49 @@ class Hub:
             out.append(item); size += encoded
         return out
 
+    def native_pending(self, req, *, drain=False):
+        """Coalesced wake generation derived atomically from existing mailbox rows.
+
+        No second queue: insertion rowid is the pending sequence. A drain is
+        notification bookkeeping, never body consumption or work completion.
+        """
+        host = self._auth(req)
+        expected = req.get('generation')
+        if drain and (type(expected) is not int or not 0 <= expected <= 9223372036854775807):
+            raise HubError('invalid_request', 'invalid pending generation')
+        self._tx()
+        try:
+            ep = self._host_endpoint(host, req.get('endpoint_id'))
+            marker = self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (ep['endpoint_id'],))
+            if (not marker or ep['platform'] not in ('cdx', 'cc')
+                    or req.get('incarnation') != ep['incarnation']
+                    or req.get('native_kind') != marker['native_kind']
+                    or req.get('native_id') != marker['native_id']):
+                raise HubError('identity_rejected', 'pending native binding mismatch')
+            generation = self._row('SELECT COALESCE(MAX(rowid),0) FROM messages WHERE recipient_endpoint=?',
+                                   (ep['endpoint_id'],))[0]
+            pending = bool(self._row("SELECT 1 FROM messages m WHERE recipient_endpoint=? AND expires_at>? AND state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.in_reply_to=m.message_id AND r.sender_endpoint=m.recipient_endpoint) LIMIT 1",
+                                     (ep['endpoint_id'], self._now())))
+            key = 'native_drained:' + ep['endpoint_id']
+            saved = self._row('SELECT value FROM metadata WHERE key=?', (key,))
+            drained_generation = int(saved[0]) if saved else 0
+            cleared = False
+            # BEGIN IMMEDIATE serializes this comparison with insert. New arrival
+            # after the empty snapshot cannot be cleared by the older generation.
+            if drain and expected == generation and not pending:
+                self.db.execute('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                                (key, str(generation)))
+                drained_generation = generation
+                cleared = True
+            result = dict(generation=generation, drained_generation=drained_generation,
+                          pending=pending, wake_needed=pending and generation > drained_generation)
+            if drain: result['cleared'] = cleared
+            self._commit()
+            return result
+        except Exception:
+            self._rollback()
+            raise
+
     def claim(self, req):
         host=self._auth(req)
         if self._maintenance() == "stopped": raise HubError("maintenance", "hub delivery is paused")
@@ -666,6 +709,8 @@ class Hub:
         if op=="submit": return self._submit_redirected(req)
         if op=="inbox": return self.inbox(req)
         if op=="inbox_notice": return self.inbox_notice(req)
+        if op=="native_pending": return self.native_pending(req)
+        if op=="native_drain": return self.native_pending(req, drain=True)
         if op=="claim": return self.claim(req)
         if op=="receipt": return self.receipt(req)
         if op=="begin_present": return self.begin_present(req)
