@@ -598,7 +598,10 @@ class Host:
             own = ['service_policy_v1', 'read_only_diagnose', 'diagnostic_identity', 'query_only_service',
                    'resource_exhausted']
             hub_caps = self.hub('messaging_capabilities')
-            return {'host_capabilities': own, 'messaging_owner': hub_caps}
+            from native_consumer import BACKEND_VERSION
+            return {'host_capabilities': own, 'messaging_owner': hub_caps,
+                    'native_consumer': {'backend_version': BACKEND_VERSION,
+                                        'enabled': self.config.get('native_consumer_enabled') is True}}
         if op == 'status' and req.get('target'):
             target = req['target']
             participant_id = None
@@ -712,6 +715,9 @@ class Host:
             self.db.commit()
             return self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=message['message_id'],
                             state='presented', evidence='bound recipient explicit acknowledgement after inbox consumption')
+        if op == 'native_resolve':
+            from native_consumer import resolve
+            return resolve(self, ep, req)
         if op == 'prompt_receipt':
             row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (req.get('message_id'),)).fetchone()
             digest = hashlib.sha256(normalize_prompt(str(req.get('prompt', ''))).encode()).hexdigest()
@@ -758,6 +764,29 @@ class Host:
                                 (mid, ep['endpoint_id'], json.dumps(msg), 'received', None, time.time()))
                 self.db.commit()
                 row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
+                from native_consumer import owns, recover
+                if owns(self.db, mid):
+                    # A native reference is not the original body. Never run the
+                    # terminal path or legacy user-prompt receipt for its row.
+                    if row['state'] in ('dispatching', 'uncertain'):
+                        try: context_recorded = recover(self, ep, mid)
+                        except (HubError, OSError, ValueError): context_recorded = False
+                        if context_recorded:
+                            # Do not close local reconciliation until Hub agrees.
+                            # On a lost receipt response the next tick reads first,
+                            # so an already-recorded receipt is never blindly sent.
+                            current = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=mid)
+                            if current.get('state') != 'presented':
+                                if current.get('state') not in ('dispatching', 'uncertain'):
+                                    continue
+                                current = self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid,
+                                                   state='presented', evidence='bound native reference plus same-turn exact peer additionalContext recorded; not model consumption or explicit ACK')
+                            if current.get('message_id') == mid and current.get('state') == 'presented':
+                                self.db.execute("UPDATE deliveries SET state='presented' WHERE message_id=?", (mid,))
+                                self.db.commit()
+                        elif row['state'] == 'dispatching' and time.time() - row['updated'] > 30:
+                            self.mark_uncertain(mid, 'receipt_timeout')
+                    continue
                 receipt_ep = ep
                 if (row['state'] in ('dispatching', 'uncertain') and ep['platform'] == 'cdx'
                         and not (ep.get('thread_id') or ep.get('session_id'))):

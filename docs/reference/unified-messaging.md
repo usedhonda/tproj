@@ -689,3 +689,58 @@ re-enqueue or presentation retry. Later cancellation retains existing too-late
 semantics; the execution side must still validate its scope/cancellation before
 external effects. This primitive does not prove automatic consumer integration,
 crash recovery, queue generation fencing, lost-wake prevention or any receipt.
+
+### Authenticated native body consumer (activation pending)
+
+The Host `native_resolve` operation authenticates its calling native process
+through the normal caller binding before resolving a reference. It remains
+unavailable unless `native_consumer_enabled` is explicitly true in that Host's
+configuration. `messaging_capabilities.native_consumer` reports the loaded backend
+version and activation flag; it is not queue/provider acceptance. Installing the module does not register a hook, queue a notice,
+activate this setting or change a user's running conversation.
+
+The preprompt consumer independently reads the exact native transcript selected
+by the persisted owner-host attestation, checks its native CLI header and project,
+and requires the hook's native ID/path/project to match. The complete hook prompt
+must match the immutable notice digest, not merely contain its token. The current
+Hub original must match the pinned immutable content. After checking response size,
+the consumer durably transitions the original local delivery from `received` to
+`dispatching` before requesting `native_begin_present`. Only an exact successful
+reservation binding permits returning the original body as JSON external-peer
+additional context. Neither this context nor its storage as a provider developer
+record is a direct user approval or new grant; existing authenticated KAI carries
+keep their independent stated scope. No body is silently truncated.
+
+A lost response or failure after local reservation leaves `uncertain`; subsequent
+resolve attempts never return the body again. A persisted native reference excludes
+that original from terminal paste and legacy user-prompt receipt matching. This is
+one-shot body exposure, not crash-safe exactly-once execution or guaranteed recovery
+from a pre-context crash. The hook blocks an unavailable/malformed reference rather
+than letting it fall back to a direct user prompt; ordinary prompts are unaffected.
+
+Recovery examines only a bounded tail of the pinned native transcript. A reference
+record alone is insufficient. Both a valid complete reference and the exact prepared
+peer additional context must be recorded in the same native turn, with the provider's
+`hooks.additional_context` kind, before reporting `presented`. This proves native
+context recording, not provider request acceptance, model consumption, explicit ACK,
+reply or task completion. Missing/old/other-turn evidence stays unknown. Presentation
+receipt does not cancel effects; the execution side still owns its scope/cancel check.
+
+Production queue publication/reconciliation, notification generations/no-lost-wake,
+consumer cutover fencing, Goal-operation isolation and provider-wide activation
+remain required before enabling native delivery. No legacy paste fallback is a
+substitute for those acceptance requirements.
+
+The pinned Codex 0.163 hook engine defaults additional context to a 2,500-token
+spill threshold. Before production hook activation, configure and prove an
+`additionalContextLimit` sufficient for the accepted full-message wire bound;
+a spilled file/reference requiring discretionary model fetching is not full-body
+acceptance. The exact-context recovery rule will not promote a spilled or altered
+context to `presented`. The small-body native fixture is not max-body acceptance.
+
+Local reconciliation stays `dispatching`/`uncertain` until the authoritative Hub
+confirms `presented`. After a receipt transport error, the next tick reads Hub
+state first: an already matching receipt closes the local row without another
+receipt call; otherwise valid native context evidence can synchronize the receipt.
+Neither path returns the body again. Local context recording must not prematurely
+remove a Hub-unconfirmed row from reconciliation.
