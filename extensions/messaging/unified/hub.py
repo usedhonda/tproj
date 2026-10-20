@@ -635,8 +635,8 @@ class Hub:
         if op=="query":
             host=self._auth(req); m=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),));
             if not m: raise HubError("not_found","message not found")
-            if m["expires_at"] <= self._now() and m["state"] in ("accepted","queued","adapter_received"):
-                self.db.execute("UPDATE messages SET state='expired' WHERE message_id=?", (m["message_id"],)); m=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),))
+            # Read expiry through delivery_summary; never mutate before or after
+            # party authorization in a query (including rejected queries).
             ep=self._host_endpoint(host,req.get("endpoint_id"));
             if not any(self._same_native_party(ep, party) for party in (m["sender_endpoint"], m["recipient_endpoint"])): raise HubError("unauthorized","not party to message")
             # Same resolved sender the inbox and claim views carry: a reader that fetches

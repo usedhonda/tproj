@@ -175,6 +175,9 @@ class HubTest(unittest.TestCase):
             ('dispatching', True, True, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_outcome_unknown'),
             ('uncertain', True, False, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_outcome_unknown'),
             ('accepted', False, False, False, 'waiting', 'active', 'pending'),
+            ('accepted', True, False, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_before_presentation'),
+            ('queued', True, False, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_before_presentation'),
+            ('adapter_received', True, False, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_before_presentation'),
             ('accepted', False, False, True, 'recipient_replied', 'active', 'recipient_replied'),
             ('accepted', False, True, False, 'action_required', 'active', 'pinned_recipient_unavailable'),
             ('cancelled', False, False, True, 'action_required', 'cancelled', 'cancelled_with_reply'),
@@ -220,6 +223,26 @@ class HubTest(unittest.TestCase):
         self.assertEqual(message['delivery_summary']['status'], 'presentation_confirmed')
         self.assertEqual(message['delivery_summary']['lifecycle'], 'ttl_elapsed')
         self.assertFalse(message['delivery_summary']['new_presentation_eligible'])
+
+    def test_expired_query_rejection_is_read_only_for_nonparty(self):
+        self.send('private-expired')
+        self.h.db.execute("UPDATE messages SET expires_at=0 WHERE message_id='private-expired'")
+        self.h.dispatch({'op':'directory_import','admin_token':'adm','projects':[
+            {'project_id':'outsider','alias':'outsider','host_id':'a','path':'/outsider'}]})
+        self.reg('a','ta','outsider-ep','outsider:cc',3)
+        before = self.h.db.total_changes
+        with self.assertRaises(HubError) as rejected:
+            self.h.dispatch({'op':'query','host_id':'a','host_token':'ta',
+                             'endpoint_id':'outsider-ep','message_id':'private-expired'})
+        self.assertEqual(rejected.exception.code, 'unauthorized')
+        self.assertEqual(self.h.db.total_changes, before)
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='private-expired'")['state'], 'accepted')
+        recipient = {'host_id':'b','host_token':'tb','endpoint_id':'eb'}
+        self.assertEqual(self.h.dispatch(dict(recipient, op='claim'))['messages'], [])
+        with self.assertRaises(HubError) as expired:
+            self.h.dispatch(dict(recipient, op='begin_present', message_id='private-expired'))
+        self.assertEqual(expired.exception.code, 'expired')
+        self.assertEqual(self.h.db.total_changes, before)
 
     def test_diagnosis_keeps_linked_reply_separate_from_receipt(self):
         self.send()

@@ -604,3 +604,9 @@ cancellation or expiry. A deadline-past confirmed presentation still reports
 presentation_confirmed with lifecycle ttl_elapsed; the deadline does not erase
 the existing evidence. The summary never extends TTL, changes pinned endpoints,
 synthesizes receipts, or starts a delivery.
+
+Message query and diagnose are read-only even after TTL or when a query is
+rejected by party authorization. Query does not persist an `expired` state for
+accepted/queued/adapter_received rows: both views project ttl_elapsed from the
+same stored state. Delivery admission still checks TTL independently in claim
+and begin_present, so a stale stored state is not permission to deliver.
