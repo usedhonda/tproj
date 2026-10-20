@@ -133,6 +133,8 @@ class Publisher:
                 safe = result['code'] in ('socket_unavailable', 'dependency_unavailable', 'transport_unavailable',
                     'request_too_large', 'invalid_native_id', 'invalid_notice', 'operation_rejected')
                 value.update(state='ready' if job.packet['op'] == 'publish' and safe else 'unknown', reason=result['code'])
+                if job.packet['op'] == 'publish' and not safe:
+                    value['last_unknown_publication'] = dict(attempt=attempt, generation=self.generation, reason=result['code'])
             elif job.packet['op'] == 'publish':
                 item = result['result'].get('queuedSubmission')
                 if (_queued(item) and item['clientUserMessageId'] == notice['client_id']
@@ -140,7 +142,8 @@ class Publisher:
                         and item['input'][0].get('text') == notice['prompt']):
                     value.update(state='queued', queue_id=item['id'], reason=None)
                 else:
-                    value.update(state='unknown', reason='invalid_worker_result')
+                    value.update(state='unknown', reason='invalid_worker_result',
+                        last_unknown_publication=dict(attempt=attempt, generation=self.generation, reason='invalid_worker_result'))
             else:
                 page = result['result']
                 if (not isinstance(page.get('data'), list) or len(page['data']) > 32
@@ -155,8 +158,13 @@ class Publisher:
                 if matches:
                     value.update(state='queued', queue_id=matches[0]['id'], cursor=None, reason=None)
                 else:
-                    value.update(state='unknown', cursor=page['nextCursor'],
-                                 reason='queue_page_incomplete' if page['nextCursor'] is not None else 'publication_unconfirmed')
+                    # Queue absence is not proof of non-consumption. It permits
+                    # only another immutable reference wake, whose body resolve
+                    # is fenced by the independent one-shot reservation CAS.
+                    absent = page['nextCursor'] is None and latest['state'] == 'received'
+                    value.update(state='reference_absent' if absent else 'unknown', cursor=page['nextCursor'],
+                                 reason='reference_not_pending' if absent else
+                                     ('queue_page_incomplete' if page['nextCursor'] is not None else 'publication_unconfirmed'))
             store(host, latest, value)
 
     def tick(self, host, ep, message_id):
@@ -191,18 +199,27 @@ class Publisher:
             return True
         if message_id in self.jobs: return True
         if value.get('state') == 'publishing':
-            store(host, row, dict(value, state='unknown', generation=self.generation, reason='publisher_interrupted', checked_at=time.time()))
+            store(host, row, dict(value, state='unknown', generation=self.generation, reason='publisher_interrupted', checked_at=time.time(),
+                last_unknown_publication=dict(attempt=value.get('attempt'), generation=value.get('generation'), reason='publisher_interrupted')))
             return True
-        if value.get('state') in ('queued', 'not_eligible'): return True
+        if value.get('state') == 'not_eligible': return True
         if time.time() - float(value.get('checked_at', 0)) < 30: return True
         # Serialize new notices within this native endpoint. New arrivals remain
         # durable Hub rows and are found by the next normal scheduler scan.
         if any(job.packet['native_id'] == native['native_id'] for job, _, _ in self.jobs.values()): return True
+        operation = 'pending' if value.get('state') in ('unknown', 'queued') else 'publish'
         for other in host.db.execute("SELECT envelope,message_id FROM deliveries WHERE endpoint_id=? AND state='received'", (ep['endpoint_id'],)):
-            if other['message_id'] != message_id and metadata(other).get('state') in ('publishing', 'queued'):
-                return True
+            if (operation == 'publish' and other['message_id'] != message_id
+                    and metadata(other).get('state') in ('publishing', 'queued')):
+                # A cancelled/expired leader may no longer be claimed at all.
+                # Its stale local queue label must not starve later originals.
+                current_other = host.hub('query', endpoint_id=ep['endpoint_id'], message_id=other['message_id'])
+                if (current_other.get('recipient_endpoint') != ep['endpoint_id']
+                        or content_digest(current_other) != content_digest(json.loads(other['envelope']))):
+                    raise QueueError('invalid_notice')
+                if current_other.get('delivery_summary', {}).get('new_presentation_eligible'):
+                    return True
         attempt = str(uuid.uuid4())
-        operation = 'pending' if value.get('state') == 'unknown' else 'publish'
         if operation == 'publish':
             # Includes known-unsubmitted retries: ownership of a prepared token
             # never carries yesterday's cancellation/expiry decision forward.

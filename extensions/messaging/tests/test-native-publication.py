@@ -33,7 +33,7 @@ class PublicationTest(unittest.TestCase):
                 self.result = None
                 # A different connection sees the attempt *before* I/O begins.
                 db = sqlite3.connect(host.config['journal'])
-                envelope = json.loads(db.execute('SELECT envelope FROM deliveries').fetchone()[0])
+                envelope = json.loads(db.execute('SELECT envelope FROM deliveries ORDER BY rowid DESC LIMIT 1').fetchone()[0])
                 db.close()
                 assert envelope[pub.KEY]['attempt']
                 created.append(self)
@@ -62,7 +62,7 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(self.row()['state'], 'received')
         clock[0] += 60
         pub.Publisher().tick(self.host, self.ep, 'original')
-        self.assertEqual(len(jobs), 1)
+        self.assertEqual([j.packet['op'] for j in jobs], ['publish', 'pending'])
         self.assertEqual(json.loads(self.row()['envelope'])['body'], self.original['body'])
 
     def test_unknown_result_reconciles_pages_without_republication(self):
@@ -84,6 +84,100 @@ class PublicationTest(unittest.TestCase):
         publisher.tick(self.host, self.ep, 'original')
         self.assertEqual(pub.metadata(self.row())['state'], 'queued')
         self.assertEqual(sum(j.packet['op'] == 'publish' for j in jobs), 1)
+
+    def test_reconciled_reference_recovery_preserves_body_fences_and_latest_permission(self):
+        # A complete queue scan authorizes only a duplicate-safe reference wake,
+        # never inference that an original body/effect was not processed.
+        for publication_state in ('unknown', 'queued'):
+            for boundary in ('eligible', 'cancelled', 'expired', 'reserved'):
+                with self.subTest(publication_state=publication_state, boundary=boundary):
+                    # Each case needs its own original and immutable token.
+                    mid = publication_state + '-' + boundary
+                    self.hub.dispatch(dict(op='submit', host_id='host', host_token='token', message={
+                        'message_id': mid, 'target': 'cdx', 'sender_endpoint': 'sender', 'body': mid}))
+                    original = self.host.hub('query', endpoint_id='recipient', message_id=mid)
+                    self.host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                        (mid, 'recipient', json.dumps(original), 'received', None, 0))
+                    self.host.db.commit()
+                    from native_notice import prepare
+                    notice = prepare(self.host.db, self.ep, dict(endpoint_id='recipient',
+                        native_kind='thread_id', native_id=self.native), original)
+                    self.host.db.commit()
+                    row = self.host.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
+                    pub.store(self.host, row, {'state': publication_state, 'checked_at': 0,
+                        'last_unknown_publication': {'attempt': 'lost-add', 'generation': 'old'}})
+                    clock, jobs = self.fixture()
+                    publisher = pub.Publisher()
+                    publisher.tick(self.host, self.ep, mid)
+                    self.assertEqual(jobs[-1].packet['op'], 'pending')
+                    jobs[-1].result = {'ok': True, 'result': {'data': [], 'nextCursor': None}}
+                    publisher.maintain(self.host)
+                    row = self.host.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
+                    self.assertEqual(pub.metadata(row)['state'], 'reference_absent')
+                    self.assertEqual(pub.metadata(row)['last_unknown_publication']['attempt'], 'lost-add')
+                    if boundary == 'cancelled':
+                        self.hub.cancel(dict(host_id='host', host_token='token', endpoint_id='sender', message_id=mid))
+                    elif boundary == 'reserved':
+                        self.host.db.execute("UPDATE deliveries SET state='dispatching' WHERE message_id=?", (mid,))
+                        self.host.db.commit()
+                    previous = len(jobs)
+                    clock[0] += 31
+                    if boundary == 'expired':
+                        with patch.object(self.hub, '_now', return_value=original['expires_at'] + 1):
+                            publisher.tick(self.host, self.ep, mid)
+                    else:
+                        publisher.tick(self.host, self.ep, mid)
+                    self.assertEqual(len(jobs), previous + (boundary == 'eligible'))
+                    if boundary == 'eligible':
+                        self.assertEqual(jobs[-1].packet['op'], 'publish')
+                        self.assertEqual(jobs[-1].packet['notice'], notice)
+                    # Keep other matrix rows from becoming a queued leader.
+                    self.host.db.execute("UPDATE deliveries SET state='presented' WHERE message_id=?", (mid,))
+                    self.host.db.commit()
+
+    def test_reconciliation_is_not_blocked_by_another_queued_reference(self):
+        _, jobs = self.fixture()
+        envelope = dict(self.original)
+        envelope[pub.KEY] = {'state': 'queued', 'checked_at': 0, 'attempt': 'old'}
+        self.host.db.execute('UPDATE deliveries SET envelope=?', (json.dumps(envelope),))
+        self.host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+            ('another-queued', self.ep['endpoint_id'], json.dumps(envelope), 'received', None, 0))
+        self.host.db.commit()
+        pub.Publisher().tick(self.host, self.ep, 'original')
+        self.assertEqual([j.packet['op'] for j in jobs], ['pending'])
+
+    def test_recovery_backoff_and_stale_attempt_cas_survive_restart(self):
+        clock, jobs = self.fixture()
+        row = self.row()
+        pub.store(self.host, row, {'state': 'reference_absent', 'checked_at': clock[0]})
+        first = pub.Publisher()
+        clock[0] += 29
+        first.tick(self.host, self.ep, 'original')
+        self.assertEqual(len(jobs), 0)
+        stale = self.row()
+        clock[0] += 2
+        pub.Publisher().tick(self.host, self.ep, 'original')
+        self.assertEqual(len(jobs), 1)
+        self.assertFalse(pub.store(self.host, stale, {'state': 'publishing', 'attempt': 'stale'}))
+        # A new controller sees the persisted attempt; it cannot issue another
+        # wake or reset the durable backoff by constructing another Publisher.
+        pub.Publisher().tick(self.host, self.ep, 'original')
+        pub.Publisher().tick(self.host, self.ep, 'original')
+        self.assertEqual(len(jobs), 1)
+
+    def test_cancelled_queued_leader_cannot_starve_later_original(self):
+        _, jobs = self.fixture()
+        pub.store(self.host, self.row(), {'state': 'queued', 'checked_at': 0})
+        self.hub.cancel(dict(host_id='host', host_token='token', endpoint_id='sender', message_id='original'))
+        self.hub.dispatch(dict(op='submit', host_id='host', host_token='token', message={
+            'message_id': 'next-original', 'target': 'cdx', 'sender_endpoint': 'sender', 'body': 'later'}))
+        original = self.host.hub('query', endpoint_id='recipient', message_id='next-original')
+        self.host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+            ('next-original', 'recipient', json.dumps(original), 'received', None, 0))
+        self.host.db.commit()
+        pub.Publisher().tick(self.host, self.ep, 'next-original')
+        self.assertEqual([j.packet['op'] for j in jobs], ['publish'])
+        self.assertEqual(jobs[0].packet['notice']['message_id'], 'next-original')
 
     def test_restart_fences_old_result_and_preserves_unknown(self):
         clock, jobs = self.fixture()

@@ -802,9 +802,21 @@ that the original local body-reservation/receipt path has started; it does not
 claim queue consumption or model consumption. Historical unknown terminal
 injections are never converted to new native references. A new reference needs
 the latest Hub presentation-eligible original. Known pre-add failures may be retried with the exact same
-reference after backoff. Unknown results use only paginated queue inspection:
-CID plus entire reference text must match. An incomplete page or an absent entry
-remains unknown and never triggers another add. A queue ACK is not a body receipt.
+reference after backoff. Both unknown results and acknowledged references use bounded paginated queue
+inspection: CID plus the entire reference text must match. An incomplete page
+never authorizes another add. An exhausted scan without that reference records
+`reference_absent`, which is **not** evidence of non-consumption or failed delivery.
+Only a still-`received` native original may then generate the same immutable
+reference wake after the existing backoff and a fresh Hub eligibility/content
+check. Token, CID, original digest and endpoint/native binding stay unchanged.
+The independent consumer CAS rejects every duplicate before returning a body;
+`dispatching`, `uncertain` and `presented` bodies are never returned again.
+This reference-only at-least-once recovery does not resubmit the original, repeat
+work, or erase unknown publication history (`last_unknown_publication` retains
+the last uncertain attempt/generation). A queue ACK is not a body receipt.
+Read-only reconciliation is not blocked by another queued reference. A queued
+leader which is no longer Hub-eligible cannot starve later eligible originals,
+even when that old leader is no longer returned by claim.
 The existing native consumer still owns the one-shot body reservation and context
 recording evidence.
 
@@ -816,8 +828,9 @@ Neither queue nor consumer flags are enabled by installing these modules.
 Every new add attempt, including a known-unsubmitted retry, rechecks the latest
 Hub eligibility and immutable original immediately before committing its attempt.
 A prepared reference is not a cached permission to notify after cancellation or
-expiry. Ineligible originals stop new publication; unknown attempts remain
-read-only queue reconciliation. A child-job exception is isolated, removed and
+expiry. Ineligible originals stop new publication. Unknown attempts must first
+complete queue reconciliation; reference-only recovery is permitted only under
+the one-shot body fence described above. A child-job exception is isolated, removed and
 recorded unknown under its matching attempt/generation, so it cannot remain a
 phantom live job or stop collecting other jobs.
 
