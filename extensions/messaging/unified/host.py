@@ -22,7 +22,7 @@ from identity import (IdentityError, adopt_native_conversation, bind_caller, dis
 from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
 from receipt import normalize_prompt, codex_transcript_presented
 
-HOST_BACKEND_VERSION = 5
+HOST_BACKEND_VERSION = 6
 WIRE_LIMIT = 262144
 
 
@@ -203,25 +203,39 @@ class Host:
         live_ids = {ep['endpoint_id'] for ep in discovered}
         live_participants = {ep['participant_id'] for ep in discovered}
         for ep in previous:
-            if (ep['endpoint_id'] not in live_ids and ep['participant_id'] in live_participants
-                    and ep['participant_id'] not in ambiguous_participants and not ep['retired']):
+            if (ep['endpoint_id'] in live_ids or ep['retired']
+                    or ep.get('platform') not in ('cc', 'cdx')
+                    or ep['participant_id'] in ambiguous_participants):
+                continue
+            # Another process for this participant does not prove this native
+            # owner disappeared. Fence retirement with the old PID incarnation.
+            from identity import _process_info
+            try:
+                current = _process_info(int(ep['pid']))
+            except (IdentityError, OSError, ValueError, KeyError, TypeError):
+                current = None
+            absent = False
+            if current is None:
+                try: os.kill(int(ep['pid']), 0)
+                except ProcessLookupError: absent = True
+                except (OSError, ValueError, TypeError): pass
+            elif str(current.get('pid_start')) != str(ep.get('pid_start')):
+                absent = True
+            if absent:
                 self.hub('endpoint_retire', endpoint_id=ep['endpoint_id'])
-            elif (ep['endpoint_id'] not in live_ids and ep['participant_id'] not in live_participants
-                  and not ep['retired'] and ep.get('platform') in ('cc', 'cdx')):
-                # A vanished participant is retired only with direct PID/start
-                # evidence; an absent registry row alone is not enough.
-                from identity import _process_info
-                try:
-                    current = _process_info(int(ep['pid']))
-                except (IdentityError, OSError, ValueError, KeyError, TypeError):
-                    current = None
-                absent = False
-                if current is None:
-                    try: os.kill(int(ep['pid']), 0)
-                    except ProcessLookupError: absent = True
-                    except (OSError, ValueError, TypeError): pass
-                if absent or (current and str(current.get('pid_start')) != str(ep.get('pid_start'))):
-                    self.hub('endpoint_retire', endpoint_id=ep['endpoint_id'])
+            elif (ep['participant_id'] in live_participants and current
+                    and current.get('uid') == os.getuid()
+                    and any(token in str(current.get('command', '')).lower() for token in
+                            (('claude', 'anthropic') if ep['platform'] == 'cc' else ('codex', 'openai')))
+                    and same_live_process_family(ep, ep)):
+                # Keep independently verified old callers usable. Borrow only
+                # project description, never the new process's native identity.
+                fresh = next(item for item in discovered
+                             if item['participant_id'] == ep['participant_id'])
+                kept = dict(ep)
+                kept.update({key: fresh[key] for key in
+                             ('project_id', 'project_path', 'address') if key in fresh})
+                discovered.append(kept)
         self.endpoints = discovered
         self.refreshed = time.monotonic()
 

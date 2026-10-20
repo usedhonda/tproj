@@ -48,7 +48,7 @@ class UnifiedHostIdentityTest(unittest.TestCase):
                 h.refresh = refresh
                 def hub(op, **args):
                     if op == 'claim':
-                        return {'messages': []}
+                        return {'messages': [], 'next_sequence': 0}
                     if op == 'receipt':
                         ages.append(clock[0] - h.refreshed)
                     return {}
@@ -82,7 +82,7 @@ class UnifiedHostIdentityTest(unittest.TestCase):
             def hub(op, **args):
                 calls.append((op, args))
                 if op == 'claim':
-                    return {'messages': [{'message_id': 'pending'}] if args['endpoint_id'] == 'no-pane' else []}
+                    return {'messages': [{'message_id': 'pending'}] if args['endpoint_id'] == 'no-pane' else [], 'next_sequence': 0}
                 return {}
             h.hub = hub
             h.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
@@ -94,7 +94,7 @@ class UnifiedHostIdentityTest(unittest.TestCase):
                 h.delivery_tick()
                 terminal.assert_not_called()
             self.assertEqual(h.db.execute("SELECT state FROM deliveries WHERE message_id='pending'").fetchone()[0], 'received')
-            self.assertIn(('delivery_status', {'endpoint_id': 'no-pane', 'message_id': 'pending', 'reason': 'endpoint_unavailable'}), calls)
+            self.assertIn(('delivery_status', {'endpoint_id': 'no-pane', 'message_id': 'pending', 'reason': 'endpoint_unavailable', 'native_observation': None}), calls)
             self.assertTrue(any(op == 'receipt' and args['endpoint_id'] == 'other' for op, args in calls))
             self.assertFalse(any(op == 'begin_present' for op, args in calls))
             h.db.close()
@@ -138,10 +138,27 @@ class UnifiedHostIdentityTest(unittest.TestCase):
 
             state["registered"].clear()
             state["retired"].clear()
-            restarted = dict(registry, pid=103, pid_start=99)
+            restarted = dict(registry, pid=103, pid_start=99, thread_id="new-native-only")
             host_mod.discover_endpoints = lambda *args, **kwargs: [restarted]
-            h.refresh()
+            from unittest.mock import patch
+            with patch.object(identity, '_process_info', side_effect=processes.get):
+                h.refresh()
             self.assertEqual(state["registered"][0]["endpoint_id"], "registry")
+            self.assertEqual(state["retired"], [])
+            self.assertEqual({ep['endpoint_id'] for ep in h.endpoints}, {'fallback', 'registry'})
+            preserved = next(ep for ep in h.endpoints if ep['endpoint_id'] == 'fallback')
+            self.assertEqual(preserved['pid'], old['pid'])
+            self.assertEqual(preserved['runtime_id'], old['runtime_id'])
+            self.assertNotIn('thread_id', preserved)
+            self.assertEqual(identity.bind_caller(101, os.getuid(), h.endpoints,
+                              inspect_process=processes.__getitem__)['endpoint_id'], 'fallback')
+            # Only actual disappearance of the old PID incarnation permits
+            # retirement; a different observed process alone does not.
+            from unittest.mock import patch
+            processes.pop(101)
+            with patch.object(identity, '_process_info', return_value=None), patch.object(
+                    host_mod.os, 'kill', side_effect=ProcessLookupError):
+                h.refresh()
             self.assertEqual(state["retired"], ["fallback"])
 
 
