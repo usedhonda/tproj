@@ -74,3 +74,22 @@ media/voice handling, no automatic reconciliation after an uncertain submission
 or Telegram send. The process stops on uncertainty; inspect receipts instead of
 recreating a request ID or deleting the journal. Local regression checks are not
 evidence of actual phone delivery or current KAI consumption.
+
+### Operational deployment notes
+
+- On messaging-only networks, do not require opening a `t.me` web link.
+  Deliver the one-use `/start <challenge>` as copyable text in the verified
+  private owner channel; the owner pastes it into the dedicated bot's existing
+  Telegram app conversation. Match the same challenge and consume it once.
+  Do not infer the Telegram operation time from a delayed report in another app.
+- Use an exact direct credential copy, not OCR correction guesses. Official
+  bot identity authentication and a Keychain read-back establish the saved
+  credential; do not repeatedly ask for it after those checks succeed.
+- The launchd service bridge and tunnel-spawned MCP stdio child are separate
+  processes. Restarting the bridge alone does not reload a previously running
+  child's `MailboxTools` projection. Identify both processes and narrowly reload
+  the existing tunnel when necessary, retaining service identity and event state.
+  Verify provenance in KAI's actual structured tool result, not only installed
+  source bytes or hub storage. Never resend an existing reply for this check.
+- Record host acceptance, KAI read/reply, Telegram API acceptance and owner phone
+  receipt separately. A process being alive is not end-to-end acceptance.
