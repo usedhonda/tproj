@@ -918,7 +918,9 @@ flags remain off until this and the remaining carry/provider gates pass.
 
 Existing runtime setup records `_native_runtime_expected` in the existing Host
 configuration. A contract-version change participates in the existing changed/
-LaunchAgent reload decision; unchanged setup does not reload again. It does not
+LaunchAgent reload decision; unchanged setup does not reload again. A nonzero/failed reload is
+reported unavailable, never reloaded. Even a successful reload command still
+requires a loaded-capability readback. It does not
 turn on either native feature flag. Expected configuration is not loaded proof.
 
 `messaging_capabilities.native_runtime` reports the loaded Host version, loaded

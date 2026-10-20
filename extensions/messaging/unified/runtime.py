@@ -228,8 +228,11 @@ def _activate(home: Path, manifests: list[Path], changed: bool, no_start: bool, 
             results.append(f"unavailable:{label}"); continue
         if listed.returncode == 0:
             if changed:
-                subprocess.run(["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{label}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                results.append(f"reloaded:{label}")
+                try:
+                    restarted = subprocess.run(["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{label}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    results.append(f"reloaded:{label}" if restarted.returncode == 0 else f"unavailable:{label}")
+                except OSError:
+                    results.append(f"unavailable:{label}")
             else:
                 results.append(f"running:{label}")
             continue

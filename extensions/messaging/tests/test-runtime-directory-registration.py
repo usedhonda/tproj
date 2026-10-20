@@ -33,6 +33,14 @@ class RuntimeDirectoryRegistrationTests(unittest.TestCase):
                 runtime.setup(home=home,no_start=True)
                 self.assertFalse(activate.call_args.args[2])
 
+    def test_failed_existing_reload_is_not_reported_as_reloaded(self):
+        import subprocess
+        def run(args,**kwargs):
+            return subprocess.CompletedProcess(args, 1 if args[1]=='kickstart' else 0)
+        with patch.object(runtime.subprocess,'run',side_effect=run):
+            result = runtime._activate(Path('/fixture'),[Path('/fixture/hub'),Path('/fixture/host')],True,False,False)
+        self.assertEqual(result,['unavailable:local.tproj.msg-unified-hub','unavailable:local.tproj.msg-unified-host'])
+
     def test_adds_only_missing_requested_projects_once(self):
         with tempfile.TemporaryDirectory() as raw:
             home = Path(raw)
