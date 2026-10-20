@@ -9,9 +9,16 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'unified'))
 from telegram_ingress import TelegramIngressAuthority, TelegramOwnerBinding
 from telegram_runtime import TelegramRuntime
+from telegram_credentials import bot_token, CredentialUnavailable
 
 
 class RuntimeTest(unittest.TestCase):
+    def test_plaintext_key_rejected_even_with_valid_keychain_reference(self):
+        reference = {'service': 'openclaw.kai.telegram', 'account': '101'}
+        for legacy in (None, '', 'fixture-not-a-real-credential'):
+            with self.assertRaisesRegex(CredentialUnavailable, 'plaintext_bot_credential_not_allowed'):
+                bot_token({'bot_token_keychain': reference, 'bot_token': legacy}, 101)
+
     def test_poll_host_and_reply_use_exact_text_and_durable_cursors(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'config.json'

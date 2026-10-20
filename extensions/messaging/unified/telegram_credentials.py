@@ -13,6 +13,8 @@ class CredentialUnavailable(RuntimeError):
 
 
 def bot_token(config, bot_id):
+    if 'bot_token' in config:
+        raise CredentialUnavailable('plaintext_bot_credential_not_allowed')
     reference = config.get('bot_token_keychain')
     if (not isinstance(reference, dict) or set(reference) != {'service', 'account'}
             or reference['service'] != 'openclaw.kai.telegram'
