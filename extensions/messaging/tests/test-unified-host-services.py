@@ -18,6 +18,55 @@ from service_policy_migrate import migrate
 
 
 class UnifiedHostServicesTest(unittest.TestCase):
+    def test_endpoint_failure_cannot_starve_other_recipients(self):
+        import time
+        import sqlite3
+        errors = (HubError('unavailable', 'fixture claim failure'), OSError('fixture transport failure'),
+                  ValueError('fixture malformed response'), sqlite3.OperationalError('fixture journal failure'),
+                  subprocess.TimeoutExpired('fixture transport', 5))
+        for error in errors:
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as tmp:
+                host = host_mod.Host({'journal': str(Path(tmp) / 'journal.db'),
+                                      'delivery_enabled': True}, recover=False)
+                self.addCleanup(host.db.close)
+                host.endpoints = [{'endpoint_id': x, 'platform': 'cc'} for x in ('faulted', 'healthy')]
+                host.refreshed = time.monotonic()
+                host._current_delivery_endpoint = lambda eid: next(ep for ep in host.endpoints if ep['endpoint_id'] == eid)
+                seen = []
+                def hub(op, **args):
+                    self.assertEqual(op, 'claim')
+                    seen.append(args['endpoint_id'])
+                    if args['endpoint_id'] == 'faulted': raise error
+                    return {'messages': [], 'next_sequence': 0}
+                host.hub = hub
+                host.delivery_tick()
+                self.assertEqual(seen, ['faulted', 'healthy'])
+                self.assertEqual(host.db.execute('SELECT count(*) FROM deliveries').fetchone()[0], 0)
+
+    def test_endpoint_failure_rolls_back_partial_work_not_committed_reservations(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            host = host_mod.Host({'journal': str(Path(tmp) / 'journal.db'),
+                                  'delivery_enabled': True}, recover=False)
+            self.addCleanup(host.db.close)
+            host.endpoints = [{'endpoint_id': x} for x in ('faulted', 'healthy')]
+            host.refreshed = time.monotonic()
+            host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                ('reserved', 'faulted', '{}', 'dispatching', None, 0))
+            host.db.commit()
+            def endpoint(ep):
+                if ep['endpoint_id'] == 'faulted':
+                    host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                        ('partial', 'faulted', '{}', 'received', None, 0))
+                    raise OSError('fixture failure with open transaction')
+                host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                    ('healthy', 'healthy', '{}', 'received', None, 0))
+                host.db.commit()
+            host._deliver_endpoint = endpoint
+            host.delivery_tick()
+            self.assertEqual(dict(host.db.execute('SELECT message_id,state FROM deliveries')),
+                             {'reserved': 'dispatching', 'healthy': 'received'})
+
     def test_delivery_scan_advances_and_wraps_pending_without_terminal_replay(self):
         import time
         with tempfile.TemporaryDirectory() as tmp:

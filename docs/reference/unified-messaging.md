@@ -1009,3 +1009,17 @@ After distributing Hub/Federation changes, reload only the existing Hub service,
 keeping Host native flags off. Match loaded capability readback to the installed
 version; preserve all mailbox rows and unknown effects. No old-message replay,
 TTL extension, identity reassignment or provider restart belongs to this step.
+
+### Per-recipient scheduler fault boundary
+
+Loaded Host generation 3 includes this boundary; consumer generation remains 2.
+The existing expected/loaded runtime contract reports the difference without
+enabling either native feature or changing any authority.
+
+An expected claim, transport, malformed-response, or local SQLite failure for one
+recipient ends only that recipient's current tick. The same scheduler continues
+with the other recipients; it does not create a replacement worker or resend an
+original. Only uncommitted local work is rolled back. Already committed body
+reservations, uncertain effects, receipts, and publication attempts are retained.
+Global refresh/authority failures remain global and are not treated as delivery
+permission. Unexpected programming errors are not reclassified as normal delivery.

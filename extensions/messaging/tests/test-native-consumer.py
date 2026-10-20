@@ -289,7 +289,9 @@ class ConsumerTest(unittest.TestCase):
             return rpc(op, **args)
         self.host.hub = lose
         with patch.object(consumer, 'recover', return_value=True):
-            with self.assertRaises(OSError): self.host.delivery_tick()
+            # Recipient failure is contained by the scheduler; durable receipt
+            # reconciliation state must still survive for its next tick.
+            self.host.delivery_tick()
             self.assertIn(self.host.db.execute('SELECT state FROM deliveries').fetchone()[0], ('dispatching', 'uncertain'))
             self.assertEqual(self.hub._row("SELECT state FROM messages WHERE message_id='original'")[0],
                              'presented' if after_commit else 'dispatching')
