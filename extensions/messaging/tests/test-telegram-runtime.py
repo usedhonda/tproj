@@ -18,7 +18,8 @@ class RuntimeTest(unittest.TestCase):
             binding = TelegramOwnerBinding('test-binding', 'test-owner', 101, 202,
                                            202, 'kai', 1, 2000)
             config = {'owner_binding': asdict(binding), 'ingress_secret': 'fixture_ingress_secret',
-                      'bot_token': 'synthetic_not_a_token', 'journal': str(Path(tmp) / 'relay.db'),
+                      'bot_token_keychain': {'service': 'openclaw.kai.telegram', 'account': '101'},
+                      'journal': str(Path(tmp) / 'relay.db'),
                       'kai_endpoint': 'kai-ep', 'host_socket': str(Path(tmp) / 'host.sock'),
                       'service_id': 'telegram', 'service_token': 'fixture-service',
                       'address': 'telegram-owner', 'binding_generation': 'fixture-gen'}

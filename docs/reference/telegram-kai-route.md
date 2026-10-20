@@ -18,7 +18,9 @@ registered launchd service. The file must be a current-UID regular file, mode
 0600, and its SQLite journal must be in a current-UID mode-0700 directory. The
 runtime config has:
 
-- `bot_token`: dedicated Telegram credential, private only.
+- `bot_token_keychain`: reference with `service: "openclaw.kai.telegram"` and
+  `account` equal to the decimal bot ID. Store the actual credential in macOS
+  Keychain through a no-echo input flow; plaintext token config is not accepted.
 - `owner_binding`: approved object with `binding_id`, `owner_id`, `bot_id`,
   `user_id`, `chat_id`, `target` (existing KAI address), integer `generation`,
   epoch `expires_at`, and boolean `revoked`.

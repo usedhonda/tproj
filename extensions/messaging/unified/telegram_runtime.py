@@ -15,6 +15,7 @@ import time
 import urllib.request
 
 from host import rpc
+from telegram_credentials import bot_token
 from telegram_ingress import (TelegramIngressAuthority, TelegramIngressError,
                               TelegramIngressJournal, TelegramMailboxRelay,
                               TelegramOwnerBinding)
@@ -79,7 +80,7 @@ class TelegramRuntime:
         self.config_path = config_path
         self.config = private_config(config_path)
         self.binding = TelegramOwnerBinding(**self.config['owner_binding'])
-        self.api = api or TelegramAPI(self.config['bot_token'])
+        self.api = api or TelegramAPI(bot_token(self.config, self.binding.bot_id))
         self.host_call = host_call or rpc
         self.clock = clock
         self.journal = TelegramIngressJournal(self.config['journal'])
@@ -97,7 +98,7 @@ class TelegramRuntime:
         latest = private_config(self.config_path)
         if any(latest.get(k) != self.config.get(k) for k in
                ('host_socket', 'service_id', 'service_token', 'address',
-                'binding_generation', 'bot_token', 'kai_endpoint')):
+                'binding_generation', 'bot_token_keychain', 'kai_endpoint')):
             raise TelegramIngressError('runtime_configuration_changed')
         return TelegramOwnerBinding(**latest['owner_binding'])
 
