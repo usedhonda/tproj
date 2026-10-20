@@ -29,6 +29,34 @@ address. `gate` is the configured OpenClaw **main** participant; `chi.cc` and
 
 ## Delivery and replies
 
+### Telegram relay foundation (not connected)
+
+`unified/telegram_ingress.py` is a network-free, opt-in transport core, not an
+installed Telegram route or a new owner-registration API. No existing host,
+hub, MCP runtime, or OpenClaw inbound path loads it. A private-text webhook
+adapter must authenticate the Telegram delivery and construct the authority
+from a separately approved bot/user/private-chat/target binding. Calling the
+Python constructor or copying its `external_origin` JSON is not proof of human
+identity and must not grant command authority to a normal mailbox sender.
+
+The core preserves input and KAI output text without a model. It reserves each
+input and correlated output in an owner-private SQLite journal before invoking
+an adapter. Duplicate, interrupted, and uncertain sends are not automatically
+sent again. This favors visible uncertainty over duplicate execution; a future
+adapter must reconcile receipts rather than invent new IDs. Outputs are pinned
+to the original request and configured KAI endpoint; continuing outputs use
+distinct mailbox IDs. A changed, revoked, or expired binding prevents new effects,
+but does not undo an already-started callback.
+
+Before activation, the remaining integration must authenticate the ingress
+process/transport, persist origin atomically in the authoritative mailbox and
+payload identity, expose a versioned allowlisted origin through KAI tools, and
+separate historical origin from current binding validity. It must also implement
+the actual Telegram receiver/sender, owner binding registration and revocation,
+receipt reconciliation, long-output handling, and the bypass of Chi inbound
+model processing. The focused fake-adapter tests do not prove any of these live
+boundaries or a real phone-to-KAI round trip. Existing KAI events are unchanged.
+
 An accepted message is durably queued, but that is not proof of presentation.
 The states are distinct:
 
