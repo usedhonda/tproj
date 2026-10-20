@@ -2,6 +2,8 @@
 from __future__ import annotations
 import hashlib
 import json
+import math
+from collections import Counter
 from pathlib import Path
 import re
 from protocol import HubError
@@ -99,6 +101,103 @@ def validate_records(records, platform, intent, scope, evidence_hash, evidence_r
         return {'intent_hash':digest(intent),'scope_hash':digest(scope),'evidence_hash':evidence_hash}
     raise HubError('approval_unattested','scope must match a native direct instruction or its approved proposed_plan')
 
+
+
+def native_goal_evidence(records, native_id):
+    """Read-only user-goal evidence, NOT a tool grant or task approval.
+
+    Caller must bind the native ID/header/project and supply only top-level live
+    rollout records. Nested compacted/replacement histories are never traversed.
+    Revalidate the latest evidence at use; do not persist this as a blanket grant.
+    """
+    if not isinstance(native_id, str) or not native_id:
+        raise HubError('approval_unattested', 'native Goal binding required')
+    counts = Counter()
+    current = None
+    state = None
+    status = None
+    prefix = '<codex_internal_context source="user_goal">'
+    suffix = '</codex_internal_context>'
+    for record in records:
+        if not isinstance(record, dict) or record.get('type') != 'response_item':
+            continue
+        item = record.get('payload')
+        if not isinstance(item, dict): continue
+        ident = item.get('id')
+        if isinstance(ident, str): counts[ident] += 1
+        meta = item.get('internal_chat_message_metadata_passthrough')
+        if not isinstance(meta, dict): continue
+        kinds = meta.get('content_item_kinds')
+        if not isinstance(kinds, list) or not any(isinstance(k, str) and k.startswith('user.goal') for k in kinds):
+            continue
+        # Any malformed/incomplete newer Goal annotation invalidates the old
+        # objective; never silently fall back to its more permissive evidence.
+        content = item.get('content')
+        stamp = meta.get('create_time')
+        valid = (item.get('type') == 'message' and item.get('role') == 'user'
+                 and kinds == ['user.goal'] and isinstance(ident, str) and bool(ident)
+                 and type(stamp) in (int, float) and math.isfinite(stamp) and stamp > 0
+                 and isinstance(content, list) and len(content) == 1
+                 and isinstance(content[0], dict) and content[0].get('type') == 'input_text'
+                 and isinstance(content[0].get('text'), str))
+        if not valid:
+            current = state = None
+            status = None
+            continue
+        text = content[0]['text']
+        if not text.startswith(prefix) or not text.endswith(suffix):
+            current = state = None
+            status = None
+            continue
+        lines = text[len(prefix):-len(suffix)].strip().splitlines()
+        update = {}
+        try:
+            if lines == ['User cleared the goal.']:
+                current = state = None
+                status = None
+                continue
+            for line in lines:
+                if line.startswith('User set the goal: ') and not update:
+                    objective = json.loads(line[len('User set the goal: '):])
+                    if (not isinstance(objective, str) or not objective.strip()
+                            or len(json.dumps(objective, ensure_ascii=False).encode()) > 700):
+                        raise ValueError()
+                    update['objective'] = objective
+                elif line.startswith('User set goal status: ') and 'status' not in update and line.endswith('.'):
+                    value = json.loads(line[len('User set goal status: '):-1])
+                    if value not in ('active', 'paused', 'blocked', 'usage_limited', 'budget_limited', 'complete'):
+                        raise ValueError()
+                    update['status'] = value
+                else: raise ValueError()
+            if not update: raise ValueError()
+        except (ValueError, TypeError):
+            current = state = None
+            status = None
+            continue
+        evidence = {'record_id': ident, 'create_time': stamp}
+        if 'objective' in update:
+            current = dict(evidence, objective=update['objective'])
+        if 'status' in update: status = update['status']
+        state = evidence
+    if (not current or not state or counts[current['record_id']] != 1
+            or counts[state['record_id']] != 1):
+        raise HubError('approval_unattested', 'current native Goal setter missing or ambiguous')
+    proof = dict(native_id=native_id, setter_record_id=current['record_id'],
+                 setter_create_time=current['create_time'], state_record_id=state['record_id'],
+                 state_create_time=state['create_time'], scope_hash=digest(current['objective']), status=status)
+    return dict(proof, objective=current['objective'], source='native_user_goal',
+                evidence_hash=digest(json.dumps(proof, sort_keys=True, separators=(',', ':'))),
+                execution_authorized=False)
+
+
+def validate_native_goal_evidence(records, native_id, scope, setter_record_id, evidence_hash):
+    """Exact current evidence identity only; latest operation/scope checks remain."""
+    proof = native_goal_evidence(records, native_id)
+    if (proof['objective'] != scope or proof['setter_record_id'] != setter_record_id
+            or proof['evidence_hash'] != evidence_hash
+            or proof['status'] in ('paused', 'blocked', 'usage_limited', 'budget_limited', 'complete')):
+        raise HubError('approval_unattested', 'native Goal evidence changed or is inactive')
+    return proof
 
 def attest(ep, req, home=None):
     home = Path(home or Path.home())

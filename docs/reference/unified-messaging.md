@@ -937,3 +937,31 @@ generation fences remain separate from endpoint incarnation/native identity
 and from this build-contract version. An adapter's existing exclusive startup
 lock prevents simultaneous delivery schedulers on its socket. No new lease,
 mailbox, scheduler or permission registry is introduced.
+
+### Read-only native user-Goal evidence
+
+The existing approval module provides `native_goal_evidence` and
+`validate_native_goal_evidence` as read-only selectors, not new approval
+admission or Goal-tool permission. Caller must validate the native rollout
+header/project/identity and pass top-level live stream records. Only exact
+host-typed `user.goal` user messages with a unique record ID, creation time,
+single text item and version-matched JSON Goal format are accepted. Plain peer
+text, automatic `goal.internal_context`, nested replacement histories and
+omitted/malformed objectives cannot create evidence.
+
+Evidence hashes bind native ID, setter record ID/time, latest lifecycle record
+ID/time, objective hash and status. Clear/omitted/new objective invalidates the
+old setter; clear then same-text set does not revive an old hash. Explicit
+paused/blocked/complete/limited states reject validation. Absent status is
+reported as unknown if no status is known; objective-only edits preserve a
+previously known status, matching native GoalSet semantics. Neither case grants
+new execution permission. This is the same
+host/local-transcript correlation trust level as existing direct evidence, not
+a provider signature.
+
+Every result explicitly has `execution_authorized=false`. Operation-specific
+scope, exact current Goal target and latest cancellation must still be checked
+at use, including KAI carry and external effects. The public task approval
+path is unchanged: it must not persist this reader output as a permanent grant
+without current-setter revocation checks. Production native ingress remains
+off until that integration is proved without blocking valid existing carry.
