@@ -1151,3 +1151,27 @@ only a generation-matching empty candidate snapshot. These Hub checks do not
 establish consumer coalescing, Host death evidence, local notice rebinding or
 end-to-end restart acceptance. The private handoff remains unexposed and unused
 by production; no legacy fallback or historical replay is enabled.
+
+
+### Immutable notice origin and private local actor binding
+
+Authenticated Hub message views include a separate `delivery_actor` projection
+for assigned originals: endpoint/incarnation/native identity, assignment
+generation, original recipient and immutable content hash. It is routing
+metadata, not a new approval or permission to process a body.
+
+The private journal `bind_actor` helper requires a fresh authenticated Hub query
+from its caller. It updates only a received, unreserved local delivery's actor
+and pinned-native route in the existing envelope. Original content, existing
+notice token/client ID/prompt/origin binding and publication uncertainty are
+preserved. Generation regression/conflict, changed content, native-origin
+change, context hash or reserved/unknown/presented body state rejects the move.
+The caller owns the transaction; this helper neither commits nor exposes a body.
+
+`prepare` and read-only provenance verification recognize the persisted current
+actor while retaining the immutable origin notice. Old actor verification
+rejects after binding. Returned notice identity fields still describe its
+immutable origin; verified current identity is returned by `verify`, not inferred
+from those fields. Fresh Hub reservation and latest cancellation/expiry/scope
+checks remain required. The helper is not called by production Host; publisher,
+consumer and discovery integration and actual restart remain unfinished.

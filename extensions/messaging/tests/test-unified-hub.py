@@ -353,6 +353,13 @@ class HubTest(unittest.TestCase):
         claim = self.h.dispatch(dict(actor, op='claim'))['messages']
         self.assertEqual([m['message_id'] for m in claim], ['actor-original'])
         self.assertEqual(claim[0]['recipient_endpoint'], 'eb')
+        actor_view = claim[0]['delivery_actor']
+        self.assertEqual((actor_view['endpoint_id'], actor_view['incarnation'], actor_view['generation']),
+                         ('eb-new', request['new_incarnation'], 1))
+        self.assertEqual(actor_view['content_hash'], content_digest(original))
+        queried = self.h.dispatch(dict(actor, op='query', message_id='actor-original'))
+        self.assertEqual(queried['delivery_actor'], actor_view)
+        self.assertEqual(content_digest(queried), content_digest(original))
         with self.assertRaises(HubError):
             self.h.dispatch(dict(actor, op='begin_present', message_id='actor-original'))
         with self.assertRaises(HubError):

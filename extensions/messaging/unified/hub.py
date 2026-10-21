@@ -468,6 +468,11 @@ class Hub:
         size = 0
         for row in rows:
             item = dict(row)
+            owner = self._row('SELECT o.*,n.native_kind,n.native_id FROM native_delivery_owners o JOIN endpoint_native n ON n.endpoint_id=o.actor_endpoint WHERE o.message_id=?', (item['message_id'],))
+            if owner:
+                item['delivery_actor'] = dict(endpoint_id=owner['actor_endpoint'], incarnation=owner['actor_incarnation'],
+                    native_kind=owner['native_kind'], native_id=owner['native_id'], generation=owner['generation'],
+                    original_recipient=owner['original_recipient'], content_hash=owner['content_hash'])
             q = self._row("SELECT p.address FROM participants p JOIN endpoints e ON e.participant_id=p.participant_id WHERE e.endpoint_id=?", (item["sender_endpoint"],))
             item["sender_address"] = q[0] if q else None
             encoded = len(json.dumps(item, ensure_ascii=False).encode())
