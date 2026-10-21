@@ -713,9 +713,23 @@ class Hub:
         # A linked row alone is not proof of a response by the pinned recipient.
         owner = self._row('SELECT actor_endpoint FROM native_delivery_owners WHERE message_id=?', (message['message_id'],))
         current = owner['actor_endpoint'] if owner else message['recipient_endpoint']
-        args = (message['message_id'], message['recipient_endpoint'], current,
-                message['sender_endpoint'], message['thread_id'])
-        where = 'in_reply_to=? AND sender_endpoint IN (?,?) AND recipient_endpoint=? AND thread_id=?'
+        # Historical evidence, not a live routing/authorization decision. Native
+        # attestations are immutable; retirement must not erase an accepted reply.
+        def party(column):
+            return f"""({column}=? OR EXISTS (
+                SELECT 1 FROM endpoints old JOIN endpoints reply
+                  ON reply.endpoint_id={column}
+                JOIN endpoint_native n ON n.endpoint_id=old.endpoint_id
+                JOIN endpoint_native r ON r.endpoint_id=reply.endpoint_id
+                WHERE old.endpoint_id=? AND old.host_id=reply.host_id
+                  AND old.participant_id=reply.participant_id
+                  AND old.platform=reply.platform
+                  AND n.native_kind=r.native_kind AND n.native_id=r.native_id))"""
+        args = (message['message_id'], message['thread_id'], current,
+                message['recipient_endpoint'], message['recipient_endpoint'],
+                message['sender_endpoint'], message['sender_endpoint'])
+        where = ('in_reply_to=? AND thread_id=? AND (sender_endpoint=? OR '
+                 + party('sender_endpoint') + ') AND ' + party('recipient_endpoint'))
         count = self._row('SELECT COUNT(*) AS n FROM messages WHERE ' + where, args)['n']
         ids = [row['message_id'] for row in self.db.execute(
             'SELECT message_id FROM messages WHERE ' + where + ' ORDER BY created_at,message_id LIMIT 20', args)]

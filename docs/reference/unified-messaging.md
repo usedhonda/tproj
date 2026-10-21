@@ -62,9 +62,11 @@ They do not change the original transport state, assert an explicit ACK, or
 prove the requested work completed; callers must inspect the actual answer.
 Message query and diagnosis also expose `response_state` (`recipient_replied`
 or `unconfirmed`), `recipient_reply_count`, and up to 20
-`recipient_reply_message_ids`. These require the exact original recipient as
-sender, original sender as recipient, and the same thread and `in_reply_to`.
-They conservatively leave endpoint-successor cases unconfirmed. Unlike the
+`recipient_reply_message_ids`. These require the original recipient/current assigned actor as
+sender and original sender as recipient, or their immutable same-native
+attestations (same host, participant, platform, native kind and native ID),
+plus the same thread and exact `in_reply_to`. Historical reply evidence survives
+endpoint retirement; this read-only comparison grants no routing or access rights. Unlike the
 broader linked-reply exploration fields, these identify pinned-recipient response
 evidence. An uncertain transport with `recipient_replied` must be described as
 "recipient replied; presentation receipt unconfirmed", not as undelivered.

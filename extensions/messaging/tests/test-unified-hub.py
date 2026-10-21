@@ -189,6 +189,33 @@ class HubTest(unittest.TestCase):
         self.h = Hub(pathlib.Path(self.tmp.name)/'hub.db', {'admin_token':'adm','hosts':{'a':'ta','b':'tb'}})
         self.assertTrue(self.h.dispatch(dict(op='query', host_id='b', host_token='tb', endpoint_id='eb-new', message_id='m1'))['reader_is_recipient'])
 
+    def test_reply_evidence_survives_both_native_rotations(self):
+        for host, endpoint in [('a', 'ea'), ('b', 'eb')]:
+            self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id=?", (endpoint,))
+            self.attest(host, endpoint)
+        self.send()
+        for host, endpoint, participant in [('a', 'ea', 'p:cc'), ('b', 'eb', 'p:cdx')]:
+            self.h.dispatch(dict(op='endpoint_retire', host_id=host, host_token='t'+host, endpoint_id=endpoint))
+            self.reg(host, 't'+host, endpoint+'-new', participant, 3)
+            self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id=?", (endpoint+'-new',))
+            self.attest(host, endpoint+'-new')
+        self.h.submit(dict(host_id='b', host_token='tb', message=dict(
+            message_id='rotated-reply', sender_endpoint='eb-new', in_reply_to='m1', body='reply')))
+        original = self.h._row("SELECT * FROM messages WHERE message_id='m1'")
+        before = self.h.db.total_changes
+        self.assertEqual(self.h.response_evidence(original)['recipient_reply_message_ids'], ['rotated-reply'])
+        self.assertEqual(self.h.db.total_changes, before)
+        # Historical acceptance remains evidence even when both successors retire.
+        for endpoint in ('ea-new', 'eb-new'):
+            self.h.db.execute("UPDATE endpoints SET retired=1,last_heartbeat=0 WHERE endpoint_id=?", (endpoint,))
+        self.assertEqual(self.h.response_evidence(original)['recipient_reply_count'], 1)
+        for column, value in [('thread_id', 'wrong'), ('sender_endpoint', 'ea-new'),
+                              ('recipient_endpoint', 'eb-new')]:
+            row = self.h._row("SELECT * FROM messages WHERE message_id='rotated-reply'")
+            self.h.db.execute('UPDATE messages SET '+column+'=? WHERE message_id=?', (value, 'rotated-reply'))
+            self.assertEqual(self.h.response_evidence(original)['recipient_reply_count'], 0)
+            self.h.db.execute('UPDATE messages SET '+column+'=? WHERE message_id=?', (row[column], 'rotated-reply'))
+
     def test_native_rotation_unknown_different_ambiguous_and_stale_reject(self):
         self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
         self.attest('b', 'eb')
