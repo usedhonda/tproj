@@ -22,7 +22,7 @@ from identity import (IdentityError, adopt_native_conversation, bind_caller, dis
 from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
 from receipt import normalize_prompt, codex_transcript_presented
 
-HOST_BACKEND_VERSION = 9
+HOST_BACKEND_VERSION = 10
 WIRE_LIMIT = 262144
 
 
@@ -146,6 +146,48 @@ class Host:
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
+    def _handoff_dead_native(self, old, discovered, proof):
+        """Owner-service-only continuity; True means do not legacy-retire old.
+
+        No public Host operation forwards death claims. Missing/unknown proof
+        holds the established native owner for the next normal refresh tick.
+        """
+        if (self.config.get('native_queue_enabled') is not True
+                or self.config.get('native_consumer_enabled') is not True
+                or old.get('platform') != 'cdx'):
+            return False
+        rows = self.hub('diagnostic_identity', endpoint_ids=[old['endpoint_id']]).get('endpoint_native', [])
+        markers = [r for r in rows if r.get('endpoint_id') == old['endpoint_id']]
+        if len(markers) != 1:
+            return False  # No established native lineage: existing legacy retirement.
+        prior = markers[0]
+        candidates = [ep for ep in discovered if ep['endpoint_id'] != old['endpoint_id']
+                      and all(ep.get(k) == old.get(k) for k in ('host_id', 'participant_id', 'platform'))]
+        if len(candidates) != 1:
+            return True
+        new = candidates[0]
+        ids = {str(new[k]) for k in ('thread_id', 'session_id') if new.get(k)
+               and re.fullmatch(r'[0-9a-fA-F-]{36}', str(new[k]))}
+        if len(ids) != 1:
+            return True
+        nid = next(iter(ids))
+        native = dict(endpoint_id=new['endpoint_id'], native_kind=prior['native_kind'], native_id=nid)
+        from native_consumer import _native_path
+        _native_path(new, native)  # New record/header, never borrowed from old owner.
+        from identity import _process_info
+        current = _process_info(int(new['pid']))
+        if (not isinstance(current, dict) or current.get('uid') != os.getuid() or type(current.get('pid_start')) is not int
+                or str(current['pid_start']) != str(new.get('pid_start'))
+                or not any(token in str(current.get('command', '')).lower() for token in ('codex', 'openai'))):
+            raise HubError('identity_rejected', 'replacement process incarnation changed')
+        if nid != prior['native_id']:
+            return False  # Independently verified different native cannot inherit originals.
+        self.hub('native_attest', **native)
+        self.hub('native_handoff', old_endpoint=old['endpoint_id'], new_endpoint=new['endpoint_id'],
+                 old_incarnation=old['incarnation'], new_incarnation=new['incarnation'],
+                 native_kind=native['native_kind'], native_id=nid, dead_owner=proof)
+        return True
+
     def _refresh_unlocked(self):
         directory = self.hub('directory_list')
         # Snapshot active identities before discovery.  A standalone tmux
@@ -215,13 +257,25 @@ class Host:
             except (IdentityError, OSError, ValueError, KeyError, TypeError):
                 current = None
             absent = False
+            proof = {k: ep.get(k) for k in ('endpoint_id', 'incarnation', 'pid', 'pid_start')}
             if current is None:
                 try: os.kill(int(ep['pid']), 0)
-                except ProcessLookupError: absent = True
+                except ProcessLookupError:
+                    absent = True
+                    proof['reason'] = 'pid_absent'
                 except (OSError, ValueError, TypeError): pass
-            elif str(current.get('pid_start')) != str(ep.get('pid_start')):
+            elif (type(current.get('pid_start')) is int and current['pid_start'] > 0
+                  and str(current['pid_start']) != str(ep.get('pid_start'))):
                 absent = True
+                proof.update(reason='pid_start_changed', observed_pid_start=current['pid_start'])
             if absent:
+                try:
+                    if self._handoff_dead_native(ep, discovered, proof):
+                        continue
+                except (HubError, IdentityError, OSError, ValueError, KeyError, TypeError):
+                    # A failed/unknown continuity operation never authorizes
+                    # destructive retirement or legacy delivery fallback.
+                    continue
                 self.hub('endpoint_retire', endpoint_id=ep['endpoint_id'])
             elif (ep['participant_id'] in live_participants and current
                     and current.get('uid') == os.getuid()

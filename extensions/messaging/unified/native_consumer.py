@@ -11,7 +11,7 @@ import time
 from native_notice import content_digest, prepare, verify, verify_record, validate_actor
 from protocol import HubError, success, NATIVE_CONTEXT_LIMIT
 
-BACKEND_VERSION = 3
+BACKEND_VERSION = 4
 
 TOKEN = re.compile(r'^\[from:tproj-native-notice\] \[tproj-native-notice:([A-Za-z0-9_-]{43})\]\n')
 
@@ -30,6 +30,18 @@ def _hook_binding(host, ep, payload=None):
     if len(markers) != 1:
         raise HubError('identity_rejected', 'unique native attestation required')
     native = markers[0]
+    return native, _native_path(ep, native, payload)
+
+
+def _native_path(ep, native, payload=None):
+    """Independent bounded header proof, before an owner Host attests a restart.
+
+    ep/native come from the Host's live discovery, never a peer/public selector.
+    This proves local header correlation, not provider-signed authenticity.
+    """
+    if (ep.get('platform') != 'cdx' or native.get('endpoint_id') != ep.get('endpoint_id')
+            or native.get('native_kind') not in ('thread_id', 'session_id')):
+        raise HubError('identity_rejected', 'native discovery binding mismatch')
     nid = native.get('native_id')
     if (not isinstance(nid, str) or not re.fullmatch(r'[0-9a-fA-F-]{36}', nid)
             or (payload is not None and (payload.get('session_id') != nid
@@ -58,7 +70,7 @@ def _hook_binding(host, ep, payload=None):
             raise ValueError('header mismatch')
     except (OSError, ValueError, TypeError, AttributeError):
         raise HubError('identity_rejected', 'native transcript header mismatch') from None
-    return native, path
+    return path
 
 
 def resolve(host, ep, req):

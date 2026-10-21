@@ -131,7 +131,7 @@ class HubTest(unittest.TestCase):
         ro = Hub(path, {'admin_token': 'adm', 'hosts': {'a': 'ta'}}, read_only=True)
         self.addCleanup(ro.close)
         self.assertEqual(ro.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'ta'})['capabilities'],
-                         ['native_attest', 'native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted', 'native_begin_present', 'native_pending', 'native_drain'])
+                         ['native_attest', 'native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted', 'native_begin_present', 'native_pending', 'native_drain', 'native_handoff'])
         self.assertEqual(ro.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'ta'})['peers'], {})
         with self.assertRaises(HubError) as caught:
             ro.dispatch({'op': 'diagnose', 'host_id': 'a', 'host_token': 'ta', 'message_id': 'missing'})
@@ -291,10 +291,9 @@ class HubTest(unittest.TestCase):
                                  message_id='pending', incarnation=proof['incarnation'], native_kind='thread_id',
                                  native_id='native-thread', content_hash=owner['content_hash']))
         self.assertEqual(late.exception.code, 'stale_session')
-        # No public dispatch surface or production Host integration exists yet.
-        with self.assertRaises(HubError) as dormant:
-            self.h.dispatch(dict(request, op='native_handoff'))
-        self.assertEqual(dormant.exception.code, 'unknown_op')
+        # Owner-service operation requires authenticated death evidence; a
+        # previously completed exact request remains idempotent.
+        self.assertTrue(self.h.dispatch(dict(request, op='native_handoff', dead_owner=proof))['duplicate'])
         self.h.dispatch(dict(op='submit', host_id='b', host_token='tb', message=dict(
             message_id='successor-reply', sender_endpoint='eb-new', in_reply_to='pending', thread_id='t', body='received')))
         self.h.dispatch(dict(op='submit', host_id='b', host_token='tb', message=dict(
@@ -506,7 +505,7 @@ class HubTest(unittest.TestCase):
     def test_native_capabilities_are_authenticated_and_read_only(self):
         before = self.h.db.total_changes
         result = self.h.dispatch(dict(op='messaging_capabilities', host_id='b', host_token='tb'))
-        self.assertEqual(result['native_runtime'], {'hub_version': 2})
+        self.assertEqual(result['native_runtime'], {'hub_version': 3})
         self.assertTrue({'native_begin_present', 'native_pending', 'native_drain'} <= set(result['capabilities']))
         with self.assertRaises(HubError):
             self.h.dispatch(dict(op='messaging_capabilities', host_id='b', host_token='wrong'))

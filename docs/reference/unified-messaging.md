@@ -1107,7 +1107,7 @@ a receipt validated against an earlier snapshot. A receipt committed first
 retains its existing lifecycle semantics. This does not transfer delivery rights
 or authorize replay of a retired original.
 
-### Isolated native handoff transaction core (not activated)
+### Owner-Host native handoff transaction core (not activated in production)
 
 The private `_handoff_native_delivery` core stores a presentation-actor mapping
 in the existing Hub database without changing original message columns, hashes
@@ -1119,12 +1119,12 @@ old incarnation's result is recorded in existing metadata for exact retries.
 Reserved, unknown, terminal, expired and authenticated same-native replied
 originals are excluded. Precommit failure rolls mapping and retirement back.
 
-This core is not exposed through dispatch and is not called by the production
-Host. Its `dead_owner` input is a trust-boundary precondition, not independent
-proof: future owner-Host integration must derive PID absence/start replacement
-from OS evidence, never accept a public caller or peer's claim. Consumer
-origin/current-actor verification, claim/pending/receipt integration, local
-reservation reconciliation and actual restart acceptance remain unfinished.
+The owner-service Hub operation accepts `dead_owner` only under its existing
+Host authentication boundary. This input is not independently verified by Hub:
+the Host derives PID absence/start replacement from OS evidence and validates
+the replacement process plus its independent native transcript header before
+invocation. The public Host API does not forward this operation or death claims.
+Production activation and actual TUI restart acceptance remain unfinished.
 The private tests do not establish live-process death, delivery completion,
 physical crash recovery or production activation. Historical retired originals
 are not revived. No new mailbox, scheduler, approval store or task transfer is
@@ -1149,7 +1149,7 @@ Pending truth takes priority over a saved drained insertion cursor: an older
 original assigned to a newer actor must still request wake. Drain still clears
 only a generation-matching empty candidate snapshot. These Hub checks do not
 establish consumer coalescing, Host death evidence, local notice rebinding or
-end-to-end restart acceptance. The private handoff remains unexposed and unused
+end-to-end restart acceptance. The owner-service handoff remains unused
 by production; no legacy fallback or historical replay is enabled.
 
 
@@ -1173,8 +1173,8 @@ actor while retaining the immutable origin notice. Old actor verification
 rejects after binding. Returned notice identity fields still describe its
 immutable origin; verified current identity is returned by `verify`, not inferred
 from those fields. Fresh Hub reservation and latest cancellation/expiry/scope
-checks remain required. The helper is not called by production Host; publisher,
-consumer and discovery integration and actual restart remain unfinished.
+checks remain required. Host/publisher/consumer/discovery source integration is
+present below but not activated in production; actual restart remains unproved.
 
 
 ### Current actor consumer and publisher connection (not activated)
@@ -1197,9 +1197,9 @@ content hash and either explicit transactional rejection or unknown response.
 A malformed return after RPC success is unknown, not rejection. Rejection does
 not prove that no earlier attempt reserved the original. Both paths retain the
 local uncertain body fence; this change does not reset or re-return any body.
-Host/consumer backend contracts are 8/3. Source version does not establish loaded
-runtime or actual restart. Trusted Host death/continuity invocation, definite
-unissued reconciliation and end-to-end restart acceptance remain unfinished.
+The current backend contracts are stated below. Source version does not establish
+loaded runtime or actual restart. Definite-unissued reconciliation and trusted
+Host invocation are described below; end-to-end restart acceptance is unproved.
 
 
 ### Reconcile an explicitly rejected old reservation (not activated)
@@ -1223,3 +1223,27 @@ This is not replay permission for historical uncertain rows. Host invokes the
 private reconciliation only on a transferred claim with an old local actor;
 no second scheduler, original re-submission or user approval is created. Source
 Host backend is 9/consumer 3; deployment and real restart remain unproved.
+
+
+### Trusted owner discovery handoff (not activated in production)
+
+With both existing native queue/consumer flags enabled, Host discovery observes
+the old PID incarnation independently. Absence requires process lookup failure
+plus kernel ESRCH; a replacement start requires a valid positive observed start.
+A new candidate must be unique for the same host/participant/platform, have its
+own discovered native ID, a matching private Codex TUI session header/project,
+and a fresh UID/PID-start/agent-command observation. Host attests that new binding
+before invoking the atomic owner-service `native_handoff` transaction.
+
+A live old process is retained. For an already-attested native lineage, missing,
+ambiguous or failed/unknown continuity evidence holds the old owner for a later
+normal refresh; it does not fall through to legacy retirement. An independently
+verified different native cannot inherit originals. Missing old native lineage
+retains legacy retirement semantics. This is not historical endpoint revival or
+conversation/task authority transfer. Public Host callers cannot supply death
+claims or invoke handoff; Hub trusts its authenticated owner Host service, not a
+peer body. Flags off preserve existing production discovery behavior.
+
+Source backend contracts are Host10/consumer4/Hub3. A focused fixture uses real
+OS Python stub PID/start/death and a synthetic native header to test this join;
+it is not a real Codex TUI/provider restart or production activation result.

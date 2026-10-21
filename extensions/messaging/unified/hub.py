@@ -27,7 +27,7 @@ except ImportError:  # allow the installed single-file entrypoint to be invoked 
     from native_notice import content_digest
 
 
-HUB_NATIVE_VERSION = 2
+HUB_NATIVE_VERSION = 3
 
 WAIT_REASONS = ('waiting_input', 'busy', 'draft_protected', 'endpoint_unavailable', 'adapter_error', 'auth_required',
                 'native_queue_accepted', 'native_queue_pending', 'native_publication_unknown', 'native_retry_pending')
@@ -187,11 +187,11 @@ class Hub:
         return {"endpoint_id": ep["endpoint_id"]}
 
     def _handoff_native_delivery(self, req, *, dead_owner):
-        """Private transaction core; NOT exposed by dispatch or called by Host.
+        """Owner-Host transaction core; not exposed by the public Host API.
 
-        dead_owner must come from the trusted owner Host's independent PID/start
-        observation, never a peer body/public caller flag. Caller integration is
-        deliberately withheld until that proof and local consumer fencing exist.
+        dead_owner comes only from the authenticated owner Host's independent PID/start
+        observation, never a peer body/public Host caller flag. The owner Host
+        gates this path on native capability and independent replacement header.
         Original message rows, notice tokens and content digests stay immutable.
         """
         host = self._auth(req)
@@ -853,7 +853,7 @@ class Hub:
         self._auth(req)
         return {'capabilities': ['native_attest', 'native_continuity',
                                 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted',
-                                'native_begin_present', 'native_pending', 'native_drain'],
+                                'native_begin_present', 'native_pending', 'native_drain', 'native_handoff'],
                 'native_runtime': {'hub_version': HUB_NATIVE_VERSION}, 'peers': {}}
 
     def dispatch(self, req):
@@ -875,6 +875,7 @@ class Hub:
         if op=="directory_list": self._auth(req); return self.directory_list()
         if op=="directory_resolve": self._auth(req); p=self._participant(req["address"]); return dict(p)
         if op=="native_attest": return self.attest_native(req)
+        if op=="native_handoff": return self._handoff_native_delivery(req, dead_owner=req.get('dead_owner'))
         if op=="endpoint_register": return self.register(req)
         if op=="endpoint_retire":
             host=self._auth(req); self._host_endpoint(host,req["endpoint_id"]); self.db.execute("UPDATE endpoints SET retired=1 WHERE endpoint_id=?",(req["endpoint_id"],)); self.db.execute("UPDATE messages SET state='stale_session' WHERE recipient_endpoint=? AND state IN ('accepted','queued','adapter_received')",(req["endpoint_id"],)); return {"retired":req["endpoint_id"]}

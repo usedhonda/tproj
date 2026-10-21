@@ -42,7 +42,7 @@ class ConsumerTest(unittest.TestCase):
         self.calls = []
         def rpc(op, **args):
             self.calls.append(op)
-            return self.hub.dispatch(dict(op=op, host_id='host', host_token='token', **args))
+            return self.hub.dispatch(dict(args, op=op, host_id='host', host_token='token'))
         self.host.hub = rpc
         self.ep = dict(self.hub._row("SELECT * FROM endpoints WHERE endpoint_id='recipient'"), project_path=str(self.work))
         self.hub.dispatch(dict(op='submit', host_id='host', host_token='token', message={
@@ -71,6 +71,52 @@ class ConsumerTest(unittest.TestCase):
             new_endpoint='successor', old_incarnation=old['incarnation'], new_incarnation=self.ep['incarnation'],
             native_kind='thread_id', native_id=self.native), dead_owner=proof)
         return old
+
+    def test_host_refresh_uses_os_death_and_independent_native_header(self):
+        import subprocess
+        import identity
+        import host as host_module
+        processes = [subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)', 'codex-fixture'],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                     for _ in range(2)]
+        def cleanup():
+            for process in processes:
+                if process.poll() is None: process.terminate()
+                process.wait(timeout=5)
+        self.addCleanup(cleanup)
+        old_process, new_process = processes
+        old_info, new_info = [identity._process_info(process.pid) for process in processes]
+        # Fixture registration represents an actual OS PID/start incarnation;
+        # these Python stubs are not real Codex/provider processes.
+        self.hub.db.execute('UPDATE endpoints SET pid=?,pid_start=? WHERE endpoint_id=?',
+                            (old_process.pid, str(old_info['pid_start']), 'recipient'))
+        self.host.config.update(host_id='host', native_queue_enabled=True)
+        candidate = dict(self.ep, endpoint_id='os-successor', pid=new_process.pid, pid_start=new_info['pid_start'],
+                         session='replacement', runtime_id='replacement', thread_id=self.native, session_id=self.native)
+        with patch.object(host_module, 'discover_endpoints', return_value=[candidate]), patch.object(host_module, 'discover_tmux_endpoints', return_value=[]):
+            self.host.refresh()
+            self.assertEqual(self.hub._row("SELECT retired FROM endpoints WHERE endpoint_id='recipient'")[0], 0)
+            self.assertNotIn('native_handoff', self.calls)
+            old_process.terminate()
+            old_process.wait(timeout=5)
+            hidden = self.transcript.with_suffix('.hidden')
+            self.transcript.rename(hidden)
+            try:
+                self.host.refresh()
+                self.assertEqual(self.hub._row("SELECT retired FROM endpoints WHERE endpoint_id='recipient'")[0], 0)
+                self.assertNotIn('native_handoff', self.calls)
+            finally: hidden.rename(self.transcript)
+            self.host.refresh()
+        owner = self.hub._row("SELECT * FROM native_delivery_owners WHERE message_id='original'")
+        self.assertEqual(owner['actor_endpoint'], 'os-successor')
+        self.assertEqual(self.hub._row("SELECT retired FROM endpoints WHERE endpoint_id='recipient'")[0], 1)
+        self.assertEqual(self.hub._row("SELECT recipient_endpoint FROM messages WHERE message_id='original'")[0], 'recipient')
+        self.assertEqual(self.calls.count('native_handoff'), 1)
+        self.ep = next(ep for ep in self.host.endpoints if ep['endpoint_id'] == 'os-successor')
+        with patch.object(self.host, 'caller', return_value=self.ep), self.assertRaises(HubError) as public:
+            self.host.dispatch(dict(op='native_handoff', dead_owner={'reason': 'pid_absent'}), 1, os.getuid())
+        self.assertEqual(public.exception.code, 'unknown_op')
+        self.assertEqual(self.calls.count('native_handoff'), 1)
 
     def test_explicit_old_reservation_rejection_reconciles_only_after_handoff(self):
         rpc = self.host.hub
@@ -373,7 +419,7 @@ class ConsumerTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(HubError): self.resolve(**bad)
         self.host.config['native_consumer_enabled'] = False
         caps = self.host.dispatch({'op': 'messaging_capabilities'}, 123, os.getuid())
-        self.assertEqual(caps['native_consumer'], {'backend_version': 3, 'enabled': False})
+        self.assertEqual(caps['native_consumer'], {'backend_version': 4, 'enabled': False})
         with self.assertRaises(HubError): self.resolve()
         self.assertNotIn('native_begin_present', self.calls)
         self.assertEqual(self.host.db.execute('SELECT state FROM deliveries').fetchone()[0], 'received')
