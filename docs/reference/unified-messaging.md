@@ -1129,3 +1129,25 @@ The private tests do not establish live-process death, delivery completion,
 physical crash recovery or production activation. Historical retired originals
 are not revived. No new mailbox, scheduler, approval store or task transfer is
 introduced by this correspondence table.
+
+
+### Current native actor integration (not activated)
+
+The isolated Hub paths for claim, native pending, begin presentation and receipt
+use the stored current actor endpoint and incarnation. Original recipient and
+content digest are not rewritten. A transferred original requires native
+presentation; legacy begin-presentation is rejected. Reservation and receipt
+validate the immutable original hash against its actor mapping under the write
+transaction. Transferred receipts also require the request incarnation and
+attested native identity. A presented receipt requires the exact current actor,
+content hash and assignment generation reservation saved atomically by native
+begin-presentation in existing Hub metadata. Unreserved uncertain diagnostics
+do not create that reservation or permit a later presented receipt. Claim validates endpoint retirement inside that same transaction.
+A current actor reply suppresses further candidate delivery.
+
+Pending truth takes priority over a saved drained insertion cursor: an older
+original assigned to a newer actor must still request wake. Drain still clears
+only a generation-matching empty candidate snapshot. These Hub checks do not
+establish consumer coalescing, Host death evidence, local notice rebinding or
+end-to-end restart acceptance. The private handoff remains unexposed and unused
+by production; no legacy fallback or historical replay is enabled.

@@ -341,6 +341,73 @@ class HubTest(unittest.TestCase):
         self.assertEqual(tuple(self.h._row("SELECT * FROM native_delivery_owners WHERE message_id='stale-generation'")), owner)
         self.assertEqual(dict(self.h._row("SELECT * FROM messages WHERE message_id='stale-generation'")), original)
 
+    def test_transferred_native_actor_claim_pending_reservation_and_receipt(self):
+        self.send('actor-original')
+        request, proof = self.handoff_fixture()
+        original = dict(self.h._row("SELECT * FROM messages WHERE message_id='actor-original'"))
+        self.h._handoff_native_delivery(request, dead_owner=proof)
+        actor = dict(host_id='b', host_token='tb', endpoint_id='eb-new')
+        native = dict(actor, incarnation=request['new_incarnation'], native_kind='thread_id', native_id='native-thread')
+        pending = self.h.dispatch(dict(native, op='native_pending'))
+        self.assertTrue(pending['wake_needed'])
+        claim = self.h.dispatch(dict(actor, op='claim'))['messages']
+        self.assertEqual([m['message_id'] for m in claim], ['actor-original'])
+        self.assertEqual(claim[0]['recipient_endpoint'], 'eb')
+        with self.assertRaises(HubError):
+            self.h.dispatch(dict(actor, op='begin_present', message_id='actor-original'))
+        with self.assertRaises(HubError):
+            self.h.dispatch(dict(actor, op='native_begin_present', message_id='actor-original',
+                                 incarnation=proof['incarnation'], native_kind='thread_id', native_id='native-thread',
+                                 content_hash=content_digest(original)))
+        reserved = self.h.dispatch(dict(native, op='native_begin_present', message_id='actor-original', content_hash=content_digest(original)))
+        self.assertEqual(reserved['endpoint_id'], 'eb-new')
+        for invalid in (actor, dict(native, incarnation='stale')):
+            with self.assertRaises(HubError):
+                self.h.dispatch(dict(invalid, op='receipt', message_id='actor-original', state='presented'))
+        self.h.dispatch(dict(native, op='receipt', message_id='actor-original', state='presented'))
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='actor-original'")[0], 'presented')
+        for key in ('recipient_endpoint', 'body', 'payload_hash', 'expires_at'):
+            self.assertEqual(self.h._row("SELECT * FROM messages WHERE message_id='actor-original'")[key], original[key])
+        self.assertFalse(self.h.dispatch(dict(native, op='native_pending'))['pending'])
+        for op in ('claim', 'receipt', 'native_begin_present'):
+            with self.subTest(op=op), self.assertRaises(HubError) as stale:
+                self.h.dispatch(dict(native, op=op, endpoint_id='eb', message_id='actor-original', state='presented', content_hash=content_digest(original)))
+            self.assertEqual(stale.exception.code, 'stale_session')
+
+    def test_transferred_presented_receipt_requires_native_reservation(self):
+        self.send('unreserved-actor')
+        request, proof = self.handoff_fixture()
+        self.h._handoff_native_delivery(request, dead_owner=proof)
+        actor = dict(host_id='b', host_token='tb', endpoint_id='eb-new')
+        native = dict(actor, incarnation=request['new_incarnation'], native_kind='thread_id', native_id='native-thread')
+        for fields in (actor, native):
+            with self.subTest(fields=fields), self.assertRaises(HubError):
+                self.h.dispatch(dict(fields, op='receipt', message_id='unreserved-actor', state='presented'))
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='unreserved-actor'")[0], 'accepted')
+        self.h.dispatch(dict(native, op='receipt', message_id='unreserved-actor', state='uncertain'))
+        with self.assertRaises(HubError):
+            self.h.dispatch(dict(native, op='receipt', message_id='unreserved-actor', state='presented'))
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='unreserved-actor'")[0], 'uncertain')
+
+    def test_transferred_actor_reply_and_old_sequence_do_not_lose_wake(self):
+        self.send('older-original')
+        request, proof = self.handoff_fixture()
+        actor = dict(host_id='b', host_token='tb', endpoint_id='eb-new')
+        native = dict(actor, incarnation=request['new_incarnation'], native_kind='thread_id', native_id='native-thread')
+        # A new endpoint may already have drained a newer original before an
+        # older row is assigned. Pending truth must not be hidden by that cursor.
+        self.h.db.execute("INSERT INTO metadata(key,value) VALUES(?,?)", ('native_drained:eb-new', '999'))
+        self.h._handoff_native_delivery(request, dead_owner=proof)
+        self.assertTrue(self.h.dispatch(dict(native, op='native_pending'))['wake_needed'])
+        self.h.dispatch(dict(actor, op='submit', message=dict(message_id='actor-response', sender_endpoint='eb-new',
+                             in_reply_to='older-original', thread_id='t', body='received')))
+        self.assertFalse(self.h.dispatch(dict(native, op='native_pending'))['pending'])
+        self.assertEqual(self.h.dispatch(dict(actor, op='claim'))['messages'], [])
+        with self.assertRaises(HubError) as replied:
+            self.h.dispatch(dict(native, op='native_begin_present', message_id='older-original',
+                                 content_hash=content_digest(dict(self.h._row("SELECT * FROM messages WHERE message_id='older-original'")))))
+        self.assertEqual(replied.exception.code, 'presentation_unavailable')
+
     def test_native_handoff_core_rolls_back_owner_and_retirement_together(self):
         self.send('pending')
         request, proof = self.handoff_fixture()
