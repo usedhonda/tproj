@@ -1106,3 +1106,26 @@ endpoint retirement committed before this transaction cannot be overwritten by
 a receipt validated against an earlier snapshot. A receipt committed first
 retains its existing lifecycle semantics. This does not transfer delivery rights
 or authorize replay of a retired original.
+
+### Isolated native handoff transaction core (not activated)
+
+The private `_handoff_native_delivery` core stores a presentation-actor mapping
+in the existing Hub database without changing original message columns, hashes
+or notice tokens. One BEGIN IMMEDIATE transaction validates matching native
+attestations and incarnation/participant/host, rejects competing active owners,
+records eligible current-actor assignments only for the matching stored actor
+incarnation and retires the old endpoint. The
+old incarnation's result is recorded in existing metadata for exact retries.
+Reserved, unknown, terminal, expired and authenticated same-native replied
+originals are excluded. Precommit failure rolls mapping and retirement back.
+
+This core is not exposed through dispatch and is not called by the production
+Host. Its `dead_owner` input is a trust-boundary precondition, not independent
+proof: future owner-Host integration must derive PID absence/start replacement
+from OS evidence, never accept a public caller or peer's claim. Consumer
+origin/current-actor verification, claim/pending/receipt integration, local
+reservation reconciliation and actual restart acceptance remain unfinished.
+The private tests do not establish live-process death, delivery completion,
+physical crash recovery or production activation. Historical retired originals
+are not revived. No new mailbox, scheduler, approval store or task transfer is
+introduced by this correspondence table.

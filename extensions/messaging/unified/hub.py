@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS endpoints (endpoint_id TEXT PRIMARY KEY, participant_
 CREATE TABLE IF NOT EXISTS endpoint_native (endpoint_id TEXT PRIMARY KEY, native_kind TEXT NOT NULL, native_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS messages (message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, in_reply_to TEXT, sender_endpoint TEXT NOT NULL, target_address TEXT NOT NULL, recipient_endpoint TEXT, body TEXT NOT NULL, kind TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL, payload_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'accepted', adapter_received_at REAL, UNIQUE(message_id));
 CREATE TABLE IF NOT EXISTS receipts (message_id TEXT PRIMARY KEY, state TEXT NOT NULL, evidence TEXT, at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS native_delivery_owners (message_id TEXT PRIMARY KEY REFERENCES messages(message_id), original_recipient TEXT NOT NULL, actor_endpoint TEXT NOT NULL, actor_incarnation TEXT NOT NULL, content_hash TEXT NOT NULL, generation INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS message_recipient ON messages(recipient_endpoint, state, expires_at);
 """
 
@@ -184,6 +185,78 @@ class Hub:
             raise HubError("identity_rejected", "endpoint native identity is immutable")
         self.db.execute("INSERT OR IGNORE INTO endpoint_native VALUES(?,?,?)", (ep["endpoint_id"], kind, native))
         return {"endpoint_id": ep["endpoint_id"]}
+
+    def _handoff_native_delivery(self, req, *, dead_owner):
+        """Private transaction core; NOT exposed by dispatch or called by Host.
+
+        dead_owner must come from the trusted owner Host's independent PID/start
+        observation, never a peer body/public caller flag. Caller integration is
+        deliberately withheld until that proof and local consumer fencing exist.
+        Original message rows, notice tokens and content digests stay immutable.
+        """
+        host = self._auth(req)
+        self._tx()
+        try:
+            old = self._row('SELECT * FROM endpoints WHERE endpoint_id=?', (req.get('old_endpoint'),))
+            new = self._host_endpoint(host, req.get('new_endpoint'))
+            if (not old or old['host_id'] != host or old['endpoint_id'] == new['endpoint_id']
+                    or any(old[k] != new[k] for k in ('participant_id', 'platform'))
+                    or new['platform'] != 'cdx' or self._now() - new['last_heartbeat'] > 30
+                    or req.get('old_incarnation') != old['incarnation']
+                    or req.get('new_incarnation') != new['incarnation']):
+                raise HubError('identity_rejected', 'handoff endpoint continuity mismatch')
+            markers = [self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (ep['endpoint_id'],))
+                       for ep in (old, new)]
+            if (not all(markers) or any(markers[0][k] != markers[1][k] for k in ('native_kind', 'native_id'))
+                    or any(req.get(k) != markers[1][k] for k in ('native_kind', 'native_id'))):
+                raise HubError('identity_rejected', 'handoff requires independent matching native attestations')
+            identity = {key: req.get(key) for key in ('old_endpoint', 'new_endpoint', 'old_incarnation',
+                                                       'new_incarnation', 'native_kind', 'native_id')}
+            digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+            key = 'native_handoff:' + hashlib.sha256(json.dumps([old['endpoint_id'], old['incarnation']]).encode()).hexdigest()
+            prior = self._row('SELECT value FROM metadata WHERE key=?', (key,))
+            if prior:
+                saved = json.loads(prior[0])
+                if saved['digest'] != digest:
+                    raise HubError('handoff_conflict', 'old incarnation already handed off elsewhere')
+                self._commit()
+                return dict(saved['result'], duplicate=True)
+            if old['retired']:
+                raise HubError('stale_session', 'historical retired originals cannot be revived')
+            if (not isinstance(dead_owner, dict)
+                    or any(str(dead_owner.get(k)) != str(old[k]) for k in ('endpoint_id', 'incarnation', 'pid', 'pid_start'))
+                    or dead_owner.get('reason') not in ('pid_absent', 'pid_start_changed')
+                    or (dead_owner['reason'] == 'pid_start_changed'
+                        and (dead_owner.get('observed_pid_start') is None
+                             or str(dead_owner['observed_pid_start']) == str(old['pid_start'])))):
+                raise HubError('identity_rejected', 'independent dead-owner incarnation evidence required')
+            others = self._row('SELECT 1 FROM endpoints WHERE participant_id=? AND retired=0 AND endpoint_id NOT IN (?,?) LIMIT 1',
+                               (old['participant_id'], old['endpoint_id'], new['endpoint_id']))
+            if others:
+                raise HubError('ambiguous_target', 'another live owner prevents handoff')
+            # Read the effective current actor, never rewrite original recipient.
+            rows = self.db.execute("SELECT m.*,o.generation AS owner_generation FROM messages m LEFT JOIN native_delivery_owners o ON o.message_id=m.message_id WHERE COALESCE(o.actor_endpoint,m.recipient_endpoint)=? AND (o.message_id IS NULL OR o.actor_incarnation=?) AND m.state IN ('accepted','queued','adapter_received') AND m.expires_at>? AND NOT EXISTS (SELECT 1 FROM messages r JOIN endpoints re ON re.endpoint_id=r.sender_endpoint JOIN endpoint_native rn ON rn.endpoint_id=re.endpoint_id WHERE r.in_reply_to=m.message_id AND r.thread_id=m.thread_id AND (r.sender_endpoint=m.recipient_endpoint OR (re.participant_id=? AND re.host_id=? AND re.platform='cdx' AND rn.native_kind=? AND rn.native_id=?)))",
+                                   (old['endpoint_id'], old['incarnation'], self._now(), old['participant_id'], host,
+                                    markers[1]['native_kind'], markers[1]['native_id']))
+            # Finish reading the actor join before changing it. Retain only
+            # bounded-per-row metadata, not another copy of every message body.
+            grants = [(row['message_id'], row['recipient_endpoint'], new['endpoint_id'], new['incarnation'],
+                       content_digest(dict(row)), (row['owner_generation'] or 0) + 1) for row in rows]
+            for grant in grants:
+                self.db.execute('INSERT INTO native_delivery_owners VALUES(?,?,?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET actor_endpoint=excluded.actor_endpoint,actor_incarnation=excluded.actor_incarnation,generation=excluded.generation', grant)
+            count = len(grants)
+            # Late old native_begin_present/receipt recheck retirement while
+            # holding this same SQLite write lock, so cannot use an old claim.
+            self.db.execute('UPDATE endpoints SET retired=1 WHERE endpoint_id=? AND incarnation=?',
+                            (old['endpoint_id'], old['incarnation']))
+            result = dict(transferred=count, old_endpoint=old['endpoint_id'], new_endpoint=new['endpoint_id'])
+            self.db.execute('INSERT INTO metadata(key,value) VALUES(?,?)',
+                            (key, json.dumps(dict(digest=digest, result=result), sort_keys=True)))
+            self._commit()
+            return result
+        except Exception:
+            self._rollback()
+            raise
 
     def _same_native_party(self, current, historical_id):
         if current["endpoint_id"] == historical_id:
