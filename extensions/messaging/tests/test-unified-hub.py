@@ -912,6 +912,24 @@ class HubTest(unittest.TestCase):
             self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id=?", (mid,))[0],
                              'cancelled' if terminal == 'cancelled' else 'accepted')
 
+    def test_cancel_rechecks_sender_retirement_inside_transaction(self):
+        self.send('cancel-retired-sender')
+        peer = Hub(self.h.db_path, self.h.config)
+        self.addCleanup(peer.close)
+        original_tx = self.h._tx
+        def retire_before_transaction():
+            peer.dispatch(dict(op='endpoint_retire', host_id='a', host_token='ta', endpoint_id='ea'))
+            original_tx()
+        self.h._tx = retire_before_transaction
+        try:
+            with self.assertRaises(HubError) as caught:
+                self.h.cancel(dict(host_id='a', host_token='ta', endpoint_id='ea', message_id='cancel-retired-sender'))
+            self.assertEqual(caught.exception.code, 'stale_session')
+        finally:
+            self.h._tx = original_tx
+        self.assertFalse(self.h.db.in_transaction)
+        self.assertEqual(peer._row("SELECT state FROM messages WHERE message_id='cancel-retired-sender'")[0], 'accepted')
+
     def test_sender_cancel_fences_presentation_and_is_not_task_cancellation(self):
         self.send('cancel')
         owner=dict(host_id='a',host_token='ta',endpoint_id='ea',message_id='cancel')

@@ -667,9 +667,9 @@ class Hub:
     def cancel(self, req):
         """Cancel only before presentation starts; cancellation never stops a task."""
         host = self._auth(req)
-        ep = self._host_endpoint(host, req.get("endpoint_id"))
         self._tx()
         try:
+            ep = self._host_endpoint(host, req.get("endpoint_id"))
             msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
             if not msg: raise HubError("not_found", "message not found")
             if msg["sender_endpoint"] != ep["endpoint_id"]:

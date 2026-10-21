@@ -606,6 +606,12 @@ reason ttl_elapsed_outcome_unknown, action_required, and false new-presentation
 eligibility; it is not rewritten to expired or replayed. A late valid receipt
 can still confirm the presentation under the existing receipt contract. Exact
 recipient replies remain separate from presentation/ACK and work completion.
+Sender cancellation revalidates the active sender endpoint inside the same
+SQLite write transaction as the message state check and cancellation update.
+A sender retired before that transaction is rejected; a stale pre-lock
+identity observation cannot authorize cancellation. This does not transfer
+cancellation authority to an endpoint successor or cancel task execution.
+
 Explicit cancelled/expired/rejected/stale_session states take summary priority,
 including a _with_reply reason if a late reply exists. A reply does not hide
 cancellation or expiry. A deadline-past confirmed presentation still reports
