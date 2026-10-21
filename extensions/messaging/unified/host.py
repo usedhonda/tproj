@@ -22,7 +22,7 @@ from identity import (IdentityError, adopt_native_conversation, bind_caller, dis
 from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
 from receipt import normalize_prompt, codex_transcript_presented
 
-HOST_BACKEND_VERSION = 7
+HOST_BACKEND_VERSION = 8
 WIRE_LIMIT = 262144
 
 
@@ -817,8 +817,19 @@ class Host:
         # Journal the bounded claim page before starting its first native
         # child, so a fast hook can coalesce the whole already-claimed set.
         for msg in claims:
+            transferred = bool(msg.get('delivery_actor'))
+            # Preserve the origin for new local rows too. Existing unknown/body
+            # rows must never be reset by a successor's claim.
+            origin = msg['recipient_endpoint'] if transferred else ep['endpoint_id']
             self.db.execute('INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?)',
-                (msg['message_id'], ep['endpoint_id'], json.dumps(msg), 'received', None, time.time()))
+                (msg['message_id'], origin, json.dumps(msg), 'received', None, time.time()))
+            saved = self.db.execute('SELECT endpoint_id,state FROM deliveries WHERE message_id=?', (msg['message_id'],)).fetchone()
+            if transferred and (saved['endpoint_id'] != ep['endpoint_id'] or saved['state'] == 'received'):
+                from native_consumer import _hook_binding
+                from native_notice import bind_actor
+                native, _ = _hook_binding(self, ep)
+                current = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=msg['message_id'])
+                bind_actor(self.db, ep, native, current)
         self.db.commit()
         for msg in claims:
             ep = self._current_delivery_endpoint(ep['endpoint_id'])
@@ -874,8 +885,14 @@ class Host:
                         if current.get('state') != 'presented':
                             if current.get('state') not in ('dispatching', 'uncertain'):
                                 continue
+                            actor = current.get('delivery_actor')
+                            binding = {}
+                            if actor:
+                                if actor.get('endpoint_id') != ep['endpoint_id'] or actor.get('incarnation') != ep['incarnation']:
+                                    continue
+                                binding = {k: actor[k] for k in ('incarnation', 'native_kind', 'native_id')}
                             current = self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid,
-                                               state='presented', evidence='bound native reference plus same-turn exact peer additionalContext recorded; not model consumption or explicit ACK')
+                                               state='presented', evidence='bound native reference plus same-turn exact peer additionalContext recorded; not model consumption or explicit ACK', **binding)
                         if current.get('message_id') == mid and current.get('state') == 'presented':
                             self.db.execute("UPDATE deliveries SET state='presented' WHERE message_id=?", (mid,))
                             self.db.commit()

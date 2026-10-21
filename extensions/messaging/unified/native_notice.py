@@ -53,6 +53,24 @@ def _actor(message, binding):
     return {key: actor[key] for key in (*IDENTITY, 'original_recipient', 'content_hash', 'generation')}
 
 
+def validate_actor(message, saved, endpoint, native):
+    """Compare a fresh authenticated Hub view with the pinned local original.
+
+    Provenance/actor consistency only; authoritative begin-present is still the
+    body grant and must recheck cancellation, expiry and assignment incarnation.
+    """
+    binding = _binding(endpoint, native)
+    if content_digest(message) != content_digest(saved):
+        raise HubError('identity_rejected', 'authoritative original differs from local content')
+    actor = saved.get('_native_actor')
+    if actor:
+        if _actor(message, binding) != actor:
+            raise HubError('identity_rejected', 'authoritative actor differs from local binding')
+    elif message.get('recipient_endpoint') != binding['endpoint_id'] or message.get('delivery_actor'):
+        raise HubError('identity_rejected', 'authoritative current actor is not pinned locally')
+    return binding
+
+
 def bind_actor(db, endpoint, native, message):
     """Private caller-owned transaction; caller must supply a fresh Hub query.
 
@@ -88,6 +106,8 @@ def bind_actor(db, endpoint, native, message):
     notice = db.execute('SELECT native_kind,native_id,content_hash FROM native_notice_metadata WHERE message_id=?', (message['message_id'],)).fetchone() if table else None
     if notice and tuple(notice) != (binding['native_kind'], binding['native_id'], actor['content_hash']):
         raise HubError('notice_conflict', 'immutable notice native origin cannot change')
+    # Hub projections are fresh inputs, not a second persistent actor cache.
+    original.pop('delivery_actor', None)
     original['_native_actor'] = actor
     original['_native_route'] = 'native-v1'
     changed = db.execute('UPDATE deliveries SET endpoint_id=?,envelope=? WHERE message_id=? AND endpoint_id=? AND envelope=? AND state=? AND prompt_hash IS NULL',

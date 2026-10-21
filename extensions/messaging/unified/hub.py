@@ -687,8 +687,7 @@ class Hub:
         ep = self._host_endpoint(host, req.get("endpoint_id"))
         msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
         if not msg: raise HubError("not_found", "message not found")
-        if msg["recipient_endpoint"] != ep["endpoint_id"]:
-            raise HubError("unauthorized", "only recipient may report delivery status")
+        self._delivery_actor(msg, ep, native=True)
         reason = req.get("reason")
         if reason not in WAIT_REASONS:
             raise HubError("invalid_status", "invalid delivery reason")
@@ -712,9 +711,11 @@ class Hub:
 
     def response_evidence(self, message):
         # A linked row alone is not proof of a response by the pinned recipient.
-        args = (message['message_id'], message['recipient_endpoint'],
+        owner = self._row('SELECT actor_endpoint FROM native_delivery_owners WHERE message_id=?', (message['message_id'],))
+        current = owner['actor_endpoint'] if owner else message['recipient_endpoint']
+        args = (message['message_id'], message['recipient_endpoint'], current,
                 message['sender_endpoint'], message['thread_id'])
-        where = 'in_reply_to=? AND sender_endpoint=? AND recipient_endpoint=? AND thread_id=?'
+        where = 'in_reply_to=? AND sender_endpoint IN (?,?) AND recipient_endpoint=? AND thread_id=?'
         count = self._row('SELECT COUNT(*) AS n FROM messages WHERE ' + where, args)['n']
         ids = [row['message_id'] for row in self.db.execute(
             'SELECT message_id FROM messages WHERE ' + where + ' ORDER BY created_at,message_id LIMIT 20', args)]
@@ -727,7 +728,11 @@ class Hub:
         now = self._now()
         elapsed = message['expires_at'] <= now
         receipt = self._row('SELECT state,evidence,at FROM receipts WHERE message_id=?', (message['message_id'],))
-        endpoint = self._row('SELECT retired,incarnation FROM endpoints WHERE endpoint_id=?', (message['recipient_endpoint'],))
+        owner = self._row('SELECT actor_endpoint,actor_incarnation FROM native_delivery_owners WHERE message_id=?', (message['message_id'],))
+        actor_id = owner['actor_endpoint'] if owner else message['recipient_endpoint']
+        endpoint = self._row('SELECT retired,incarnation FROM endpoints WHERE endpoint_id=?', (actor_id,))
+        if owner and endpoint and owner['actor_incarnation'] != endpoint['incarnation']:
+            endpoint = None
         presented = state == 'presented' or bool(receipt and receipt['state'] == 'presented')
         replied = response['response_state'] == 'recipient_replied'
         terminal = state in ('cancelled', 'expired', 'rejected', 'stale_session')
@@ -757,10 +762,10 @@ class Hub:
             try: evidence = json.loads(receipt['evidence'])
             except (ValueError, TypeError): evidence = {}
             bound = (isinstance(evidence, dict) and endpoint
-                     and evidence.get('endpoint_id') == message['recipient_endpoint']
+                     and evidence.get('endpoint_id') == actor_id
                      and evidence.get('incarnation') == endpoint['incarnation'])
             if bound and observed and observed.startswith('native_'):
-                marker = self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (message['recipient_endpoint'],))
+                marker = self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (actor_id,))
                 native = evidence.get('native_observation')
                 bound = bool(marker and isinstance(native, dict)
                              and native.get('incarnation') == endpoint['incarnation']

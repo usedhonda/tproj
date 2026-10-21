@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'unified'))
+from protocol import HubError
 import native_publication as pub
 spec = importlib.util.spec_from_file_location('consumer_fixture', Path(__file__).with_name('test-native-consumer.py'))
 fixtures = importlib.util.module_from_spec(spec)
@@ -50,6 +51,69 @@ class PublicationTest(unittest.TestCase):
         n = job.packet['notice']
         return {'ok': True, 'result': {'queuedSubmission': {'id': 'queue-id',
             'clientUserMessageId': n['client_id'], 'input': [{'type': 'text', 'text': n['prompt']}]}}}
+
+    def test_two_handoffs_do_not_reuse_stale_actor_projection(self):
+        from native_notice import bind_actor
+        fixtures.ConsumerTest.transfer(self)
+        current = self.host.hub('query', endpoint_id='successor', message_id='original')
+        # Initial claim carries a transient Hub projection, unlike an old local
+        # row originally journaled before any transfer.
+        self.host.db.execute('UPDATE deliveries SET envelope=?', (json.dumps(current),))
+        bind_actor(self.host.db, self.ep, dict(endpoint_id='successor', native_kind='thread_id', native_id=self.native), current)
+        self.host.db.commit()
+        old = dict(self.ep)
+        self.hub.dispatch(dict(op='endpoint_register', host_id='host', host_token='token', endpoint_id='successor2',
+            participant_id='project:cdx', session='successor2', pane='0', pid=3, pid_start='third-start', runtime_id='successor2', platform='cdx'))
+        self.hub.dispatch(dict(op='native_attest', host_id='host', host_token='token', endpoint_id='successor2', native_kind='thread_id', native_id=self.native))
+        self.ep = dict(self.hub._row("SELECT * FROM endpoints WHERE endpoint_id='successor2'"), project_path=str(self.work))
+        proof = {k: old[k] for k in ('endpoint_id', 'incarnation', 'pid', 'pid_start')}
+        proof['reason'] = 'pid_absent'
+        self.hub._handoff_native_delivery(dict(host_id='host', host_token='token', old_endpoint='successor', new_endpoint='successor2',
+            old_incarnation=old['incarnation'], new_incarnation=self.ep['incarnation'], native_kind='thread_id', native_id=self.native), dead_owner=proof)
+        current = self.host.hub('query', endpoint_id='successor2', message_id='original')
+        bind_actor(self.host.db, self.ep, dict(endpoint_id='successor2', native_kind='thread_id', native_id=self.native), current)
+        self.host.db.commit()
+        clock, jobs = self.fixture()
+        pub.Publisher().tick(self.host, self.ep, 'original')
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].packet['notice']['token'], self.notice['token'])
+        self.assertEqual(jobs[0].packet['notice']['incarnation'], self.ep['incarnation'])
+        saved = json.loads(self.row()['envelope'])
+        self.assertEqual(saved['_native_actor']['generation'], 2)
+        self.assertEqual(saved['recipient_endpoint'], self.original['recipient_endpoint'])
+        self.assertEqual(saved['body'], self.original['body'])
+
+    def test_transferred_reference_publication_uses_current_binding_and_original_token(self):
+        fixtures.ConsumerTest.transfer(self)
+        native = dict(endpoint_id='successor', native_kind='thread_id', native_id=self.native)
+        from native_notice import bind_actor
+        current = self.host.hub('query', endpoint_id='successor', message_id='original')
+        bind_actor(self.host.db, self.ep, native, current)
+        self.host.db.commit()
+        clock, jobs = self.fixture()
+        publisher = pub.Publisher()
+        publisher.tick(self.host, self.ep, 'original')
+        self.assertEqual(len(jobs), 1)
+        notice = jobs[0].packet['notice']
+        self.assertEqual(notice['token'], self.notice['token'])
+        self.assertEqual(notice['prompt'], self.notice['prompt'])
+        self.assertEqual(notice['incarnation'], self.ep['incarnation'])
+        jobs[0].result = self.success(jobs[0])
+        publisher.maintain(self.host)
+        self.assertEqual(pub.metadata(self.row())['state'], 'queued')
+        self.assertEqual(self.hub._row("SELECT state FROM messages WHERE message_id='original'")[0], 'accepted')
+        summary = self.host.hub('query', endpoint_id='successor', message_id='original')['delivery_summary']
+        self.assertEqual(summary['reason'], 'native_queue_accepted')
+        # A stale local generation must not authorize another publication.
+        row = self.row()
+        envelope = json.loads(row['envelope'])
+        envelope['_native_actor']['generation'] += 1
+        self.host.db.execute('UPDATE deliveries SET envelope=?', (json.dumps(envelope),))
+        self.host.db.commit()
+        clock[0] += 31
+        pub.store(self.host, self.row(), dict(pub.metadata(self.row()), state='ready', checked_at=0))
+        with self.assertRaises(HubError): publisher.tick(self.host, self.ep, 'original')
+        self.assertEqual(len(jobs), 1)
 
     def test_commit_before_io_and_ack_does_not_present_body_or_publish_twice(self):
         clock, jobs = self.fixture()

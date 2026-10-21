@@ -1175,3 +1175,28 @@ immutable origin; verified current identity is returned by `verify`, not inferre
 from those fields. Fresh Hub reservation and latest cancellation/expiry/scope
 checks remain required. The helper is not called by production Host; publisher,
 consumer and discovery integration and actual restart remain unfinished.
+
+
+### Current actor consumer and publisher connection (not activated)
+
+Host journals claimed transferred originals under their original recipient before
+received-only actor binding, using a fresh authenticated Hub query and native
+transcript binding. Reserved/unknown local rows are not reset. Publisher and
+consumer compare current Hub actor/generation with the pinned local grant and
+immutable content before publication or body reservation. Operational notice
+binding uses verified current identity, while token/client ID/prompt keep their
+origin. Recovery selects the current local actor without rewriting notice origin.
+Transferred presented receipts carry the request native binding required by Hub.
+
+Summary eligibility and observed waiting reason follow the current actor and
+incarnation; original recipient history remains unchanged. Exact current-actor
+replies are separately projected as replies without changing transport or ACK.
+
+A failed native reservation durably records this attempt's current native binding,
+content hash and either explicit transactional rejection or unknown response.
+A malformed return after RPC success is unknown, not rejection. Rejection does
+not prove that no earlier attempt reserved the original. Both paths retain the
+local uncertain body fence; this change does not reset or re-return any body.
+Host/consumer backend contracts are 8/3. Source version does not establish loaded
+runtime or actual restart. Trusted Host death/continuity invocation, definite
+unissued reconciliation and end-to-end restart acceptance remain unfinished.
