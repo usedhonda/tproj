@@ -483,22 +483,35 @@ class Hub:
         return result
 
     def receipt(self, req):
-        host=self._auth(req); msg=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),));
-        if not msg: raise HubError("not_found","message not found")
-        ep=self._host_endpoint(host, req.get("endpoint_id"));
-        if msg["recipient_endpoint"] != ep["endpoint_id"]: raise HubError("unauthorized","only recipient may receipt")
-        state=req.get("state");
-        if state not in ("presented","uncertain","stale_session","rejected"): raise HubError("invalid_receipt","invalid receipt state")
-        current = msg["state"]
-        if current in ("cancelled", "expired", "stale_session", "rejected"):
-            if state == current: return {"message_id": msg["message_id"], "state": current}
-            raise HubError("terminal_message", "terminal message cannot be presented")
-        if current == "presented" and state != "presented": raise HubError("invalid_receipt", "receipt state cannot move backwards")
+        """Serialize receipt state and owner validation with cancel/retirement."""
+        host = self._auth(req)
+        state = req.get("state")
+        if state not in ("presented", "uncertain", "stale_session", "rejected"):
+            raise HubError("invalid_receipt", "invalid receipt state")
         self._tx()
         try:
-            self.db.execute("INSERT OR REPLACE INTO receipts(message_id,state,evidence,at) VALUES(?,?,?,?)",(msg["message_id"],state,req.get("evidence"),self._now())); self.db.execute("UPDATE messages SET state=? WHERE message_id=?",(state,msg["message_id"])); self._commit()
-        except Exception: self._rollback(); raise
-        return {"message_id":msg["message_id"],"state":state}
+            msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
+            if not msg:
+                raise HubError("not_found", "message not found")
+            ep = self._host_endpoint(host, req.get("endpoint_id"))
+            if msg["recipient_endpoint"] != ep["endpoint_id"]:
+                raise HubError("unauthorized", "only recipient may receipt")
+            current = msg["state"]
+            if current in ("cancelled", "expired", "stale_session", "rejected"):
+                if state != current:
+                    raise HubError("terminal_message", "terminal message cannot be presented")
+                self._commit()
+                return {"message_id": msg["message_id"], "state": current}
+            if current == "presented" and state != "presented":
+                raise HubError("invalid_receipt", "receipt state cannot move backwards")
+            self.db.execute("INSERT OR REPLACE INTO receipts(message_id,state,evidence,at) VALUES(?,?,?,?)",
+                            (msg["message_id"], state, req.get("evidence"), self._now()))
+            self.db.execute("UPDATE messages SET state=? WHERE message_id=?", (state, msg["message_id"]))
+            self._commit()
+            return {"message_id": msg["message_id"], "state": state}
+        except Exception:
+            self._rollback()
+            raise
 
     def begin_present(self, req, *, native=False):
         """Serialize irreversible adapter presentation against sender cancellation."""

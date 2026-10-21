@@ -213,6 +213,34 @@ class HubTest(unittest.TestCase):
     def reg(self,h,t,e,p,pid): return self.h.dispatch({"op":"endpoint_register","host_id":h,"host_token":t,"endpoint_id":e,"participant_id":p,"host_id":h,"session":"s","pane":"0","pid":pid,"pid_start":"x","runtime_id":"r","platform":"test"})
     def send(self,mid="m1",body="hello",target="cdx"):
         return self.h.dispatch({"op":"submit","host_id":"a","host_token":"ta","message":{"message_id":mid,"thread_id":"t","sender_endpoint":"ea","target":target,"body":body,"kind":"chat"}})
+    def test_receipt_transaction_rechecks_cancel_and_retired_owner(self):
+        peer = Hub(self.h.db_path, self.h.config)
+        self.addCleanup(peer.close)
+        for action, terminal, code in [('cancel', 'cancelled', 'terminal_message'),
+                                       ('endpoint_retire', 'stale_session', 'stale_session')]:
+            with self.subTest(action=action):
+                mid = 'receipt-race-' + action
+                self.send(mid)
+                original_tx = self.h._tx
+                def concurrent_change():
+                    if action == 'cancel':
+                        peer.dispatch(dict(op=action, host_id='a', host_token='ta',
+                                           endpoint_id='ea', message_id=mid))
+                    else:
+                        peer.dispatch(dict(op=action, host_id='b', host_token='tb', endpoint_id='eb'))
+                    original_tx()
+                self.h._tx = concurrent_change
+                try:
+                    with self.assertRaises(HubError) as caught:
+                        self.h.dispatch(dict(op='receipt', host_id='b', host_token='tb',
+                                             endpoint_id='eb', message_id=mid, state='presented'))
+                    self.assertEqual(caught.exception.code, code)
+                finally:
+                    self.h._tx = original_tx
+                self.assertEqual(peer._row('SELECT state FROM messages WHERE message_id=?', (mid,))[0], terminal)
+                self.assertIsNone(peer._row('SELECT * FROM receipts WHERE message_id=?', (mid,)))
+                self.assertFalse(self.h.db.in_transaction)
+
     def test_claim_sequence_passes_old_pending_and_wraps_without_replay(self):
         self.send('old')
         self.send('new')

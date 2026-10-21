@@ -1097,3 +1097,12 @@ Online still requires a recent heartbeat, and a non-retired offline endpoint is
 not silently discarded. This projection does not alter recipient resolution,
 authorization, immutable messages, or delivery eligibility. Wire limits remain
 enforced; this is not an unlimited catalog-size guarantee.
+
+### Receipt cancellation and owner fencing
+
+Receipt endpoint ownership and current message state are validated inside the
+same BEGIN IMMEDIATE transaction as receipt persistence. A cancellation or
+endpoint retirement committed before this transaction cannot be overwritten by
+a receipt validated against an earlier snapshot. A receipt committed first
+retains its existing lifecycle semantics. This does not transfer delivery rights
+or authorize replay of a retired original.
