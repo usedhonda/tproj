@@ -1076,14 +1076,15 @@ reply still does not establish task completion.
 
 ### Live native owner preservation during discovery
 
-Host generation 6 does not treat discovery of another process for the same
+Host generation 7 does not treat discovery of another process for the same
 participant as proof that the old owner disappeared. Retirement requires
 positive PID absence or PID-start mismatch. Unknown process evidence leaves
 the persisted identity active, without granting new caller authority.
 When the old same-UID native process incarnation is independently verified
-alive, it remains a caller candidate alongside the new process. Only project
-description is refreshed; native IDs, PID/start, runtime and endpoint binding
-are never borrowed from the replacement. Multiple live recipient candidates
+alive, it remains a caller candidate alongside the new process. Its complete
+persisted binding is retained: project ID/path/address also carry routing or
+diagnostic authority and are never borrowed from the new candidate, just as
+native IDs, PID/start, runtime and endpoint binding are never borrowed. Multiple live recipient candidates
 remain ambiguous rather than silently choosing or retiring one. This guard is
 not same-native delivery handoff and does not revive historical stale messages.
 

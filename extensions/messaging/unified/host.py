@@ -22,7 +22,7 @@ from identity import (IdentityError, adopt_native_conversation, bind_caller, dis
 from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
 from receipt import normalize_prompt, codex_transcript_presented
 
-HOST_BACKEND_VERSION = 6
+HOST_BACKEND_VERSION = 7
 WIRE_LIMIT = 262144
 
 
@@ -228,14 +228,9 @@ class Host:
                     and any(token in str(current.get('command', '')).lower() for token in
                             (('claude', 'anthropic') if ep['platform'] == 'cc' else ('codex', 'openai')))
                     and same_live_process_family(ep, ep)):
-                # Keep independently verified old callers usable. Borrow only
-                # project description, never the new process's native identity.
-                fresh = next(item for item in discovered
-                             if item['participant_id'] == ep['participant_id'])
-                kept = dict(ep)
-                kept.update({key: fresh[key] for key in
-                             ('project_id', 'project_path', 'address') if key in fresh})
-                discovered.append(kept)
+                # Project/address fields also carry routing and diagnostic
+                # authority. Preserve the entire old binding, not fresh metadata.
+                discovered.append(dict(ep))
         self.endpoints = discovered
         self.refreshed = time.monotonic()
 

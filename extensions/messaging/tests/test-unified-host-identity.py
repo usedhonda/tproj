@@ -138,7 +138,8 @@ class UnifiedHostIdentityTest(unittest.TestCase):
 
             state["registered"].clear()
             state["retired"].clear()
-            restarted = dict(registry, pid=103, pid_start=99, thread_id="new-native-only")
+            restarted = dict(registry, pid=103, pid_start=99, thread_id="new-native-only",
+                             project_id="other-project", project_path="/other-project", address="other.cdx")
             host_mod.discover_endpoints = lambda *args, **kwargs: [restarted]
             from unittest.mock import patch
             with patch.object(identity, '_process_info', side_effect=processes.get):
@@ -149,6 +150,8 @@ class UnifiedHostIdentityTest(unittest.TestCase):
             preserved = next(ep for ep in h.endpoints if ep['endpoint_id'] == 'fallback')
             self.assertEqual(preserved['pid'], old['pid'])
             self.assertEqual(preserved['runtime_id'], old['runtime_id'])
+            for key in ('project_id', 'project_path', 'address'):
+                self.assertEqual(preserved.get(key), old.get(key))
             self.assertNotIn('thread_id', preserved)
             self.assertEqual(identity.bind_caller(101, os.getuid(), h.endpoints,
                               inspect_process=processes.__getitem__)['endpoint_id'], 'fallback')
