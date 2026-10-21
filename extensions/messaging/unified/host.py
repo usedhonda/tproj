@@ -22,7 +22,7 @@ from identity import (IdentityError, adopt_native_conversation, bind_caller, dis
 from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
 from receipt import normalize_prompt, codex_transcript_presented
 
-HOST_BACKEND_VERSION = 8
+HOST_BACKEND_VERSION = 9
 WIRE_LIMIT = 262144
 
 
@@ -829,7 +829,7 @@ class Host:
                 from native_notice import bind_actor
                 native, _ = _hook_binding(self, ep)
                 current = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=msg['message_id'])
-                bind_actor(self.db, ep, native, current)
+                bind_actor(self.db, ep, native, current, reconcile_rejected=(saved['state'] == 'uncertain'))
         self.db.commit()
         for msg in claims:
             ep = self._current_delivery_endpoint(ep['endpoint_id'])

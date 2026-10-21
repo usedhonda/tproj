@@ -1200,3 +1200,26 @@ local uncertain body fence; this change does not reset or re-return any body.
 Host/consumer backend contracts are 8/3. Source version does not establish loaded
 runtime or actual restart. Trusted Host death/continuity invocation, definite
 unissued reconciliation and end-to-end restart acceptance remain unfinished.
+
+
+### Reconcile an explicitly rejected old reservation (not activated)
+
+A transferred original may reconcile a local uncertain row only when its durable
+attempt records a transactional `stale_session` rejection for the exact previous
+endpoint/incarnation/native binding and immutable content. The caller supplies
+a fresh authenticated Hub view with an eligible unreserved state and a strictly
+newer current-actor assignment. The old actor and new actor must differ.
+
+The one local conditional update binds the new actor and marks only that proved
+unissued row received. It preserves the rejection evidence with the target
+assignment, original content, notice and publication history. Only the failed
+attempt's context-reference association is removed. A context hash, reserved
+publication, missing/replaced rejection, generic unknown response, same/stale
+actor, terminal/expired/replied state or later global reservation rejects the
+transition. Original native begin-present remains the one-shot body gate after
+reconciliation, including a reservation racing the read-only Hub snapshot.
+
+This is not replay permission for historical uncertain rows. Host invokes the
+private reconciliation only on a transferred claim with an old local actor;
+no second scheduler, original re-submission or user approval is created. Source
+Host backend is 9/consumer 3; deployment and real restart remain unproved.

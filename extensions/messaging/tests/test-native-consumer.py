@@ -72,6 +72,64 @@ class ConsumerTest(unittest.TestCase):
             native_kind='thread_id', native_id=self.native), dead_owner=proof)
         return old
 
+    def test_explicit_old_reservation_rejection_reconciles_only_after_handoff(self):
+        rpc = self.host.hub
+        def replace_before_reserve(op, **args):
+            if op == 'native_begin_present' and args['endpoint_id'] == 'recipient':
+                self.transfer()
+            return rpc(op, **args)
+        self.host.hub = replace_before_reserve
+        with self.assertRaises(HubError) as rejected: self.resolve()
+        self.assertEqual(rejected.exception.code, 'stale_session')
+        self.host.hub = rpc
+        self.assertEqual(self.host.db.execute('SELECT state FROM deliveries').fetchone()[0], 'uncertain')
+        with patch.object(self.host, '_current_delivery_endpoint', return_value=self.ep):
+            self.host._deliver_endpoint(self.ep)
+        row = self.host.db.execute('SELECT * FROM deliveries').fetchone()
+        self.assertEqual((row['endpoint_id'], row['state']), ('successor', 'received'))
+        saved = json.loads(row['envelope'])
+        self.assertEqual(saved['_native_reservation_attempt']['outcome'], 'rejected')
+        self.assertEqual(saved['_native_reservation_attempt']['reconciled_to']['generation'], 1)
+        self.assertNotIn('_native_context_reference', saved)
+        result = self.resolve()
+        self.assertIn(self.original['body'], result['context'])
+        self.assertEqual(self.hub._row("SELECT recipient_endpoint FROM messages WHERE message_id='original'")[0], 'recipient')
+
+    def test_rejected_old_attempt_cannot_reconcile_a_later_global_reservation(self):
+        rpc = self.host.hub
+        def replace_before_reserve(op, **args):
+            if op == 'native_begin_present' and args['endpoint_id'] == 'recipient': self.transfer()
+            return rpc(op, **args)
+        self.host.hub = replace_before_reserve
+        with self.assertRaises(HubError): self.resolve()
+        self.host.hub = rpc
+        from native_notice import bind_actor, content_digest
+        native = dict(endpoint_id='successor', native_kind='thread_id', native_id=self.native)
+        rpc('native_begin_present', message_id='original', incarnation=self.ep['incarnation'],
+            content_hash=content_digest(self.original), **native)
+        current = rpc('query', endpoint_id='successor', message_id='original')
+        before = tuple(self.host.db.execute('SELECT * FROM deliveries').fetchone())
+        with self.assertRaises(HubError): bind_actor(self.host.db, self.ep, native, current, reconcile_rejected=True)
+        self.assertEqual(tuple(self.host.db.execute('SELECT * FROM deliveries').fetchone()), before)
+        self.assertEqual(current['state'], 'dispatching')
+
+    def test_unknown_old_reservation_never_reconciles_even_if_new_actor_is_pending(self):
+        rpc = self.host.hub
+        def unknown_before_reserve(op, **args):
+            if op == 'native_begin_present':
+                self.transfer()
+                raise OSError('fixture unknown response; original must remain fenced')
+            return rpc(op, **args)
+        self.host.hub = unknown_before_reserve
+        with self.assertRaises(OSError): self.resolve()
+        self.host.hub = rpc
+        before = tuple(self.host.db.execute('SELECT * FROM deliveries').fetchone())
+        with patch.object(self.host, '_current_delivery_endpoint', return_value=self.ep), self.assertRaises(HubError):
+            self.host._deliver_endpoint(self.ep)
+        self.host.db.rollback()
+        self.assertEqual(tuple(self.host.db.execute('SELECT * FROM deliveries').fetchone()), before)
+        self.assertEqual(self.hub._row("SELECT state FROM messages WHERE message_id='original'")[0], 'adapter_received')
+
     def test_new_local_claim_keeps_reserved_transfer_recoverable(self):
         self.transfer()
         # Fixture begins before the first local claim; not recovery by deleting
