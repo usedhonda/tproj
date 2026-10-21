@@ -72,7 +72,49 @@ class ConsumerTest(unittest.TestCase):
             native_kind='thread_id', native_id=self.native), dead_owner=proof)
         return old
 
+    def test_initial_discovery_attests_without_recipient_caller(self):
+        import host as host_module
+        import identity
+        # A newly discovered receive-only endpoint has never called caller().
+        self.hub.db.execute("DELETE FROM endpoint_native WHERE endpoint_id='recipient'")
+        self.hub.db.execute("UPDATE endpoints SET pid=4242,pid_start='100' WHERE endpoint_id='recipient'")
+        candidate = dict(self.ep, pid=4242, pid_start=100, session_id=self.native)
+        fresh = dict(pid_start=100, uid=os.getuid(), command='/fixture/codex')
+        self.host.config.update(host_id='host', native_queue_enabled=False)
+        with patch.object(host_module, 'discover_endpoints', return_value=[candidate]), patch.object(host_module, 'discover_tmux_endpoints', return_value=[]), patch.object(identity, '_process_info', return_value=fresh):
+            self.host.refresh()
+            self.assertIsNone(self.hub._row("SELECT * FROM endpoint_native WHERE endpoint_id='recipient'"))
+            self.host.config['native_queue_enabled'] = True
+            hidden = self.transcript.with_suffix('.hidden')
+            self.transcript.rename(hidden)
+            try:
+                self.host.refresh()
+                self.assertIsNone(self.hub._row("SELECT * FROM endpoint_native WHERE endpoint_id='recipient'"))
+            finally:
+                hidden.rename(self.transcript)
+            for invalid in (dict(fresh, uid=os.getuid()+1), dict(fresh, pid_start=101),
+                            dict(fresh, command='/fixture/unrelated')):
+                with patch.object(identity, '_process_info', return_value=invalid):
+                    self.host.refresh()
+                self.assertIsNone(self.hub._row("SELECT * FROM endpoint_native WHERE endpoint_id='recipient'"))
+            self.host.refresh()
+            saved = self.hub._row("SELECT * FROM endpoint_native WHERE endpoint_id='recipient'")
+            self.assertIsNotNone(saved)
+            self.assertEqual((saved['native_kind'], saved['native_id']), ('session_id', self.native))
+            # Later equal thread-label discovery preserves the original kind.
+            candidate['thread_id'] = self.native
+            self.host.refresh()
+            self.assertEqual(self.hub._row("SELECT native_kind FROM endpoint_native WHERE endpoint_id='recipient'")[0], 'session_id')
+        self.assertEqual(self.calls.count('native_attest'), 1)
+        self.assertNotIn('native_handoff', self.calls)
+        self.assertEqual(self.hub._row("SELECT recipient_endpoint FROM messages WHERE message_id='original'")[0], 'recipient')
+
     def test_host_refresh_uses_os_death_and_independent_native_header(self):
+        # A session-only old label may gain an equal thread label on discovery.
+        # A new endpoint must not pre-pin thread_id before handoff inherits kind.
+        self.hub.db.execute("DELETE FROM endpoint_native WHERE endpoint_id='recipient'")
+        self.hub.dispatch(dict(op='native_attest', host_id='host', host_token='token',
+                              endpoint_id='recipient', native_kind='session_id', native_id=self.native))
         import subprocess
         import identity
         import host as host_module
@@ -109,6 +151,7 @@ class ConsumerTest(unittest.TestCase):
             self.host.refresh()
         owner = self.hub._row("SELECT * FROM native_delivery_owners WHERE message_id='original'")
         self.assertEqual(owner['actor_endpoint'], 'os-successor')
+        self.assertEqual(self.hub._row("SELECT native_kind FROM endpoint_native WHERE endpoint_id='os-successor'")[0], 'session_id')
         self.assertEqual(self.hub._row("SELECT retired FROM endpoints WHERE endpoint_id='recipient'")[0], 1)
         self.assertEqual(self.hub._row("SELECT recipient_endpoint FROM messages WHERE message_id='original'")[0], 'recipient')
         self.assertEqual(self.calls.count('native_handoff'), 1)

@@ -1252,6 +1252,22 @@ conversation/task authority transfer. Public Host callers cannot supply death
 claims or invoke handoff; Hub trusts its authenticated owner Host service, not a
 peer body. Flags off preserve existing production discovery behavior.
 
-Source backend contracts are Host10/consumer4/Hub3. A focused fixture uses real
+Source backend contracts are Host11/consumer4/Hub3. A focused fixture uses real
 OS Python stub PID/start/death and a synthetic native header to test this join;
 it is not a real Codex TUI/provider restart or production activation result.
+
+
+When both native features are explicitly enabled, Host discovery pins the first
+receive-only Codex native identity before a caller operation is needed. The
+registered endpoint must carry one unambiguous native ID, an exact same-user
+Codex CLI transcript header/project, and fresh matching PID start/UID/agent
+process evidence. Existing immutable native identity and kind are preserved.
+Missing or conflicting proof leaves native delivery unavailable without breaking
+core endpoint registration, changing native flags, or granting approval/task
+authority. This prevents ordinary first incoming delivery from depending on the
+recipient having previously invoked the messaging CLI; it does not reconstruct
+missing historical attestations after process death.
+A distinct previous owner defers the new endpoint's initial pin to the existing
+continuity/handoff decision, so an equal new thread label cannot preempt the
+old immutable session label. If independently different conversation retirement
+succeeds, ordinary first attestation can occur on the next discovery refresh.
