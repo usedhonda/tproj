@@ -1086,3 +1086,13 @@ description is refreshed; native IDs, PID/start, runtime and endpoint binding
 are never borrowed from the replacement. Multiple live recipient candidates
 remain ambiguous rather than silently choosing or retiring one. This guard is
 not same-native delivery handoff and does not revive historical stale messages.
+
+### Bounded live target catalog
+
+Target directory participants expose only non-retired endpoints. Historical
+endpoint rows remain intact and accessible through the authenticated endpoint
+diagnostics; they are not repeated in every local/federated target listing.
+Online still requires a recent heartbeat, and a non-retired offline endpoint is
+not silently discarded. This projection does not alter recipient resolution,
+authorization, immutable messages, or delivery eligibility. Wire limits remain
+enforced; this is not an unlimited catalog-size guarantee.

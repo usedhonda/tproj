@@ -115,6 +115,11 @@ class HubTest(unittest.TestCase):
         self.assertLess(len(json.dumps(active).encode()), MAX_REQUEST)
         self.assertEqual([e["endpoint_id"] for e in active["endpoints"]], ["ea"])
         self.assertEqual(len(self.h.dispatch(req)["endpoints"]), 1001)
+        catalog = self.h.directory_list()
+        self.assertLess(len(json.dumps(catalog).encode()), MAX_REQUEST)
+        participant = next(p for p in catalog['participants'] if p['participant_id'] == 'p:cc')
+        self.assertEqual([e['endpoint_id'] for e in participant['endpoints']], ['ea'])
+        self.assertTrue(participant['online'])
         with self.assertRaises(HubError):
             self.h.dispatch(dict(req, active_only=True, host_token="wrong"))
 

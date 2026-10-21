@@ -224,7 +224,7 @@ class Hub:
     def directory_list(self):
         now=self._now(); participants=[]
         for x in self.db.execute("SELECT * FROM participants"):
-            d=dict(x); eps=[dict(e) for e in self.db.execute("SELECT endpoint_id,host_id,incarnation,last_heartbeat,retired FROM endpoints WHERE participant_id=?",(x["participant_id"],))]; d["endpoints"]=eps; d["online"]=any(not e["retired"] and now-e["last_heartbeat"] <= 30 for e in eps); participants.append(d)
+            d=dict(x); eps=[dict(e) for e in self.db.execute("SELECT endpoint_id,host_id,incarnation,last_heartbeat,retired FROM endpoints WHERE participant_id=? AND retired=0",(x["participant_id"],))]; d["endpoints"]=eps; d["online"]=any(not e["retired"] and now-e["last_heartbeat"] <= 30 for e in eps); participants.append(d)
         retired = {r[0] for r in self.db.execute("SELECT alias FROM alias_redirect")}
         projects = [dict(x) for x in self.db.execute("SELECT * FROM projects") if x["alias"] not in retired]
         live = {x["project_id"] for x in projects}; participants = [x for x in participants if x["project_id"] is None or x["project_id"] in live]
