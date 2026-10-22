@@ -5973,12 +5973,17 @@ struct ContentView: View {
         window.isRestorable = false
         // Apply persisted size (origin is handled by snap logic)
         let currentOrigin = window.frame.origin
-        let targetSize = NSSize(width: max(14, persistedWidth), height: max(520, persistedHeight))
+        let targetSize = NSSize(width: persistedWidth > 0 ? max(14, persistedWidth) : 242,
+                                height: max(520, persistedHeight))
         window.setFrame(NSRect(origin: currentOrigin, size: targetSize), display: true)
     }
 
     private func persistWindowSize(_ window: NSWindow) {
-        persistedWidth = Double(window.frame.width - (terminalDock.visibleProjectPath == nil ? 0 : 620))
+        // The OS may constrain the expanded window below sidebar + dock width.
+        // Persist the actual sidebar, not a negative inferred remainder.
+        guard !collapseController.isCollapsed else { return }
+        persistedWidth = Double(max(200, terminalDock.visibleProjectPath == nil
+            ? window.frame.width : terminalDock.sidebarWidth))
         persistedHeight = Double(window.frame.height)
     }
 
