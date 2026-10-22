@@ -9,7 +9,7 @@ import tempfile
 import time
 import uuid
 
-from native_notice import prepare, verify, content_digest
+from native_notice import prepare, verify, content_digest, validate_actor
 from native_consumer import _hook_binding, owns
 from native_queue import LIMIT, QueueError, _queued
 from protocol import HubError
@@ -194,15 +194,16 @@ class Publisher:
             # native reference, or steal its existing receipt recovery path.
             if row['state'] != 'received': return False
             current = host.hub('query', endpoint_id=ep['endpoint_id'], message_id=message_id)
-            if (current.get('recipient_endpoint') != ep['endpoint_id']
-                    or content_digest(current) != content_digest(json.loads(row['envelope']))):
-                raise QueueError('invalid_notice')
+            validate_actor(current, json.loads(row['envelope']), ep, native)
             if not current.get('delivery_summary', {}).get('new_presentation_eligible'):
                 return True
         message = json.loads(row['envelope'])
         notice = prepare(host.db, ep, native, message)
         host.db.commit()
-        verify(host.db, ep, native, message_id, notice['token'])
+        # Token/client ID/prompt retain their origin. Operational binding comes
+        # from verified current ownership, never the origin notice's identity.
+        checked = verify(host.db, ep, native, message_id, notice['token'])
+        notice.update({k: checked[k] for k in ('endpoint_id', 'incarnation', 'native_kind', 'native_id')})
         value = metadata(row)
         # A native body reservation/receipt is independent of queue ACK. Do not
         # keep another notification outstanding after that reference was handled.
@@ -227,9 +228,7 @@ class Publisher:
                 # A cancelled/expired leader may no longer be claimed at all.
                 # Its stale local queue label must not starve later originals.
                 current_other = host.hub('query', endpoint_id=ep['endpoint_id'], message_id=other['message_id'])
-                if (current_other.get('recipient_endpoint') != ep['endpoint_id']
-                        or content_digest(current_other) != content_digest(json.loads(other['envelope']))):
-                    raise QueueError('invalid_notice')
+                validate_actor(current_other, json.loads(other['envelope']), ep, native)
                 if current_other.get('delivery_summary', {}).get('new_presentation_eligible'):
                     return True
         attempt = str(uuid.uuid4())
@@ -237,9 +236,7 @@ class Publisher:
             # Includes known-unsubmitted retries: ownership of a prepared token
             # never carries yesterday's cancellation/expiry decision forward.
             current = host.hub('query', endpoint_id=ep['endpoint_id'], message_id=message_id)
-            if (current.get('recipient_endpoint') != ep['endpoint_id']
-                    or content_digest(current) != content_digest(message)):
-                raise QueueError('invalid_notice')
+            validate_actor(current, message, ep, native)
             if not current.get('delivery_summary', {}).get('new_presentation_eligible'):
                 store(host, row, dict(value, state='not_eligible', reason='latest_hub_ineligible', checked_at=time.time()))
                 return True

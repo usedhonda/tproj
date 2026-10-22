@@ -42,6 +42,107 @@ def _binding(endpoint, native):
                 native_kind=native['native_kind'], native_id=native['native_id'])
 
 
+def _actor(message, binding):
+    """Validate an actor projection supplied by authenticated Hub I/O, not body."""
+    actor = message.get('delivery_actor')
+    if (not isinstance(actor, dict) or any(actor.get(k) != binding[k] for k in IDENTITY)
+            or actor.get('original_recipient') != message.get('recipient_endpoint')
+            or actor.get('content_hash') != content_digest(message)
+            or type(actor.get('generation')) is not int or actor['generation'] < 1):
+        raise HubError('identity_rejected', 'authoritative current actor required')
+    return {key: actor[key] for key in (*IDENTITY, 'original_recipient', 'content_hash', 'generation')}
+
+
+def validate_actor(message, saved, endpoint, native):
+    """Compare a fresh authenticated Hub view with the pinned local original.
+
+    Provenance/actor consistency only; authoritative begin-present is still the
+    body grant and must recheck cancellation, expiry and assignment incarnation.
+    """
+    binding = _binding(endpoint, native)
+    if content_digest(message) != content_digest(saved):
+        raise HubError('identity_rejected', 'authoritative original differs from local content')
+    actor = saved.get('_native_actor')
+    if actor:
+        if _actor(message, binding) != actor:
+            raise HubError('identity_rejected', 'authoritative actor differs from local binding')
+    elif message.get('recipient_endpoint') != binding['endpoint_id'] or message.get('delivery_actor'):
+        raise HubError('identity_rejected', 'authoritative current actor is not pinned locally')
+    return binding
+
+
+def bind_actor(db, endpoint, native, message, *, reconcile_rejected=False):
+    """Private caller-owned transaction; caller must supply a fresh Hub query.
+
+    An unreserved received original may move its local delivery actor. The
+    optional reconciliation path additionally requires a durable old-incarnation
+    stale-session rejection plus a newer, fresh, globally unreserved Hub grant.
+    Generic unknowns and issued contexts never qualify.
+    Existing reference token, prompt, origin binding and publication uncertainty
+    remain immutable. This is not an execution grant or a public migration API.
+    """
+    binding = _binding(endpoint, native)
+    actor = _actor(message, binding)
+    cursor = db.execute('SELECT * FROM deliveries WHERE message_id=?', (message.get('message_id'),))
+    row = cursor.fetchone()
+    if row is None:
+        raise HubError('identity_rejected', 'existing local original required')
+    saved = dict(zip((column[0] for column in cursor.description), row))
+    try:
+        original = json.loads(saved['envelope'])
+    except (ValueError, TypeError):
+        raise HubError('identity_rejected', 'local original unavailable') from None
+    table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='native_notice_metadata'").fetchone()
+    notice = db.execute('SELECT endpoint_id,incarnation,native_kind,native_id,content_hash FROM native_notice_metadata WHERE message_id=?', (message['message_id'],)).fetchone() if table else None
+    reconciled = False
+    if reconcile_rejected and saved.get('state') == 'uncertain':
+        attempt = original.get('_native_reservation_attempt')
+        previous = original.get('_native_actor')
+        prior_binding = previous if previous else dict(zip(IDENTITY, notice[:4])) if notice else {}
+        prior_generation = previous.get('generation') if isinstance(previous, dict) else 0
+        if (not isinstance(prior_binding, dict) or not isinstance(attempt, dict) or attempt.get('outcome') != 'rejected'
+                or attempt.get('error') != 'stale_session'
+                or any(attempt.get(k) != prior_binding.get(k) for k in IDENTITY)
+                or prior_binding.get('endpoint_id') != saved['endpoint_id']
+                or prior_binding.get('endpoint_id') == binding['endpoint_id']
+                or type(prior_generation) is not int or actor['generation'] <= prior_generation
+                or attempt.get('content_hash') != content_digest(original)
+                or message.get('state') not in ('accepted', 'queued', 'adapter_received')
+                or message.get('delivery_summary', {}).get('new_presentation_eligible') is not True):
+            raise HubError('presentation_unavailable', 'old reservation is not proved rejected and globally unreserved')
+        # Retain the rejected attempt as evidence. Only its unissued reference
+        # association is removed; the original notice and publication stay.
+        original['_native_reservation_attempt'] = dict(attempt, reconciled_to={
+            k: actor[k] for k in ('endpoint_id', 'incarnation', 'generation')})
+        original.pop('_native_context_reference', None)
+        reconciled = True
+    if ((saved.get('state') != 'received' and not reconciled) or saved.get('prompt_hash') is not None
+            or original.get('_native_context_reference')
+            or original.get('_native_publication', {}).get('state') == 'body_reserved'
+            or content_digest(original) != content_digest(message)):
+        raise HubError('presentation_unavailable', 'reserved or changed original cannot change actor')
+    previous = original.get('_native_actor')
+    if previous:
+        if (not isinstance(previous, dict) or type(previous.get('generation')) is not int
+                or previous['generation'] > actor['generation']
+                or (previous['generation'] == actor['generation'] and previous != actor)):
+            raise HubError('notice_conflict', 'actor generation cannot regress or conflict')
+    elif saved['endpoint_id'] != message['recipient_endpoint']:
+        raise HubError('notice_conflict', 'local original recipient mismatch')
+    if notice and tuple(notice[2:]) != (binding['native_kind'], binding['native_id'], actor['content_hash']):
+        raise HubError('notice_conflict', 'immutable notice native origin cannot change')
+    # Hub projections are fresh inputs, not a second persistent actor cache.
+    original.pop('delivery_actor', None)
+    original['_native_actor'] = actor
+    original['_native_route'] = 'native-v1'
+    changed = db.execute('UPDATE deliveries SET endpoint_id=?,envelope=?,state=? WHERE message_id=? AND endpoint_id=? AND envelope=? AND state=? AND prompt_hash IS NULL',
+        (binding['endpoint_id'], json.dumps(original, ensure_ascii=False), 'received', message['message_id'],
+         saved['endpoint_id'], saved['envelope'], saved['state'])).rowcount
+    if changed != 1:
+        raise HubError('notice_conflict', 'local delivery changed during actor binding')
+    return actor
+
+
 def _prompt(row):
     return (f"[from:tproj-native-notice] [tproj-native-notice:{row['token']}]\n"
             f"Original-ID SHA256: {hashlib.sha256(row['message_id'].encode()).hexdigest()}\n"
@@ -58,8 +159,7 @@ def prepare(db, endpoint, native, message):
     """
     binding = _binding(endpoint, native)
     mid = message.get('message_id')
-    if (not isinstance(mid, str) or not mid
-            or message.get('recipient_endpoint') != binding['endpoint_id']):
+    if not isinstance(mid, str) or not mid:
         raise HubError('identity_rejected', 'notice recipient does not match pinned delivery')
     saved = db.execute('SELECT endpoint_id,envelope FROM deliveries WHERE message_id=?', (mid,)).fetchone()
     if not saved or saved[0] != binding['endpoint_id']:
@@ -71,6 +171,11 @@ def prepare(db, endpoint, native, message):
         raise HubError('identity_rejected', 'stored delivery content unavailable') from None
     if content != {key: original.get(key) for key in CONTENT}:
         raise HubError('notice_conflict', 'notice content differs from pinned original')
+    if message.get('recipient_endpoint') != binding['endpoint_id'] and not original.get('_native_actor'):
+        raise HubError('identity_rejected', 'transferred original needs a pinned actor')
+    actor = _actor(dict(message, delivery_actor=message.get('delivery_actor', original.get('_native_actor'))), binding) if original.get('_native_actor') else None
+    if actor != original.get('_native_actor'):
+        raise HubError('notice_conflict', 'current actor differs from pinned grant')
     db.execute('''CREATE TABLE IF NOT EXISTS native_notice_metadata (
         message_id TEXT PRIMARY KEY REFERENCES deliveries(message_id),
         endpoint_id TEXT NOT NULL, incarnation TEXT NOT NULL,
@@ -84,7 +189,9 @@ def prepare(db, endpoint, native, message):
         client_id=str(uuid.uuid5(uuid.NAMESPACE_URL, 'tproj-native-notice:' + _hash([mid, binding, VERSION]))))
     if not existing:
         row['prompt_hash'] = hashlib.sha256(_prompt(row).encode()).hexdigest()
-    if any(row[k] != binding[k] for k in IDENTITY) or row['version'] != VERSION or row['content_hash'] != content_digest(message) or row['prompt_hash'] != hashlib.sha256(_prompt(row).encode()).hexdigest():
+    identity_matches = (all(row[k] == binding[k] for k in IDENTITY) if not actor else
+                        all(row[k] == binding[k] for k in ('native_kind', 'native_id')))
+    if not identity_matches or row['version'] != VERSION or row['content_hash'] != content_digest(message) or row['prompt_hash'] != hashlib.sha256(_prompt(row).encode()).hexdigest():
         raise HubError('notice_conflict', 'native notice identity or content is immutable')
     if not existing:
         db.execute('INSERT INTO native_notice_metadata VALUES(?,?,?,?,?,?,?,?,?,?)', tuple(row[k] for k in keys))
@@ -106,12 +213,18 @@ def verify(db, endpoint, native, message_id, token):
                          'JOIN deliveries d ON d.message_id=n.message_id WHERE n.message_id=?', (message_id,)).fetchone()
     except sqlite3.OperationalError:
         raise HubError('identity_rejected', 'native notice metadata unavailable') from None
-    if (not row or tuple(binding[k] for k in IDENTITY) != tuple(row[:4])
-            or row[4] != VERSION or not hmac.compare_digest(row[5], token)):
+    if (not row or row[4] != VERSION or not hmac.compare_digest(row[5], token)):
         raise HubError('identity_rejected', 'native notice does not match current binding')
     try:
         original = json.loads(row[8])
-        matches = row[7] == binding['endpoint_id'] and row[6] == content_digest(original)
+        actor = original.get('_native_actor')
+        if actor:
+            grant = _actor(dict(original, delivery_actor=actor), binding)
+            matches = (row[7] == binding['endpoint_id'] and actor == grant
+                       and tuple(row[2:4]) == (binding['native_kind'], binding['native_id']))
+        else:
+            matches = row[7] == binding['endpoint_id'] and tuple(binding[k] for k in IDENTITY) == tuple(row[:4])
+        matches = matches and row[6] == content_digest(original)
     except (ValueError, TypeError, AttributeError):
         matches = False
     if not matches:

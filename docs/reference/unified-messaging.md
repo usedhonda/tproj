@@ -62,9 +62,11 @@ They do not change the original transport state, assert an explicit ACK, or
 prove the requested work completed; callers must inspect the actual answer.
 Message query and diagnosis also expose `response_state` (`recipient_replied`
 or `unconfirmed`), `recipient_reply_count`, and up to 20
-`recipient_reply_message_ids`. These require the exact original recipient as
-sender, original sender as recipient, and the same thread and `in_reply_to`.
-They conservatively leave endpoint-successor cases unconfirmed. Unlike the
+`recipient_reply_message_ids`. These require the original recipient/current assigned actor as
+sender and original sender as recipient, or their immutable same-native
+attestations (same host, participant, platform, native kind and native ID),
+plus the same thread and exact `in_reply_to`. Historical reply evidence survives
+endpoint retirement; this read-only comparison grants no routing or access rights. Unlike the
 broader linked-reply exploration fields, these identify pinned-recipient response
 evidence. An uncertain transport with `recipient_replied` must be described as
 "recipient replied; presentation receipt unconfirmed", not as undelivered.
@@ -604,6 +606,12 @@ reason ttl_elapsed_outcome_unknown, action_required, and false new-presentation
 eligibility; it is not rewritten to expired or replayed. A late valid receipt
 can still confirm the presentation under the existing receipt contract. Exact
 recipient replies remain separate from presentation/ACK and work completion.
+Sender cancellation revalidates the active sender endpoint inside the same
+SQLite write transaction as the message state check and cancellation update.
+A sender retired before that transaction is rejected; a stale pre-lock
+identity observation cannot authorize cancellation. This does not transfer
+cancellation authority to an endpoint successor or cancel task execution.
+
 Explicit cancelled/expired/rejected/stale_session states take summary priority,
 including a _with_reply reason if a late reply exists. A reply does not hide
 cancellation or expiry. A deadline-past confirmed presentation still reports
@@ -1106,3 +1114,160 @@ endpoint retirement committed before this transaction cannot be overwritten by
 a receipt validated against an earlier snapshot. A receipt committed first
 retains its existing lifecycle semantics. This does not transfer delivery rights
 or authorize replay of a retired original.
+
+### Owner-Host native handoff transaction core (not activated in production)
+
+The private `_handoff_native_delivery` core stores a presentation-actor mapping
+in the existing Hub database without changing original message columns, hashes
+or notice tokens. One BEGIN IMMEDIATE transaction validates matching native
+attestations and incarnation/participant/host, rejects competing active owners,
+records eligible current-actor assignments only for the matching stored actor
+incarnation and retires the old endpoint. The
+old incarnation's result is recorded in existing metadata for exact retries.
+Reserved, unknown, terminal, expired and authenticated same-native replied
+originals are excluded. Precommit failure rolls mapping and retirement back.
+
+The owner-service Hub operation accepts `dead_owner` only under its existing
+Host authentication boundary. This input is not independently verified by Hub:
+the Host derives PID absence/start replacement from OS evidence and validates
+the replacement process plus its independent native transcript header before
+invocation. The public Host API does not forward this operation or death claims.
+Production activation and actual TUI restart acceptance remain unfinished.
+The private tests do not establish live-process death, delivery completion,
+physical crash recovery or production activation. Historical retired originals
+are not revived. No new mailbox, scheduler, approval store or task transfer is
+introduced by this correspondence table.
+
+
+### Current native actor integration (not activated)
+
+The isolated Hub paths for claim, native pending, begin presentation and receipt
+use the stored current actor endpoint and incarnation. Original recipient and
+content digest are not rewritten. A transferred original requires native
+presentation; legacy begin-presentation is rejected. Reservation and receipt
+validate the immutable original hash against its actor mapping under the write
+transaction. Transferred receipts also require the request incarnation and
+attested native identity. A presented receipt requires the exact current actor,
+content hash and assignment generation reservation saved atomically by native
+begin-presentation in existing Hub metadata. Unreserved uncertain diagnostics
+do not create that reservation or permit a later presented receipt. Claim validates endpoint retirement inside that same transaction.
+A current actor reply suppresses further candidate delivery.
+
+Pending truth takes priority over a saved drained insertion cursor: an older
+original assigned to a newer actor must still request wake. Drain still clears
+only a generation-matching empty candidate snapshot. These Hub checks do not
+establish consumer coalescing, Host death evidence, local notice rebinding or
+end-to-end restart acceptance. The owner-service handoff remains unused
+by production; no legacy fallback or historical replay is enabled.
+
+
+### Immutable notice origin and private local actor binding
+
+Authenticated Hub message views include a separate `delivery_actor` projection
+for assigned originals: endpoint/incarnation/native identity, assignment
+generation, original recipient and immutable content hash. It is routing
+metadata, not a new approval or permission to process a body.
+
+The private journal `bind_actor` helper requires a fresh authenticated Hub query
+from its caller. It updates only a received, unreserved local delivery's actor
+and pinned-native route in the existing envelope. Original content, existing
+notice token/client ID/prompt/origin binding and publication uncertainty are
+preserved. Generation regression/conflict, changed content, native-origin
+change, context hash or reserved/unknown/presented body state rejects the move.
+The caller owns the transaction; this helper neither commits nor exposes a body.
+
+`prepare` and read-only provenance verification recognize the persisted current
+actor while retaining the immutable origin notice. Old actor verification
+rejects after binding. Returned notice identity fields still describe its
+immutable origin; verified current identity is returned by `verify`, not inferred
+from those fields. Fresh Hub reservation and latest cancellation/expiry/scope
+checks remain required. Host/publisher/consumer/discovery source integration is
+present below but not activated in production; actual restart remains unproved.
+
+
+### Current actor consumer and publisher connection (not activated)
+
+Host journals claimed transferred originals under their original recipient before
+received-only actor binding, using a fresh authenticated Hub query and native
+transcript binding. Reserved/unknown local rows are not reset. Publisher and
+consumer compare current Hub actor/generation with the pinned local grant and
+immutable content before publication or body reservation. Operational notice
+binding uses verified current identity, while token/client ID/prompt keep their
+origin. Recovery selects the current local actor without rewriting notice origin.
+Transferred presented receipts carry the request native binding required by Hub.
+
+Summary eligibility and observed waiting reason follow the current actor and
+incarnation; original recipient history remains unchanged. Exact current-actor
+replies are separately projected as replies without changing transport or ACK.
+
+A failed native reservation durably records this attempt's current native binding,
+content hash and either explicit transactional rejection or unknown response.
+A malformed return after RPC success is unknown, not rejection. Rejection does
+not prove that no earlier attempt reserved the original. Both paths retain the
+local uncertain body fence; this change does not reset or re-return any body.
+The current backend contracts are stated below. Source version does not establish
+loaded runtime or actual restart. Definite-unissued reconciliation and trusted
+Host invocation are described below; end-to-end restart acceptance is unproved.
+
+
+### Reconcile an explicitly rejected old reservation (not activated)
+
+A transferred original may reconcile a local uncertain row only when its durable
+attempt records a transactional `stale_session` rejection for the exact previous
+endpoint/incarnation/native binding and immutable content. The caller supplies
+a fresh authenticated Hub view with an eligible unreserved state and a strictly
+newer current-actor assignment. The old actor and new actor must differ.
+
+The one local conditional update binds the new actor and marks only that proved
+unissued row received. It preserves the rejection evidence with the target
+assignment, original content, notice and publication history. Only the failed
+attempt's context-reference association is removed. A context hash, reserved
+publication, missing/replaced rejection, generic unknown response, same/stale
+actor, terminal/expired/replied state or later global reservation rejects the
+transition. Original native begin-present remains the one-shot body gate after
+reconciliation, including a reservation racing the read-only Hub snapshot.
+
+This is not replay permission for historical uncertain rows. Host invokes the
+private reconciliation only on a transferred claim with an old local actor;
+no second scheduler, original re-submission or user approval is created. Source
+Host backend is 9/consumer 3; deployment and real restart remain unproved.
+
+
+### Trusted owner discovery handoff (not activated in production)
+
+With both existing native queue/consumer flags enabled, Host discovery observes
+the old PID incarnation independently. Absence requires process lookup failure
+plus kernel ESRCH; a replacement start requires a valid positive observed start.
+A new candidate must be unique for the same host/participant/platform, have its
+own discovered native ID, a matching private Codex TUI session header/project,
+and a fresh UID/PID-start/agent-command observation. Host attests that new binding
+before invoking the atomic owner-service `native_handoff` transaction.
+
+A live old process is retained. For an already-attested native lineage, missing,
+ambiguous or failed/unknown continuity evidence holds the old owner for a later
+normal refresh; it does not fall through to legacy retirement. An independently
+verified different native cannot inherit originals. Missing old native lineage
+retains legacy retirement semantics. This is not historical endpoint revival or
+conversation/task authority transfer. Public Host callers cannot supply death
+claims or invoke handoff; Hub trusts its authenticated owner Host service, not a
+peer body. Flags off preserve existing production discovery behavior.
+
+Source backend contracts are Host11/consumer4/Hub3. A focused fixture uses real
+OS Python stub PID/start/death and a synthetic native header to test this join;
+it is not a real Codex TUI/provider restart or production activation result.
+
+
+When both native features are explicitly enabled, Host discovery pins the first
+receive-only Codex native identity before a caller operation is needed. The
+registered endpoint must carry one unambiguous native ID, an exact same-user
+Codex CLI transcript header/project, and fresh matching PID start/UID/agent
+process evidence. Existing immutable native identity and kind are preserved.
+Missing or conflicting proof leaves native delivery unavailable without breaking
+core endpoint registration, changing native flags, or granting approval/task
+authority. This prevents ordinary first incoming delivery from depending on the
+recipient having previously invoked the messaging CLI; it does not reconstruct
+missing historical attestations after process death.
+A distinct previous owner defers the new endpoint's initial pin to the existing
+continuity/handoff decision, so an equal new thread label cannot preempt the
+old immutable session label. If independently different conversation retirement
+succeeds, ordinary first attestation can occur on the next discovery refresh.

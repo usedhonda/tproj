@@ -2,6 +2,7 @@
 import contextlib, io, json, pathlib, socket, sys, tempfile, unittest, errno
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 from extensions.messaging.unified import Hub, HubError
+from extensions.messaging.unified.native_notice import content_digest
 from extensions.messaging.unified.protocol import MAX_REQUEST, MAX_TTL, serve_socket, success, resource_error
 
 class ProtocolTest(unittest.TestCase):
@@ -130,7 +131,7 @@ class HubTest(unittest.TestCase):
         ro = Hub(path, {'admin_token': 'adm', 'hosts': {'a': 'ta'}}, read_only=True)
         self.addCleanup(ro.close)
         self.assertEqual(ro.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'ta'})['capabilities'],
-                         ['native_attest', 'native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted', 'native_begin_present', 'native_pending', 'native_drain'])
+                         ['native_attest', 'native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted', 'native_begin_present', 'native_pending', 'native_drain', 'native_handoff'])
         self.assertEqual(ro.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'ta'})['peers'], {})
         with self.assertRaises(HubError) as caught:
             ro.dispatch({'op': 'diagnose', 'host_id': 'a', 'host_token': 'ta', 'message_id': 'missing'})
@@ -188,6 +189,33 @@ class HubTest(unittest.TestCase):
         self.h = Hub(pathlib.Path(self.tmp.name)/'hub.db', {'admin_token':'adm','hosts':{'a':'ta','b':'tb'}})
         self.assertTrue(self.h.dispatch(dict(op='query', host_id='b', host_token='tb', endpoint_id='eb-new', message_id='m1'))['reader_is_recipient'])
 
+    def test_reply_evidence_survives_both_native_rotations(self):
+        for host, endpoint in [('a', 'ea'), ('b', 'eb')]:
+            self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id=?", (endpoint,))
+            self.attest(host, endpoint)
+        self.send()
+        for host, endpoint, participant in [('a', 'ea', 'p:cc'), ('b', 'eb', 'p:cdx')]:
+            self.h.dispatch(dict(op='endpoint_retire', host_id=host, host_token='t'+host, endpoint_id=endpoint))
+            self.reg(host, 't'+host, endpoint+'-new', participant, 3)
+            self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id=?", (endpoint+'-new',))
+            self.attest(host, endpoint+'-new')
+        self.h.submit(dict(host_id='b', host_token='tb', message=dict(
+            message_id='rotated-reply', sender_endpoint='eb-new', in_reply_to='m1', body='reply')))
+        original = self.h._row("SELECT * FROM messages WHERE message_id='m1'")
+        before = self.h.db.total_changes
+        self.assertEqual(self.h.response_evidence(original)['recipient_reply_message_ids'], ['rotated-reply'])
+        self.assertEqual(self.h.db.total_changes, before)
+        # Historical acceptance remains evidence even when both successors retire.
+        for endpoint in ('ea-new', 'eb-new'):
+            self.h.db.execute("UPDATE endpoints SET retired=1,last_heartbeat=0 WHERE endpoint_id=?", (endpoint,))
+        self.assertEqual(self.h.response_evidence(original)['recipient_reply_count'], 1)
+        for column, value in [('thread_id', 'wrong'), ('sender_endpoint', 'ea-new'),
+                              ('recipient_endpoint', 'eb-new')]:
+            row = self.h._row("SELECT * FROM messages WHERE message_id='rotated-reply'")
+            self.h.db.execute('UPDATE messages SET '+column+'=? WHERE message_id=?', (value, 'rotated-reply'))
+            self.assertEqual(self.h.response_evidence(original)['recipient_reply_count'], 0)
+            self.h.db.execute('UPDATE messages SET '+column+'=? WHERE message_id=?', (row[column], 'rotated-reply'))
+
     def test_native_rotation_unknown_different_ambiguous_and_stale_reject(self):
         self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
         self.attest('b', 'eb')
@@ -240,6 +268,193 @@ class HubTest(unittest.TestCase):
                 self.assertEqual(peer._row('SELECT state FROM messages WHERE message_id=?', (mid,))[0], terminal)
                 self.assertIsNone(peer._row('SELECT * FROM receipts WHERE message_id=?', (mid,)))
                 self.assertFalse(self.h.db.in_transaction)
+
+    def handoff_fixture(self):
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
+        self.attest('b', 'eb')
+        self.reg('b', 'tb', 'eb-new', 'p:cdx', 3)
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb-new'")
+        self.attest('b', 'eb-new')
+        old = dict(self.h._row("SELECT * FROM endpoints WHERE endpoint_id='eb'"))
+        new = dict(self.h._row("SELECT * FROM endpoints WHERE endpoint_id='eb-new'"))
+        request = dict(host_id='b', host_token='tb', old_endpoint='eb', new_endpoint='eb-new',
+                       old_incarnation=old['incarnation'], new_incarnation=new['incarnation'],
+                       native_kind='thread_id', native_id='native-thread')
+        proof = {k: old[k] for k in ('endpoint_id', 'incarnation', 'pid', 'pid_start')}
+        proof['reason'] = 'pid_absent'  # Trusted Host input ONLY; OS proof is a separate acceptance.
+        return request, proof
+
+    def test_native_handoff_core_preserves_originals_and_excludes_irreversible_states(self):
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
+        self.attest('b', 'eb')
+        old_incarnation = self.h._row("SELECT incarnation FROM endpoints WHERE endpoint_id='eb'")[0]
+        for mid in ('pending', 'pending-second', 'cancelled', 'reserved', 'unknown', 'presented', 'replied'):
+            self.send(mid)
+        self.h.dispatch(dict(op='cancel', host_id='a', host_token='ta', endpoint_id='ea', message_id='cancelled'))
+        self.h.dispatch(dict(op='native_begin_present', host_id='b', host_token='tb', endpoint_id='eb',
+                             message_id='reserved', incarnation=old_incarnation, native_kind='thread_id',
+                             native_id='native-thread', content_hash=content_digest(dict(self.h._row("SELECT * FROM messages WHERE message_id='reserved'")))))
+        for mid, state in [('unknown', 'uncertain'), ('presented', 'presented')]:
+            self.h.dispatch(dict(op='receipt', host_id='b', host_token='tb', endpoint_id='eb', message_id=mid, state=state))
+        self.h.dispatch(dict(op='submit', host_id='a', host_token='ta', message=dict(
+            message_id='expired', sender_endpoint='ea', target='cdx', body='expired', ttl_sec=1)))
+        self.h.dispatch(dict(op='submit', host_id='b', host_token='tb', message=dict(
+            message_id='old-owner-reply', sender_endpoint='eb', in_reply_to='replied', thread_id='t', body='received')))
+        clock = self.h._now() + 2
+        self.h._now = lambda: clock
+        before = [tuple(row) for row in self.h.db.execute('SELECT * FROM messages ORDER BY message_id')]
+        request, proof = self.handoff_fixture()
+        result = self.h._handoff_native_delivery(request, dead_owner=proof)
+        self.assertEqual(result['transferred'], 2)
+        self.assertEqual([tuple(row) for row in self.h.db.execute('SELECT * FROM messages ORDER BY message_id')], before)
+        owner = dict(self.h._row("SELECT * FROM native_delivery_owners WHERE message_id='pending'"))
+        self.assertEqual((owner['original_recipient'], owner['actor_endpoint'], owner['generation']), ('eb', 'eb-new', 1))
+        self.assertEqual(owner['content_hash'], content_digest(dict(self.h._row("SELECT * FROM messages WHERE message_id='pending'"))))
+        self.assertEqual(self.h._row('SELECT count(*) FROM native_delivery_owners')[0], 2)
+        self.assertTrue(self.h._handoff_native_delivery(request, dead_owner=proof)['duplicate'])
+        self.assertEqual(self.h._row("SELECT retired FROM endpoints WHERE endpoint_id='eb'")[0], 1)
+        with self.assertRaises(HubError) as late:
+            self.h.dispatch(dict(op='native_begin_present', host_id='b', host_token='tb', endpoint_id='eb',
+                                 message_id='pending', incarnation=proof['incarnation'], native_kind='thread_id',
+                                 native_id='native-thread', content_hash=owner['content_hash']))
+        self.assertEqual(late.exception.code, 'stale_session')
+        # Owner-service operation requires authenticated death evidence; a
+        # previously completed exact request remains idempotent.
+        self.assertTrue(self.h.dispatch(dict(request, op='native_handoff', dead_owner=proof))['duplicate'])
+        self.h.dispatch(dict(op='submit', host_id='b', host_token='tb', message=dict(
+            message_id='successor-reply', sender_endpoint='eb-new', in_reply_to='pending', thread_id='t', body='received')))
+        self.h.dispatch(dict(op='submit', host_id='b', host_token='tb', message=dict(
+            message_id='successor-second-reply', sender_endpoint='eb-new', in_reply_to='pending-second', thread_id='t', body='received')))
+        self.reg('b', 'tb', 'eb-next', 'p:cdx', 4)
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb-next'")
+        self.attest('b', 'eb-next')
+        successor = dict(self.h._row("SELECT * FROM endpoints WHERE endpoint_id='eb-new'"))
+        next_owner = dict(self.h._row("SELECT * FROM endpoints WHERE endpoint_id='eb-next'"))
+        next_request = dict(request, old_endpoint='eb-new', new_endpoint='eb-next',
+                            old_incarnation=successor['incarnation'], new_incarnation=next_owner['incarnation'])
+        next_proof = {k: successor[k] for k in ('endpoint_id', 'incarnation', 'pid', 'pid_start')}
+        next_proof['reason'] = 'pid_absent'
+        self.assertEqual(self.h._handoff_native_delivery(next_request, dead_owner=next_proof)['transferred'], 0)
+        self.assertEqual(self.h._row("SELECT generation FROM native_delivery_owners WHERE message_id='pending'")[0], 1)
+
+    def test_native_handoff_core_rejects_unproved_or_ambiguous_continuity(self):
+        self.send('untouched')
+        request, proof = self.handoff_fixture()
+        for change, evidence in [(dict(native_id='other-native'), proof), ({}, {}),
+                                 (dict(old_incarnation='stale'), proof),
+                                 ({}, dict(proof, reason='pid_start_changed', observed_pid_start=proof['pid_start']))]:
+            with self.subTest(change=change, evidence=evidence):
+                with self.assertRaises(HubError):
+                    self.h._handoff_native_delivery(dict(request, **change), dead_owner=evidence)
+        self.reg('b', 'tb', 'third', 'p:cdx', 4)
+        with self.assertRaises(HubError) as ambiguous:
+            self.h._handoff_native_delivery(request, dead_owner=proof)
+        self.assertEqual(ambiguous.exception.code, 'ambiguous_target')
+        self.assertEqual(self.h._row('SELECT count(*) FROM native_delivery_owners')[0], 0)
+        self.assertEqual(self.h._row("SELECT retired FROM endpoints WHERE endpoint_id='eb'")[0], 0)
+        self.assertEqual(self.h._row("SELECT recipient_endpoint FROM messages WHERE message_id='untouched'")[0], 'eb')
+
+    def test_native_handoff_core_does_not_transfer_a_different_actor_generation(self):
+        self.send('stale-generation')
+        request, proof = self.handoff_fixture()
+        original = dict(self.h._row("SELECT * FROM messages WHERE message_id='stale-generation'"))
+        # Defensive inconsistent-generation fixture, not proof that ordinary
+        # register can reuse an existing immutable endpoint incarnation.
+        self.h.db.execute('INSERT INTO native_delivery_owners VALUES(?,?,?,?,?,?)',
+                          ('stale-generation', 'eb', 'eb', 'earlier-incarnation', content_digest(original), 1))
+        owner = tuple(self.h._row("SELECT * FROM native_delivery_owners WHERE message_id='stale-generation'"))
+        self.assertEqual(self.h._handoff_native_delivery(request, dead_owner=proof)['transferred'], 0)
+        self.assertEqual(tuple(self.h._row("SELECT * FROM native_delivery_owners WHERE message_id='stale-generation'")), owner)
+        self.assertEqual(dict(self.h._row("SELECT * FROM messages WHERE message_id='stale-generation'")), original)
+
+    def test_transferred_native_actor_claim_pending_reservation_and_receipt(self):
+        self.send('actor-original')
+        request, proof = self.handoff_fixture()
+        original = dict(self.h._row("SELECT * FROM messages WHERE message_id='actor-original'"))
+        self.h._handoff_native_delivery(request, dead_owner=proof)
+        actor = dict(host_id='b', host_token='tb', endpoint_id='eb-new')
+        native = dict(actor, incarnation=request['new_incarnation'], native_kind='thread_id', native_id='native-thread')
+        pending = self.h.dispatch(dict(native, op='native_pending'))
+        self.assertTrue(pending['wake_needed'])
+        claim = self.h.dispatch(dict(actor, op='claim'))['messages']
+        self.assertEqual([m['message_id'] for m in claim], ['actor-original'])
+        self.assertEqual(claim[0]['recipient_endpoint'], 'eb')
+        actor_view = claim[0]['delivery_actor']
+        self.assertEqual((actor_view['endpoint_id'], actor_view['incarnation'], actor_view['generation']),
+                         ('eb-new', request['new_incarnation'], 1))
+        self.assertEqual(actor_view['content_hash'], content_digest(original))
+        queried = self.h.dispatch(dict(actor, op='query', message_id='actor-original'))
+        self.assertEqual(queried['delivery_actor'], actor_view)
+        self.assertEqual(content_digest(queried), content_digest(original))
+        with self.assertRaises(HubError):
+            self.h.dispatch(dict(actor, op='begin_present', message_id='actor-original'))
+        with self.assertRaises(HubError):
+            self.h.dispatch(dict(actor, op='native_begin_present', message_id='actor-original',
+                                 incarnation=proof['incarnation'], native_kind='thread_id', native_id='native-thread',
+                                 content_hash=content_digest(original)))
+        reserved = self.h.dispatch(dict(native, op='native_begin_present', message_id='actor-original', content_hash=content_digest(original)))
+        self.assertEqual(reserved['endpoint_id'], 'eb-new')
+        for invalid in (actor, dict(native, incarnation='stale')):
+            with self.assertRaises(HubError):
+                self.h.dispatch(dict(invalid, op='receipt', message_id='actor-original', state='presented'))
+        self.h.dispatch(dict(native, op='receipt', message_id='actor-original', state='presented'))
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='actor-original'")[0], 'presented')
+        for key in ('recipient_endpoint', 'body', 'payload_hash', 'expires_at'):
+            self.assertEqual(self.h._row("SELECT * FROM messages WHERE message_id='actor-original'")[key], original[key])
+        self.assertFalse(self.h.dispatch(dict(native, op='native_pending'))['pending'])
+        for op in ('claim', 'receipt', 'native_begin_present'):
+            with self.subTest(op=op), self.assertRaises(HubError) as stale:
+                self.h.dispatch(dict(native, op=op, endpoint_id='eb', message_id='actor-original', state='presented', content_hash=content_digest(original)))
+            self.assertEqual(stale.exception.code, 'stale_session')
+
+    def test_transferred_presented_receipt_requires_native_reservation(self):
+        self.send('unreserved-actor')
+        request, proof = self.handoff_fixture()
+        self.h._handoff_native_delivery(request, dead_owner=proof)
+        actor = dict(host_id='b', host_token='tb', endpoint_id='eb-new')
+        native = dict(actor, incarnation=request['new_incarnation'], native_kind='thread_id', native_id='native-thread')
+        for fields in (actor, native):
+            with self.subTest(fields=fields), self.assertRaises(HubError):
+                self.h.dispatch(dict(fields, op='receipt', message_id='unreserved-actor', state='presented'))
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='unreserved-actor'")[0], 'accepted')
+        self.h.dispatch(dict(native, op='receipt', message_id='unreserved-actor', state='uncertain'))
+        with self.assertRaises(HubError):
+            self.h.dispatch(dict(native, op='receipt', message_id='unreserved-actor', state='presented'))
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='unreserved-actor'")[0], 'uncertain')
+
+    def test_transferred_actor_reply_and_old_sequence_do_not_lose_wake(self):
+        self.send('older-original')
+        request, proof = self.handoff_fixture()
+        actor = dict(host_id='b', host_token='tb', endpoint_id='eb-new')
+        native = dict(actor, incarnation=request['new_incarnation'], native_kind='thread_id', native_id='native-thread')
+        # A new endpoint may already have drained a newer original before an
+        # older row is assigned. Pending truth must not be hidden by that cursor.
+        self.h.db.execute("INSERT INTO metadata(key,value) VALUES(?,?)", ('native_drained:eb-new', '999'))
+        self.h._handoff_native_delivery(request, dead_owner=proof)
+        self.assertTrue(self.h.dispatch(dict(native, op='native_pending'))['wake_needed'])
+        self.h.dispatch(dict(actor, op='submit', message=dict(message_id='actor-response', sender_endpoint='eb-new',
+                             in_reply_to='older-original', thread_id='t', body='received')))
+        self.assertFalse(self.h.dispatch(dict(native, op='native_pending'))['pending'])
+        self.assertEqual(self.h.dispatch(dict(actor, op='claim'))['messages'], [])
+        with self.assertRaises(HubError) as replied:
+            self.h.dispatch(dict(native, op='native_begin_present', message_id='older-original',
+                                 content_hash=content_digest(dict(self.h._row("SELECT * FROM messages WHERE message_id='older-original'")))))
+        self.assertEqual(replied.exception.code, 'presentation_unavailable')
+
+    def test_native_handoff_core_rolls_back_owner_and_retirement_together(self):
+        self.send('pending')
+        request, proof = self.handoff_fixture()
+        commit = self.h._commit
+        self.h._commit = lambda: (_ for _ in ()).throw(RuntimeError('injected precommit failure'))
+        try:
+            with self.assertRaises(RuntimeError):
+                self.h._handoff_native_delivery(request, dead_owner=proof)
+        finally:
+            self.h._commit = commit
+        self.assertFalse(self.h.db.in_transaction)
+        self.assertEqual(self.h._row('SELECT count(*) FROM native_delivery_owners')[0], 0)
+        self.assertEqual(self.h._row("SELECT retired FROM endpoints WHERE endpoint_id='eb'")[0], 0)
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='pending'")[0], 'accepted')
 
     def test_claim_sequence_passes_old_pending_and_wraps_without_replay(self):
         self.send('old')
@@ -317,7 +532,7 @@ class HubTest(unittest.TestCase):
     def test_native_capabilities_are_authenticated_and_read_only(self):
         before = self.h.db.total_changes
         result = self.h.dispatch(dict(op='messaging_capabilities', host_id='b', host_token='tb'))
-        self.assertEqual(result['native_runtime'], {'hub_version': 2})
+        self.assertEqual(result['native_runtime'], {'hub_version': 3})
         self.assertTrue({'native_begin_present', 'native_pending', 'native_drain'} <= set(result['capabilities']))
         with self.assertRaises(HubError):
             self.h.dispatch(dict(op='messaging_capabilities', host_id='b', host_token='wrong'))
@@ -696,6 +911,24 @@ class HubTest(unittest.TestCase):
             with self.assertRaises(HubError): self.h.dispatch(current_request)
             self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id=?", (mid,))[0],
                              'cancelled' if terminal == 'cancelled' else 'accepted')
+
+    def test_cancel_rechecks_sender_retirement_inside_transaction(self):
+        self.send('cancel-retired-sender')
+        peer = Hub(self.h.db_path, self.h.config)
+        self.addCleanup(peer.close)
+        original_tx = self.h._tx
+        def retire_before_transaction():
+            peer.dispatch(dict(op='endpoint_retire', host_id='a', host_token='ta', endpoint_id='ea'))
+            original_tx()
+        self.h._tx = retire_before_transaction
+        try:
+            with self.assertRaises(HubError) as caught:
+                self.h.cancel(dict(host_id='a', host_token='ta', endpoint_id='ea', message_id='cancel-retired-sender'))
+            self.assertEqual(caught.exception.code, 'stale_session')
+        finally:
+            self.h._tx = original_tx
+        self.assertFalse(self.h.db.in_transaction)
+        self.assertEqual(peer._row("SELECT state FROM messages WHERE message_id='cancel-retired-sender'")[0], 'accepted')
 
     def test_sender_cancel_fences_presentation_and_is_not_task_cancellation(self):
         self.send('cancel')

@@ -8,10 +8,10 @@ from pathlib import Path
 import re
 import time
 
-from native_notice import content_digest, prepare, verify, verify_record
+from native_notice import content_digest, prepare, verify, verify_record, validate_actor
 from protocol import HubError, success, NATIVE_CONTEXT_LIMIT
 
-BACKEND_VERSION = 2
+BACKEND_VERSION = 4
 
 TOKEN = re.compile(r'^\[from:tproj-native-notice\] \[tproj-native-notice:([A-Za-z0-9_-]{43})\]\n')
 
@@ -30,6 +30,18 @@ def _hook_binding(host, ep, payload=None):
     if len(markers) != 1:
         raise HubError('identity_rejected', 'unique native attestation required')
     native = markers[0]
+    return native, _native_path(ep, native, payload)
+
+
+def _native_path(ep, native, payload=None):
+    """Independent bounded header proof, before an owner Host attests a restart.
+
+    ep/native come from the Host's live discovery, never a peer/public selector.
+    This proves local header correlation, not provider-signed authenticity.
+    """
+    if (ep.get('platform') != 'cdx' or native.get('endpoint_id') != ep.get('endpoint_id')
+            or native.get('native_kind') not in ('thread_id', 'session_id')):
+        raise HubError('identity_rejected', 'native discovery binding mismatch')
     nid = native.get('native_id')
     if (not isinstance(nid, str) or not re.fullmatch(r'[0-9a-fA-F-]{36}', nid)
             or (payload is not None and (payload.get('session_id') != nid
@@ -58,7 +70,7 @@ def _hook_binding(host, ep, payload=None):
             raise ValueError('header mismatch')
     except (OSError, ValueError, TypeError, AttributeError):
         raise HubError('identity_rejected', 'native transcript header mismatch') from None
-    return native, path
+    return path
 
 
 def resolve(host, ep, req):
@@ -106,8 +118,7 @@ def resolve(host, ep, req):
     for candidate in candidates:
         original = host.hub('query', endpoint_id=ep['endpoint_id'], message_id=candidate)
         saved = json.loads(host.db.execute('SELECT envelope FROM deliveries WHERE message_id=?', (candidate,)).fetchone()[0])
-        if original.get('recipient_endpoint') != ep['endpoint_id'] or content_digest(original) != content_digest(saved):
-            raise HubError('identity_rejected', 'authoritative original differs from pinned notice')
+        validate_actor(original, saved, ep, native)
         # Later cancelled/expired/replied rows are not swept into this context.
         # Leader still uses the authoritative reservation gate (and its errors).
         if candidate != mid and not original.get('delivery_summary', {}).get('new_presentation_eligible'):
@@ -143,14 +154,28 @@ def resolve(host, ep, req):
             if candidate == mid:
                 raise HubError('presentation_unavailable', 'native body already reserved or outcome unknown')
             continue
+        rpc_returned = False
         try:
             permission = host.hub('native_begin_present', message_id=candidate,
                                   content_hash=content_digest(original), **pending_args)
+            rpc_returned = True
             expected = dict(state='dispatching', message_id=candidate, content_hash=content_digest(original), **pending_args)
             if any(permission.get(k) != v for k, v in expected.items()):
                 raise HubError('identity_rejected', 'native reservation response mismatch')
-        except Exception:
-            host.db.execute("UPDATE deliveries SET state='uncertain' WHERE message_id=?", (candidate,))
+        except Exception as exc:
+            # An explicit transactional rejection describes this attempt only;
+            # it is NOT proof that a prior attempt never reserved the original.
+            # A lost/malformed response, including mismatch after RPC return,
+            # remains unknown. Never reset either state or re-return a body here.
+            rejected = (not rpc_returned and isinstance(exc, HubError) and exc.code in
+                        ('stale_session', 'identity_rejected', 'unauthorized', 'expired',
+                         'presentation_unavailable', 'maintenance', 'not_found'))
+            previous = json.dumps(envelope, ensure_ascii=False)
+            envelope['_native_reservation_attempt'] = dict(pending_args,
+                content_hash=content_digest(original), outcome='rejected' if rejected else 'unknown',
+                error=exc.code if rejected else None, observed_at=time.time())
+            host.db.execute("UPDATE deliveries SET state='uncertain',envelope=? WHERE message_id=? AND state='dispatching' AND prompt_hash IS NULL AND envelope=?",
+                            (json.dumps(envelope, ensure_ascii=False), candidate, previous))
             host.db.commit()
             if candidate == mid: raise
             # Failed later reservations never expose their body. Their uncertain
@@ -177,7 +202,7 @@ def recover(host, ep, message_id):
     native, path = _hook_binding(host, ep)
     delivery = host.db.execute('SELECT prompt_hash,envelope FROM deliveries WHERE message_id=?', (message_id,)).fetchone()
     reference_id = json.loads(delivery['envelope']).get('_native_context_reference', message_id) if delivery else message_id
-    row = host.db.execute('SELECT token FROM native_notice_metadata WHERE message_id=? AND endpoint_id=?', (reference_id, ep['endpoint_id'])).fetchone()
+    row = host.db.execute('SELECT n.token FROM native_notice_metadata n JOIN deliveries d ON d.message_id=n.message_id WHERE n.message_id=? AND d.endpoint_id=?', (reference_id, ep['endpoint_id'])).fetchone()
     if not row or not delivery or not delivery['prompt_hash']:
         return False
     own_notice = host.db.execute('SELECT token FROM native_notice_metadata WHERE message_id=?', (message_id,)).fetchone()

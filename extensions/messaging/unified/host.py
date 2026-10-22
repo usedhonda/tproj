@@ -22,7 +22,7 @@ from identity import (IdentityError, adopt_native_conversation, bind_caller, dis
 from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
 from receipt import normalize_prompt, codex_transcript_presented
 
-HOST_BACKEND_VERSION = 7
+HOST_BACKEND_VERSION = 11
 WIRE_LIMIT = 262144
 
 
@@ -146,6 +146,82 @@ class Host:
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
+    def _attest_discovered_native(self, ep):
+        """Pin a receive-only live native before any caller or publication.
+
+        This is same-user header/process correlation, not provider authenticity
+        or a new delivery/approval grant. Existing immutable labels win.
+        """
+        if (self.config.get('native_queue_enabled') is not True
+                or self.config.get('native_consumer_enabled') is not True
+                or ep.get('platform') != 'cdx'):
+            return
+        ids = {ep[k] for k in ('thread_id', 'session_id') if ep.get(k)}
+        if len(ids) != 1:
+            return
+        nid = next(iter(ids))
+        if not isinstance(nid, str) or not re.fullmatch(r'[0-9a-fA-F-]{36}', nid):
+            return
+        rows = self.hub('diagnostic_identity', endpoint_ids=[ep['endpoint_id']]).get('endpoint_native', [])
+        markers = [row for row in rows if row.get('endpoint_id') == ep['endpoint_id']]
+        if len(markers) > 1 or (markers and markers[0].get('native_id') != nid):
+            raise HubError('identity_rejected', 'discovered native differs from immutable attestation')
+        kind = markers[0]['native_kind'] if markers else ('thread_id' if ep.get('thread_id') else 'session_id')
+        native = dict(endpoint_id=ep['endpoint_id'], native_kind=kind, native_id=nid)
+        from native_consumer import _native_path
+        _native_path(ep, native)
+        from identity import _process_info
+        process = _process_info(int(ep['pid']))
+        if (not isinstance(process, dict) or process.get('uid') != os.getuid()
+                or type(process.get('pid_start')) is not int or process['pid_start'] <= 0
+                or str(process['pid_start']) != str(ep.get('pid_start'))
+                or not any(token in str(process.get('command', '')).lower() for token in ('codex', 'openai'))):
+            raise HubError('identity_rejected', 'discovered process incarnation changed')
+        if not markers:
+            self.hub('native_attest', **native)
+
+    def _handoff_dead_native(self, old, discovered, proof):
+        """Owner-service-only continuity; True means do not legacy-retire old.
+
+        No public Host operation forwards death claims. Missing/unknown proof
+        holds the established native owner for the next normal refresh tick.
+        """
+        if (self.config.get('native_queue_enabled') is not True
+                or self.config.get('native_consumer_enabled') is not True
+                or old.get('platform') != 'cdx'):
+            return False
+        rows = self.hub('diagnostic_identity', endpoint_ids=[old['endpoint_id']]).get('endpoint_native', [])
+        markers = [r for r in rows if r.get('endpoint_id') == old['endpoint_id']]
+        if len(markers) != 1:
+            return False  # No established native lineage: existing legacy retirement.
+        prior = markers[0]
+        candidates = [ep for ep in discovered if ep['endpoint_id'] != old['endpoint_id']
+                      and all(ep.get(k) == old.get(k) for k in ('host_id', 'participant_id', 'platform'))]
+        if len(candidates) != 1:
+            return True
+        new = candidates[0]
+        ids = {str(new[k]) for k in ('thread_id', 'session_id') if new.get(k)
+               and re.fullmatch(r'[0-9a-fA-F-]{36}', str(new[k]))}
+        if len(ids) != 1:
+            return True
+        nid = next(iter(ids))
+        native = dict(endpoint_id=new['endpoint_id'], native_kind=prior['native_kind'], native_id=nid)
+        from native_consumer import _native_path
+        _native_path(new, native)  # New record/header, never borrowed from old owner.
+        from identity import _process_info
+        current = _process_info(int(new['pid']))
+        if (not isinstance(current, dict) or current.get('uid') != os.getuid() or type(current.get('pid_start')) is not int
+                or str(current['pid_start']) != str(new.get('pid_start'))
+                or not any(token in str(current.get('command', '')).lower() for token in ('codex', 'openai'))):
+            raise HubError('identity_rejected', 'replacement process incarnation changed')
+        if nid != prior['native_id']:
+            return False  # Independently verified different native cannot inherit originals.
+        self.hub('native_attest', **native)
+        self.hub('native_handoff', old_endpoint=old['endpoint_id'], new_endpoint=new['endpoint_id'],
+                 old_incarnation=old['incarnation'], new_incarnation=new['incarnation'],
+                 native_kind=native['native_kind'], native_id=nid, dead_owner=proof)
+        return True
+
     def _refresh_unlocked(self):
         directory = self.hub('directory_list')
         # Snapshot active identities before discovery.  A standalone tmux
@@ -196,6 +272,18 @@ class Host:
             # Registry/process evidence authenticates the caller; the hub alone
             # issues the durable incarnation used by formal task fences.
             ep['incarnation'] = registered['incarnation']
+            # A distinct previous owner chooses the inherited immutable kind
+            # only after continuity is proven. Pre-pinning a fresh thread label
+            # here can conflict with that owner's equal session label.
+            if not any(old['endpoint_id'] != ep['endpoint_id']
+                       and all(old.get(k) == ep.get(k) for k in ('host_id', 'participant_id', 'platform'))
+                       for old in active_previous):
+                try:
+                    self._attest_discovered_native(ep)
+                except (HubError, IdentityError, OSError, ValueError, KeyError, TypeError):
+                    # Optional native proof cannot break core registration.
+                    # Native delivery still requires its independent binding.
+                    pass
             registered_endpoints.append(ep)
         discovered = registered_endpoints
         # A disappeared process is not inferred from an alias. Retire only after
@@ -215,13 +303,25 @@ class Host:
             except (IdentityError, OSError, ValueError, KeyError, TypeError):
                 current = None
             absent = False
+            proof = {k: ep.get(k) for k in ('endpoint_id', 'incarnation', 'pid', 'pid_start')}
             if current is None:
                 try: os.kill(int(ep['pid']), 0)
-                except ProcessLookupError: absent = True
+                except ProcessLookupError:
+                    absent = True
+                    proof['reason'] = 'pid_absent'
                 except (OSError, ValueError, TypeError): pass
-            elif str(current.get('pid_start')) != str(ep.get('pid_start')):
+            elif (type(current.get('pid_start')) is int and current['pid_start'] > 0
+                  and str(current['pid_start']) != str(ep.get('pid_start'))):
                 absent = True
+                proof.update(reason='pid_start_changed', observed_pid_start=current['pid_start'])
             if absent:
+                try:
+                    if self._handoff_dead_native(ep, discovered, proof):
+                        continue
+                except (HubError, IdentityError, OSError, ValueError, KeyError, TypeError):
+                    # A failed/unknown continuity operation never authorizes
+                    # destructive retirement or legacy delivery fallback.
+                    continue
                 self.hub('endpoint_retire', endpoint_id=ep['endpoint_id'])
             elif (ep['participant_id'] in live_participants and current
                     and current.get('uid') == os.getuid()
@@ -817,8 +917,19 @@ class Host:
         # Journal the bounded claim page before starting its first native
         # child, so a fast hook can coalesce the whole already-claimed set.
         for msg in claims:
+            transferred = bool(msg.get('delivery_actor'))
+            # Preserve the origin for new local rows too. Existing unknown/body
+            # rows must never be reset by a successor's claim.
+            origin = msg['recipient_endpoint'] if transferred else ep['endpoint_id']
             self.db.execute('INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?)',
-                (msg['message_id'], ep['endpoint_id'], json.dumps(msg), 'received', None, time.time()))
+                (msg['message_id'], origin, json.dumps(msg), 'received', None, time.time()))
+            saved = self.db.execute('SELECT endpoint_id,state FROM deliveries WHERE message_id=?', (msg['message_id'],)).fetchone()
+            if transferred and (saved['endpoint_id'] != ep['endpoint_id'] or saved['state'] == 'received'):
+                from native_consumer import _hook_binding
+                from native_notice import bind_actor
+                native, _ = _hook_binding(self, ep)
+                current = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=msg['message_id'])
+                bind_actor(self.db, ep, native, current, reconcile_rejected=(saved['state'] == 'uncertain'))
         self.db.commit()
         for msg in claims:
             ep = self._current_delivery_endpoint(ep['endpoint_id'])
@@ -874,8 +985,14 @@ class Host:
                         if current.get('state') != 'presented':
                             if current.get('state') not in ('dispatching', 'uncertain'):
                                 continue
+                            actor = current.get('delivery_actor')
+                            binding = {}
+                            if actor:
+                                if actor.get('endpoint_id') != ep['endpoint_id'] or actor.get('incarnation') != ep['incarnation']:
+                                    continue
+                                binding = {k: actor[k] for k in ('incarnation', 'native_kind', 'native_id')}
                             current = self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid,
-                                               state='presented', evidence='bound native reference plus same-turn exact peer additionalContext recorded; not model consumption or explicit ACK')
+                                               state='presented', evidence='bound native reference plus same-turn exact peer additionalContext recorded; not model consumption or explicit ACK', **binding)
                         if current.get('message_id') == mid and current.get('state') == 'presented':
                             self.db.execute("UPDATE deliveries SET state='presented' WHERE message_id=?", (mid,))
                             self.db.commit()

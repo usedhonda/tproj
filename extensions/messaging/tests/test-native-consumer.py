@@ -42,7 +42,7 @@ class ConsumerTest(unittest.TestCase):
         self.calls = []
         def rpc(op, **args):
             self.calls.append(op)
-            return self.hub.dispatch(dict(op=op, host_id='host', host_token='token', **args))
+            return self.hub.dispatch(dict(args, op=op, host_id='host', host_token='token'))
         self.host.hub = rpc
         self.ep = dict(self.hub._row("SELECT * FROM endpoints WHERE endpoint_id='recipient'"), project_path=str(self.work))
         self.hub.dispatch(dict(op='submit', host_id='host', host_token='token', message={
@@ -57,6 +57,231 @@ class ConsumerTest(unittest.TestCase):
         self.patch_home = patch.object(Path, 'home', return_value=self.home)
         self.patch_home.start()
         self.addCleanup(self.patch_home.stop)
+
+    def transfer(self):
+        old = dict(self.ep)
+        self.hub.dispatch(dict(op='endpoint_register', host_id='host', host_token='token', endpoint_id='successor',
+            participant_id='project:cdx', session='successor', pane='0', pid=2, pid_start='next-start', runtime_id='successor', platform='cdx'))
+        self.hub.dispatch(dict(op='native_attest', host_id='host', host_token='token', endpoint_id='successor',
+                              native_kind='thread_id', native_id=self.native))
+        self.ep = dict(self.hub._row("SELECT * FROM endpoints WHERE endpoint_id='successor'"), project_path=str(self.work))
+        proof = {k: old[k] for k in ('endpoint_id', 'incarnation', 'pid', 'pid_start')}
+        proof['reason'] = 'pid_absent'  # Synthetic trusted-input fixture, not actual OS death proof.
+        self.hub._handoff_native_delivery(dict(host_id='host', host_token='token', old_endpoint=old['endpoint_id'],
+            new_endpoint='successor', old_incarnation=old['incarnation'], new_incarnation=self.ep['incarnation'],
+            native_kind='thread_id', native_id=self.native), dead_owner=proof)
+        return old
+
+    def test_initial_discovery_attests_without_recipient_caller(self):
+        import host as host_module
+        import identity
+        # A newly discovered receive-only endpoint has never called caller().
+        self.hub.db.execute("DELETE FROM endpoint_native WHERE endpoint_id='recipient'")
+        self.hub.db.execute("UPDATE endpoints SET pid=4242,pid_start='100' WHERE endpoint_id='recipient'")
+        candidate = dict(self.ep, pid=4242, pid_start=100, session_id=self.native)
+        fresh = dict(pid_start=100, uid=os.getuid(), command='/fixture/codex')
+        self.host.config.update(host_id='host', native_queue_enabled=False)
+        with patch.object(host_module, 'discover_endpoints', return_value=[candidate]), patch.object(host_module, 'discover_tmux_endpoints', return_value=[]), patch.object(identity, '_process_info', return_value=fresh):
+            self.host.refresh()
+            self.assertIsNone(self.hub._row("SELECT * FROM endpoint_native WHERE endpoint_id='recipient'"))
+            self.host.config['native_queue_enabled'] = True
+            hidden = self.transcript.with_suffix('.hidden')
+            self.transcript.rename(hidden)
+            try:
+                self.host.refresh()
+                self.assertIsNone(self.hub._row("SELECT * FROM endpoint_native WHERE endpoint_id='recipient'"))
+            finally:
+                hidden.rename(self.transcript)
+            for invalid in (dict(fresh, uid=os.getuid()+1), dict(fresh, pid_start=101),
+                            dict(fresh, command='/fixture/unrelated')):
+                with patch.object(identity, '_process_info', return_value=invalid):
+                    self.host.refresh()
+                self.assertIsNone(self.hub._row("SELECT * FROM endpoint_native WHERE endpoint_id='recipient'"))
+            self.host.refresh()
+            saved = self.hub._row("SELECT * FROM endpoint_native WHERE endpoint_id='recipient'")
+            self.assertIsNotNone(saved)
+            self.assertEqual((saved['native_kind'], saved['native_id']), ('session_id', self.native))
+            # Later equal thread-label discovery preserves the original kind.
+            candidate['thread_id'] = self.native
+            self.host.refresh()
+            self.assertEqual(self.hub._row("SELECT native_kind FROM endpoint_native WHERE endpoint_id='recipient'")[0], 'session_id')
+        self.assertEqual(self.calls.count('native_attest'), 1)
+        self.assertNotIn('native_handoff', self.calls)
+        self.assertEqual(self.hub._row("SELECT recipient_endpoint FROM messages WHERE message_id='original'")[0], 'recipient')
+
+    def test_host_refresh_uses_os_death_and_independent_native_header(self):
+        # A session-only old label may gain an equal thread label on discovery.
+        # A new endpoint must not pre-pin thread_id before handoff inherits kind.
+        self.hub.db.execute("DELETE FROM endpoint_native WHERE endpoint_id='recipient'")
+        self.hub.dispatch(dict(op='native_attest', host_id='host', host_token='token',
+                              endpoint_id='recipient', native_kind='session_id', native_id=self.native))
+        import subprocess
+        import identity
+        import host as host_module
+        processes = [subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)', 'codex-fixture'],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                     for _ in range(2)]
+        def cleanup():
+            for process in processes:
+                if process.poll() is None: process.terminate()
+                process.wait(timeout=5)
+        self.addCleanup(cleanup)
+        old_process, new_process = processes
+        old_info, new_info = [identity._process_info(process.pid) for process in processes]
+        # Fixture registration represents an actual OS PID/start incarnation;
+        # these Python stubs are not real Codex/provider processes.
+        self.hub.db.execute('UPDATE endpoints SET pid=?,pid_start=? WHERE endpoint_id=?',
+                            (old_process.pid, str(old_info['pid_start']), 'recipient'))
+        self.host.config.update(host_id='host', native_queue_enabled=True)
+        candidate = dict(self.ep, endpoint_id='os-successor', pid=new_process.pid, pid_start=new_info['pid_start'],
+                         session='replacement', runtime_id='replacement', thread_id=self.native, session_id=self.native)
+        with patch.object(host_module, 'discover_endpoints', return_value=[candidate]), patch.object(host_module, 'discover_tmux_endpoints', return_value=[]):
+            self.host.refresh()
+            self.assertEqual(self.hub._row("SELECT retired FROM endpoints WHERE endpoint_id='recipient'")[0], 0)
+            self.assertNotIn('native_handoff', self.calls)
+            old_process.terminate()
+            old_process.wait(timeout=5)
+            hidden = self.transcript.with_suffix('.hidden')
+            self.transcript.rename(hidden)
+            try:
+                self.host.refresh()
+                self.assertEqual(self.hub._row("SELECT retired FROM endpoints WHERE endpoint_id='recipient'")[0], 0)
+                self.assertNotIn('native_handoff', self.calls)
+            finally: hidden.rename(self.transcript)
+            self.host.refresh()
+        owner = self.hub._row("SELECT * FROM native_delivery_owners WHERE message_id='original'")
+        self.assertEqual(owner['actor_endpoint'], 'os-successor')
+        self.assertEqual(self.hub._row("SELECT native_kind FROM endpoint_native WHERE endpoint_id='os-successor'")[0], 'session_id')
+        self.assertEqual(self.hub._row("SELECT retired FROM endpoints WHERE endpoint_id='recipient'")[0], 1)
+        self.assertEqual(self.hub._row("SELECT recipient_endpoint FROM messages WHERE message_id='original'")[0], 'recipient')
+        self.assertEqual(self.calls.count('native_handoff'), 1)
+        self.ep = next(ep for ep in self.host.endpoints if ep['endpoint_id'] == 'os-successor')
+        with patch.object(self.host, 'caller', return_value=self.ep), self.assertRaises(HubError) as public:
+            self.host.dispatch(dict(op='native_handoff', dead_owner={'reason': 'pid_absent'}), 1, os.getuid())
+        self.assertEqual(public.exception.code, 'unknown_op')
+        self.assertEqual(self.calls.count('native_handoff'), 1)
+
+    def test_explicit_old_reservation_rejection_reconciles_only_after_handoff(self):
+        rpc = self.host.hub
+        def replace_before_reserve(op, **args):
+            if op == 'native_begin_present' and args['endpoint_id'] == 'recipient':
+                self.transfer()
+            return rpc(op, **args)
+        self.host.hub = replace_before_reserve
+        with self.assertRaises(HubError) as rejected: self.resolve()
+        self.assertEqual(rejected.exception.code, 'stale_session')
+        self.host.hub = rpc
+        self.assertEqual(self.host.db.execute('SELECT state FROM deliveries').fetchone()[0], 'uncertain')
+        with patch.object(self.host, '_current_delivery_endpoint', return_value=self.ep):
+            self.host._deliver_endpoint(self.ep)
+        row = self.host.db.execute('SELECT * FROM deliveries').fetchone()
+        self.assertEqual((row['endpoint_id'], row['state']), ('successor', 'received'))
+        saved = json.loads(row['envelope'])
+        self.assertEqual(saved['_native_reservation_attempt']['outcome'], 'rejected')
+        self.assertEqual(saved['_native_reservation_attempt']['reconciled_to']['generation'], 1)
+        self.assertNotIn('_native_context_reference', saved)
+        result = self.resolve()
+        self.assertIn(self.original['body'], result['context'])
+        self.assertEqual(self.hub._row("SELECT recipient_endpoint FROM messages WHERE message_id='original'")[0], 'recipient')
+
+    def test_rejected_old_attempt_cannot_reconcile_a_later_global_reservation(self):
+        rpc = self.host.hub
+        def replace_before_reserve(op, **args):
+            if op == 'native_begin_present' and args['endpoint_id'] == 'recipient': self.transfer()
+            return rpc(op, **args)
+        self.host.hub = replace_before_reserve
+        with self.assertRaises(HubError): self.resolve()
+        self.host.hub = rpc
+        from native_notice import bind_actor, content_digest
+        native = dict(endpoint_id='successor', native_kind='thread_id', native_id=self.native)
+        rpc('native_begin_present', message_id='original', incarnation=self.ep['incarnation'],
+            content_hash=content_digest(self.original), **native)
+        current = rpc('query', endpoint_id='successor', message_id='original')
+        before = tuple(self.host.db.execute('SELECT * FROM deliveries').fetchone())
+        with self.assertRaises(HubError): bind_actor(self.host.db, self.ep, native, current, reconcile_rejected=True)
+        self.assertEqual(tuple(self.host.db.execute('SELECT * FROM deliveries').fetchone()), before)
+        self.assertEqual(current['state'], 'dispatching')
+
+    def test_unknown_old_reservation_never_reconciles_even_if_new_actor_is_pending(self):
+        rpc = self.host.hub
+        def unknown_before_reserve(op, **args):
+            if op == 'native_begin_present':
+                self.transfer()
+                raise OSError('fixture unknown response; original must remain fenced')
+            return rpc(op, **args)
+        self.host.hub = unknown_before_reserve
+        with self.assertRaises(OSError): self.resolve()
+        self.host.hub = rpc
+        before = tuple(self.host.db.execute('SELECT * FROM deliveries').fetchone())
+        with patch.object(self.host, '_current_delivery_endpoint', return_value=self.ep), self.assertRaises(HubError):
+            self.host._deliver_endpoint(self.ep)
+        self.host.db.rollback()
+        self.assertEqual(tuple(self.host.db.execute('SELECT * FROM deliveries').fetchone()), before)
+        self.assertEqual(self.hub._row("SELECT state FROM messages WHERE message_id='original'")[0], 'adapter_received')
+
+    def test_new_local_claim_keeps_reserved_transfer_recoverable(self):
+        self.transfer()
+        # Fixture begins before the first local claim; not recovery by deleting
+        # a production journal or discarding unknown effects.
+        self.host.db.execute('DELETE FROM native_notice_metadata')
+        self.host.db.execute('DELETE FROM deliveries')
+        self.host.db.commit()
+        with patch.object(self.host, '_current_delivery_endpoint', return_value=self.ep):
+            self.host._deliver_endpoint(self.ep)
+        saved = json.loads(self.host.db.execute('SELECT envelope FROM deliveries').fetchone()[0])
+        self.assertNotIn('delivery_actor', saved)
+        self.notice = prepare(self.host.db, self.ep, dict(endpoint_id='successor', native_kind='thread_id', native_id=self.native), saved)
+        self.host.db.commit()
+        self.payload['prompt'] = self.notice['prompt']
+        self.resolve()
+        # This case targets the journal/receipt branch. Actual same-turn record
+        # verification is covered separately by the transferred integration case.
+        with patch.object(self.host, '_current_delivery_endpoint', return_value=self.ep), patch.object(consumer, 'recover', return_value=True):
+            self.host._deliver_endpoint(self.ep)
+        self.assertEqual(self.host.db.execute('SELECT state FROM deliveries').fetchone()[0], 'presented')
+
+    def test_current_actor_generation_mismatch_stops_before_body_reservation(self):
+        self.transfer()
+        with patch.object(self.host, '_current_delivery_endpoint', return_value=self.ep):
+            self.host._deliver_endpoint(self.ep)
+        row = self.host.db.execute('SELECT envelope FROM deliveries').fetchone()
+        envelope = json.loads(row[0])
+        envelope['_native_actor']['generation'] += 1
+        self.host.db.execute('UPDATE deliveries SET envelope=?', (json.dumps(envelope),))
+        self.host.db.commit()
+        with self.assertRaises(HubError): self.resolve()
+        self.assertNotIn('native_begin_present', self.calls)
+        self.assertEqual(self.host.db.execute('SELECT state FROM deliveries').fetchone()[0], 'received')
+
+    def test_transferred_original_resolve_recover_and_host_receipt(self):
+        old = self.transfer()
+        self.host.config['native_queue_enabled'] = False
+        current = self.host.hub('query', endpoint_id='successor', message_id='original')
+        self.assertTrue(current['delivery_summary']['new_presentation_eligible'])
+        origin = tuple(self.host.db.execute('SELECT * FROM native_notice_metadata').fetchone())
+        with patch.object(self.host, '_current_delivery_endpoint', return_value=self.ep):
+            self.host._deliver_endpoint(self.ep)
+        self.assertEqual(self.host.db.execute('SELECT endpoint_id FROM deliveries').fetchone()[0], 'successor')
+        self.assertEqual(tuple(self.host.db.execute('SELECT * FROM native_notice_metadata').fetchone()), origin)
+        result = self.resolve()
+        self.assertIn(self.original['body'], result['context'])
+        for role, text, kind in [('user', self.notice['prompt'], 'user.text'), ('developer', result['context'], 'hooks.additional_context')]:
+            record = dict(type='response_item', payload=dict(type='message', role=role, id=role+'-record',
+                content=[dict(type='input_text', text=text)], internal_chat_message_metadata_passthrough=dict(
+                    turn_id='current-turn', content_item_kinds=[kind])))
+            with self.transcript.open('a') as f: f.write(json.dumps(record)+'\n')
+        self.assertTrue(consumer.recover(self.host, self.ep, 'original'))
+        with patch.object(self.host, '_current_delivery_endpoint', return_value=self.ep):
+            self.host._deliver_endpoint(self.ep)
+        self.assertEqual(self.hub._row("SELECT state FROM messages WHERE message_id='original'")[0], 'presented')
+        self.assertEqual(self.host.db.execute('SELECT state FROM deliveries').fetchone()[0], 'presented')
+        self.assertEqual(self.hub._row("SELECT recipient_endpoint FROM messages WHERE message_id='original'")[0], old['endpoint_id'])
+        with self.assertRaises(HubError): consumer.resolve(self.host, old, {'hook': self.payload})
+        self.host.hub('submit', message=dict(message_id='successor-reply', sender_endpoint='successor',
+                      in_reply_to='original', thread_id=self.original['thread_id'], body='received'))
+        summary = self.host.hub('query', endpoint_id='sender', message_id='original')
+        self.assertEqual(summary['response_state'], 'recipient_replied')
+        self.assertEqual(summary['recipient_reply_message_ids'], ['successor-reply'])
 
     def resolve(self, **fields):
         return consumer.resolve(self.host, self.ep, {'hook': dict(self.payload, **fields)})
@@ -237,7 +462,7 @@ class ConsumerTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(HubError): self.resolve(**bad)
         self.host.config['native_consumer_enabled'] = False
         caps = self.host.dispatch({'op': 'messaging_capabilities'}, 123, os.getuid())
-        self.assertEqual(caps['native_consumer'], {'backend_version': 2, 'enabled': False})
+        self.assertEqual(caps['native_consumer'], {'backend_version': 4, 'enabled': False})
         with self.assertRaises(HubError): self.resolve()
         self.assertNotIn('native_begin_present', self.calls)
         self.assertEqual(self.host.db.execute('SELECT state FROM deliveries').fetchone()[0], 'received')
@@ -252,6 +477,9 @@ class ConsumerTest(unittest.TestCase):
         with self.assertRaises(HubError): self.resolve()
         self.assertEqual(self.host.db.execute('SELECT state FROM deliveries').fetchone()[0], 'uncertain')
         self.assertEqual(self.hub._row("SELECT state FROM messages WHERE message_id='original'")[0], 'cancelled')
+        attempt = json.loads(self.host.db.execute('SELECT envelope FROM deliveries').fetchone()[0])['_native_reservation_attempt']
+        self.assertEqual(attempt['outcome'], 'rejected')
+        self.assertEqual(attempt['error'], 'presentation_unavailable')
 
     def test_lost_permission_response_survives_reopen_without_second_reservation(self):
         rpc = self.host.hub
@@ -262,6 +490,9 @@ class ConsumerTest(unittest.TestCase):
         self.host.hub = lose_response
         with self.assertRaises(OSError): self.resolve()
         self.assertEqual(self.hub._row("SELECT state FROM messages WHERE message_id='original'")[0], 'dispatching')
+        attempt = json.loads(self.host.db.execute('SELECT envelope FROM deliveries').fetchone()[0])['_native_reservation_attempt']
+        self.assertEqual(attempt['outcome'], 'unknown')
+        self.assertIsNone(attempt['error'])
         self.host.db.close()
         import sqlite3
         self.host.db = sqlite3.connect(self.home / 'journal.db')

@@ -27,7 +27,7 @@ except ImportError:  # allow the installed single-file entrypoint to be invoked 
     from native_notice import content_digest
 
 
-HUB_NATIVE_VERSION = 2
+HUB_NATIVE_VERSION = 3
 
 WAIT_REASONS = ('waiting_input', 'busy', 'draft_protected', 'endpoint_unavailable', 'adapter_error', 'auth_required',
                 'native_queue_accepted', 'native_queue_pending', 'native_publication_unknown', 'native_retry_pending')
@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS endpoints (endpoint_id TEXT PRIMARY KEY, participant_
 CREATE TABLE IF NOT EXISTS endpoint_native (endpoint_id TEXT PRIMARY KEY, native_kind TEXT NOT NULL, native_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS messages (message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, in_reply_to TEXT, sender_endpoint TEXT NOT NULL, target_address TEXT NOT NULL, recipient_endpoint TEXT, body TEXT NOT NULL, kind TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL, payload_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'accepted', adapter_received_at REAL, UNIQUE(message_id));
 CREATE TABLE IF NOT EXISTS receipts (message_id TEXT PRIMARY KEY, state TEXT NOT NULL, evidence TEXT, at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS native_delivery_owners (message_id TEXT PRIMARY KEY REFERENCES messages(message_id), original_recipient TEXT NOT NULL, actor_endpoint TEXT NOT NULL, actor_incarnation TEXT NOT NULL, content_hash TEXT NOT NULL, generation INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS message_recipient ON messages(recipient_endpoint, state, expires_at);
 """
 
@@ -184,6 +185,78 @@ class Hub:
             raise HubError("identity_rejected", "endpoint native identity is immutable")
         self.db.execute("INSERT OR IGNORE INTO endpoint_native VALUES(?,?,?)", (ep["endpoint_id"], kind, native))
         return {"endpoint_id": ep["endpoint_id"]}
+
+    def _handoff_native_delivery(self, req, *, dead_owner):
+        """Owner-Host transaction core; not exposed by the public Host API.
+
+        dead_owner comes only from the authenticated owner Host's independent PID/start
+        observation, never a peer body/public Host caller flag. The owner Host
+        gates this path on native capability and independent replacement header.
+        Original message rows, notice tokens and content digests stay immutable.
+        """
+        host = self._auth(req)
+        self._tx()
+        try:
+            old = self._row('SELECT * FROM endpoints WHERE endpoint_id=?', (req.get('old_endpoint'),))
+            new = self._host_endpoint(host, req.get('new_endpoint'))
+            if (not old or old['host_id'] != host or old['endpoint_id'] == new['endpoint_id']
+                    or any(old[k] != new[k] for k in ('participant_id', 'platform'))
+                    or new['platform'] != 'cdx' or self._now() - new['last_heartbeat'] > 30
+                    or req.get('old_incarnation') != old['incarnation']
+                    or req.get('new_incarnation') != new['incarnation']):
+                raise HubError('identity_rejected', 'handoff endpoint continuity mismatch')
+            markers = [self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (ep['endpoint_id'],))
+                       for ep in (old, new)]
+            if (not all(markers) or any(markers[0][k] != markers[1][k] for k in ('native_kind', 'native_id'))
+                    or any(req.get(k) != markers[1][k] for k in ('native_kind', 'native_id'))):
+                raise HubError('identity_rejected', 'handoff requires independent matching native attestations')
+            identity = {key: req.get(key) for key in ('old_endpoint', 'new_endpoint', 'old_incarnation',
+                                                       'new_incarnation', 'native_kind', 'native_id')}
+            digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+            key = 'native_handoff:' + hashlib.sha256(json.dumps([old['endpoint_id'], old['incarnation']]).encode()).hexdigest()
+            prior = self._row('SELECT value FROM metadata WHERE key=?', (key,))
+            if prior:
+                saved = json.loads(prior[0])
+                if saved['digest'] != digest:
+                    raise HubError('handoff_conflict', 'old incarnation already handed off elsewhere')
+                self._commit()
+                return dict(saved['result'], duplicate=True)
+            if old['retired']:
+                raise HubError('stale_session', 'historical retired originals cannot be revived')
+            if (not isinstance(dead_owner, dict)
+                    or any(str(dead_owner.get(k)) != str(old[k]) for k in ('endpoint_id', 'incarnation', 'pid', 'pid_start'))
+                    or dead_owner.get('reason') not in ('pid_absent', 'pid_start_changed')
+                    or (dead_owner['reason'] == 'pid_start_changed'
+                        and (dead_owner.get('observed_pid_start') is None
+                             or str(dead_owner['observed_pid_start']) == str(old['pid_start'])))):
+                raise HubError('identity_rejected', 'independent dead-owner incarnation evidence required')
+            others = self._row('SELECT 1 FROM endpoints WHERE participant_id=? AND retired=0 AND endpoint_id NOT IN (?,?) LIMIT 1',
+                               (old['participant_id'], old['endpoint_id'], new['endpoint_id']))
+            if others:
+                raise HubError('ambiguous_target', 'another live owner prevents handoff')
+            # Read the effective current actor, never rewrite original recipient.
+            rows = self.db.execute("SELECT m.*,o.generation AS owner_generation FROM messages m LEFT JOIN native_delivery_owners o ON o.message_id=m.message_id WHERE COALESCE(o.actor_endpoint,m.recipient_endpoint)=? AND (o.message_id IS NULL OR o.actor_incarnation=?) AND m.state IN ('accepted','queued','adapter_received') AND m.expires_at>? AND NOT EXISTS (SELECT 1 FROM messages r JOIN endpoints re ON re.endpoint_id=r.sender_endpoint JOIN endpoint_native rn ON rn.endpoint_id=re.endpoint_id WHERE r.in_reply_to=m.message_id AND r.thread_id=m.thread_id AND (r.sender_endpoint=m.recipient_endpoint OR (re.participant_id=? AND re.host_id=? AND re.platform='cdx' AND rn.native_kind=? AND rn.native_id=?)))",
+                                   (old['endpoint_id'], old['incarnation'], self._now(), old['participant_id'], host,
+                                    markers[1]['native_kind'], markers[1]['native_id']))
+            # Finish reading the actor join before changing it. Retain only
+            # bounded-per-row metadata, not another copy of every message body.
+            grants = [(row['message_id'], row['recipient_endpoint'], new['endpoint_id'], new['incarnation'],
+                       content_digest(dict(row)), (row['owner_generation'] or 0) + 1) for row in rows]
+            for grant in grants:
+                self.db.execute('INSERT INTO native_delivery_owners VALUES(?,?,?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET actor_endpoint=excluded.actor_endpoint,actor_incarnation=excluded.actor_incarnation,generation=excluded.generation', grant)
+            count = len(grants)
+            # Late old native_begin_present/receipt recheck retirement while
+            # holding this same SQLite write lock, so cannot use an old claim.
+            self.db.execute('UPDATE endpoints SET retired=1 WHERE endpoint_id=? AND incarnation=?',
+                            (old['endpoint_id'], old['incarnation']))
+            result = dict(transferred=count, old_endpoint=old['endpoint_id'], new_endpoint=new['endpoint_id'])
+            self.db.execute('INSERT INTO metadata(key,value) VALUES(?,?)',
+                            (key, json.dumps(dict(digest=digest, result=result), sort_keys=True)))
+            self._commit()
+            return result
+        except Exception:
+            self._rollback()
+            raise
 
     def _same_native_party(self, current, historical_id):
         if current["endpoint_id"] == historical_id:
@@ -395,6 +468,11 @@ class Hub:
         size = 0
         for row in rows:
             item = dict(row)
+            owner = self._row('SELECT o.*,n.native_kind,n.native_id FROM native_delivery_owners o JOIN endpoint_native n ON n.endpoint_id=o.actor_endpoint WHERE o.message_id=?', (item['message_id'],))
+            if owner:
+                item['delivery_actor'] = dict(endpoint_id=owner['actor_endpoint'], incarnation=owner['actor_incarnation'],
+                    native_kind=owner['native_kind'], native_id=owner['native_id'], generation=owner['generation'],
+                    original_recipient=owner['original_recipient'], content_hash=owner['content_hash'])
             q = self._row("SELECT p.address FROM participants p JOIN endpoints e ON e.participant_id=p.participant_id WHERE e.endpoint_id=?", (item["sender_endpoint"],))
             item["sender_address"] = q[0] if q else None
             encoded = len(json.dumps(item, ensure_ascii=False).encode())
@@ -407,6 +485,33 @@ class Hub:
                 break
             out.append(item); size += encoded
         return out
+
+    def _delivery_actor(self, msg, ep, *, native=False):
+        """Validate current delivery right without changing immutable origin."""
+        owner = self._row('SELECT * FROM native_delivery_owners WHERE message_id=?', (msg['message_id'],))
+        if owner:
+            if (owner['original_recipient'] != msg['recipient_endpoint']
+                    or owner['actor_endpoint'] != ep['endpoint_id']
+                    or owner['actor_incarnation'] != ep['incarnation']
+                    or owner['content_hash'] != content_digest(dict(msg))):
+                raise HubError('identity_rejected', 'current native delivery owner mismatch')
+            if not native:
+                raise HubError('identity_rejected', 'transferred originals require native presentation')
+        elif msg['recipient_endpoint'] != ep['endpoint_id']:
+            raise HubError('unauthorized', 'only current recipient may present')
+        return owner
+
+    def _actor_reservation(self, msg, ep, owner, req):
+        marker = self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (ep['endpoint_id'],))
+        if (not marker or ep['platform'] != 'cdx'
+                or req.get('incarnation') != ep['incarnation']
+                or any(req.get(k) != marker[k] for k in ('native_kind', 'native_id'))):
+            raise HubError('identity_rejected', 'transferred receipt requires current native binding')
+        value = dict(endpoint_id=ep['endpoint_id'], incarnation=ep['incarnation'],
+                     native_kind=marker['native_kind'], native_id=marker['native_id'],
+                     content_hash=owner['content_hash'], generation=owner['generation'])
+        key = 'native_actor_reserved:' + hashlib.sha256(msg['message_id'].encode()).hexdigest()
+        return key, json.dumps(value, sort_keys=True)
 
     def native_pending(self, req, *, drain=False):
         """Coalesced wake generation derived atomically from existing mailbox rows.
@@ -427,11 +532,11 @@ class Hub:
                     or req.get('native_kind') != marker['native_kind']
                     or req.get('native_id') != marker['native_id']):
                 raise HubError('identity_rejected', 'pending native binding mismatch')
-            generation = self._row('SELECT COALESCE(MAX(rowid),0) FROM messages WHERE recipient_endpoint=?',
-                                   (ep['endpoint_id'],))[0]
+            generation = self._row('SELECT COALESCE(MAX(m.rowid),0) FROM messages m LEFT JOIN native_delivery_owners o ON o.message_id=m.message_id WHERE COALESCE(o.actor_endpoint,m.recipient_endpoint)=? AND (o.message_id IS NULL OR o.actor_incarnation=?)',
+                                   (ep['endpoint_id'], ep['incarnation']))[0]
             now = self._now()
-            oldest = self._row("SELECT MIN(created_at) FROM messages m WHERE recipient_endpoint=? AND expires_at>? AND state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.in_reply_to=m.message_id AND r.sender_endpoint=m.recipient_endpoint)",
-                               (ep['endpoint_id'], now))[0]
+            oldest = self._row("SELECT MIN(m.created_at) FROM messages m LEFT JOIN native_delivery_owners o ON o.message_id=m.message_id WHERE COALESCE(o.actor_endpoint,m.recipient_endpoint)=? AND (o.message_id IS NULL OR o.actor_incarnation=?) AND expires_at>? AND state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.in_reply_to=m.message_id AND r.sender_endpoint=COALESCE(o.actor_endpoint,m.recipient_endpoint))",
+                               (ep['endpoint_id'], ep['incarnation'], now))[0]
             pending = oldest is not None
             key = 'native_drained:' + ep['endpoint_id']
             saved = self._row('SELECT value FROM metadata WHERE key=?', (key,))
@@ -445,7 +550,7 @@ class Hub:
                 drained_generation = generation
                 cleared = True
             result = dict(generation=generation, drained_generation=drained_generation,
-                          pending=pending, wake_needed=pending and generation > drained_generation,
+                          pending=pending, wake_needed=pending,
                           oldest_pending_age_seconds=max(0.0, now - oldest) if pending else None)
             if drain: result['cleared'] = cleared
             self._commit()
@@ -457,19 +562,20 @@ class Hub:
     def claim(self, req):
         host=self._auth(req)
         if self._maintenance() == "stopped": raise HubError("maintenance", "hub delivery is paused")
-        ep=self._host_endpoint(host,req.get("endpoint_id")); now=self._now()
+        now=self._now()
         after = req.get('after_sequence')
         if after is not None and (type(after) is not int or after < 0 or after > 9223372036854775807):
             raise HubError('invalid_request', 'invalid claim sequence')
         self._tx()
         try:
+            ep=self._host_endpoint(host,req.get("endpoint_id"))
             limit=min(max(int(req.get("limit",100)),1),1000)
             # Optional keyset scan on the existing immutable insertion sequence.
             # Default callers retain their historical created-at ordering.
             boundary = ' AND m.rowid>?' if after is not None else ''
             order = 'm.rowid' if after is not None else 'm.created_at,m.message_id'
-            params = (ep['endpoint_id'], now) + ((after,) if after is not None else ()) + (limit,)
-            rows=self.db.execute("SELECT m.rowid AS sequence,m.* FROM messages m WHERE m.recipient_endpoint=? AND m.expires_at>? AND m.state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages reply WHERE reply.in_reply_to=m.message_id AND reply.sender_endpoint=m.recipient_endpoint)" + boundary + " ORDER BY " + order + " LIMIT ?", params).fetchall()
+            params = (ep['endpoint_id'], ep['incarnation'], now) + ((after,) if after is not None else ()) + (limit,)
+            rows=self.db.execute("SELECT m.rowid AS sequence,m.* FROM messages m LEFT JOIN native_delivery_owners o ON o.message_id=m.message_id WHERE COALESCE(o.actor_endpoint,m.recipient_endpoint)=? AND (o.message_id IS NULL OR o.actor_incarnation=?) AND m.expires_at>? AND m.state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages reply WHERE reply.in_reply_to=m.message_id AND reply.sender_endpoint=COALESCE(o.actor_endpoint,m.recipient_endpoint))" + boundary + " ORDER BY " + order + " LIMIT ?", params).fetchall()
             scanned_sequence = rows[-1]['sequence'] if rows else 0
             if self._maintenance() == "probe": rows=[r for r in rows if r["message_id"] in set(self.config.get("probe_message_ids", []))]
             rows=self.message_views(rows)
@@ -494,8 +600,12 @@ class Hub:
             if not msg:
                 raise HubError("not_found", "message not found")
             ep = self._host_endpoint(host, req.get("endpoint_id"))
-            if msg["recipient_endpoint"] != ep["endpoint_id"]:
-                raise HubError("unauthorized", "only recipient may receipt")
+            owner = self._delivery_actor(msg, ep, native=True)
+            if owner:
+                key, expected = self._actor_reservation(msg, ep, owner, req)
+                saved = self._row('SELECT value FROM metadata WHERE key=?', (key,))
+                if state == 'presented' and (not saved or saved[0] != expected):
+                    raise HubError('invalid_receipt', 'transferred presentation requires native reservation')
             current = msg["state"]
             if current in ("cancelled", "expired", "stale_session", "rejected"):
                 if state != current:
@@ -521,8 +631,7 @@ class Hub:
             ep = self._host_endpoint(host, req.get("endpoint_id"))
             msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
             if not msg: raise HubError("not_found", "message not found")
-            if msg["recipient_endpoint"] != ep["endpoint_id"]:
-                raise HubError("unauthorized", "only recipient may begin presentation")
+            owner = self._delivery_actor(msg, ep, native=native)
             if native:
                 marker = self._row("SELECT * FROM endpoint_native WHERE endpoint_id=?", (ep["endpoint_id"],))
                 if (ep["platform"] != "cdx" or not marker
@@ -540,9 +649,12 @@ class Hub:
                 raise HubError("presentation_unavailable", "message is terminal or presentation has already begun")
             if msg["expires_at"] <= self._now():
                 raise HubError("expired", "message expired before presentation")
-            if self._row("SELECT 1 FROM messages WHERE in_reply_to=? AND sender_endpoint=? LIMIT 1", (msg["message_id"], msg["recipient_endpoint"])):
+            if self._row("SELECT 1 FROM messages WHERE in_reply_to=? AND sender_endpoint IN (?,?) LIMIT 1", (msg["message_id"], msg["recipient_endpoint"], ep["endpoint_id"])):
                 raise HubError("presentation_unavailable", "recipient already replied to message")
             self.db.execute("UPDATE messages SET state='dispatching' WHERE message_id=?", (msg["message_id"],))
+            if native and owner:
+                key, value = self._actor_reservation(msg, ep, owner, req)
+                self.db.execute('INSERT INTO metadata(key,value) VALUES(?,?)', (key, value))
             self._commit()
             result = {"message_id": msg["message_id"], "state": "dispatching"}
             if native:
@@ -555,9 +667,9 @@ class Hub:
     def cancel(self, req):
         """Cancel only before presentation starts; cancellation never stops a task."""
         host = self._auth(req)
-        ep = self._host_endpoint(host, req.get("endpoint_id"))
         self._tx()
         try:
+            ep = self._host_endpoint(host, req.get("endpoint_id"))
             msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
             if not msg: raise HubError("not_found", "message not found")
             if msg["sender_endpoint"] != ep["endpoint_id"]:
@@ -575,8 +687,7 @@ class Hub:
         ep = self._host_endpoint(host, req.get("endpoint_id"))
         msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
         if not msg: raise HubError("not_found", "message not found")
-        if msg["recipient_endpoint"] != ep["endpoint_id"]:
-            raise HubError("unauthorized", "only recipient may report delivery status")
+        self._delivery_actor(msg, ep, native=True)
         reason = req.get("reason")
         if reason not in WAIT_REASONS:
             raise HubError("invalid_status", "invalid delivery reason")
@@ -600,9 +711,25 @@ class Hub:
 
     def response_evidence(self, message):
         # A linked row alone is not proof of a response by the pinned recipient.
-        args = (message['message_id'], message['recipient_endpoint'],
-                message['sender_endpoint'], message['thread_id'])
-        where = 'in_reply_to=? AND sender_endpoint=? AND recipient_endpoint=? AND thread_id=?'
+        owner = self._row('SELECT actor_endpoint FROM native_delivery_owners WHERE message_id=?', (message['message_id'],))
+        current = owner['actor_endpoint'] if owner else message['recipient_endpoint']
+        # Historical evidence, not a live routing/authorization decision. Native
+        # attestations are immutable; retirement must not erase an accepted reply.
+        def party(column):
+            return f"""({column}=? OR EXISTS (
+                SELECT 1 FROM endpoints old JOIN endpoints reply
+                  ON reply.endpoint_id={column}
+                JOIN endpoint_native n ON n.endpoint_id=old.endpoint_id
+                JOIN endpoint_native r ON r.endpoint_id=reply.endpoint_id
+                WHERE old.endpoint_id=? AND old.host_id=reply.host_id
+                  AND old.participant_id=reply.participant_id
+                  AND old.platform=reply.platform
+                  AND n.native_kind=r.native_kind AND n.native_id=r.native_id))"""
+        args = (message['message_id'], message['thread_id'], current,
+                message['recipient_endpoint'], message['recipient_endpoint'],
+                message['sender_endpoint'], message['sender_endpoint'])
+        where = ('in_reply_to=? AND thread_id=? AND (sender_endpoint=? OR '
+                 + party('sender_endpoint') + ') AND ' + party('recipient_endpoint'))
         count = self._row('SELECT COUNT(*) AS n FROM messages WHERE ' + where, args)['n']
         ids = [row['message_id'] for row in self.db.execute(
             'SELECT message_id FROM messages WHERE ' + where + ' ORDER BY created_at,message_id LIMIT 20', args)]
@@ -615,7 +742,11 @@ class Hub:
         now = self._now()
         elapsed = message['expires_at'] <= now
         receipt = self._row('SELECT state,evidence,at FROM receipts WHERE message_id=?', (message['message_id'],))
-        endpoint = self._row('SELECT retired,incarnation FROM endpoints WHERE endpoint_id=?', (message['recipient_endpoint'],))
+        owner = self._row('SELECT actor_endpoint,actor_incarnation FROM native_delivery_owners WHERE message_id=?', (message['message_id'],))
+        actor_id = owner['actor_endpoint'] if owner else message['recipient_endpoint']
+        endpoint = self._row('SELECT retired,incarnation FROM endpoints WHERE endpoint_id=?', (actor_id,))
+        if owner and endpoint and owner['actor_incarnation'] != endpoint['incarnation']:
+            endpoint = None
         presented = state == 'presented' or bool(receipt and receipt['state'] == 'presented')
         replied = response['response_state'] == 'recipient_replied'
         terminal = state in ('cancelled', 'expired', 'rejected', 'stale_session')
@@ -645,10 +776,10 @@ class Hub:
             try: evidence = json.loads(receipt['evidence'])
             except (ValueError, TypeError): evidence = {}
             bound = (isinstance(evidence, dict) and endpoint
-                     and evidence.get('endpoint_id') == message['recipient_endpoint']
+                     and evidence.get('endpoint_id') == actor_id
                      and evidence.get('incarnation') == endpoint['incarnation'])
             if bound and observed and observed.startswith('native_'):
-                marker = self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (message['recipient_endpoint'],))
+                marker = self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (actor_id,))
                 native = evidence.get('native_observation')
                 bound = bool(marker and isinstance(native, dict)
                              and native.get('incarnation') == endpoint['incarnation']
@@ -736,7 +867,7 @@ class Hub:
         self._auth(req)
         return {'capabilities': ['native_attest', 'native_continuity',
                                 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted',
-                                'native_begin_present', 'native_pending', 'native_drain'],
+                                'native_begin_present', 'native_pending', 'native_drain', 'native_handoff'],
                 'native_runtime': {'hub_version': HUB_NATIVE_VERSION}, 'peers': {}}
 
     def dispatch(self, req):
@@ -758,6 +889,7 @@ class Hub:
         if op=="directory_list": self._auth(req); return self.directory_list()
         if op=="directory_resolve": self._auth(req); p=self._participant(req["address"]); return dict(p)
         if op=="native_attest": return self.attest_native(req)
+        if op=="native_handoff": return self._handoff_native_delivery(req, dead_owner=req.get('dead_owner'))
         if op=="endpoint_register": return self.register(req)
         if op=="endpoint_retire":
             host=self._auth(req); self._host_endpoint(host,req["endpoint_id"]); self.db.execute("UPDATE endpoints SET retired=1 WHERE endpoint_id=?",(req["endpoint_id"],)); self.db.execute("UPDATE messages SET state='stale_session' WHERE recipient_endpoint=? AND state IN ('accepted','queued','adapter_received')",(req["endpoint_id"],)); return {"retired":req["endpoint_id"]}
