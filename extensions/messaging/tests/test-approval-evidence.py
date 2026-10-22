@@ -6,6 +6,21 @@ from protocol import HubError
 
 def rec(text):return {"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":text}]}}
 class EvidenceTest(unittest.TestCase):
+ def test_cc_native_metadata_cannot_create_or_bridge_owner_approval(self):
+  def cc(text,meta=False,role='user'):
+   return {'type':role,'isMeta':meta,'message':{'role':role,'content':text}}
+  scope='Change only the approved widget.'
+  peer=cc(scope,True)
+  for hashes in (None,[digest(scope)]):
+   with self.assertRaises(HubError):
+    validate_records([peer],'cc','Repair widget',scope,digest(scope),hashes)
+  owner=cc(scope)
+  self.assertEqual(validate_records([owner,peer],'cc','Repair widget',scope,digest(scope))['scope_hash'],digest(scope))
+  proposal=cc('<proposed_plan>'+scope+'</proposed_plan>',role='assistant')
+  with self.assertRaises(HubError):
+   validate_records([proposal,cc('external result',True),cc('すすめて')],'cc','Repair widget',scope,digest('すすめて'))
+  self.assertEqual(validate_records([proposal,cc('すすめて')],'cc','Repair widget',scope,digest('すすめて'))['scope_hash'],digest(scope))
+
  def test_summarized_intent_and_ordered_native_evidence(self):
   a,b="Change only the approved widget.","Include its existing test."
   self.assertEqual(validate_records([rec(a)],"cdx","Repair widget",a,digest(a))["scope_hash"],digest(a))

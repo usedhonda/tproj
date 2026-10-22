@@ -34,7 +34,15 @@ def matches_project(cwd, project):
     return observed_root is None or observed_root == root
 
 
+def _cc_metadata_user(record, platform):
+    # Native channel events are user-role records, but the CLI marks them as
+    # metadata. They cannot create a direct owner grant. Existing independently
+    # attested owner scope is unaffected by the turn that delivers peer data.
+    return platform != 'cdx' and record.get('type') == 'user' and record.get('isMeta') is True
+
+
 def texts(record, platform):
+    if _cc_metadata_user(record, platform): return None
     if platform == 'cdx':
         if record.get('type') != 'response_item': return None
         record = record.get('payload', {})
@@ -77,6 +85,11 @@ def validate_records(records, platform, intent, scope, evidence_hash, evidence_r
                 'evidence_hash': digest(json.dumps(evidence_records, separators=(',', ':')))}
     plan = None
     for record in records:
+        if _cc_metadata_user(record, platform):
+            # A rejected user-role event still consumes the pending proposal;
+            # it must not bridge a later confirmation to an older proposal.
+            plan = None
+            continue
         item = texts(record, platform)
         if not item: continue
         role,text = item

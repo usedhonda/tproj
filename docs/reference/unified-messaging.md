@@ -725,6 +725,14 @@ additional context. Neither this context nor its storage as a provider developer
 record is a direct user approval or new grant; existing authenticated KAI carries
 keep their independent stated scope. No body is silently truncated.
 
+Claude Code channel events are native user-role records marked `isMeta: true`.
+Such metadata records are not direct owner approval evidence, including when
+their exact body matches a requested scope or ordered evidence hash. They also
+consume a pending proposed-plan confirmation boundary. An independently recorded
+direct owner instruction remains valid; receiving peer data does not revoke that
+instruction or a separately authenticated KAI carry. This approval-source rule
+does not attest channel registration, model receipt, or production activation.
+
 A lost response or failure after local reservation leaves `uncertain`; subsequent
 resolve attempts never return the body again. A persisted native reference excludes
 that original from terminal paste and legacy user-prompt receipt matching. This is
