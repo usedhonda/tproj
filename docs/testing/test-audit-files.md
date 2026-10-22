@@ -2041,13 +2041,13 @@ Shellの検査位置 5 件はcase台帳の `T102` を参照。fixture setup/補�
 
 ## T103 — test-remote-setup-topology.sh
 
-[Test source](../../tests/test-remote-setup-topology.sh) · 56 lines · CI: `not-in-test-workflow` · `strengthen`
+[Test source](../../tests/test-remote-setup-topology.sh) · 56 lines · CI: `not-in-test-workflow` · `clarify`
 
 **守るもの:** remote配布集合とdrift分類
 
 **本番接点:** [tproj-remote-setup](../../bin/tproj-remote-setup)
 
-**証拠と限界:** fake SSH/tar、positive checkのexitを握り潰す。実remote反映なし
+**証拠と限界:** fake SSH/tar。matchはwrapperだけ一致しskills/allowは空。exit無視は局所診断で、全体no-drift成功の証拠ではない
 
 **重なり:** `remote` · **指摘:** F17.
 
