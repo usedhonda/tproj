@@ -5379,6 +5379,7 @@ struct ContentView: View {
     @AppStorage("ccCdxSectionCollapsed") private var ccCdxCollapsed = true
     @AppStorage("workspaceProjectOrder") private var workspaceProjectOrderRaw = WorkspaceProjectOrder.recent.rawValue
     @AppStorage("autoZoomEnabled") private var autoZoomEnabled = false
+    @State private var workspaceViewportWidth: CGFloat = 242
     @State private var draggingColumnID: Int?
     @State private var cachePopoverColumn: Int?
     @State private var dropInsertionIndex: Int?
@@ -5422,6 +5423,7 @@ struct ContentView: View {
         } else {
             HStack(spacing: 0) {
                 normalContentView
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                     .frame(width: terminalDock.visibleProjectPath == nil ? nil : terminalDock.sidebarWidth)
                     // Keep the sidebar at one vertical origin across dock open/close.
                     .padding(.top, 28)
@@ -5483,6 +5485,7 @@ struct ContentView: View {
                 .foregroundStyle(GhosttyTheme.current.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             Spacer()
             ActionButton("Stop", tone: .danger, isEnabled: !vm.isBusy && !vm.liveColumns.isEmpty, dense: true) {
                 vm.pendingSessionAction = .stop
@@ -5731,11 +5734,8 @@ struct ContentView: View {
         }
     }
 
-    private var workspaceUtilitiesRow: some View {
-        VStack(spacing: 3) {
-            Divider()
-                .overlay(GhosttyTheme.current.cardBorder.opacity(0.55))
-            HStack(spacing: 6) {
+    private var workspaceUtilityButtons: some View {
+        HStack(spacing: 6) {
                 ActionButton("Projects", tone: .neutral, isEnabled: !vm.isBusy, dense: true) {
                     locationDraft = vm.workspaceProjects
                     locationDraftBaseline = vm.workspaceLocationSnapshot()
@@ -5753,7 +5753,10 @@ struct ContentView: View {
                 }
                 .fixedSize()
                 .help("Open workspace.yaml")
-                Spacer(minLength: 0)
+        }
+    }
+
+    private var workspaceOrderMenu: some View {
                 Menu {
                     Picker("Order", selection: $workspaceProjectOrderRaw) {
                         ForEach(WorkspaceProjectOrder.allCases) { order in
@@ -5768,6 +5771,20 @@ struct ContentView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("Sort waiting projects; live panes keep tmux order")
+    }
+
+    private var workspaceUtilitiesRow: some View {
+        VStack(spacing: 3) {
+            Divider().overlay(GhosttyTheme.current.cardBorder.opacity(0.55))
+            if compactWorkspaceCards {
+                HStack { workspaceUtilityButtons; Spacer(minLength: 0) }
+                HStack { Spacer(minLength: 0); workspaceOrderMenu }
+            } else {
+                HStack(spacing: 6) {
+                    workspaceUtilityButtons
+                    Spacer(minLength: 0)
+                    workspaceOrderMenu
+                }
             }
         }
     }
@@ -5965,7 +5982,18 @@ struct ContentView: View {
         persistedHeight = Double(window.frame.height)
     }
 
+    private var compactWorkspaceCards: Bool {
+        let width = terminalDock.visibleProjectPath == nil ? workspaceViewportWidth : terminalDock.sidebarWidth
+        return width < 320
+    }
+
     private func observeWindowResize(_ window: NSWindow) {
+        workspaceViewportWidth = window.frame.width
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification, object: window, queue: .main
+        ) { [self] _ in
+            workspaceViewportWidth = window.frame.width
+        }
         // Only save when user actually finished dragging the resize edge
         NotificationCenter.default.addObserver(
             forName: NSWindow.didEndLiveResizeNotification,
@@ -6030,7 +6058,7 @@ struct ContentView: View {
             }
     }
 
-    private func liveColumnHeader(_ column: LiveColumn, compact: Bool) -> some View {
+    private func liveColumnActions(_ column: LiveColumn, compact: Bool) -> some View {
         // Conversation-main side + mode tint. This is the pane the user chose to
         // talk to, not necessarily the higher-tier or orchestrating side.
         let host = column.hostLabel.hasPrefix("remote@")
@@ -6040,21 +6068,6 @@ struct ContentView: View {
         let mainTint = leadTint
 
         return HStack(spacing: 4) {
-                Text("#\(column.column)")
-                    .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
-                    .foregroundStyle(GhosttyTheme.current.textPrimary)
-                    .fixedSize()
-                pill(liveHostLabel(column), tint: column.hostLabel == "local" ? GhosttyTheme.current.accentGreen : GhosttyTheme.current.accentYellow)
-                if !compact {
-                Text(columnPrimaryName(column))
-                    .font(GhosttyTheme.current.font(size: 13, weight: .semibold))
-                    .foregroundStyle(GhosttyTheme.current.textPrimary)
-                    .lineLimit(1)
-                    // Natural width selects the stacked variant before controls clip.
-                    .fixedSize(horizontal: true, vertical: false)
-                    .help(columnAgentNamesText(column) ?? columnPrimaryName(column))
-                }
-                Spacer(minLength: 0)
                 ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
                 }
@@ -6085,17 +6098,39 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .disabled(vm.isBusy || vm.isDropPending(column.column))
                 .help("Drop column #\(column.column)")
+        }
+    }
+
+    private func liveColumnHeader(_ column: LiveColumn, compact: Bool) -> some View {
+        HStack(spacing: 4) {
+            Text("#\(column.column)")
+                .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
+                .foregroundStyle(GhosttyTheme.current.textPrimary)
+                .fixedSize()
+            pill(liveHostLabel(column), tint: column.hostLabel == "local" ? GhosttyTheme.current.accentGreen : GhosttyTheme.current.accentYellow)
+            if !compact {
+                Text(columnPrimaryName(column))
+                    .font(GhosttyTheme.current.font(size: 13, weight: .semibold))
+                    .foregroundStyle(GhosttyTheme.current.textPrimary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .help(columnAgentNamesText(column) ?? columnPrimaryName(column))
             }
+            Spacer(minLength: 0)
+            if !compact { liveColumnActions(column, compact: false) }
+        }
     }
 
     private func liveColumnRow(_ column: LiveColumn) -> some View {
         let isDragging = draggingColumnID == column.column
         return ViewThatFits(in: .horizontal) {
+            if !compactWorkspaceCards {
             VStack(alignment: .leading, spacing: 3) {
                 liveColumnHeader(column, compact: false)
                 columnSettingsPill(column)
             }
             .fixedSize(horizontal: true, vertical: false)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 liveColumnHeader(column, compact: true)
                 Text(columnPrimaryName(column))
@@ -6103,7 +6138,13 @@ struct ContentView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(columnAgentNamesText(column) ?? columnPrimaryName(column))
-                columnSettingsPill(column, compact: true)
+                HStack(spacing: 4) {
+                    columnSettingsPill(column, compact: true)
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                        .clipped()
+                    liveColumnActions(column, compact: true)
+                        .fixedSize()
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -6170,6 +6211,7 @@ struct ContentView: View {
 
     private func inactiveProjectRow(_ project: WorkspaceProject) -> some View {
         ViewThatFits(in: .horizontal) {
+        if !compactWorkspaceCards {
         HStack(spacing: 4) {
             Text("--")
                 .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
@@ -6183,6 +6225,7 @@ struct ContentView: View {
             inactiveProjectControls(project)
         }
             .fixedSize(horizontal: true, vertical: false)
+        }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
             Text("--")
