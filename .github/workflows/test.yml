@@ -24,6 +24,12 @@ jobs:
         run: bash extensions/messaging/tests/test-sendability-gate.sh
       - name: Target resolution and liveness hardening
         run: bash extensions/messaging/tests/test-target-resolution-hardening.sh
+      - name: Native notice provenance and consumer
+        run: |
+          python3 extensions/messaging/tests/test-native-notice.py
+          python3 extensions/messaging/tests/test-native-consumer.py
+          python3 extensions/messaging/tests/test-native-queue.py
+          python3 extensions/messaging/tests/test-native-publication.py
       - name: Role handoff
         run: bash extensions/messaging/tests/test-role-handoff.sh
       - name: Desktop mailbox

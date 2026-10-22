@@ -21,6 +21,12 @@ import plistlib
 from typing import Any
 
 
+try:
+    from .protocol import NATIVE_RUNTIME_CONTRACT
+except ImportError:
+    from protocol import NATIVE_RUNTIME_CONTRACT
+
+
 def _atomic_json(path: Path, value: dict[str, Any], dry_run: bool) -> bool:
     data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
     if path.exists() and path.read_bytes() == data:
@@ -222,8 +228,11 @@ def _activate(home: Path, manifests: list[Path], changed: bool, no_start: bool, 
             results.append(f"unavailable:{label}"); continue
         if listed.returncode == 0:
             if changed:
-                subprocess.run(["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{label}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                results.append(f"reloaded:{label}")
+                try:
+                    restarted = subprocess.run(["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{label}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    results.append(f"reloaded:{label}" if restarted.returncode == 0 else f"unavailable:{label}")
+                except OSError:
+                    results.append(f"unavailable:{label}")
             else:
                 results.append(f"running:{label}")
             continue
@@ -257,6 +266,9 @@ def setup(home: Path | None = None, refresh: bool = False, dry_run: bool = False
     hub = dict(old_hub); hub.update({"host_id": host_id, "hosts": dict(old_hub.get("hosts") or {}, **{host_id: token}), "admin_token": admin, "topology_path": str(topology_path), "socket": str(socket), "db": str(hub_db)})
     host = dict(old_host); host.update({"host_id": host_id, "host_token": token, "hub_socket": str(socket), "socket": str(host_socket), "journal": str(journal), "registry": str(home / ".cache/tproj-model-role"), "federated": True})
     host.setdefault("delivery_enabled", True)
+    # Internal expected contract participates in the existing setup changed/reload
+    # decision. It is not loaded-code evidence or a native activation flag.
+    host['_native_runtime_expected'] = dict(NATIVE_RUNTIME_CONTRACT)
     client = _read_json(config_dir / "msg-client.json"); client.update({"host_id": host_id, "socket": str(host_socket), "hub_socket": str(socket), "active": True})
     topology = _read_json(topology_path); topology.setdefault("version", 1); topology["mode"] = topology.get("mode", "standalone"); topology.setdefault("mode_explicit", True); topology.setdefault("local", {"id": host_id, "display_name": os.uname().nodename.split(".", 1)[0], "ssh_alias": None}); topology["local"].setdefault("id", host_id)
     changed_flags = [_atomic_json(topology_path, topology, dry_run)]

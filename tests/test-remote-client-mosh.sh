@@ -26,4 +26,13 @@ run hostB
 
 MOSH_STATUS=1 run hostA
 grep -q '^MOSH' "$tmp/log" && grep -q '^SSH .*hostA' "$tmp/log" || fail "quick mosh failure must fall back to ssh"
+: > "$tmp/log"
+HOME="$tmp/home" LOG="$tmp/log" PATH="$tmp/bin:$PATH" \
+  "$repo/bin/tproj-remote-client" shell hostA "/p/with space" </dev/null >/dev/null 2>&1
+grep -q '^MOSH .*hostA -- /bin/sh -c cd ' "$tmp/log" || fail "shell must share mosh transport"
+! grep -q 'tproj-remote-host' "$tmp/log" || fail "shell must not start an agent attachment"
+: > "$tmp/log"
+HOME="$tmp/home" LOG="$tmp/log" PATH="$tmp/bin:$PATH" MOSH_STATUS=1 \
+  "$repo/bin/tproj-remote-client" shell hostA /p/x </dev/null >/dev/null 2>&1
+grep -q '^SSH .*ServerAliveInterval=15.*ServerAliveCountMax=3.*ConnectTimeout=10.*cd /p/x' "$tmp/log" || fail "shell fallback must share relaxed ssh options"
 echo "remote client mosh transport: PASS (default ssh, per-host opt-in, fallback)"

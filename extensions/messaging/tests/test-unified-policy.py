@@ -25,11 +25,11 @@ class PolicyTest(unittest.TestCase):
                              ("proj.cc", "[Persona Sync]"), ("proj.cc", "[Task:x] do")]:
             self.blocked(target, body)
 
-    def test_normal_multiline_and_fanout(self):
+    def test_explicit_recipients_allow_identical_text(self):
         policy.check_policy(self.db, "ep", "proj.cc", "hello\nworld", 1000)
         self.db.execute("INSERT INTO messages VALUES(?,?,?,?)", ("ep", "other.cdx", "hello world", 999))
-        with self.assertRaises(policy.HubError):
-            policy.check_policy(self.db, "ep", "proj.cdx", "hello\nworld", 1000)
+        for target in ("proj.cdx", "proj.cc", "other.cdx"):
+            policy.check_policy(self.db, "ep", target, "hello\nworld", 1000)
 
     def test_recovery_duplicate_and_reply(self):
         body = "未達 LINE の作業依頼 id 42 を復元"

@@ -19,9 +19,10 @@ from urllib.parse import quote
 
 from identity import (IdentityError, adopt_native_conversation, bind_caller, discover_endpoints, discover_tmux_endpoints,
                       peer_credentials, same_live_process_family)
-from protocol import HubError, success, failure, resource_error
-from receipt import normalize_prompt
+from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
+from receipt import normalize_prompt, codex_transcript_presented
 
+HOST_BACKEND_VERSION = 7
 WIRE_LIMIT = 262144
 
 
@@ -99,6 +100,9 @@ class Host:
         self.read_only = bool(read_only)
         self.endpoints = []
         self.refreshed = 0
+        self.claim_sequences = {}
+        self.native_publisher = None
+        self._journal_needs_reopen = False
         try:
             if self.read_only:
                 self.db = sqlite3.connect('file:' + quote(str(config['journal']), safe='/') + '?mode=ro', uri=True)
@@ -199,25 +203,34 @@ class Host:
         live_ids = {ep['endpoint_id'] for ep in discovered}
         live_participants = {ep['participant_id'] for ep in discovered}
         for ep in previous:
-            if (ep['endpoint_id'] not in live_ids and ep['participant_id'] in live_participants
-                    and ep['participant_id'] not in ambiguous_participants and not ep['retired']):
+            if (ep['endpoint_id'] in live_ids or ep['retired']
+                    or ep.get('platform') not in ('cc', 'cdx')
+                    or ep['participant_id'] in ambiguous_participants):
+                continue
+            # Another process for this participant does not prove this native
+            # owner disappeared. Fence retirement with the old PID incarnation.
+            from identity import _process_info
+            try:
+                current = _process_info(int(ep['pid']))
+            except (IdentityError, OSError, ValueError, KeyError, TypeError):
+                current = None
+            absent = False
+            if current is None:
+                try: os.kill(int(ep['pid']), 0)
+                except ProcessLookupError: absent = True
+                except (OSError, ValueError, TypeError): pass
+            elif str(current.get('pid_start')) != str(ep.get('pid_start')):
+                absent = True
+            if absent:
                 self.hub('endpoint_retire', endpoint_id=ep['endpoint_id'])
-            elif (ep['endpoint_id'] not in live_ids and ep['participant_id'] not in live_participants
-                  and not ep['retired'] and ep.get('platform') in ('cc', 'cdx')):
-                # A vanished participant is retired only with direct PID/start
-                # evidence; an absent registry row alone is not enough.
-                from identity import _process_info
-                try:
-                    current = _process_info(int(ep['pid']))
-                except (IdentityError, OSError, ValueError, KeyError, TypeError):
-                    current = None
-                absent = False
-                if current is None:
-                    try: os.kill(int(ep['pid']), 0)
-                    except ProcessLookupError: absent = True
-                    except (OSError, ValueError, TypeError): pass
-                if absent or (current and str(current.get('pid_start')) != str(ep.get('pid_start'))):
-                    self.hub('endpoint_retire', endpoint_id=ep['endpoint_id'])
+            elif (ep['participant_id'] in live_participants and current
+                    and current.get('uid') == os.getuid()
+                    and any(token in str(current.get('command', '')).lower() for token in
+                            (('claude', 'anthropic') if ep['platform'] == 'cc' else ('codex', 'openai')))
+                    and same_live_process_family(ep, ep)):
+                # Project/address fields also carry routing and diagnostic
+                # authority. Preserve the entire old binding, not fresh metadata.
+                discovered.append(dict(ep))
         self.endpoints = discovered
         self.refreshed = time.monotonic()
 
@@ -440,10 +453,11 @@ class Host:
         except (OSError, sqlite3.Error) as exc:
             raise resource_error(exc, 'authority_rpc') or HubError('unavailable', 'authority RPC unavailable') from None
 
-    def delivery_status(self, endpoint_id, message_id, reason):
+    def delivery_status(self, endpoint_id, message_id, reason, *, native_observation=None):
         """Record a nonterminal delivery diagnostic without changing state."""
         try:
-            return self.hub('delivery_status', endpoint_id=endpoint_id, message_id=message_id, reason=reason)
+            return self.hub('delivery_status', endpoint_id=endpoint_id, message_id=message_id, reason=reason,
+                            native_observation=native_observation)
         except HubError:
             return None
 
@@ -584,7 +598,7 @@ class Host:
         if uid != os.getuid():
             raise HubError('identity_rejected', 'local UID mismatch')
         if op == 'diagnostic_identity':
-            return self.hub('diagnostic_identity')
+            return self.hub('diagnostic_identity', **{key: req[key] for key in ('active_only', 'endpoint_ids') if key in req})
         # Legacy service consumers must not take the public operator branch.
         if op in ('list', 'status') and ('service_id' in req or 'service_token' in req):
             op = 'service_' + op
@@ -598,7 +612,13 @@ class Host:
             own = ['service_policy_v1', 'read_only_diagnose', 'diagnostic_identity', 'query_only_service',
                    'resource_exhausted']
             hub_caps = self.hub('messaging_capabilities')
-            return {'host_capabilities': own, 'messaging_owner': hub_caps}
+            from native_consumer import BACKEND_VERSION
+            return {'host_capabilities': own, 'messaging_owner': hub_caps,
+                    'native_runtime': {'host_version': HOST_BACKEND_VERSION,
+                                       'consumer_version': BACKEND_VERSION,
+                                       'context_response_limit': NATIVE_CONTEXT_LIMIT},
+                    'native_consumer': {'backend_version': BACKEND_VERSION,
+                                        'enabled': self.config.get('native_consumer_enabled') is True}}
         if op == 'status' and req.get('target'):
             target = req['target']
             participant_id = None
@@ -712,6 +732,9 @@ class Host:
             self.db.commit()
             return self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=message['message_id'],
                             state='presented', evidence='bound recipient explicit acknowledgement after inbox consumption')
+        if op == 'native_resolve':
+            from native_consumer import resolve
+            return resolve(self, ep, req)
         if op == 'prompt_receipt':
             row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (req.get('message_id'),)).fetchone()
             digest = hashlib.sha256(normalize_prompt(str(req.get('prompt', ''))).encode()).hexdigest()
@@ -728,108 +751,249 @@ class Host:
             return self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=row['message_id'], state='presented', evidence='bound UserPromptSubmit exact prompt hash')
         raise HubError('unknown_op', 'unsupported host operation')
 
+    def _current_delivery_endpoint(self, endpoint_id):
+        # Historical receipt recovery can outlast the heartbeat TTL. Refresh at
+        # message boundaries, and never continue on an incarnation retired by it.
+        if time.monotonic() - self.refreshed >= 10:
+            self.refresh()
+        return next((ep for ep in self.endpoints if ep['endpoint_id'] == endpoint_id), None)
+
+    def _reopen_delivery_journal(self):
+        """Discard a suspect connection; never recreate or recover delivery rows."""
+        self.db.close()
+        mode = 'ro' if self.read_only else 'rw'
+        db = sqlite3.connect('file:' + quote(str(self.config['journal']), safe='/') + '?mode=' + mode, uri=True)
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute('PRAGMA synchronous=FULL')
+            # Missing/schema-damaged journals fail closed, not a new blank ledger.
+            for table in ('deliveries', 'submissions', 'delivery_diagnostics'):
+                db.execute('SELECT message_id FROM ' + table + ' LIMIT 0')
+        except Exception:
+            db.close()
+            raise
+        self.db = db
+        self._journal_needs_reopen = False
+
     def delivery_tick(self):
+        if self._journal_needs_reopen:
+            self._reopen_delivery_journal()
+        # Collect all owned transport children, even if their endpoint vanished,
+        # delivery was disabled, or this tick visits a different claim page.
+        if self.native_publisher is not None:
+            self.native_publisher.maintain(self)
         if time.monotonic() - self.refreshed >= 10:
             self.refresh()
         if not self.config.get('delivery_enabled', False):
             return
-        for ep in self.endpoints:
-            claims = self.hub('claim', endpoint_id=ep['endpoint_id'], limit=1)['messages']
-            claimed_ids = {m['message_id'] for m in claims}
-            for pending in self.db.execute("SELECT envelope,message_id FROM deliveries WHERE endpoint_id=? AND state IN ('dispatching','uncertain')", (ep['endpoint_id'],)):
-                if pending['message_id'] not in claimed_ids:
-                    claims.append(json.loads(pending['envelope']))
-            for msg in claims:
-                mid = msg['message_id']
-                self.db.execute('INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?)',
-                                (mid, ep['endpoint_id'], json.dumps(msg), 'received', None, time.time()))
+        for ep in list(self.endpoints):
+            try:
+                self._deliver_endpoint(ep)
+            except (OSError, HubError, ValueError, subprocess.SubprocessError, sqlite3.Error) as exc:
+                # Roll back only uncommitted local work. Durable reservation and
+                # unknown-effect fences survive; other recipients still run.
+                try: self.db.rollback()
+                except sqlite3.Error:
+                    self._journal_needs_reopen = True
+                    self._reopen_delivery_journal()
+                print('delivery endpoint failure: ' + type(exc).__name__, file=sys.stderr, flush=True)
+
+    def _deliver_endpoint(self, ep):
+        """One recipient fault boundary on the existing shared scheduler."""
+        ep = self._current_delivery_endpoint(ep['endpoint_id'])
+        if ep is None:
+            return
+        page = self.hub('claim', endpoint_id=ep['endpoint_id'],
+                        limit=32 if ep.get('platform') == 'cdx' and self.config.get('native_queue_enabled') is True else 1,
+                        after_sequence=self.claim_sequences.get(ep['endpoint_id'], 0))
+        claims = page['messages']
+        # SQL end wraps on the next tick (filtered empty need not). Restart resets only this scan
+        # hint; durable local presentation/unknown ownership never resets.
+        self.claim_sequences[ep['endpoint_id']] = page['next_sequence']
+        claimed_ids = {m['message_id'] for m in claims}
+        for pending in self.db.execute("SELECT envelope,message_id FROM deliveries WHERE endpoint_id=? AND state IN ('dispatching','uncertain')", (ep['endpoint_id'],)):
+            if pending['message_id'] not in claimed_ids:
+                claims.append(json.loads(pending['envelope']))
+        # Journal the bounded claim page before starting its first native
+        # child, so a fast hook can coalesce the whole already-claimed set.
+        for msg in claims:
+            self.db.execute('INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?)',
+                (msg['message_id'], ep['endpoint_id'], json.dumps(msg), 'received', None, time.time()))
+        self.db.commit()
+        for msg in claims:
+            ep = self._current_delivery_endpoint(ep['endpoint_id'])
+            if ep is None:
+                break
+            mid = msg['message_id']
+            self.db.execute('INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?)',
+                            (mid, ep['endpoint_id'], json.dumps(msg), 'received', None, time.time()))
+            self.db.commit()
+            row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
+            from native_consumer import owns, recover
+            native_owned = owns(self.db, mid)
+            local_envelope = json.loads(row['envelope'])
+            pinned_native = local_envelope.get('_native_route') == 'native-v1'
+            native_selected = (row['state'] == 'received' and (pinned_native or
+                               (ep.get('platform') == 'cdx'
+                                and self.config.get('native_queue_enabled') is True)))
+            if native_selected and not pinned_native:
+                # Persist route ownership before identity/prepare/I/O. Turning
+                # the feature off later is never permission for terminal paste.
+                local_envelope['_native_route'] = 'native-v1'
+                changed = self.db.execute('UPDATE deliveries SET envelope=? WHERE message_id=? AND envelope=?',
+                    (json.dumps(local_envelope), mid, row['envelope'])).rowcount
                 self.db.commit()
-                row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
-                if row['state'] in ('dispatching', 'uncertain') and ep['platform'] == 'cc':
-                    observed_runtime = ep.get('observed_runtime_id') or ep['runtime_id']
-                    for transcript in (Path.home()/'.claude/projects').glob('*/'+observed_runtime+'.jsonl'):
-                        try:
-                            with transcript.open('rb') as handle:
-                                handle.seek(max(0, transcript.stat().st_size - 262144))
-                                tail = handle.read().decode(errors='replace')
-                            for line in tail.splitlines():
-                                try: event = json.loads(line)
-                                except ValueError: continue
-                                content = event.get('message', {}).get('content')
-                                if event.get('type') == 'user' and isinstance(content, str):
-                                    digest = hashlib.sha256(normalize_prompt(content).encode()).hexdigest()
-                                    if digest == row['prompt_hash']:
-                                        self.db.execute("UPDATE deliveries SET state='presented' WHERE message_id=?", (mid,)); self.db.commit()
-                                        self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid, state='presented', evidence='bound Claude transcript exact prompt hash')
-                                        break
-                        except OSError: pass
-                    row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
-                if row['state'] in ('uncertain', 'presented'):
-                    diagnostic=self.db.execute('SELECT reason FROM delivery_diagnostics WHERE message_id=?',(mid,)).fetchone()
-                    evidence=json.dumps({'delivery_reason':diagnostic['reason']}) if row['state']=='uncertain' and diagnostic else 'durable local journal'
-                    self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid, state=row['state'], evidence=evidence)
+                if changed != 1:
                     continue
-                if row['state'] == 'dispatching':
-                    self.delivery_status(ep['endpoint_id'], mid, 'waiting_input')
-                    if time.time() - row['updated'] > 30:
+            if native_selected:
+                # Route selection precedes any terminal/composer operation.
+                # Missing consumer/identity/transport cannot fall back to paste.
+                if self.config.get('native_consumer_enabled') is True:
+                    from native_publication import Publisher
+                    from native_queue import QueueError
+                    if self.native_publisher is None:
+                        self.native_publisher = Publisher()
+                    try:
+                        self.native_publisher.tick(self, ep, mid)
+                    except (HubError, QueueError, OSError, ValueError):
+                        self.delivery_status(ep['endpoint_id'], mid, 'adapter_error')
+                else:
+                    self.delivery_status(ep['endpoint_id'], mid, 'adapter_error')
+                native_owned = owns(self.db, mid)
+            if native_owned or native_selected:
+                # A native reference is not the original body. Never run the
+                # terminal path or legacy user-prompt receipt for its row.
+                if row['state'] in ('dispatching', 'uncertain'):
+                    try: context_recorded = recover(self, ep, mid)
+                    except (HubError, OSError, ValueError): context_recorded = False
+                    if context_recorded:
+                        # Do not close local reconciliation until Hub agrees.
+                        # On a lost receipt response the next tick reads first,
+                        # so an already-recorded receipt is never blindly sent.
+                        current = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=mid)
+                        if current.get('state') != 'presented':
+                            if current.get('state') not in ('dispatching', 'uncertain'):
+                                continue
+                            current = self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid,
+                                               state='presented', evidence='bound native reference plus same-turn exact peer additionalContext recorded; not model consumption or explicit ACK')
+                        if current.get('message_id') == mid and current.get('state') == 'presented':
+                            self.db.execute("UPDATE deliveries SET state='presented' WHERE message_id=?", (mid,))
+                            self.db.commit()
+                    elif row['state'] == 'dispatching' and time.time() - row['updated'] > 30:
                         self.mark_uncertain(mid, 'receipt_timeout')
-                    continue
-                # Revalidate this exact process incarnation immediately before terminal access.
-                from identity import _process_info
+                continue
+            receipt_ep = ep
+            if (row['state'] in ('dispatching', 'uncertain') and ep['platform'] == 'cdx'
+                    and not (ep.get('thread_id') or ep.get('session_id'))):
+                # Standalone tmux discovery intentionally has no native ID.
+                # Read the hub's existing attestation for this exact immutable
+                # endpoint, never infer a conversation from pane/project labels.
                 try:
-                    current = _process_info(ep['pid'])
-                    if current['pid_start'] != ep['pid_start']:
-                        self.delivery_status(ep['endpoint_id'], mid, 'endpoint_unavailable')
-                        continue
-                except (IdentityError, OSError):
+                    native_rows = self.hub('diagnostic_identity', active_only=True).get('endpoint_native', [])
+                    markers = [n for n in native_rows if n.get('endpoint_id') == ep['endpoint_id']
+                               and n.get('native_kind') in ('thread_id', 'session_id')]
+                    if len(markers) == 1:
+                        receipt_ep = dict(ep, thread_id=markers[0]['native_id'])
+                except HubError:
+                    pass  # older/unavailable hub leaves presentation unknown
+            if (row['state'] in ('dispatching', 'uncertain') and ep['platform'] == 'cdx'
+                    and codex_transcript_presented(receipt_ep, row['prompt_hash'])):
+                self.db.execute("UPDATE deliveries SET state='presented' WHERE message_id=?", (mid,))
+                self.db.commit()
+                self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid,
+                         state='presented', evidence='bound Codex transcript exact prompt hash')
+                row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
+            if row['state'] in ('dispatching', 'uncertain') and ep['platform'] == 'cc':
+                observed_runtime = ep.get('observed_runtime_id') or ep['runtime_id']
+                for transcript in (Path.home()/'.claude/projects').glob('*/'+observed_runtime+'.jsonl'):
+                    try:
+                        with transcript.open('rb') as handle:
+                            handle.seek(max(0, transcript.stat().st_size - 262144))
+                            tail = handle.read().decode(errors='replace')
+                        for line in tail.splitlines():
+                            try: event = json.loads(line)
+                            except ValueError: continue
+                            content = event.get('message', {}).get('content')
+                            if event.get('type') == 'user' and isinstance(content, str):
+                                digest = hashlib.sha256(normalize_prompt(content).encode()).hexdigest()
+                                if digest == row['prompt_hash']:
+                                    self.db.execute("UPDATE deliveries SET state='presented' WHERE message_id=?", (mid,)); self.db.commit()
+                                    self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid, state='presented', evidence='bound Claude transcript exact prompt hash')
+                                    break
+                    except OSError: pass
+                row = self.db.execute('SELECT * FROM deliveries WHERE message_id=?', (mid,)).fetchone()
+            if row['state'] in ('uncertain', 'presented'):
+                diagnostic=self.db.execute('SELECT reason FROM delivery_diagnostics WHERE message_id=?',(mid,)).fetchone()
+                evidence=json.dumps({'delivery_reason':diagnostic['reason']}) if row['state']=='uncertain' and diagnostic else 'durable local journal'
+                self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=mid, state=row['state'], evidence=evidence)
+                continue
+            if row['state'] == 'dispatching':
+                self.delivery_status(ep['endpoint_id'], mid, 'waiting_input')
+                if time.time() - row['updated'] > 30:
+                    self.mark_uncertain(mid, 'receipt_timeout')
+                continue
+            # Native identity can exist without a tmux surface. Keep its
+            # pending message intact; one unavailable pane must not kill
+            # the shared delivery/heartbeat worker for all endpoints.
+            if not isinstance(ep.get('pane'), str) or not ep['pane']:
+                self.delivery_status(ep['endpoint_id'], mid, 'endpoint_unavailable')
+                continue
+            # Revalidate this exact process incarnation immediately before terminal access.
+            from identity import _process_info
+            try:
+                current = _process_info(ep['pid'])
+                if current['pid_start'] != ep['pid_start']:
                     self.delivery_status(ep['endpoint_id'], mid, 'endpoint_unavailable')
                     continue
-                cache_kind = 'cc-cache' if ep['platform'] == 'cc' else 'codex-cache'
-                observed_runtime = ep.get('observed_runtime_id') or ep['runtime_id']
-                cache_path = Path.home()/'.local/state/tproj'/cache_kind/(hashlib.sha256(observed_runtime.encode()).hexdigest()+'.json')
-                try:
-                    observed = json.loads(cache_path.read_text())
-                    if observed.get('pane_id') == ep['pane'] and (observed.get('turn_state') == 'running' or observed.get('event') == 'prompt'):
-                        self.delivery_status(ep['endpoint_id'], mid, 'busy')
-                        continue
-                except (OSError, ValueError): pass
-                guard = subprocess.run(['bash', str(Path(__file__).with_name('terminal-guard.sh')), ep['pane']], capture_output=True, timeout=5)
-                if guard.returncode:
-                    self.delivery_status(ep['endpoint_id'], mid, 'draft_protected')
+            except (IdentityError, OSError):
+                self.delivery_status(ep['endpoint_id'], mid, 'endpoint_unavailable')
+                continue
+            cache_kind = 'cc-cache' if ep['platform'] == 'cc' else 'codex-cache'
+            observed_runtime = ep.get('observed_runtime_id') or ep['runtime_id']
+            cache_path = Path.home()/'.local/state/tproj'/cache_kind/(hashlib.sha256(observed_runtime.encode()).hexdigest()+'.json')
+            try:
+                observed = json.loads(cache_path.read_text())
+                if observed.get('pane_id') == ep['pane'] and (observed.get('turn_state') == 'running' or observed.get('event') == 'prompt'):
+                    self.delivery_status(ep['endpoint_id'], mid, 'busy')
                     continue
-                # The hub owns the atomic cancellation gate.  Claiming here
-                # immediately before terminal access prevents a cancel racing
-                # with paste from being reported as successful.
-                try:
-                    gate = self.hub('begin_present', endpoint_id=ep['endpoint_id'], message_id=mid)
-                except HubError:
-                    self.delivery_status(ep['endpoint_id'], mid, 'adapter_error')
-                    continue
-                if isinstance(gate, dict) and gate.get('ok') is False:
-                    continue
-                # Resolve displayed sender from the hub, never from a stale local alias copy.
-                sender = msg.get('sender_address') or msg['sender_endpoint']
-                if sender == 'gate':
-                    sender = 'OpenClaw Agent - Main'
-                header = f"[from:{sender}] [tproj-message:{mid}] "
-                body = f"{msg['body']}\n\nReply to this message with: tproj-msg reply {mid} --stdin"
-                prompt = header + body
-                self.db.execute("UPDATE deliveries SET state='dispatching',prompt_hash=?,updated=? WHERE message_id=?",
-                                (hashlib.sha256(prompt.encode()).hexdigest(), time.time(), mid)); self.db.commit()
-                try:
-                    buffer = 'tproj-msg-' + hashlib.sha256(mid.encode()).hexdigest()[:24]
-                    # Codex paste coalescing can replace immediately preceding
-                    # literal keystrokes. Keep its complete envelope in one paste.
-                    # Claude needs the sender outside its pasted_content wrapper.
-                    literal, pasted = paste_parts(ep['platform'], header, body)
-                    if literal:
-                        subprocess.run(['tmux', 'send-keys', '-t', ep['pane'], '-l', '--', literal], check=True, timeout=5, capture_output=True)
-                    subprocess.run(['tmux', 'load-buffer', '-b', buffer, '-'], input=pasted.encode(), check=True, timeout=5, capture_output=True)
-                    subprocess.run(['tmux', 'paste-buffer', '-p', '-d', '-b', buffer, '-t', ep['pane']], check=True, timeout=5, capture_output=True)
-                    time.sleep(0.5)
-                    subprocess.run(['tmux', 'send-keys', '-t', ep['pane'], 'Enter'], check=True, timeout=5, capture_output=True)
-                except (subprocess.SubprocessError, OSError):
-                    self.mark_uncertain(mid, 'dispatch_error')
+            except (OSError, ValueError): pass
+            guard = subprocess.run(['bash', str(Path(__file__).with_name('terminal-guard.sh')), ep['pane']], capture_output=True, timeout=5)
+            if guard.returncode:
+                self.delivery_status(ep['endpoint_id'], mid, 'draft_protected')
+                continue
+            # The hub owns the atomic cancellation gate.  Claiming here
+            # immediately before terminal access prevents a cancel racing
+            # with paste from being reported as successful.
+            try:
+                gate = self.hub('begin_present', endpoint_id=ep['endpoint_id'], message_id=mid)
+            except HubError:
+                self.delivery_status(ep['endpoint_id'], mid, 'adapter_error')
+                continue
+            if isinstance(gate, dict) and gate.get('ok') is False:
+                continue
+            # Resolve displayed sender from the hub, never from a stale local alias copy.
+            sender = msg.get('sender_address') or msg['sender_endpoint']
+            if sender == 'gate':
+                sender = 'OpenClaw Agent - Main'
+            header = f"[from:{sender}] [tproj-message:{mid}] "
+            body = f"{msg['body']}\n\nReply to this message with: tproj-msg reply {mid} --stdin"
+            prompt = header + body
+            self.db.execute("UPDATE deliveries SET state='dispatching',prompt_hash=?,updated=? WHERE message_id=?",
+                            (hashlib.sha256(prompt.encode()).hexdigest(), time.time(), mid)); self.db.commit()
+            try:
+                buffer = 'tproj-msg-' + hashlib.sha256(mid.encode()).hexdigest()[:24]
+                # Codex paste coalescing can replace immediately preceding
+                # literal keystrokes. Keep its complete envelope in one paste.
+                # Claude needs the sender outside its pasted_content wrapper.
+                literal, pasted = paste_parts(ep['platform'], header, body)
+                if literal:
+                    subprocess.run(['tmux', 'send-keys', '-t', ep['pane'], '-l', '--', literal], check=True, timeout=5, capture_output=True)
+                subprocess.run(['tmux', 'load-buffer', '-b', buffer, '-'], input=pasted.encode(), check=True, timeout=5, capture_output=True)
+                subprocess.run(['tmux', 'paste-buffer', '-p', '-d', '-b', buffer, '-t', ep['pane']], check=True, timeout=5, capture_output=True)
+                time.sleep(0.5)
+                subprocess.run(['tmux', 'send-keys', '-t', ep['pane'], 'Enter'], check=True, timeout=5, capture_output=True)
+            except (subprocess.SubprocessError, OSError):
+                self.mark_uncertain(mid, 'dispatch_error')
 
 
 def main():

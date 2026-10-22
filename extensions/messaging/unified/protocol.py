@@ -11,6 +11,11 @@ from typing import Any, BinaryIO
 
 MAX_TTL = 24 * 60 * 60
 MAX_REQUEST = 256 * 1024
+# Native context JSON nests already wire-bounded originals. Response-only limit;
+# normal requests, Hub queries and all other client responses stay unchanged.
+NATIVE_CONTEXT_LIMIT = 4 * MAX_REQUEST
+NATIVE_RUNTIME_CONTRACT = {"host_version": 7, "consumer_version": 2,
+                           "context_response_limit": NATIVE_CONTEXT_LIMIT}
 
 
 RESOURCE_STAGES = frozenset({'local_persistence', 'authority_persistence', 'authority_rpc', 'outcome_query', 'unknown'})

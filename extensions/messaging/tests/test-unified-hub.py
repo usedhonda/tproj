@@ -54,6 +54,56 @@ class HubTest(unittest.TestCase):
         return self.h.dispatch(dict(op='native_attest', host_id=host, host_token='t'+host,
                                     endpoint_id=endpoint, native_kind='thread_id', native_id=native))
 
+    def test_sqlite_full_never_acknowledges_uncommitted_admission(self):
+        import sqlite3
+        import threading
+        self.send('retained')
+        retained = tuple(self.h.db.execute("SELECT * FROM messages WHERE message_id='retained'").fetchone())
+        pages = self.h.db.execute('PRAGMA page_count').fetchone()[0]
+        self.h.db.execute('PRAGMA max_page_count=' + str(pages))
+        request = dict(op='submit', host_id='a', host_token='ta', message=dict(
+            message_id='capacity-original', thread_id='t', sender_endpoint='ea',
+            target='cdx', body='x' * 100000, kind='chat'))
+        server, client = socket.socketpair()
+        class Listener:
+            accepted = False
+            def accept(inner):
+                if inner.accepted: raise StopIteration
+                inner.accepted = True
+                return server, None
+        def serve_once():
+            try: serve_socket(Listener(), self.h.dispatch)
+            except StopIteration: pass
+        worker = threading.Thread(target=serve_once, daemon=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            worker.start()
+            with client:
+                client.settimeout(5)
+                client.sendall(json.dumps(request).encode() + b'\n')
+                response = json.loads(client.recv(4096))
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(response['ok'])
+        if sys.version_info >= (3, 11):
+            self.assertEqual(response['error']['code'], 'resource_exhausted')
+            self.assertEqual(response['error']['details']['acceptance'], 'unknown')
+        else:
+            # Older sqlite3 exceptions expose no numeric error code. Do not
+            # infer exhaustion from text or misreport successful acceptance.
+            self.assertEqual(response['error']['code'], 'internal')
+        self.assertFalse(self.h.db.in_transaction)
+        # A separate connection sees only the durable pre-existing original.
+        with sqlite3.connect(self.h.db_path) as reader:
+            self.assertEqual(reader.execute('SELECT message_id FROM messages').fetchall(), [('retained',)])
+            self.assertEqual(reader.execute("SELECT * FROM messages WHERE message_id='retained'").fetchone(), retained)
+        # Capacity recovery keeps the immutable ID; a repeated request cannot
+        # duplicate acceptance even when the preceding success response is lost.
+        self.h.db.execute('PRAGMA max_page_count=' + str(pages + 1000))
+        self.assertEqual(self.h.dispatch(request), {'message_id': 'capacity-original', 'state': 'queued'})
+        self.assertTrue(self.h.dispatch(request)['duplicate'])
+        with sqlite3.connect(self.h.db_path) as reader:
+            self.assertEqual(reader.execute("SELECT count(*) FROM messages WHERE message_id='capacity-original'").fetchone()[0], 1)
+
     def test_active_endpoint_list_excludes_large_retired_history_without_deletion(self):
         for n in range(1000):
             self.reg("a", "ta", "retired-" + str(n), "p:cc", n + 10)
@@ -65,6 +115,11 @@ class HubTest(unittest.TestCase):
         self.assertLess(len(json.dumps(active).encode()), MAX_REQUEST)
         self.assertEqual([e["endpoint_id"] for e in active["endpoints"]], ["ea"])
         self.assertEqual(len(self.h.dispatch(req)["endpoints"]), 1001)
+        catalog = self.h.directory_list()
+        self.assertLess(len(json.dumps(catalog).encode()), MAX_REQUEST)
+        participant = next(p for p in catalog['participants'] if p['participant_id'] == 'p:cc')
+        self.assertEqual([e['endpoint_id'] for e in participant['endpoints']], ['ea'])
+        self.assertTrue(participant['online'])
         with self.assertRaises(HubError):
             self.h.dispatch(dict(req, active_only=True, host_token="wrong"))
 
@@ -75,7 +130,7 @@ class HubTest(unittest.TestCase):
         ro = Hub(path, {'admin_token': 'adm', 'hosts': {'a': 'ta'}}, read_only=True)
         self.addCleanup(ro.close)
         self.assertEqual(ro.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'ta'})['capabilities'],
-                         ['native_attest', 'native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted'])
+                         ['native_attest', 'native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted', 'native_begin_present', 'native_pending', 'native_drain'])
         self.assertEqual(ro.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'ta'})['peers'], {})
         with self.assertRaises(HubError) as caught:
             ro.dispatch({'op': 'diagnose', 'host_id': 'a', 'host_token': 'ta', 'message_id': 'missing'})
@@ -104,6 +159,17 @@ class HubTest(unittest.TestCase):
         self.assertEqual([row['endpoint_id'] for row in result['endpoint_native']], ['eb'])
         self.assertLess(len(json.dumps(success(result)).encode()), MAX_REQUEST)
         self.assertEqual(len(self.h.dispatch(req)['endpoints']), 801)
+        before = self.h.db.total_changes
+        scoped = self.h.dispatch(dict(req, endpoint_ids=['eb', 'retired-1', 'ea']))
+        self.assertEqual([row['endpoint_id'] for row in scoped['endpoints']], ['eb', 'retired-1'])
+        self.assertEqual([row['endpoint_id'] for row in scoped['endpoint_native']], ['eb', 'retired-1'])
+        self.assertLess(len(json.dumps(success(scoped)).encode()), MAX_REQUEST)
+        active = self.h.dispatch(dict(req, endpoint_ids=['eb', 'retired-1'], active_only=True))
+        self.assertEqual([row['endpoint_id'] for row in active['endpoints']], ['eb'])
+        for invalid in ([], ['x'] * 33, 'eb', [None]):
+            with self.assertRaises(HubError):
+                self.h.dispatch(dict(req, endpoint_ids=invalid))
+        self.assertEqual(self.h.db.total_changes, before)
 
     def test_same_native_rotation_preserves_exact_query_and_reply(self):
         self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
@@ -147,6 +213,116 @@ class HubTest(unittest.TestCase):
     def reg(self,h,t,e,p,pid): return self.h.dispatch({"op":"endpoint_register","host_id":h,"host_token":t,"endpoint_id":e,"participant_id":p,"host_id":h,"session":"s","pane":"0","pid":pid,"pid_start":"x","runtime_id":"r","platform":"test"})
     def send(self,mid="m1",body="hello",target="cdx"):
         return self.h.dispatch({"op":"submit","host_id":"a","host_token":"ta","message":{"message_id":mid,"thread_id":"t","sender_endpoint":"ea","target":target,"body":body,"kind":"chat"}})
+    def test_receipt_transaction_rechecks_cancel_and_retired_owner(self):
+        peer = Hub(self.h.db_path, self.h.config)
+        self.addCleanup(peer.close)
+        for action, terminal, code in [('cancel', 'cancelled', 'terminal_message'),
+                                       ('endpoint_retire', 'stale_session', 'stale_session')]:
+            with self.subTest(action=action):
+                mid = 'receipt-race-' + action
+                self.send(mid)
+                original_tx = self.h._tx
+                def concurrent_change():
+                    if action == 'cancel':
+                        peer.dispatch(dict(op=action, host_id='a', host_token='ta',
+                                           endpoint_id='ea', message_id=mid))
+                    else:
+                        peer.dispatch(dict(op=action, host_id='b', host_token='tb', endpoint_id='eb'))
+                    original_tx()
+                self.h._tx = concurrent_change
+                try:
+                    with self.assertRaises(HubError) as caught:
+                        self.h.dispatch(dict(op='receipt', host_id='b', host_token='tb',
+                                             endpoint_id='eb', message_id=mid, state='presented'))
+                    self.assertEqual(caught.exception.code, code)
+                finally:
+                    self.h._tx = original_tx
+                self.assertEqual(peer._row('SELECT state FROM messages WHERE message_id=?', (mid,))[0], terminal)
+                self.assertIsNone(peer._row('SELECT * FROM receipts WHERE message_id=?', (mid,)))
+                self.assertFalse(self.h.db.in_transaction)
+
+    def test_claim_sequence_passes_old_pending_and_wraps_without_replay(self):
+        self.send('old')
+        self.send('new')
+        receiver = dict(op='claim', host_id='b', host_token='tb', endpoint_id='eb', limit=1)
+        first = self.h.dispatch(dict(receiver, after_sequence=0))
+        second = self.h.dispatch(dict(receiver, after_sequence=first['next_sequence']))
+        self.assertEqual([m['message_id'] for m in first['messages']], ['old'])
+        self.assertEqual([m['message_id'] for m in second['messages']], ['new'])
+        empty = self.h.dispatch(dict(receiver, after_sequence=second['next_sequence']))
+        self.assertEqual(empty, {'messages': [], 'next_sequence': 0})
+        self.assertEqual(self.h.dispatch(dict(receiver, after_sequence=0))['messages'][0]['message_id'], 'old')
+        # Claim is adapter custody, never presentation or permission to replay.
+        self.assertEqual(self.h.db.execute("SELECT state FROM messages WHERE message_id='old'").fetchone()[0], 'adapter_received')
+        before = self.h.db.total_changes
+        for invalid in (True, -1, '1', [], 2**63):
+            with self.assertRaises(HubError): self.h.dispatch(dict(receiver, after_sequence=invalid))
+        self.assertEqual(self.h.db.total_changes, before)
+        with self.assertRaises(HubError):
+            self.h.dispatch(dict(receiver, host_id='a', host_token='ta', after_sequence=0))
+
+    def test_claim_probe_filtered_page_is_not_scan_end(self):
+        self.send('excluded')
+        self.send('allowed')
+        self.h.config['probe_message_ids'] = ['allowed']
+        self.h.db.execute("UPDATE metadata SET value='probe' WHERE key='maintenance'")
+        self.h.db.commit()
+        receiver = dict(op='claim', host_id='b', host_token='tb', endpoint_id='eb', limit=1)
+        first = self.h.dispatch(dict(receiver, after_sequence=0))
+        self.assertEqual(first['messages'], [])
+        self.assertGreater(first['next_sequence'], 0)
+        second = self.h.dispatch(dict(receiver, after_sequence=first['next_sequence']))
+        self.assertEqual([m['message_id'] for m in second['messages']], ['allowed'])
+
+    def test_native_pending_insert_between_empty_and_drain_and_restart(self):
+        self.h._now = lambda: 1000.0
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
+        self.attest('b', 'eb')
+        ep = self.h._row("SELECT * FROM endpoints WHERE endpoint_id='eb'")
+        req = dict(host_id='b', host_token='tb', endpoint_id='eb', incarnation=ep['incarnation'],
+                   native_kind='thread_id', native_id='native-thread')
+        self.send('first')
+        first = self.h.dispatch(dict(req, op='native_pending'))
+        self.assertTrue(first['wake_needed'])
+        self.assertEqual(first['oldest_pending_age_seconds'], 0.0)
+        self.assertFalse(self.h.dispatch(dict(req, op='native_drain', generation=first['generation']))['cleared'])
+        self.h.db.execute("UPDATE messages SET state='dispatching' WHERE message_id='first'")
+        empty = self.h.dispatch(dict(req, op='native_pending'))
+        self.assertFalse(empty['pending'])
+        self.assertIsNone(empty['oldest_pending_age_seconds'])
+        self.send('second')
+        stale = self.h.dispatch(dict(req, op='native_drain', generation=empty['generation']))
+        self.assertFalse(stale['cleared'])
+        self.assertTrue(stale['wake_needed'])
+        # A new Hub connection represents consumer crash/restart; wake survives.
+        reopened = Hub(self.h.db_path, self.h.config)
+        try:
+            reopened._now = self.h._now
+            self.assertEqual(reopened.dispatch(dict(req, op='native_pending')), {k:v for k,v in stale.items() if k!='cleared'})
+            reopened.db.execute("UPDATE messages SET state='dispatching' WHERE message_id='second'")
+            cleared = reopened.dispatch(dict(req, op='native_drain', generation=stale['generation']))
+            self.assertTrue(cleared['cleared'])
+            self.assertEqual(cleared['generation'], cleared['drained_generation'])
+            # The other ordering: arrival immediately after a committed drain.
+            self.send('third')
+            after_clear = reopened.dispatch(dict(req, op='native_pending'))
+            self.assertTrue(after_clear['wake_needed'])
+            self.assertGreater(after_clear['generation'], after_clear['drained_generation'])
+            before = reopened.db.total_changes
+            with self.assertRaises(HubError): reopened.dispatch(dict(req, op='native_drain', native_id='other', generation=stale['generation']))
+            with self.assertRaises(HubError): reopened.dispatch(dict(req, op='native_drain', host_id='a', host_token='ta', generation=stale['generation']))
+            self.assertEqual(reopened.db.total_changes, before)
+        finally: reopened.close()
+
+    def test_native_capabilities_are_authenticated_and_read_only(self):
+        before = self.h.db.total_changes
+        result = self.h.dispatch(dict(op='messaging_capabilities', host_id='b', host_token='tb'))
+        self.assertEqual(result['native_runtime'], {'hub_version': 2})
+        self.assertTrue({'native_begin_present', 'native_pending', 'native_drain'} <= set(result['capabilities']))
+        with self.assertRaises(HubError):
+            self.h.dispatch(dict(op='messaging_capabilities', host_id='b', host_token='wrong'))
+        self.assertEqual(self.h.db.total_changes, before)
+
     def test_diagnosis_is_metadata_only_and_operator_permission_is_explicit(self):
         self.send(body='private-body-sentinel')
         self.h.dispatch({'op':'directory_import','admin_token':'adm','projects':[{'project_id':'support','alias':'support','host_id':'a','path':'/support'}]})
@@ -169,6 +345,163 @@ class HubTest(unittest.TestCase):
         self.assertNotIn('private-body-sentinel',str(result))
         self.assertFalse(result['presentation_confirmed'])
         self.assertIsNone(result['delivery_reason'])
+
+    def test_waiting_summary_uses_observed_reason_and_own_age_without_writes(self):
+        now = [1000.0]
+        self.h._now = lambda: now[0]
+        self.send('wait-age')
+        now[0] = 1007.0
+        self.h.dispatch(dict(op='delivery_status', host_id='b', host_token='tb',
+                             endpoint_id='eb', message_id='wait-age', reason='busy'))
+        now[0] = 1020.0
+        request = dict(host_id='a', host_token='ta', endpoint_id='ea', message_id='wait-age')
+        before = self.h.db.total_changes
+        message = self.h.dispatch(dict(request, op='query'))
+        diagnostic = self.h.dispatch(dict(request, op='diagnose'))
+        self.assertEqual(message['delivery_summary'], diagnostic['delivery_summary'])
+        summary = message['delivery_summary']
+        self.assertEqual((summary['reason'], summary['pending_age_seconds'], summary['reason_observed_at']),
+                         ('busy', 20.0, 1007.0))
+        self.assertNotIn('oldest_pending_age_seconds', summary, 'sender must not learn other senders activity')
+        self.assertEqual(self.h.db.total_changes, before)
+        now[0] = 1021.0
+        self.h.dispatch(dict(op='delivery_status', host_id='b', host_token='tb',
+                             endpoint_id='eb', message_id='wait-age', reason='busy'))
+        self.assertEqual(self.h.dispatch(dict(request, op='query'))['delivery_summary']['pending_age_seconds'], 21.0)
+        self.h.db.execute("UPDATE endpoints SET incarnation='replacement' WHERE endpoint_id='eb'")
+        stale = self.h.dispatch(dict(request, op='query'))['delivery_summary']
+        self.assertEqual(stale['reason'], 'pending')
+        self.assertIsNone(stale['reason_observed_at'])
+        self.h.db.execute("UPDATE messages SET state='uncertain' WHERE message_id='wait-age'")
+        unknown = self.h.dispatch(dict(request, op='query'))['delivery_summary']
+        self.assertEqual(unknown['reason'], 'presentation_outcome_unknown')
+        self.assertIsNone(unknown['pending_age_seconds'])
+        self.assertIsNone(unknown['reason_observed_at'])
+
+    def test_native_wait_observation_requires_current_binding(self):
+        self.h._now = lambda: 1000.0
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
+        self.attest('b', 'eb')
+        self.send('native-status')
+        ep = self.h._row("SELECT * FROM endpoints WHERE endpoint_id='eb'")
+        observed = dict(incarnation=ep['incarnation'], native_kind='thread_id', native_id='native-thread',
+                        attempt='publication-attempt', generation='publisher-generation')
+        req = dict(op='delivery_status', host_id='b', host_token='tb', endpoint_id='eb',
+                   message_id='native-status', reason='native_queue_accepted', native_observation=observed)
+        self.h.dispatch(req)
+        reader = dict(op='query', host_id='a', host_token='ta', endpoint_id='ea', message_id='native-status')
+        self.assertEqual(self.h.dispatch(reader)['delivery_summary']['reason'], 'native_queue_accepted')
+        self.h.db.execute("UPDATE endpoint_native SET native_id='replacement-thread' WHERE endpoint_id='eb'")
+        self.assertEqual(self.h.dispatch(reader)['delivery_summary']['reason'], 'pending')
+        before = self.h.db.total_changes
+        with self.assertRaises(HubError): self.h.dispatch(req)
+        self.assertEqual(self.h.db.total_changes, before)
+
+    def test_delivery_summary_preserves_expired_unknown_and_late_evidence(self):
+        self.h._now = lambda: 1000.0
+        cases = [
+            ('dispatching', True, True, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_outcome_unknown'),
+            ('uncertain', True, False, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_outcome_unknown'),
+            ('accepted', False, False, False, 'waiting', 'active', 'pending'),
+            ('accepted', True, False, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_before_presentation'),
+            ('queued', True, False, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_before_presentation'),
+            ('adapter_received', True, False, False, 'action_required', 'ttl_elapsed', 'ttl_elapsed_before_presentation'),
+            ('accepted', False, False, True, 'recipient_replied', 'active', 'recipient_replied'),
+            ('presented', False, False, True, 'recipient_replied', 'active', 'recipient_replied'),
+            ('presented', True, False, True, 'recipient_replied', 'ttl_elapsed', 'ttl_elapsed_with_reply'),
+            ('accepted', False, True, False, 'action_required', 'active', 'pinned_recipient_unavailable'),
+            ('cancelled', False, False, True, 'action_required', 'cancelled', 'cancelled_with_reply'),
+            ('expired', True, False, True, 'action_required', 'expired', 'expired_with_reply'),
+            ('dispatching', True, False, True, 'recipient_replied', 'ttl_elapsed', 'ttl_elapsed_with_reply'),
+        ]
+        for i, (state, elapsed, retired, replied, status, lifecycle, reason) in enumerate(cases):
+            with self.subTest(state=state, elapsed=elapsed, retired=retired, replied=replied):
+                self.h.db.execute("UPDATE endpoints SET retired=0 WHERE endpoint_id='eb'")
+                mid = 'summary-' + str(i)
+                self.send(mid)
+                if replied:
+                    self.h.dispatch({'op':'submit','host_id':'b','host_token':'tb','message':{
+                        'message_id':'reply-' + mid,'in_reply_to':mid,'sender_endpoint':'eb',
+                        'body':'reply','kind':'chat'}})
+                self.h.db.execute('UPDATE messages SET state=?,expires_at=? WHERE message_id=?',
+                                  (state, self.h._now() + (-10 if elapsed else 100), mid))
+                self.h.db.execute("UPDATE endpoints SET retired=? WHERE endpoint_id='eb'", (int(retired),))
+                before = self.h.db.total_changes
+                req = {'host_id':'a','host_token':'ta','endpoint_id':'ea','message_id':mid}
+                diagnostic = self.h.dispatch(dict(req, op='diagnose'))
+                message = self.h.dispatch(dict(req, op='query'))
+                self.assertEqual(self.h.db.total_changes, before)
+                self.assertEqual(message['state'], state)
+                self.assertEqual(diagnostic['delivery_summary'], message['delivery_summary'])
+                summary = message['delivery_summary']
+                self.assertEqual((summary['status'], summary['lifecycle'], summary['reason']),
+                                 (status, lifecycle, reason))
+                self.assertEqual(summary['ttl_elapsed'], elapsed)
+                self.assertEqual(summary['presentation_confirmed'], state == 'presented')
+                self.assertEqual(summary['new_presentation_eligible'],
+                                 state == 'accepted' and not elapsed and not retired and not replied)
+                self.assertEqual(message['recipient_reply_count'], int(replied))
+        self.h.db.execute("UPDATE endpoints SET retired=0 WHERE endpoint_id='eb'")
+        self.send('late')
+        recipient = {'host_id':'b','host_token':'tb','endpoint_id':'eb','message_id':'late'}
+        self.h.dispatch(dict(recipient, op='begin_present'))
+        self.h.db.execute("UPDATE messages SET expires_at=0 WHERE message_id='late'")
+        self.h.dispatch(dict(recipient, op='receipt', state='presented', evidence='fixture'))
+        message = self.h.dispatch({'op':'query','host_id':'a','host_token':'ta',
+                                   'endpoint_id':'ea','message_id':'late'})
+        self.assertEqual(message['state'], 'presented')
+        self.assertEqual(message['delivery_summary']['status'], 'presentation_confirmed')
+        self.assertEqual(message['delivery_summary']['lifecycle'], 'ttl_elapsed')
+        self.assertFalse(message['delivery_summary']['new_presentation_eligible'])
+
+    def test_expired_query_rejection_is_read_only_for_nonparty(self):
+        self.send('private-expired')
+        self.h.db.execute("UPDATE messages SET expires_at=0 WHERE message_id='private-expired'")
+        self.h.dispatch({'op':'directory_import','admin_token':'adm','projects':[
+            {'project_id':'outsider','alias':'outsider','host_id':'a','path':'/outsider'}]})
+        self.reg('a','ta','outsider-ep','outsider:cc',3)
+        before = self.h.db.total_changes
+        with self.assertRaises(HubError) as rejected:
+            self.h.dispatch({'op':'query','host_id':'a','host_token':'ta',
+                             'endpoint_id':'outsider-ep','message_id':'private-expired'})
+        self.assertEqual(rejected.exception.code, 'unauthorized')
+        self.assertEqual(self.h.db.total_changes, before)
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='private-expired'")['state'], 'accepted')
+        recipient = {'host_id':'b','host_token':'tb','endpoint_id':'eb'}
+        self.assertEqual(self.h.dispatch(dict(recipient, op='claim'))['messages'], [])
+        with self.assertRaises(HubError) as expired:
+            self.h.dispatch(dict(recipient, op='begin_present', message_id='private-expired'))
+        self.assertEqual(expired.exception.code, 'expired')
+        self.assertEqual(self.h.db.total_changes, before)
+
+    def test_diagnosis_keeps_linked_reply_separate_from_receipt(self):
+        self.send()
+        self.h.dispatch({'op':'submit','host_id':'b','host_token':'tb','message':{
+            'message_id':'reply-1','in_reply_to':'m1','sender_endpoint':'eb',
+            'body':'private-reply-sentinel','kind':'chat'}})
+        self.h.db.execute("UPDATE messages SET state='uncertain' WHERE message_id='m1'")
+        before = self.h.db.total_changes
+        result = self.h.dispatch({'op':'diagnose','host_id':'a','host_token':'ta',
+                                  'endpoint_id':'ea','message_id':'m1'})
+        self.assertEqual(self.h.db.total_changes, before)
+        self.assertEqual(result['state'], 'uncertain')
+        self.assertFalse(result['presentation_confirmed'])
+        self.assertIsNone(result['receipt_state'])
+        self.assertEqual(result['reply_count'], 1)
+        self.assertEqual(result['reply_message_ids'], ['reply-1'])
+        self.assertEqual(result['response_state'], 'recipient_replied')
+        self.assertEqual(result['recipient_reply_message_ids'], ['reply-1'])
+        self.assertEqual(result['recipient_reply_count'], 1)
+        self.h.db.execute("UPDATE messages SET thread_id='other-thread' WHERE message_id='reply-1'")
+        wrong = self.h.dispatch({'op':'diagnose','host_id':'a','host_token':'ta',
+                                'endpoint_id':'ea','message_id':'m1'})
+        self.assertEqual(wrong['response_state'], 'unconfirmed')
+        self.h.db.execute("UPDATE messages SET thread_id='m1',sender_endpoint='ea' WHERE message_id='reply-1'")
+        wrong = self.h.dispatch({'op':'diagnose','host_id':'a','host_token':'ta',
+                                'endpoint_id':'ea','message_id':'m1'})
+        self.assertEqual(wrong['recipient_reply_count'], 0)
+
+        self.assertNotIn('private-reply-sentinel', str(result))
 
     def test_durable_idempotency_and_relative_route(self):
         self.assertEqual(self.send(), {"message_id":"m1","state":"queued"})
@@ -327,6 +660,42 @@ class HubTest(unittest.TestCase):
     def test_ambiguous_endpoint_rejected(self):
         self.reg("b","tb","eb2","p:cdx",3)
         with self.assertRaisesRegex(HubError,"ambiguous"): self.send("amb")
+
+    def test_native_reservation_binds_original_and_generation_and_remains_one_shot(self):
+        from extensions.messaging.unified.native_notice import content_digest
+        self.h.db.execute("UPDATE endpoints SET platform='cdx' WHERE endpoint_id='eb'")
+        self.attest('b', 'eb')
+        self.send('native')
+        ep = self.h._row("SELECT * FROM endpoints WHERE endpoint_id='eb'")
+        msg = dict(self.h._row("SELECT * FROM messages WHERE message_id='native'"))
+        request = dict(op='native_begin_present', host_id='b', host_token='tb', endpoint_id='eb',
+                       message_id='native', incarnation=ep['incarnation'], native_kind='thread_id',
+                       native_id='native-thread', content_hash=content_digest(msg))
+        before = self.h.db.total_changes
+        for field, bad in [('incarnation', 'old'), ('native_id', 'foreign'), ('native_kind', 'session_id'),
+                           ('content_hash', 'wrong'), ('host_token', 'wrong')]:
+            with self.subTest(field=field), self.assertRaises(HubError):
+                self.h.dispatch(dict(request, **{field: bad}))
+        self.assertEqual(self.h.db.total_changes, before)
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='native'")[0], 'accepted')
+        result = self.h.dispatch(request)
+        self.assertEqual(result['content_hash'], request['content_hash'])
+        self.assertEqual(result['incarnation'], ep['incarnation'])
+        self.assertEqual(result['native_id'], 'native-thread')
+        with self.assertRaises(HubError): self.h.dispatch(request)
+        with self.assertRaises(HubError):
+            self.h.cancel(dict(host_id='a', host_token='ta', endpoint_id='ea', message_id='native'))
+        for mid, terminal in [('native-cancel', 'cancelled'), ('native-expire', 'expired')]:
+            self.send(mid)
+            current = dict(self.h._row("SELECT * FROM messages WHERE message_id=?", (mid,)))
+            current_request = dict(request, message_id=mid, content_hash=content_digest(current))
+            if terminal == 'cancelled':
+                self.h.cancel(dict(host_id='a', host_token='ta', endpoint_id='ea', message_id=mid))
+            else:
+                self.h._now = lambda: current['expires_at'] + 1
+            with self.assertRaises(HubError): self.h.dispatch(current_request)
+            self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id=?", (mid,))[0],
+                             'cancelled' if terminal == 'cancelled' else 'accepted')
 
     def test_sender_cancel_fences_presentation_and_is_not_task_cancellation(self):
         self.send('cancel')

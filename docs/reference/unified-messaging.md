@@ -27,6 +27,21 @@ project. Cross-project sends use the full `<project>.cc` or `<project>.cdx`
 address. `gate` is the configured OpenClaw **main** participant; `chi.cc` and
 `chi.cdx` are ordinary AI-project endpoints and are not the main participant.
 
+## Explicit recipients and submission identity
+
+Each ordinary send resolves one registered recipient. Identical text sent to
+separately named recipients is not evidence of an unauthorized broadcast and
+is not rejected by a cross-recipient similarity or time-window heuristic.
+No additional approval token or recipient grant is required by this transport.
+Authentication does not expand the sender's existing user-authorized recipients
+or sharing scope.
+Explicit broadcast targets and forged sender/control/task markers remain
+forbidden; ordinary messages do not create user authorization or task authority.
+The hub's immutable submission ID, not body similarity, identifies a retry:
+the same ID and payload returns its recorded result; changing that payload is
+rejected. This does not promise deduplication of different IDs with identical text.
+Recovery replay protection for the OpenClaw main participant is unchanged.
+
 ## Delivery and replies
 
 An accepted message is durably queued, but that is not proof of presentation.
@@ -37,6 +52,24 @@ The states are distinct:
 3. a reply: a new message linked by the original message ID (`in_reply_to`).
 
 Transport health, a socket write, or a model run does not collapse these states.
+Body-free `diagnose` metadata exposes `receipt_state` (recorded receipt state or
+null), `reply_count`, and up to 20 `reply_message_ids` ordered by creation time
+and ID. The list is bounded, while `reply_count` reports the total; absence
+from the first 20 IDs is not evidence that a particular reply does not exist.
+These linked replies were authenticated on submission. They let callers
+inspect an exact response without interpreting absent ACK as non-consumption.
+They do not change the original transport state, assert an explicit ACK, or
+prove the requested work completed; callers must inspect the actual answer.
+Message query and diagnosis also expose `response_state` (`recipient_replied`
+or `unconfirmed`), `recipient_reply_count`, and up to 20
+`recipient_reply_message_ids`. These require the exact original recipient as
+sender, original sender as recipient, and the same thread and `in_reply_to`.
+They conservatively leave endpoint-successor cases unconfirmed. Unlike the
+broader linked-reply exploration fields, these identify pinned-recipient response
+evidence. An uncertain transport with `recipient_replied` must be described as
+"recipient replied; presentation receipt unconfirmed", not as undelivered.
+Neither these fields nor a reply synthesize an explicit ACK or task completion.
+Old consumers may omit these additive fields; missing fields mean unknown.
 For a service recipient, mailbox acceptance, notification acceptance, presentation,
 recipient consumption, and a substantive answer are separate observations. The
 absence of an ACK does not establish that a screen is absent, that the recipient is
@@ -111,6 +144,12 @@ the entire envelope in one paste, because paste coalescing can discard preceding
 literal keystrokes. Exact prompt
 receipts normalize only the known single native paste wrapper. A matching bound
 Claude session transcript may resolve an uncertain write without reinjection.
+For Codex CLI, the host may likewise recover presentation from a unique native
+rollout pinned to the endpoint thread and project. Only a top-level live user
+message with the exact normalized delivery prompt hash counts; compaction
+histories, event mirrors, replies, other threads/projects and partial matches do
+not. The bounded tail may leave older evidence unknown. This records observed
+presentation, not an explicit recipient ACK or requested-work completion.
 Observer running state, selection screens and independent draft measurement
 block injection; terminal write success is never a presentation receipt.
 
@@ -323,7 +362,13 @@ grant historical access. Service diagnosis checks the current enrollment
 generation and launchd process without registering it.
 
 Only ENOSPC, EDQUOT and SQLite SQLITE_FULL classify as `resource_exhausted`.
-Its optional metadata contains a bounded `failure_stage` and `acceptance=unknown`;
+SQLite classification requires the exception's numeric error code (available
+in Python 3.11 and later). Older runtimes return a generic failure when that
+code is unavailable; error text is not used to infer exhaustion. Neither
+failure acknowledges an uncommitted message. Existing committed originals
+remain intact, and capacity recovery preserves the original submission ID.
+The `resource_exhausted` response's optional metadata contains a bounded
+`failure_stage` and `acceptance=unknown`;
 even a locally failed attempt cannot disprove acceptance of an earlier attempt
 with the same submission ID. Diagnosis is metadata-only and may itself be
 unavailable on a full disk. Preserve the stable ID and body; do not create a new
@@ -538,3 +583,526 @@ host-local native thread metadata contradicts a registry record's project,
 discovery rejects that record rather than letting it suppress live tmux fallback.
 The existing native catalog/rollout, unique-project adoption and live process
 checks still apply. A conflicting thread in the same project is not replaced.
+
+### Delivery summary without rewriting evidence
+
+Exact message/query and metadata-only diagnose return the same optional
+`delivery_summary` object; the KAI message projection preserves it. It is a
+read-only projection, not a delivery action or a new authorization gate. Existing
+`state`, receipt/ACK evidence and authenticated recipient reply evidence remain
+unchanged. Older consumers may ignore this additive field.
+
+`status` is waiting, presentation_confirmed, recipient_replied or action_required.
+`lifecycle` independently retains active, ttl_elapsed or the recorded terminal
+state. `reason` explains their combination. `ttl_elapsed` is a clock observation,
+not proof that a prior presentation did not happen. `new_presentation_eligible`
+means only lifecycle eligibility (active pinned endpoint, unused presentation
+state, unelapsed TTL), never sender authorization or permission to retry.
+
+A deadline-past dispatching/uncertain message without presentation evidence has
+reason ttl_elapsed_outcome_unknown, action_required, and false new-presentation
+eligibility; it is not rewritten to expired or replayed. A late valid receipt
+can still confirm the presentation under the existing receipt contract. Exact
+recipient replies remain separate from presentation/ACK and work completion.
+Explicit cancelled/expired/rejected/stale_session states take summary priority,
+including a _with_reply reason if a late reply exists. A reply does not hide
+cancellation or expiry. A deadline-past confirmed presentation still reports
+presentation_confirmed with lifecycle ttl_elapsed; the deadline does not erase
+the existing evidence. The summary never extends TTL, changes pinned endpoints,
+synthesizes receipts, or starts a delivery.
+
+Message query and diagnose are read-only even after TTL or when a query is
+rejected by party authorization. Query does not persist an `expired` state for
+accepted/queued/adapter_received rows: both views project ttl_elapsed from the
+same stored state. Delivery admission still checks TTL independently in claim
+and begin_present, so a stale stored state is not permission to deliver.
+
+Owner-host identity diagnostics accept optional `endpoint_ids` (1–32 nonempty IDs,
+at most 128 characters each) alongside `active_only`. Both endpoint and native
+evidence rows are filtered within the authenticated host, including retired rows
+when requested. Cross-host IDs return no rows; selectors never grant message
+access or change identity. Use this bounded view for historical continuity
+instead of fetching an ever-growing retired-endpoint inventory.
+This bounds selected endpoint count, not the entire response size: host-owned
+project metadata and individual field sizes still contribute. Oversized responses
+remain explicit failures; never silently truncate or retry without selectors.
+
+The existing delivery worker refreshes endpoint/process evidence at message
+boundaries, including during historical uncertain-receipt recovery, rather than
+only after an entire backlog. A refresh that removes an endpoint stops further
+processing for that immutable endpoint. This does not relax heartbeat freshness,
+create a second scheduler, replay unknown deliveries, or guarantee progress during
+a single blocked operation longer than the heartbeat TTL.
+
+An authenticated native endpoint need not have a tmux pane. Terminal delivery
+requires a nonempty pane string; otherwise the original remains pending with
+`endpoint_unavailable`, without terminal access, presentation claim, input
+mutation, endpoint retirement, or replay. Other endpoints continue through the
+same worker. Existing historical receipt recovery remains available separately.
+This is an unavailable terminal surface, not proof of an invalid native identity
+or a completed native ingress implementation.
+
+### Native peer reference provenance (preparation only)
+
+The native-notice primitive is not an enabled ingress adapter. It prepares a
+small reference, never a copy of the original body, from an existing pinned
+`deliveries` row. The same host journal retains only its token, immutable content
+digest, native ID/kind, endpoint/incarnation and stable client ID in
+`native_notice_metadata`. This metadata has no message body, pending list, cursor
+or scheduler and is not another mailbox or an approval source.
+
+The host supplies independently authenticated endpoint/native attestations, not
+selectors from a peer body. Same-original preparation must preserve content and
+binding or fail with conflict. The exact generated prompt digest is retained.
+Verification is read-only, checks the stored
+original and current binding, and rejects a changed token, thread, incarnation or
+endpoint. Its result establishes peer provenance only, never user approval,
+presentation, execution permission, cancellation success or expiry eligibility.
+
+Native queue records may otherwise look like ordinary `user.text`. The queued
+reference keeps the peer marker and excludes the original's authority claims;
+existing approval and role classifiers must still reject it as direct user input.
+The consumer must read the actual live record from the pinned transcript, check
+its header/project binding, and use entire-record reference verification. Token
+verification alone does not attest the full received text; appended, mixed or
+changed content fails without direct-user fallback. Local journal/transcript
+correlation retains the existing same-OS-user trust level, not provider-signed
+attestation.
+Body retrieval must separately recheck the authoritative original's latest
+cancellation, TTL and sharing scope; later effects require the existing execution
+scope/cancellation check. The primitive alone does not implement that consumer,
+queue idempotency, coalescing, generation fencing or native delivery. A stable
+client ID is a correlation key, not provider deduplication. Normal historical
+message queries and established authorized carry are unchanged.
+
+### Native presentation reservation (consumer integration pending)
+
+`native_begin_present` is the owner-host authenticated, one-shot presentation
+reservation for the prepared native reference. In the same transaction as the
+existing `dispatching` transition it checks the current non-retired recipient,
+Codex platform, persisted native attestation, exact endpoint incarnation and
+canonical immutable original content digest. It also checks maintenance, current
+cancellation/terminal state, expiry and prior recipient reply. A mismatched or
+missing binding fails without advancing the message. The returned binding is a
+presentation permission for that exact original, not a user approval, task grant,
+body-consumption receipt or execution permission. Current authenticated host and
+service scope restrictions remain independent; this operation creates no sharing
+grant. Legacy `begin_present` remains unchanged for existing consumers.
+
+Duplicate requests after reservation fail rather than re-expose the body. An
+unknown reservation result requires existing-state reconciliation, never blind
+re-enqueue or presentation retry. Later cancellation retains existing too-late
+semantics; the execution side must still validate its scope/cancellation before
+external effects. This primitive does not prove automatic consumer integration,
+crash recovery, queue generation fencing, lost-wake prevention or any receipt.
+
+### Authenticated native body consumer (activation pending)
+
+The Host `native_resolve` operation authenticates its calling native process
+through the normal caller binding before resolving a reference. It remains
+unavailable unless `native_consumer_enabled` is explicitly true in that Host's
+configuration. `messaging_capabilities.native_consumer` reports the loaded backend
+version and activation flag; it is not queue/provider acceptance. Installing the module does not register a hook, queue a notice,
+activate this setting or change a user's running conversation.
+
+The preprompt consumer independently reads the exact native transcript selected
+by the persisted owner-host attestation, checks its native CLI header and project,
+and requires the hook's native ID/path/project to match. The complete hook prompt
+must match the immutable notice digest, not merely contain its token. The current
+Hub original must match the pinned immutable content. After checking response size,
+the consumer durably transitions the original local delivery from `received` to
+`dispatching` before requesting `native_begin_present`. Only an exact successful
+reservation binding permits returning the original body as JSON external-peer
+additional context. Neither this context nor its storage as a provider developer
+record is a direct user approval or new grant; existing authenticated KAI carries
+keep their independent stated scope. No body is silently truncated.
+
+A lost response or failure after local reservation leaves `uncertain`; subsequent
+resolve attempts never return the body again. A persisted native reference excludes
+that original from terminal paste and legacy user-prompt receipt matching. This is
+one-shot body exposure, not crash-safe exactly-once execution or guaranteed recovery
+from a pre-context crash. The hook blocks an unavailable/malformed reference rather
+than letting it fall back to a direct user prompt; ordinary prompts are unaffected.
+
+Recovery examines only a bounded tail of the pinned native transcript. A reference
+record alone is insufficient. Both a valid complete reference and the exact prepared
+peer additional context must be recorded in the same native turn, with the provider's
+`hooks.additional_context` kind, before reporting `presented`. This proves native
+context recording, not provider request acceptance, model consumption, explicit ACK,
+reply or task completion. Missing/old/other-turn evidence stays unknown. Presentation
+receipt does not cancel effects; the execution side still owns its scope/cancel check.
+
+Production queue publication/reconciliation, notification generations/no-lost-wake,
+consumer cutover fencing, Goal-operation isolation and provider-wide activation
+remain required before enabling native delivery. No legacy paste fallback is a
+substitute for those acceptance requirements.
+
+The pinned Codex 0.163 hook engine defaults additional context to a 2,500-token
+spill threshold. Before production hook activation, configure and prove an
+`additionalContextLimit` sufficient for the accepted full-message wire bound;
+a spilled file/reference requiring discretionary model fetching is not full-body
+acceptance. The exact-context recovery rule will not promote a spilled or altered
+context to `presented`. The small-body native fixture is not max-body acceptance.
+
+Local reconciliation stays `dispatching`/`uncertain` until the authoritative Hub
+confirms `presented`. After a receipt transport error, the next tick reads Hub
+state first: an already matching receipt closes the local row without another
+receipt call; otherwise valid native context evidence can synchronize the receipt.
+Neither path returns the body again. Local context recording must not prematurely
+remove a Hub-unconfirmed row from reconciliation.
+
+### Existing-socket Codex queue transport (scheduler integration pending)
+
+`native_queue` uses only one existing owner-private Unix control socket and the
+provider's `initialize`, `thread/queue/add` and bounded `thread/queue/list` RPCs.
+It never starts a daemon, resumes/starts a thread, invokes a model or retries an
+operation. The caller must supply independently authenticated native binding and
+an immutable prepared reference, and durably record its publication attempt first.
+The normal control-socket symlink is allowed only when owned by the caller and
+resolving to a same-owner socket with no group/other permissions.
+
+The optional Python `websockets.sync.client` dependency must be available in the
+actual runtime. Missing dependency/socket/transport is explicit unavailability,
+not successful delivery; it does not affect core tmux startup. Version 16.0 is
+covered by the isolated installed-runtime fixture, not an all-host assumption.
+
+Stable client IDs are correlation only: Codex does not deduplicate them. After an
+add may have been sent, missing/malformed results and generic provider errors are
+`publication_unknown`; only explicit method-not-found/invalid-params errors are
+known rejection. No exception triggers replay, a different socket, runtime spawn
+or a new client ID. Oversized frames fail explicitly rather than truncating queue
+history. This transport primitive alone does not implement durable publication,
+queue/history reconciliation, cutover fencing, no-lost-wake or provider acceptance.
+
+Response validation follows the pinned Codex App Server profile (`rpc.rs`):
+`jsonrpc` is intentionally absent in native responses; if explicitly present it
+must be `2.0`. Response IDs have the exact requested type/value, result/error are
+exclusive, and an error requires integer code plus string message. Malformed
+post-send envelopes never establish known rejection. Add success additionally
+requires the returned queued ID, exact correlation ID and original text input;
+list results retain the opaque `nextCursor`, so absence on one 32-item page is
+never proof of absence from the whole queue. Incoming unrelated messages do not
+reset the per-RPC response deadline. The caller must also isolate potentially
+blocking transport I/O from heartbeat scheduling before production integration.
+
+### Durable publication controller (scheduler cutover pending)
+
+`native_publication.Publisher` records reference-publication metadata under the
+reserved `_native_publication` member of the existing private delivery envelope.
+It does not change original content-digest fields, delivery/receipt state, create
+a mailbox, introduce a second scheduler, or store an original body elsewhere.
+The attempt ID and controller generation are committed before any queue I/O;
+metadata updates use an envelope compare-and-swap and cannot reset body state.
+
+One bounded, non-AI Python child handles each queue add/list request on the
+existing socket. Private request files contain reference metadata, not the peer
+body. The controller drains bounded stdout without waiting for network I/O;
+its 15-second child deadline kills only that owned child and retains publication
+unknown. Children never resume a thread or start a provider. Existing scheduler
+integration must call `maintain` each tick, including ticks not visiting that row.
+
+A process restart fences interrupted publication into a new generation and
+`unknown`, not `ready`. Late results cannot overwrite a new attempt/generation
+or a body-reserved reference. The publication label `body_reserved` means only
+that the original local body-reservation/receipt path has started; it does not
+claim queue consumption or model consumption. Historical unknown terminal
+injections are never converted to new native references. A new reference needs
+the latest Hub presentation-eligible original. Known pre-add failures may be retried with the exact same
+reference after backoff. Both unknown results and acknowledged references use bounded paginated queue
+inspection: CID plus the entire reference text must match. An incomplete page
+never authorizes another add. An exhausted scan without that reference records
+`reference_absent`, which is **not** evidence of non-consumption or failed delivery.
+Only a still-`received` native original may then generate the same immutable
+reference wake after the existing backoff and a fresh Hub eligibility/content
+check. Token, CID, original digest and endpoint/native binding stay unchanged.
+The independent consumer CAS rejects every duplicate before returning a body;
+`dispatching`, `uncertain` and `presented` bodies are never returned again.
+This reference-only at-least-once recovery does not resubmit the original, repeat
+work, or erase unknown publication history (`last_unknown_publication` retains
+the last uncertain attempt/generation). A queue ACK is not a body receipt.
+Read-only reconciliation is not blocked by another queued reference. A queued
+leader which is no longer Hub-eligible cannot starve later eligible originals,
+even when that old leader is no longer returned by claim.
+The existing native consumer still owns the one-shot body reservation and context
+recording evidence.
+
+This controller is not yet the provider-wide scheduler cutover: fair claim
+pagination, complete no-lost-wake acceptance, conversation-level pending-set drain,
+crash/history convergence, hook/carry activation and CC ingress remain incomplete.
+Neither queue nor consumer flags are enabled by installing these modules.
+
+Every new add attempt, including a known-unsubmitted retry, rechecks the latest
+Hub eligibility and immutable original immediately before committing its attempt.
+A prepared reference is not a cached permission to notify after cancellation or
+expiry. Ineligible originals stop new publication. Unknown attempts must first
+complete queue reconciliation; reference-only recovery is permitted only under
+the one-shot body fence described above. A child-job exception is isolated, removed and
+recorded unknown under its matching attempt/generation, so it cannot remain a
+phantom live job or stop collecting other jobs.
+
+### Bounded fair claim scan
+
+The existing authenticated recipient `claim` accepts optional nonnegative integer
+`after_sequence` (signed 64-bit). This uses the existing messages row sequence,
+not a new queue. It returns `next_sequence` for the last returned row, or zero
+only at SQL end. A probe-filtered empty page advances to the raw scanned
+sequence instead of wrapping; a size-bounded nonempty page advances only through
+returned rows. The Host visits one row per endpoint per tick and wraps on
+the tick after SQL end, so an old adapter-received message cannot
+permanently hide later messages. Default callers retain created-at ordering.
+The cursor is a volatile scheduling hint, not consumption, notification-drain
+completion, cancellation permission, or a no-lost-wake guarantee. Restart may
+scan old rows again, but existing durable presentation/unknown fences remain
+authoritative; claiming never authorizes replay.
+
+### Native publication scheduler connection (inactive by default)
+
+Host uses its existing delivery tick, not a second scheduler. Every tick first
+maintains all owned publication jobs, including when delivery is disabled or
+the original endpoint/claim row is not visited. With `native_queue_enabled`
+true, fresh received Codex rows select native routing before any terminal
+operation. Missing consumer enablement, failed identity or transport leaves
+the row pending with an adapter diagnostic; it never falls back to paste.
+Route selection is pinned as `_native_route=native-v1` in the existing local
+delivery envelope before prepare/identity/I/O. This pin survives restart and
+flag disablement; neither makes terminal delivery eligible again.
+Previously native-owned rows retain their receipt-recovery path even with flags
+off. Historical legacy uncertain/dispatching rows are not re-published. This
+connection alone does not prove conversation notification coalescing, durable
+pending generations, no-lost-wake, Goal carry, or provider acceptance. Both
+native flags remain false until those activation prerequisites are proved.
+
+### Native pending generation and drain
+
+`native_pending` and `native_drain` require the authenticated owner host, active
+endpoint, immutable incarnation, and exact persisted native kind/ID. The
+generation is MAX existing message insertion sequence for that endpoint: the
+message insert itself advances it atomically, without another mailbox/table or
+separate generation update. The methods return metadata only, never bodies.
+
+`native_drain(generation)` uses the existing Hub BEGIN IMMEDIATE transaction.
+It records a drained generation in existing metadata only when that generation
+is still current and no unexpired, unanswered, new-presentation candidate
+remains. Insert after an empty snapshot therefore prevents stale clearing.
+Insert after clearing advances the sequence and restores wake_needed. Crash
+before drain leaves the same pending generation discoverable on restart.
+
+This is notification bookkeeping, not receipt, consumption, completion,
+permission to replay, or a new execution grant. It does not reactivate expired,
+retired, cancelled or uncertain effects. Consumer notification coalescing and
+activation must still be connected and separately demonstrated; these Hub
+primitives alone are not end-to-end no-lost-wake acceptance.
+
+### Bounded native pending-set consumption
+
+With native queue enabled, Host journals a bounded claim page (up to 32) before
+starting its first transport child. An authenticated reference hook coalesces
+up to 32 same-endpoint received originals into one context, under the existing
+wire bound; no body is truncated. The reference remains pinned to its leader.
+All member notice/binding preparations run before the first irreversible body
+reservation; a later predictable notice rejection cannot strand a reserved
+leader. Every member separately validates its immutable original and passes the latest
+Hub native presentation reservation (maintenance/probe/cancel/TTL included).
+Failed later reservations expose no body and retain uncertainty; leader failure
+blocks the reference. Each successful member pins the shared reference ID and
+whole-context hash in its existing delivery row. Recovery requires that member's
+immutable original plus the exact shared reference and context in the same turn.
+
+Consumer snapshots pending generation before reserving and attempts generation-
+matched drain afterwards. New unclaimed arrivals remain Hub candidates and
+prevent stale clearing. Drain errors do not revoke an already issued context.
+A crash before final context-hash commit leaves unresolved reserved effects,
+not permission to return bodies again. Native feature flags remain off pending
+full provider/carry/cutover acceptance; this connection is not a blanket
+end-to-end reliability claim.
+
+### Native context size and hook spill boundary
+
+Normal requests, Hub query frames and non-native client responses remain
+256 KiB. Only the authenticated `native_resolve` response has a bounded 1 MiB
+client/consumer envelope, to accommodate JSON escaping of wire-bounded original
+bodies without truncation or a permanently blocked oversized leader. Batches
+stop before that limit; unreturned originals remain pending. Exact-record
+recovery reads a bounded 4 MiB tail, enough for the maximum context frame and
+its shared reference at immediate recovery (not arbitrary historical proof).
+
+Codex 0.163 native hook activation must set `additionalContextLimit: 0` only on
+the native consumer command. In that version zero disables additional-context
+spill; the product's 1 MiB response bound remains effective. This must be
+confirmed in loaded hook configuration before activation, not inferred from a
+wrapper or a source file. Do not change unrelated hook limits. The native
+flags remain off until this and the remaining carry/provider gates pass.
+
+### Runtime generation and concurrent consumers
+
+Existing runtime setup records `_native_runtime_expected` in the existing Host
+configuration. A contract-version change participates in the existing changed/
+LaunchAgent reload decision; unchanged setup does not reload again. A nonzero/failed reload is
+reported unavailable, never reloaded. Even a successful reload command still
+requires a loaded-capability readback. It does not
+turn on either native feature flag. Expected configuration is not loaded proof.
+
+`messaging_capabilities.native_runtime` reports the loaded Host version, loaded
+consumer version and native response limit independently of that expected field.
+Version 2 identifies the Host's pinned/batched native routing and the consumer's
+coalesced, preflighted, large-frame path. Compare these plus installed artifacts
+and actual behavior before activation. Hook trust/no-spill and Goal carry still
+require their own direct evidence; version numbers do not grant authority.
+
+Two concurrent hook consumers share the existing per-original received-state
+CAS and latest Hub reservation. Exactly one can return that original body; the
+loser remains rejected rather than reopening effects. Publisher attempt and
+generation fences remain separate from endpoint incarnation/native identity
+and from this build-contract version. An adapter's existing exclusive startup
+lock prevents simultaneous delivery schedulers on its socket. No new lease,
+mailbox, scheduler or permission registry is introduced.
+
+### Read-only native user-Goal evidence
+
+The existing approval module provides `native_goal_evidence` and
+`validate_native_goal_evidence` as read-only selectors, not new approval
+admission or Goal-tool permission. Caller must validate the native rollout
+header/project/identity and pass top-level live stream records. Only exact
+host-typed `user.goal` user messages with a unique record ID, creation time,
+single text item and version-matched JSON Goal format are accepted. Plain peer
+text, automatic `goal.internal_context`, nested replacement histories and
+omitted/malformed objectives cannot create evidence.
+
+Evidence hashes bind native ID, setter record ID/time, latest lifecycle record
+ID/time, objective hash and status. Clear/omitted/new objective invalidates the
+old setter; clear then same-text set does not revive an old hash. Explicit
+paused/blocked/complete/limited states reject validation. Absent status is
+reported as unknown if no status is known; objective-only edits preserve a
+previously known status, matching native GoalSet semantics. Neither case grants
+new execution permission. This is the same
+host/local-transcript correlation trust level as existing direct evidence, not
+a provider signature.
+
+Every result explicitly has `execution_authorized=false`. Operation-specific
+scope, exact current Goal target and latest cancellation must still be checked
+at use, including KAI carry and external effects. The public task approval
+path is unchanged: it must not persist this reader output as a permanent grant
+without current-setter revocation checks. Production native ingress remains
+off until that integration is proved without blocking valid existing carry.
+
+### Optional native queue dependency
+
+The unified installer accepts `--native-queue-dependency` to provision only the
+optional queue library in its private module directory, using the universal
+websockets 15.0.1 wheel and the pinned PyPI SHA-256. This release supports
+Python 3.9; no global pip installation, package setup script, native extension
+or OS permission change is involved. Default core installation remains offline
+and unchanged. `--check --native-queue-dependency` verifies that artifact.
+
+The transport prefers this adjacent owner-controlled wheel via zip import,
+verifying its hash and ownership before any socket I/O. Conflicting/tampered
+artifacts or an already loaded different library are unavailable, not silent
+fallback or permission to publish. Without an adjacent wheel, the existing
+optional installed-library path remains compatible. Provisioning does not
+enable native consumer/queue flags or prove remote Codex/provider acceptance.
+Pinned package metadata: https://pypi.org/project/websockets/15.0.1/ .
+
+### Loaded Hub native capability
+
+Authenticated local and peer capability views share the same Hub implementation
+and report `native_runtime.hub_version` plus the native reservation/pending/drain
+operations. Federation preserves a valid peer Hub version instead of reporting
+only disk placement or dropping that generation. An older peer with no version
+remains unknown; ordinary core messaging is not disabled. These read-only
+capabilities neither claim successful native presentation nor grant authority.
+
+After distributing Hub/Federation changes, reload only the existing Hub service,
+keeping Host native flags off. Match loaded capability readback to the installed
+version; preserve all mailbox rows and unknown effects. No old-message replay,
+TTL extension, identity reassignment or provider restart belongs to this step.
+
+### Per-recipient scheduler fault boundary
+
+Loaded Host generation 3 includes this boundary; consumer generation remains 2.
+The existing expected/loaded runtime contract reports the difference without
+enabling either native feature or changing any authority.
+
+An expected claim, transport, malformed-response, or local SQLite failure for one
+recipient ends only that recipient's current tick. The same scheduler continues
+with the other recipients; it does not create a replacement worker or resend an
+original. Only uncommitted local work is rolled back. Already committed body
+reservations, uncertain effects, receipts, and publication attempts are retained.
+Global refresh/authority failures remain global and are not treated as delivery
+permission. Unexpected programming errors are not reclassified as normal delivery.
+
+Host generation 4 also discards a connection whose rollback fails, then opens
+the same existing journal without startup recovery or schema creation. Committed
+reservations and unknown effects are not reset. A failed reopen stops that tick;
+the next tick must reopen before job maintenance or recipient processing. Missing
+or schema-damaged journals are not silently replaced by a blank ledger. This is
+local SQLite recovery, not a new messaging connection or authority grant.
+
+### Observed waiting reason and age
+
+Query and diagnose compute the same `delivery_summary`, without updating rows.
+For status `waiting`, `pending_age_seconds` is nonnegative elapsed time since
+that original was accepted, not time spent busy or an answer deadline. Otherwise
+it is null. `reason_observed_at` dates a recognized adapter observation only
+when its receipt state still matches; stale-state, malformed or future observations
+do not override the summary. Terminal, presentation, reply and TTL precedence is
+unchanged. An observed `busy` is not a fresh proof of what a model is doing.
+
+`native_queue_accepted` records the past add ACK; `native_queue_pending` records
+a positive list match at the observation time. Neither is model receipt, proof of
+current queue contents after that time, or a claim that a tool is busy. `native_publication_unknown` means notification
+publication/reconciliation was not confirmed. `native_retry_pending` means only a
+reference wake may be retried under the existing eligibility and one-shot fences.
+These optional diagnostic writes cannot block publication on transport failure.
+
+Only the authenticated recipient-native `native_pending` view returns
+`oldest_pending_age_seconds` over its existing raw pending candidate set; empty
+is null. It is not presentation permission and is not returned to an original's
+sender as cross-message metadata. CLI and KAI preserve the same per-original
+summary; schemas admit its additive age/observation fields. Hub generation 2
+identifies this projection; existing native feature flags remain unchanged.
+
+Wait observations are bound to the reporting endpoint incarnation. Native
+observations also retain the immutable notice binding and publication attempt/
+generation, checked against current native attestation. Old-incarnation or
+old-native observations do not become current reasons merely because the message
+state is unchanged. Older unbound evidence remains historical diagnostic data.
+Host generation 5 includes this optional reporting path; it does not enable native
+publication or consumer features.
+
+Within the same summary, an authenticated reply takes precedence over a
+presentation receipt, while `presentation_confirmed` remains true as independent
+evidence. Cancellation/expiry/rejection lifecycle precedence is unchanged. A
+reply still does not establish task completion.
+
+### Live native owner preservation during discovery
+
+Host generation 7 does not treat discovery of another process for the same
+participant as proof that the old owner disappeared. Retirement requires
+positive PID absence or PID-start mismatch. Unknown process evidence leaves
+the persisted identity active, without granting new caller authority.
+When the old same-UID native process incarnation is independently verified
+alive, it remains a caller candidate alongside the new process. Its complete
+persisted binding is retained: project ID/path/address also carry routing or
+diagnostic authority and are never borrowed from the new candidate, just as
+native IDs, PID/start, runtime and endpoint binding are never borrowed. Multiple live recipient candidates
+remain ambiguous rather than silently choosing or retiring one. This guard is
+not same-native delivery handoff and does not revive historical stale messages.
+
+### Bounded live target catalog
+
+Target directory participants expose only non-retired endpoints. Historical
+endpoint rows remain intact and accessible through the authenticated endpoint
+diagnostics; they are not repeated in every local/federated target listing.
+Online still requires a recent heartbeat, and a non-retired offline endpoint is
+not silently discarded. This projection does not alter recipient resolution,
+authorization, immutable messages, or delivery eligibility. Wire limits remain
+enforced; this is not an unlimited catalog-size guarantee.
+
+### Receipt cancellation and owner fencing
+
+Receipt endpoint ownership and current message state are validated inside the
+same BEGIN IMMEDIATE transaction as receipt persistence. A cancellation or
+endpoint retirement committed before this transaction cannot be overwritten by
+a receipt validated against an earlier snapshot. A receipt committed first
+retains its existing lifecycle semantics. This does not transfer delivery rights
+or authorize replay of a retired original.

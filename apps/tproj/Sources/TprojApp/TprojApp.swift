@@ -3072,7 +3072,8 @@ final class AppViewModel: ObservableObject {
         if let host = hostForColumn(column) {
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_host", host])
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_path", column.projectPath])
-            let remoteCmd = "ssh -t \(shellSingleQuote(host)) \"cd \(shellDoubleQuote(column.projectPath)) && exec \\$SHELL -l\""
+            let remoteClient = shellSingleQuote(NSHomeDirectory() + "/bin/tproj-remote-client")
+            let remoteCmd = "\(remoteClient) shell \(shellSingleQuote(host)) \(shellSingleQuote(column.projectPath))"
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, remoteCmd, "C-m"])
         } else {
             let localDir = column.projectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? NSHomeDirectory() : column.projectPath
@@ -6029,8 +6030,7 @@ struct ContentView: View {
             }
     }
 
-    private func liveColumnRow(_ column: LiveColumn) -> some View {
-        let isDragging = draggingColumnID == column.column
+    private func liveColumnHeader(_ column: LiveColumn, compact: Bool) -> some View {
         // Conversation-main side + mode tint. This is the pane the user chose to
         // talk to, not necessarily the higher-tier or orchestrating side.
         let host = column.hostLabel.hasPrefix("remote@")
@@ -6039,32 +6039,31 @@ struct ContentView: View {
         let leadTint = roleModeTint(vm.roleMode(forProjectPath: column.projectPath, host: host))
         let mainTint = leadTint
 
-        return VStack(alignment: .leading, spacing: 3) {
-            // Header row
-            HStack(spacing: 4) {
+        return HStack(spacing: 4) {
                 Text("#\(column.column)")
                     .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
                     .fixedSize()
                 pill(liveHostLabel(column), tint: column.hostLabel == "local" ? GhosttyTheme.current.accentGreen : GhosttyTheme.current.accentYellow)
+                if !compact {
                 Text(columnPrimaryName(column))
                     .font(GhosttyTheme.current.font(size: 13, weight: .semibold))
                     .foregroundStyle(GhosttyTheme.current.textPrimary)
                     .lineLimit(1)
-                    // Keep the whole name; when the row is too narrow the buttons
-                    // on the right are cut off instead (see the frame below).
+                    // Natural width selects the stacked variant before controls clip.
                     .fixedSize(horizontal: true, vertical: false)
                     .help(columnAgentNamesText(column) ?? columnPrimaryName(column))
+                }
                 Spacer(minLength: 0)
                 ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "codex", for: column) }
                 }
-                .frame(width: 36)
+                .frame(width: compact ? 28 : 36)
                 ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cc" ? mainTint : nil) {
                     Task { await vm.toggleAIPane(role: "claude", for: column) }
                 }
-                .frame(width: 30)
-                ActionButton("Term", tone: column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath) ? .primary : (column.terminalPaneID == nil ? .neutral : .primary), isEnabled: !vm.isBusy, dense: true,
+                .frame(width: compact ? 24 : 30)
+                ActionButton(compact ? "T" : "Term", tone: column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath) ? .primary : (column.terminalPaneID == nil ? .neutral : .primary), isEnabled: !vm.isBusy, dense: true,
                              // Only while the whole dock is hidden: a background tab of an open dock is not hidden.
                              tint: column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath) && terminalDock.visibleProjectPath == nil ? GhosttyTheme.current.accentYellow : nil) {
                     if column.hostLabel == "local" {
@@ -6073,25 +6072,40 @@ struct ContentView: View {
                         Task { await vm.toggleTerminal(for: column) }
                     }
                 }
-                .frame(width: 40)
+                .frame(width: compact ? 24 : 40)
                 Button {
                     Task { await vm.removeColumn(column) }
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(GhosttyTheme.current.accentRed.opacity(0.8))
-                        .frame(width: 20, height: 18)
+                        .frame(width: compact ? 16 : 20, height: 18)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(vm.isBusy || vm.isDropPending(column.column))
                 .help("Drop column #\(column.column)")
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .clipped()
+    }
 
-            // Row 2: every per-column setting behind one pill.
-            columnSettingsPill(column)
+    private func liveColumnRow(_ column: LiveColumn) -> some View {
+        let isDragging = draggingColumnID == column.column
+        return ViewThatFits(in: .horizontal) {
+            VStack(alignment: .leading, spacing: 3) {
+                liveColumnHeader(column, compact: false)
+                columnSettingsPill(column)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: 2) {
+                liveColumnHeader(column, compact: true)
+                Text(columnPrimaryName(column))
+                    .font(GhosttyTheme.current.font(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(columnAgentNamesText(column) ?? columnPrimaryName(column))
+                columnSettingsPill(column, compact: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 2)
         .padding(.leading, 10)   // accent bar との間隔確保
@@ -6140,7 +6154,22 @@ struct ContentView: View {
             .padding(.vertical, 0)
     }
 
+    private func inactiveProjectControls(_ project: WorkspaceProject) -> some View {
+        HStack(spacing: 4) {
+            roleModeBadge(projectPath: project.path, host: project.type == "remote" ? project.host : nil)
+            Spacer()
+            if project.type == "remote" {
+                remoteCCCacheMenu(project)
+            }
+            ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
+                Task { await vm.addColumnByAlias(project.routingAlias) }
+            }
+            .frame(width: 38)
+        }
+    }
+
     private func inactiveProjectRow(_ project: WorkspaceProject) -> some View {
+        ViewThatFits(in: .horizontal) {
         HStack(spacing: 4) {
             Text("--")
                 .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
@@ -6151,15 +6180,26 @@ struct ContentView: View {
                 .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
                 .foregroundStyle(GhosttyTheme.current.textPrimary)
                 .lineLimit(1)
-            roleModeBadge(projectPath: project.path, host: project.type == "remote" ? project.host : nil)
-            Spacer()
-            if project.type == "remote" {
-                remoteCCCacheMenu(project)
+            inactiveProjectControls(project)
+        }
+            .fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+            Text("--")
+                .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
+                .foregroundStyle(GhosttyTheme.current.textTertiary)
+            pill(project.type == "remote" ? "@\(project.host)" : "lcl",
+                 tint: project.type == "remote" ? GhosttyTheme.current.accentYellow : GhosttyTheme.current.accentGreen)
+
+                }
+                Text(project.effectiveAlias)
+                    .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(project.effectiveAlias)
+                inactiveProjectControls(project)
             }
-            ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
-                Task { await vm.addColumnByAlias(project.routingAlias) }
-            }
-            .frame(width: 38)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 2)
         .padding(.leading, 10)     // liveColumnRow と揃える
@@ -6735,7 +6775,7 @@ struct ContentView: View {
     /// Every per-column setting behind one pill: role mode, main conversation and
     /// both agents' keep-warm. The popover stays open while settings change.
     @ViewBuilder
-    private func columnSettingsPill(_ column: LiveColumn) -> some View {
+    private func columnSettingsPill(_ column: LiveColumn, compact: Bool = false) -> some View {
         let isLocal = column.hostLabel == "local" && !column.projectPath.isEmpty
         let host = column.hostLabel.hasPrefix("remote@")
             ? String(column.hostLabel.dropFirst("remote@".count)) : nil
@@ -6770,7 +6810,7 @@ struct ContentView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .fixedSize()
+            .fixedSize(horizontal: !compact, vertical: true)
             .popover(isPresented: Binding(
                 get: { cachePopoverColumn == column.column },
                 set: { if !$0 { cachePopoverColumn = nil } }

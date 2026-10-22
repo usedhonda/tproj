@@ -2378,14 +2378,17 @@ if [[ "$WORKSPACE_MODE" == "true" ]]; then
 
     # 5) コマンドを自動起動（リモート/ローカルで分岐）
     if [[ -n "$REMOTE_HOST" ]]; then
-      # --- リモートモード: 先にSSHシェルを起動し、ツールは後から送信 ---
-      # SSHでリモートのログインシェルに入る（ツール終了後もシェルが残る）
+      # Reuse the per-host transport and terminal cleanup for remote shells.
+      local remote_client remote_shell
+      remote_client="$(quoted_runtime_bin_path tproj-remote-client)"
+      [[ -n "$remote_client" ]] || { echo "Error: tproj-remote-client not installed" >&2; return 1; }
+      printf -v remote_shell '%s shell %q %q' "$remote_client" "$REMOTE_HOST" "$root"
       for pane in 1 2 3; do
         tmux send-keys -t "$session:dev.$pane" \
-          "ssh -t $REMOTE_HOST 'cd $root && exec \$SHELL -l'" C-m
+          "$remote_shell" C-m
       done
       tmux send-keys -t "$session:git" \
-        "ssh -t $REMOTE_HOST 'cd $root && exec \$SHELL -l'" C-m
+        "$remote_shell" C-m
 
       # SSH接続待ち
       sleep 2

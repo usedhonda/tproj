@@ -20,9 +20,25 @@ from typing import Any
 try:
     from .protocol import HubError, MAX_REQUEST, MAX_TTL, serve_socket, success, resource_error
     from .policy import check_policy
+    from .native_notice import content_digest
 except ImportError:  # allow the installed single-file entrypoint to be invoked directly
     from protocol import HubError, MAX_REQUEST, MAX_TTL, serve_socket, success, resource_error
     from policy import check_policy
+    from native_notice import content_digest
+
+
+HUB_NATIVE_VERSION = 2
+
+WAIT_REASONS = ('waiting_input', 'busy', 'draft_protected', 'endpoint_unavailable', 'adapter_error', 'auth_required',
+                'native_queue_accepted', 'native_queue_pending', 'native_publication_unknown', 'native_retry_pending')
+DIAGNOSTIC_REASONS = WAIT_REASONS + ('receipt_timeout', 'dispatch_error', 'adapter_interrupted')
+
+
+def _receipt_reason(receipt):
+    if not receipt: return None
+    try: reason = json.loads(receipt['evidence']).get('delivery_reason')
+    except (ValueError, TypeError, AttributeError): return None
+    return reason if reason in DIAGNOSTIC_REASONS else None
 
 
 SCHEMA = """
@@ -208,7 +224,7 @@ class Hub:
     def directory_list(self):
         now=self._now(); participants=[]
         for x in self.db.execute("SELECT * FROM participants"):
-            d=dict(x); eps=[dict(e) for e in self.db.execute("SELECT endpoint_id,host_id,incarnation,last_heartbeat,retired FROM endpoints WHERE participant_id=?",(x["participant_id"],))]; d["endpoints"]=eps; d["online"]=any(not e["retired"] and now-e["last_heartbeat"] <= 30 for e in eps); participants.append(d)
+            d=dict(x); eps=[dict(e) for e in self.db.execute("SELECT endpoint_id,host_id,incarnation,last_heartbeat,retired FROM endpoints WHERE participant_id=? AND retired=0",(x["participant_id"],))]; d["endpoints"]=eps; d["online"]=any(not e["retired"] and now-e["last_heartbeat"] <= 30 for e in eps); participants.append(d)
         retired = {r[0] for r in self.db.execute("SELECT alias FROM alias_redirect")}
         projects = [dict(x) for x in self.db.execute("SELECT * FROM projects") if x["alias"] not in retired]
         live = {x["project_id"] for x in projects}; participants = [x for x in participants if x["project_id"] is None or x["project_id"] in live]
@@ -392,50 +408,134 @@ class Hub:
             out.append(item); size += encoded
         return out
 
+    def native_pending(self, req, *, drain=False):
+        """Coalesced wake generation derived atomically from existing mailbox rows.
+
+        No second queue: insertion rowid is the pending sequence. A drain is
+        notification bookkeeping, never body consumption or work completion.
+        """
+        host = self._auth(req)
+        expected = req.get('generation')
+        if drain and (type(expected) is not int or not 0 <= expected <= 9223372036854775807):
+            raise HubError('invalid_request', 'invalid pending generation')
+        self._tx()
+        try:
+            ep = self._host_endpoint(host, req.get('endpoint_id'))
+            marker = self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (ep['endpoint_id'],))
+            if (not marker or ep['platform'] not in ('cdx', 'cc')
+                    or req.get('incarnation') != ep['incarnation']
+                    or req.get('native_kind') != marker['native_kind']
+                    or req.get('native_id') != marker['native_id']):
+                raise HubError('identity_rejected', 'pending native binding mismatch')
+            generation = self._row('SELECT COALESCE(MAX(rowid),0) FROM messages WHERE recipient_endpoint=?',
+                                   (ep['endpoint_id'],))[0]
+            now = self._now()
+            oldest = self._row("SELECT MIN(created_at) FROM messages m WHERE recipient_endpoint=? AND expires_at>? AND state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.in_reply_to=m.message_id AND r.sender_endpoint=m.recipient_endpoint)",
+                               (ep['endpoint_id'], now))[0]
+            pending = oldest is not None
+            key = 'native_drained:' + ep['endpoint_id']
+            saved = self._row('SELECT value FROM metadata WHERE key=?', (key,))
+            drained_generation = int(saved[0]) if saved else 0
+            cleared = False
+            # BEGIN IMMEDIATE serializes this comparison with insert. New arrival
+            # after the empty snapshot cannot be cleared by the older generation.
+            if drain and expected == generation and not pending:
+                self.db.execute('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                                (key, str(generation)))
+                drained_generation = generation
+                cleared = True
+            result = dict(generation=generation, drained_generation=drained_generation,
+                          pending=pending, wake_needed=pending and generation > drained_generation,
+                          oldest_pending_age_seconds=max(0.0, now - oldest) if pending else None)
+            if drain: result['cleared'] = cleared
+            self._commit()
+            return result
+        except Exception:
+            self._rollback()
+            raise
+
     def claim(self, req):
         host=self._auth(req)
         if self._maintenance() == "stopped": raise HubError("maintenance", "hub delivery is paused")
         ep=self._host_endpoint(host,req.get("endpoint_id")); now=self._now()
+        after = req.get('after_sequence')
+        if after is not None and (type(after) is not int or after < 0 or after > 9223372036854775807):
+            raise HubError('invalid_request', 'invalid claim sequence')
         self._tx()
         try:
             limit=min(max(int(req.get("limit",100)),1),1000)
-            rows=self.db.execute("SELECT m.* FROM messages m WHERE m.recipient_endpoint=? AND m.expires_at>? AND m.state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages reply WHERE reply.in_reply_to=m.message_id AND reply.sender_endpoint=m.recipient_endpoint) ORDER BY m.created_at,m.message_id LIMIT ?",(ep["endpoint_id"],now,limit)).fetchall()
+            # Optional keyset scan on the existing immutable insertion sequence.
+            # Default callers retain their historical created-at ordering.
+            boundary = ' AND m.rowid>?' if after is not None else ''
+            order = 'm.rowid' if after is not None else 'm.created_at,m.message_id'
+            params = (ep['endpoint_id'], now) + ((after,) if after is not None else ()) + (limit,)
+            rows=self.db.execute("SELECT m.rowid AS sequence,m.* FROM messages m WHERE m.recipient_endpoint=? AND m.expires_at>? AND m.state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages reply WHERE reply.in_reply_to=m.message_id AND reply.sender_endpoint=m.recipient_endpoint)" + boundary + " ORDER BY " + order + " LIMIT ?", params).fetchall()
+            scanned_sequence = rows[-1]['sequence'] if rows else 0
             if self._maintenance() == "probe": rows=[r for r in rows if r["message_id"] in set(self.config.get("probe_message_ids", []))]
             rows=self.message_views(rows)
             for r in rows: self.db.execute("UPDATE messages SET state='adapter_received',adapter_received_at=? WHERE message_id=?",(now,r["message_id"]))
             self._commit()
         except Exception:
             self._rollback(); raise
-        return {"messages":rows}
+        result = {"messages": rows}
+        if after is not None:
+            result['next_sequence'] = rows[-1]['sequence'] if rows else scanned_sequence
+        return result
 
     def receipt(self, req):
-        host=self._auth(req); msg=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),));
-        if not msg: raise HubError("not_found","message not found")
-        ep=self._host_endpoint(host, req.get("endpoint_id"));
-        if msg["recipient_endpoint"] != ep["endpoint_id"]: raise HubError("unauthorized","only recipient may receipt")
-        state=req.get("state");
-        if state not in ("presented","uncertain","stale_session","rejected"): raise HubError("invalid_receipt","invalid receipt state")
-        current = msg["state"]
-        if current in ("cancelled", "expired", "stale_session", "rejected"):
-            if state == current: return {"message_id": msg["message_id"], "state": current}
-            raise HubError("terminal_message", "terminal message cannot be presented")
-        if current == "presented" and state != "presented": raise HubError("invalid_receipt", "receipt state cannot move backwards")
+        """Serialize receipt state and owner validation with cancel/retirement."""
+        host = self._auth(req)
+        state = req.get("state")
+        if state not in ("presented", "uncertain", "stale_session", "rejected"):
+            raise HubError("invalid_receipt", "invalid receipt state")
         self._tx()
         try:
-            self.db.execute("INSERT OR REPLACE INTO receipts(message_id,state,evidence,at) VALUES(?,?,?,?)",(msg["message_id"],state,req.get("evidence"),self._now())); self.db.execute("UPDATE messages SET state=? WHERE message_id=?",(state,msg["message_id"])); self._commit()
-        except Exception: self._rollback(); raise
-        return {"message_id":msg["message_id"],"state":state}
+            msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
+            if not msg:
+                raise HubError("not_found", "message not found")
+            ep = self._host_endpoint(host, req.get("endpoint_id"))
+            if msg["recipient_endpoint"] != ep["endpoint_id"]:
+                raise HubError("unauthorized", "only recipient may receipt")
+            current = msg["state"]
+            if current in ("cancelled", "expired", "stale_session", "rejected"):
+                if state != current:
+                    raise HubError("terminal_message", "terminal message cannot be presented")
+                self._commit()
+                return {"message_id": msg["message_id"], "state": current}
+            if current == "presented" and state != "presented":
+                raise HubError("invalid_receipt", "receipt state cannot move backwards")
+            self.db.execute("INSERT OR REPLACE INTO receipts(message_id,state,evidence,at) VALUES(?,?,?,?)",
+                            (msg["message_id"], state, req.get("evidence"), self._now()))
+            self.db.execute("UPDATE messages SET state=? WHERE message_id=?", (state, msg["message_id"]))
+            self._commit()
+            return {"message_id": msg["message_id"], "state": state}
+        except Exception:
+            self._rollback()
+            raise
 
-    def begin_present(self, req):
+    def begin_present(self, req, *, native=False):
         """Serialize irreversible adapter presentation against sender cancellation."""
         host = self._auth(req)
-        ep = self._host_endpoint(host, req.get("endpoint_id"))
         self._tx()
         try:
+            ep = self._host_endpoint(host, req.get("endpoint_id"))
             msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
             if not msg: raise HubError("not_found", "message not found")
             if msg["recipient_endpoint"] != ep["endpoint_id"]:
                 raise HubError("unauthorized", "only recipient may begin presentation")
+            if native:
+                marker = self._row("SELECT * FROM endpoint_native WHERE endpoint_id=?", (ep["endpoint_id"],))
+                if (ep["platform"] != "cdx" or not marker
+                        or any(not isinstance(req.get(k), str) or not req[k]
+                               for k in ("incarnation", "native_kind", "native_id", "content_hash"))
+                        or req["incarnation"] != ep["incarnation"]
+                        or req["native_kind"] != marker["native_kind"]
+                        or req["native_id"] != marker["native_id"]
+                        or req["content_hash"] != content_digest(dict(msg))):
+                    raise HubError("identity_rejected", "native presentation binding or content mismatch")
+                mode = self._maintenance()
+                if mode == "stopped" or (mode == "probe" and msg["message_id"] not in set(self.config.get("probe_message_ids", []))):
+                    raise HubError("maintenance", "native presentation is paused")
             if msg["state"] not in ("accepted", "queued", "adapter_received"):
                 raise HubError("presentation_unavailable", "message is terminal or presentation has already begun")
             if msg["expires_at"] <= self._now():
@@ -444,7 +544,11 @@ class Hub:
                 raise HubError("presentation_unavailable", "recipient already replied to message")
             self.db.execute("UPDATE messages SET state='dispatching' WHERE message_id=?", (msg["message_id"],))
             self._commit()
-            return {"message_id": msg["message_id"], "state": "dispatching"}
+            result = {"message_id": msg["message_id"], "state": "dispatching"}
+            if native:
+                result.update(content_hash=req["content_hash"], endpoint_id=ep["endpoint_id"],
+                              incarnation=ep["incarnation"], native_kind=marker["native_kind"], native_id=marker["native_id"])
+            return result
         except Exception:
             self._rollback(); raise
 
@@ -474,18 +578,93 @@ class Hub:
         if msg["recipient_endpoint"] != ep["endpoint_id"]:
             raise HubError("unauthorized", "only recipient may report delivery status")
         reason = req.get("reason")
-        if reason not in ("waiting_input", "busy", "draft_protected", "endpoint_unavailable", "adapter_error", "auth_required"):
+        if reason not in WAIT_REASONS:
             raise HubError("invalid_status", "invalid delivery reason")
         if msg["state"] not in ("accepted", "queued", "adapter_received"):
             return {"message_id": msg["message_id"], "state": msg["state"]}
+        evidence = dict(delivery_reason=reason, endpoint_id=ep['endpoint_id'], incarnation=ep['incarnation'])
+        native = req.get('native_observation')
+        if reason.startswith('native_'):
+            marker = self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (ep['endpoint_id'],))
+            if (not isinstance(native, dict) or not marker
+                    or native.get('incarnation') != ep['incarnation']
+                    or any(native.get(k) != marker[k] for k in ('native_kind', 'native_id'))
+                    or any(not isinstance(native.get(k), str) or not 1 <= len(native[k]) <= 128
+                           for k in ('attempt', 'generation'))):
+                raise HubError('identity_rejected', 'native diagnostic binding mismatch')
+            evidence['native_observation'] = {k: native[k] for k in
+                ('incarnation', 'native_kind', 'native_id', 'attempt', 'generation')}
         self.db.execute("INSERT OR REPLACE INTO receipts(message_id,state,evidence,at) VALUES(?,?,?,?)",
-                        (msg["message_id"], msg["state"], json.dumps({"delivery_reason": reason}), self._now()))
+                        (msg["message_id"], msg["state"], json.dumps(evidence), self._now()))
         return {"message_id": msg["message_id"], "state": msg["state"], "delivery_reason": reason}
+
+    def response_evidence(self, message):
+        # A linked row alone is not proof of a response by the pinned recipient.
+        args = (message['message_id'], message['recipient_endpoint'],
+                message['sender_endpoint'], message['thread_id'])
+        where = 'in_reply_to=? AND sender_endpoint=? AND recipient_endpoint=? AND thread_id=?'
+        count = self._row('SELECT COUNT(*) AS n FROM messages WHERE ' + where, args)['n']
+        ids = [row['message_id'] for row in self.db.execute(
+            'SELECT message_id FROM messages WHERE ' + where + ' ORDER BY created_at,message_id LIMIT 20', args)]
+        return {'recipient_reply_count': count, 'recipient_reply_message_ids': ids,
+                'response_state': 'recipient_replied' if count else 'unconfirmed'}
+
+    def delivery_summary(self, message, response):
+        """Read-only lifecycle projection; never rewrite uncertain delivery effects."""
+        state = message['state']
+        now = self._now()
+        elapsed = message['expires_at'] <= now
+        receipt = self._row('SELECT state,evidence,at FROM receipts WHERE message_id=?', (message['message_id'],))
+        endpoint = self._row('SELECT retired,incarnation FROM endpoints WHERE endpoint_id=?', (message['recipient_endpoint'],))
+        presented = state == 'presented' or bool(receipt and receipt['state'] == 'presented')
+        replied = response['response_state'] == 'recipient_replied'
+        terminal = state in ('cancelled', 'expired', 'rejected', 'stale_session')
+        lifecycle = state if terminal else ('ttl_elapsed' if elapsed else 'active')
+        eligible = bool(endpoint and not endpoint['retired'] and not elapsed
+                        and state in ('accepted', 'queued', 'adapter_received')
+                        and not presented and not replied)
+        if terminal:
+            status, reason = 'action_required', state + ('_with_reply' if replied else '')
+        elif replied:
+            status, reason = 'recipient_replied', 'ttl_elapsed_with_reply' if elapsed else 'recipient_replied'
+        elif presented:
+            status, reason = 'presentation_confirmed', 'receipt_confirmed'
+        elif elapsed:
+            status = 'action_required'
+            reason = ('ttl_elapsed_outcome_unknown' if state in ('dispatching', 'uncertain')
+                      else 'ttl_elapsed_before_presentation')
+        elif not endpoint or endpoint['retired']:
+            status, reason = 'action_required', 'pinned_recipient_unavailable'
+        elif state == 'uncertain':
+            status, reason = 'action_required', 'presentation_outcome_unknown'
+        else:
+            status, reason = 'waiting', 'presentation_in_progress' if state == 'dispatching' else 'pending'
+        observed_at = None
+        if status == 'waiting' and receipt and receipt['state'] == state and receipt['at'] <= now:
+            observed = _receipt_reason(receipt)
+            try: evidence = json.loads(receipt['evidence'])
+            except (ValueError, TypeError): evidence = {}
+            bound = (isinstance(evidence, dict) and endpoint
+                     and evidence.get('endpoint_id') == message['recipient_endpoint']
+                     and evidence.get('incarnation') == endpoint['incarnation'])
+            if bound and observed and observed.startswith('native_'):
+                marker = self._row('SELECT * FROM endpoint_native WHERE endpoint_id=?', (message['recipient_endpoint'],))
+                native = evidence.get('native_observation')
+                bound = bool(marker and isinstance(native, dict)
+                             and native.get('incarnation') == endpoint['incarnation']
+                             and all(native.get(k) == marker[k] for k in ('native_kind', 'native_id')))
+            if bound and observed in WAIT_REASONS:
+                reason, observed_at = observed, receipt['at']
+        return {'status': status, 'lifecycle': lifecycle, 'reason': reason,
+                'pending_age_seconds': max(0.0, now - message['created_at']) if status == 'waiting' else None,
+                'reason_observed_at': observed_at,
+                'ttl_elapsed': elapsed, 'presentation_confirmed': presented,
+                'new_presentation_eligible': eligible}
 
     def diagnose(self, req, authenticated_party=None):
         host=self._auth(req)
         try:
-            message=self._row('SELECT rowid AS sequence,message_id,state,sender_endpoint,recipient_endpoint,created_at,expires_at,adapter_received_at FROM messages WHERE message_id=?',(req.get('message_id'),))
+            message=self._row('SELECT rowid AS sequence,message_id,thread_id,state,sender_endpoint,recipient_endpoint,created_at,expires_at,adapter_received_at FROM messages WHERE message_id=?',(req.get('message_id'),))
         except (OSError, sqlite3.Error) as exc:
             classified = resource_error(exc, 'outcome_query')
             if classified: raise classified from None
@@ -501,16 +680,21 @@ class Hub:
             if not any(self._same_native_party(ep, party) for party in (message['sender_endpoint'], message['recipient_endpoint'])):
                 raise HubError('unauthorized','delivery metadata requires party or configured operator permission')
         result=dict(message)
+        response = self.response_evidence(message)
+        result.update(response)
+        result['delivery_summary'] = self.delivery_summary(message, response)
         result['diagnostic_host_id']=self.config.get('host_id',host)
         receipt=self._row('SELECT state,evidence,at FROM receipts WHERE message_id=?',(message['message_id'],))
         result['presentation_confirmed']=message['state']=='presented' or bool(receipt and receipt['state']=='presented')
         result['receipt_at']=receipt['at'] if receipt else None
-        result['delivery_reason']=None
-        if receipt:
-            try:reason=json.loads(receipt['evidence']).get('delivery_reason')
-            except (ValueError,TypeError,AttributeError):reason=None
-            if reason in ('waiting_input','busy','draft_protected','endpoint_unavailable','adapter_error','auth_required','receipt_timeout','dispatch_error','adapter_interrupted'):
-                result['delivery_reason']=reason
+        result['receipt_state']=receipt['state'] if receipt else None
+        result['reply_count']=self._row('SELECT COUNT(*) AS n FROM messages WHERE in_reply_to=?', (message['message_id'],))['n']
+        result['reply_message_ids']=[row['message_id'] for row in self.db.execute(
+            'SELECT message_id FROM messages WHERE in_reply_to=? ORDER BY created_at,message_id LIMIT 20',
+            (message['message_id'],))]
+        result['delivery_reason'] = _receipt_reason(receipt)
+        if result['delivery_reason'] is not None:
+            result['delivery_checked_at'] = receipt['at']
         endpoint=self._row('SELECT host_id,retired,last_heartbeat FROM endpoints WHERE endpoint_id=?',(message['recipient_endpoint'],))
         result['recipient_host_id']=endpoint['host_id'] if endpoint else None
         result['recipient_retired']=bool(endpoint['retired']) if endpoint else None
@@ -521,15 +705,25 @@ class Hub:
         """Read-only host-owned endpoint/native evidence for process continuity checks."""
         host = self._auth(req)
         active_only = req.get('active_only') is True
+        ids = req.get('endpoint_ids')
+        if ids is not None and (not isinstance(ids, list) or not 1 <= len(ids) <= 32
+                                or any(not isinstance(x, str) or not x or len(x) > 128 for x in ids)):
+            raise HubError('invalid_request', 'endpoint_ids requires 1 to 32 bounded endpoint IDs')
         active_filter = ' AND retired=0' if active_only else ''
         native_filter = ' AND e.retired=0' if active_only else ''
+        args = (host,)
+        if ids is not None:
+            placeholders = ','.join('?' for _ in ids)
+            active_filter += ' AND endpoint_id IN (' + placeholders + ')'
+            native_filter += ' AND e.endpoint_id IN (' + placeholders + ')'
+            args += tuple(ids)
         try:
             endpoints = [dict(row) for row in self.db.execute(
                 'SELECT endpoint_id,participant_id,host_id,session,pane,pid,pid_start,runtime_id,platform,incarnation,last_heartbeat,retired '
-                'FROM endpoints WHERE host_id=?' + active_filter + ' ORDER BY endpoint_id', (host,))]
+                'FROM endpoints WHERE host_id=?' + active_filter + ' ORDER BY endpoint_id', args)]
             native = [dict(row) for row in self.db.execute(
                 'SELECT n.endpoint_id,n.native_kind,n.native_id FROM endpoint_native n '
-                'JOIN endpoints e ON e.endpoint_id=n.endpoint_id WHERE e.host_id=?' + native_filter + ' ORDER BY n.endpoint_id', (host,))]
+                'JOIN endpoints e ON e.endpoint_id=n.endpoint_id WHERE e.host_id=?' + native_filter + ' ORDER BY n.endpoint_id', args)]
             projects = [dict(row) for row in self.db.execute(
                 'SELECT project_id,alias,host_id,path FROM projects WHERE host_id=? ORDER BY project_id', (host,))]
         except (OSError, sqlite3.Error) as exc:
@@ -538,13 +732,17 @@ class Hub:
             raise HubError('unavailable', 'diagnostic identity unavailable') from None
         return {'host_id': host, 'endpoints': endpoints, 'endpoint_native': native, 'projects': projects}
 
+    def messaging_capabilities(self, req):
+        self._auth(req)
+        return {'capabilities': ['native_attest', 'native_continuity',
+                                'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted',
+                                'native_begin_present', 'native_pending', 'native_drain'],
+                'native_runtime': {'hub_version': HUB_NATIVE_VERSION}, 'peers': {}}
+
     def dispatch(self, req):
         op=req.get("op")
         if op in ('messaging_capabilities', 'peer_messaging_capabilities'):
-            self._auth(req)
-            return {'capabilities': ['native_attest', 'native_continuity',
-                                     'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted'],
-                    'peers': {}}
+            return self.messaging_capabilities(req)
         if op == 'diagnostic_identity': return self.diagnostic_identity(req)
         if op == "task_capabilities":
             self._auth(req)
@@ -573,9 +771,12 @@ class Hub:
         if op=="submit": return self._submit_redirected(req)
         if op=="inbox": return self.inbox(req)
         if op=="inbox_notice": return self.inbox_notice(req)
+        if op=="native_pending": return self.native_pending(req)
+        if op=="native_drain": return self.native_pending(req, drain=True)
         if op=="claim": return self.claim(req)
         if op=="receipt": return self.receipt(req)
         if op=="begin_present": return self.begin_present(req)
+        if op=="native_begin_present": return self.begin_present(req, native=True)
         if op=="cancel": return self.cancel(req)
         if op=="delivery_status": return self.delivery_status(req)
         if op=="diagnose": return self.diagnose(req)
@@ -583,19 +784,21 @@ class Hub:
         if op=="query":
             host=self._auth(req); m=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),));
             if not m: raise HubError("not_found","message not found")
-            if m["expires_at"] <= self._now() and m["state"] in ("accepted","queued","adapter_received"):
-                self.db.execute("UPDATE messages SET state='expired' WHERE message_id=?", (m["message_id"],)); m=self._row("SELECT * FROM messages WHERE message_id=?",(req.get("message_id"),))
+            # Read expiry through delivery_summary; never mutate before or after
+            # party authorization in a query (including rejected queries).
             ep=self._host_endpoint(host,req.get("endpoint_id"));
             if not any(self._same_native_party(ep, party) for party in (m["sender_endpoint"], m["recipient_endpoint"])): raise HubError("unauthorized","not party to message")
             # Same resolved sender the inbox and claim views carry: a reader that fetches
             # one message by ID must not have to trust the name written in its body.
             result = self.message_views([m], response_kind="query")[0]
+            response = self.response_evidence(m)
+            result.update(response)
+            result['delivery_summary'] = self.delivery_summary(m, response)
             result["reader_is_recipient"] = self._same_native_party(ep, m["recipient_endpoint"])
             receipt = self._row("SELECT evidence,at FROM receipts WHERE message_id=?", (m["message_id"],))
             if receipt and m["state"] in ("accepted", "queued", "adapter_received", "uncertain"):
-                try: reason = json.loads(receipt["evidence"]).get("delivery_reason")
-                except (ValueError, TypeError, AttributeError): reason = None
-                if reason: result.update(delivery_reason=reason, delivery_checked_at=receipt["at"])
+                reason = _receipt_reason(receipt)
+                if reason: result.update(delivery_reason=reason, delivery_checked_at=receipt['at'])
             self._check_message_response(result)
             return result
         if op=="maintenance":

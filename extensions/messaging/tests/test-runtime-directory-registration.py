@@ -1,15 +1,46 @@
 import importlib.util
 import tempfile
+import json
+import sys
+from unittest.mock import patch
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "unified"
+sys.path.insert(0,str(ROOT))
 SPEC = importlib.util.spec_from_file_location("runtime", ROOT / "runtime.py")
 runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runtime)
 
 
 class RuntimeDirectoryRegistrationTests(unittest.TestCase):
+    def test_native_expected_generation_triggers_existing_reload_decision_only_once(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            with patch.object(runtime,'_projects',return_value=[]), patch.object(runtime,'_activate',return_value=['skipped']) as activate:
+                runtime.setup(home=home,no_start=True)
+                cfgpath = home/'.config/tproj/msg-host.json'
+                cfg = json.loads(cfgpath.read_text())
+                cfg.update(native_queue_enabled=False,native_consumer_enabled=False)
+                cfg['_native_runtime_expected'] = {'host_version':1}
+                cfgpath.write_text(json.dumps(cfg))
+                runtime.setup(home=home,no_start=True)
+                self.assertTrue(activate.call_args.args[2])
+                cfg = json.loads(cfgpath.read_text())
+                self.assertEqual(cfg['_native_runtime_expected'],runtime.NATIVE_RUNTIME_CONTRACT)
+                self.assertFalse(cfg['native_queue_enabled'])
+                self.assertFalse(cfg['native_consumer_enabled'])
+                runtime.setup(home=home,no_start=True)
+                self.assertFalse(activate.call_args.args[2])
+
+    def test_failed_existing_reload_is_not_reported_as_reloaded(self):
+        import subprocess
+        def run(args,**kwargs):
+            return subprocess.CompletedProcess(args, 1 if args[1]=='kickstart' else 0)
+        with patch.object(runtime.subprocess,'run',side_effect=run):
+            result = runtime._activate(Path('/fixture'),[Path('/fixture/hub'),Path('/fixture/host')],True,False,False)
+        self.assertEqual(result,['unavailable:local.tproj.msg-unified-hub','unavailable:local.tproj.msg-unified-host'])
+
     def test_adds_only_missing_requested_projects_once(self):
         with tempfile.TemporaryDirectory() as raw:
             home = Path(raw)

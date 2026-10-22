@@ -18,6 +18,192 @@ from service_policy_migrate import migrate
 
 
 class UnifiedHostServicesTest(unittest.TestCase):
+    def test_endpoint_failure_cannot_starve_other_recipients(self):
+        import time
+        import sqlite3
+        errors = (HubError('unavailable', 'fixture claim failure'), OSError('fixture transport failure'),
+                  ValueError('fixture malformed response'), sqlite3.OperationalError('fixture journal failure'),
+                  subprocess.TimeoutExpired('fixture transport', 5))
+        for error in errors:
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as tmp:
+                host = host_mod.Host({'journal': str(Path(tmp) / 'journal.db'),
+                                      'delivery_enabled': True}, recover=False)
+                self.addCleanup(host.db.close)
+                host.endpoints = [{'endpoint_id': x, 'platform': 'cc'} for x in ('faulted', 'healthy')]
+                host.refreshed = time.monotonic()
+                host._current_delivery_endpoint = lambda eid: next(ep for ep in host.endpoints if ep['endpoint_id'] == eid)
+                seen = []
+                def hub(op, **args):
+                    self.assertEqual(op, 'claim')
+                    seen.append(args['endpoint_id'])
+                    if args['endpoint_id'] == 'faulted': raise error
+                    return {'messages': [], 'next_sequence': 0}
+                host.hub = hub
+                host.delivery_tick()
+                self.assertEqual(seen, ['faulted', 'healthy'])
+                self.assertEqual(host.db.execute('SELECT count(*) FROM deliveries').fetchone()[0], 0)
+
+    def test_endpoint_failure_rolls_back_partial_work_not_committed_reservations(self):
+        import time
+        import sqlite3
+        for rollback_fails in (False, True):
+            with self.subTest(rollback_fails=rollback_fails), tempfile.TemporaryDirectory() as tmp:
+                host = host_mod.Host({'journal': str(Path(tmp) / 'journal.db'),
+                                      'delivery_enabled': True}, recover=False)
+                self.addCleanup(lambda host=host: host.db.close())
+                host.endpoints = [{'endpoint_id': x} for x in ('faulted', 'healthy')]
+                host.refreshed = time.monotonic()
+                host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                    ('reserved', 'faulted', '{}', 'dispatching', None, 0))
+                host.db.commit()
+                if rollback_fails:
+                    connection = host.db
+                    class FailedRollback:
+                        def __getattr__(self, key): return getattr(connection, key)
+                        def rollback(self): raise sqlite3.OperationalError('fixture rollback failure')
+                    host.db = FailedRollback()
+                def endpoint(ep):
+                    if ep['endpoint_id'] == 'faulted':
+                        host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                            ('partial', 'faulted', '{}', 'received', None, 0))
+                        raise OSError('fixture failure with open transaction')
+                    host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                        ('healthy', 'healthy', '{}', 'received', None, 0))
+                    host.db.commit()
+                host._deliver_endpoint = endpoint
+                host.delivery_tick()
+                self.assertEqual(dict(host.db.execute('SELECT message_id,state FROM deliveries')),
+                                 {'reserved': 'dispatching', 'healthy': 'received'})
+
+    def test_failed_journal_reopen_never_recreates_ledger_or_runs_later_work(self):
+        import time
+        import sqlite3
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'journal.db'
+            saved = path.with_suffix('.saved')
+            host = host_mod.Host({'journal': str(path), 'delivery_enabled': True}, recover=False)
+            self.addCleanup(lambda: host.db.close())
+            host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                ('reserved', 'faulted', '{}', 'dispatching', None, 0))
+            host.db.commit()
+            connection = host.db
+            class FailedRollback:
+                def __getattr__(self, key): return getattr(connection, key)
+                def rollback(self):
+                    connection.close()  # Discard partial work, preserve the durable journal.
+                    path.rename(saved)  # Temporary loss of the original journal path.
+                    raise sqlite3.OperationalError('fixture rollback failure')
+            host.db = FailedRollback()
+            publisher = host.native_publisher = Mock()
+            host.endpoints = [{'endpoint_id': x} for x in ('faulted', 'healthy')]
+            host.refreshed = time.monotonic()
+            seen = []
+            def endpoint(ep):
+                seen.append(ep['endpoint_id'])
+                if ep['endpoint_id'] == 'faulted' and len(seen) == 1:
+                    host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                        ('partial', 'faulted', '{}', 'received', None, 0))
+                    raise OSError('fixture failure before rollback')
+                if ep['endpoint_id'] == 'healthy':
+                    host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',
+                        ('healthy', 'healthy', '{}', 'received', None, 0))
+                    host.db.commit()
+            host._deliver_endpoint = endpoint
+            for _ in range(2):
+                with self.assertRaises(sqlite3.OperationalError): host.delivery_tick()
+                self.assertFalse(path.exists(), 'reopen created a blank ledger')
+                self.assertEqual(seen, ['faulted'])
+                publisher.maintain.assert_called_once_with(host)
+            saved.rename(path)
+            host.delivery_tick()
+            self.assertEqual(seen, ['faulted', 'faulted', 'healthy'])
+            self.assertEqual(dict(host.db.execute('SELECT message_id,state FROM deliveries')),
+                             {'reserved': 'dispatching', 'healthy': 'received'})
+
+    def test_delivery_scan_advances_and_wraps_pending_without_terminal_replay(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            host = host_mod.Host({'journal': str(Path(tmp) / 'journal.db'),
+                                  'delivery_enabled': True}, recover=False)
+            ep = {'endpoint_id': 'ep', 'platform': 'cdx'}
+            host.endpoints = [ep]
+            host.refreshed = time.monotonic()
+            host._current_delivery_endpoint = lambda _: ep
+            seen = []
+            def hub(op, **args):
+                self.assertEqual(op, 'claim')
+                seen.append(args['after_sequence'])
+                seq = args['after_sequence']
+                return {'messages': [{'message_id': 'm'+str(seq+1)}] if seq < 2 else [],
+                        'next_sequence': seq+1 if seq < 2 else 0}
+            host.hub = hub
+            with patch('native_consumer.owns', return_value=True):
+                for _ in range(4): host.delivery_tick()
+            self.assertEqual(seen, [0, 1, 2, 0])
+            self.assertEqual(host.db.execute('SELECT count(*) FROM deliveries').fetchone()[0], 2)
+            self.assertEqual({r[0] for r in host.db.execute('SELECT state FROM deliveries')}, {'received'})
+            host.db.close()
+
+    def test_native_scheduler_maintains_off_path_and_never_falls_back(self):
+        import time
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as tmp:
+            host = host_mod.Host({'journal': str(Path(tmp) / 'journal.db'),
+                'delivery_enabled': False, 'native_queue_enabled': True,
+                'native_consumer_enabled': True}, recover=False)
+            publisher = Mock()
+            host.native_publisher = publisher
+            host.refreshed = time.monotonic()
+            host.delivery_tick()
+            publisher.maintain.assert_called_once_with(host)
+            host.config['delivery_enabled'] = True
+            ep = {'endpoint_id': 'ep', 'platform': 'cdx'}
+            host.endpoints = [ep]
+            host.refreshed = time.monotonic()
+            host._current_delivery_endpoint = lambda _: ep
+            host.hub = Mock(return_value={'messages': [{'message_id': 'native'}], 'next_sequence': 1})
+            publisher.tick.side_effect = HubError('identity_rejected', 'fixture')
+            with patch.object(host_mod.subprocess, 'run', side_effect=AssertionError('terminal access')):
+                host.delivery_tick()
+                publisher.tick.assert_called_once_with(host, ep, 'native')
+                host.config['native_consumer_enabled'] = False
+                host.delivery_tick()
+                self.assertEqual(publisher.tick.call_count, 1)
+            self.assertEqual(host.db.execute('SELECT state FROM deliveries').fetchone()[0], 'received')
+            # A vanished endpoint/empty scan still drains already running jobs.
+            host.endpoints = []
+            host.delivery_tick()
+            self.assertEqual(publisher.maintain.call_count, 4)
+            host.db.close()
+
+    def test_native_route_survives_flag_off_and_host_restart_before_prepare(self):
+        import time
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {'journal': str(Path(tmp) / 'journal.db'), 'delivery_enabled': True,
+                   'native_queue_enabled': True, 'native_consumer_enabled': False}
+            ep = {'endpoint_id': 'ep', 'platform': 'cdx'}
+            def setup(host):
+                host.refreshed = time.monotonic()
+                host.endpoints = [ep]
+                host._current_delivery_endpoint = lambda _: ep
+                host.hub = Mock(return_value={'messages': [{'message_id': 'native'}], 'next_sequence': 1})
+            host = host_mod.Host(cfg, recover=False)
+            setup(host)
+            with patch.object(host_mod.subprocess, 'run', side_effect=AssertionError('terminal fallback')):
+                host.delivery_tick()
+                host.db.close()
+                cfg['native_queue_enabled'] = False
+                host = host_mod.Host(cfg, recover=True)
+                setup(host)
+                host.delivery_tick()
+            import json
+            row = host.db.execute('SELECT * FROM deliveries').fetchone()
+            self.assertEqual(json.loads(row['envelope'])['_native_route'], 'native-v1')
+            self.assertEqual(row['state'], 'received')
+            host.db.close()
+
     def test_current_host_policy_controls_legacy_and_new_service_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)
@@ -81,6 +267,16 @@ class UnifiedHostServicesTest(unittest.TestCase):
                 host.db.execute("INSERT INTO sentinel VALUES('forbidden')")
             host.db.close()
             self.assertEqual(Path(cfg['journal']).read_bytes(), before)
+
+    def test_identity_diagnostic_forwards_only_bounded_selectors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self.host(tmp)
+            calls = []
+            host.hub = lambda op, **args: calls.append((op, args)) or {}
+            host.dispatch({'op': 'diagnostic_identity', 'endpoint_ids': ['old', 'new'],
+                           'active_only': False, 'host_id': 'other'}, 1, os.getuid())
+            self.assertEqual(calls, [('diagnostic_identity', {'endpoint_ids': ['old', 'new'], 'active_only': False})])
+            host.db.close()
 
     def test_private_snapshot_and_idempotent_scope_migration(self):
         with tempfile.TemporaryDirectory() as tmp:
