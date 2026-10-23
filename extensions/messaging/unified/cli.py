@@ -215,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
                 req.update(body=sys.stdin.read(), submission_id=args.submission_id)
             if op != 'recipient_list':
                 req['operation_id'] = args.operation_id or str(uuid.uuid4())
+                req.setdefault('submission_id', req['operation_id'])
                 req, _ = submission(req)
             result = rpc(cfg['socket'], req)
         elif args.rest:

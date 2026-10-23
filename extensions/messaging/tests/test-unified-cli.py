@@ -28,6 +28,11 @@ class CliTest(unittest.TestCase):
             request = rpc.call_args.args[1]
             self.assertEqual((request['op'],request['message_id'],request['grant_id']),
                              ('recovery_read','original','grant'))
+            self.assertEqual(request['submission_id'],'read')
+            first = dict(request)
+            self.assertEqual(cli.main(['recovery','read','original','--grant','grant','--operation-id','read']), 0)
+            self.assertEqual(rpc.call_args.args[1],first)
+            self.assertEqual(set(cli.read_spool(Path(tmp)/'spool.json')),{'choose','read'})
 
     def test_pending_explains_acceptance_and_no_ack_without_reroute(self):
         text = cli.format_pending({
