@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-ALLOWLIST = ("task_role.py", "tasks.py", "task_transport.py", "task_host.py", "task_approval.py", "task_cli.py", "cli.py", "recipient.py", "receipt.py", "native_notice.py", "native_consumer.py", "native_queue.py", "native_publication.py", "host.py", "hub.py", "identity.py", "protocol.py", "policy.py", "federation.py", "runtime.py", "directory.py", "enrollment.py", "repo_access.py", "repo_access_policy.py", "repo_write.py", "inbox_notice.py", "service_policy_migrate.py", "terminal-parser.sh", "terminal-guard.sh")
+ALLOWLIST = ("task_role.py", "tasks.py", "task_transport.py", "task_host.py", "task_approval.py", "task_cli.py", "cli.py", "recipient.py", "receipt.py", "native_notice.py", "native_consumer.py", "native_cc.py", "native_queue.py", "native_publication.py", "host.py", "hub.py", "identity.py", "protocol.py", "policy.py", "federation.py", "runtime.py", "directory.py", "enrollment.py", "repo_access.py", "repo_access_policy.py", "repo_write.py", "inbox_notice.py", "service_policy_migrate.py", "terminal-parser.sh", "terminal-guard.sh")
 LAUNCHER = "#!/bin/sh\nexec python3 \"$HOME/lib/tproj-msg-unified/cli.py\" \"$@\"\n"
 
 

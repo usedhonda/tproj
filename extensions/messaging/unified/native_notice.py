@@ -31,13 +31,15 @@ def content_digest(message):
 def _binding(endpoint, native):
     # The host must obtain both inputs from authenticated discovery/attestation,
     # never from the peer body or the public request's selectors.
-    if (endpoint.get('platform') != 'cdx' or not endpoint.get('endpoint_id')
+    if (endpoint.get('platform') not in ('cdx', 'cc') or not endpoint.get('endpoint_id')
             or not endpoint.get('incarnation')
             or native.get('endpoint_id') != endpoint['endpoint_id']
             or native.get('native_kind') not in ('thread_id', 'session_id')
             or not isinstance(native.get('native_id'), str)
             or not re.fullmatch(r'[0-9a-fA-F-]{36}', native['native_id'])):
         raise HubError('identity_rejected', 'authenticated native notice binding required')
+    if endpoint.get('platform') == 'cc' and native.get('native_kind') != 'session_id':
+        raise HubError('identity_rejected', 'CC session binding required')
     return dict(endpoint_id=endpoint['endpoint_id'], incarnation=endpoint['incarnation'],
                 native_kind=native['native_kind'], native_id=native['native_id'])
 

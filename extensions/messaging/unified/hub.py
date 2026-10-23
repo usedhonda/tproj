@@ -32,7 +32,8 @@ except ImportError:  # allow the installed single-file entrypoint to be invoked 
 HUB_NATIVE_VERSION = 3
 
 WAIT_REASONS = ('waiting_input', 'busy', 'draft_protected', 'endpoint_unavailable', 'adapter_error', 'auth_required',
-                'native_queue_accepted', 'native_queue_pending', 'native_publication_unknown', 'native_retry_pending')
+                'native_queue_accepted', 'native_queue_pending', 'native_publication_unknown', 'native_retry_pending',
+                'native_subscriber_unavailable')
 DIAGNOSTIC_REASONS = WAIT_REASONS + ('receipt_timeout', 'dispatch_error', 'adapter_interrupted')
 
 
@@ -657,7 +658,7 @@ class Hub:
                 raise HubError('endpoint_unavailable', 'MSG presentation surface was revoked')
             if native:
                 marker = self._row("SELECT * FROM endpoint_native WHERE endpoint_id=?", (ep["endpoint_id"],))
-                if (ep["platform"] != "cdx" or not marker
+                if (ep["platform"] not in ("cdx", "cc") or not marker
                         or any(not isinstance(req.get(k), str) or not req[k]
                                for k in ("incarnation", "native_kind", "native_id", "content_hash"))
                         or req["incarnation"] != ep["incarnation"]
@@ -893,7 +894,7 @@ class Hub:
         self._auth(req)
         return {'capabilities': ['native_attest', 'native_continuity',
                                 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted',
-                                'native_begin_present', 'native_pending', 'native_drain', 'native_handoff', recipient.CAPABILITY],
+                                'native_begin_present', 'native_pending', 'native_drain', 'native_handoff', recipient.CAPABILITY, 'native_cc_v1'],
                 'native_runtime': {'hub_version': HUB_NATIVE_VERSION}, 'peers': {}}
 
     def dispatch(self, req):

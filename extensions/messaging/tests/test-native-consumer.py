@@ -462,7 +462,7 @@ class ConsumerTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(HubError): self.resolve(**bad)
         self.host.config['native_consumer_enabled'] = False
         caps = self.host.dispatch({'op': 'messaging_capabilities'}, 123, os.getuid())
-        self.assertEqual(caps['native_consumer'], {'backend_version': 4, 'enabled': False})
+        self.assertEqual(caps['native_consumer'], {'backend_version': 5, 'enabled': False, 'cc_enabled': False})
         with self.assertRaises(HubError): self.resolve()
         self.assertNotIn('native_begin_present', self.calls)
         self.assertEqual(self.host.db.execute('SELECT state FROM deliveries').fetchone()[0], 'received')

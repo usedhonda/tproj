@@ -22,7 +22,7 @@ from identity import (IdentityError, adopt_native_conversation, bind_caller, dis
 from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
 from receipt import normalize_prompt, codex_transcript_presented
 
-HOST_BACKEND_VERSION = 11
+HOST_BACKEND_VERSION = 12
 WIRE_LIMIT = 262144
 
 
@@ -784,7 +784,7 @@ class Host:
                     'task_master': self.hub('task_capabilities')}
         if op == 'messaging_capabilities':
             own = ['service_policy_v1', 'read_only_diagnose', 'diagnostic_identity', 'query_only_service',
-                   'resource_exhausted', 'recipient_recovery_v1']
+                   'resource_exhausted', 'recipient_recovery_v1', 'native_cc_v1']
             hub_caps = self.hub('messaging_capabilities')
             from native_consumer import BACKEND_VERSION
             return {'host_capabilities': own, 'messaging_owner': hub_caps,
@@ -792,7 +792,8 @@ class Host:
                                        'consumer_version': BACKEND_VERSION,
                                        'context_response_limit': NATIVE_CONTEXT_LIMIT},
                     'native_consumer': {'backend_version': BACKEND_VERSION,
-                                        'enabled': self.config.get('native_consumer_enabled') is True}}
+                                        'enabled': self.config.get('native_consumer_enabled') is True,
+                                        'cc_enabled': self.config.get('native_cc_enabled') is True}}
         if op == 'status' and req.get('target'):
             target = req['target']
             participant_id = None
@@ -925,6 +926,9 @@ class Host:
             self.db.commit()
             return self.hub('receipt', endpoint_id=ep['endpoint_id'], message_id=message['message_id'],
                             state='presented', evidence='bound recipient explicit acknowledgement after inbox consumption')
+        if op == 'native_cc_poll':
+            from native_cc import poll
+            return poll(self, ep)
         if op == 'native_resolve':
             from native_consumer import resolve
             return resolve(self, ep, req)
@@ -1036,14 +1040,16 @@ class Host:
             from native_consumer import owns, recover
             native_owned = owns(self.db, mid)
             local_envelope = json.loads(row['envelope'])
-            pinned_native = local_envelope.get('_native_route') == 'native-v1'
+            pinned_native = local_envelope.get('_native_route') in ('native-v1', 'native-cc-v1')
+            from native_cc import selected as cc_selected
             native_selected = (row['state'] == 'received' and (pinned_native or
                                (ep.get('platform') == 'cdx'
-                                and self.config.get('native_queue_enabled') is True)))
+                                and self.config.get('native_queue_enabled') is True)
+                               or cc_selected(self, ep)))
             if native_selected and not pinned_native:
                 # Persist route ownership before identity/prepare/I/O. Turning
                 # the feature off later is never permission for terminal paste.
-                local_envelope['_native_route'] = 'native-v1'
+                local_envelope['_native_route'] = 'native-cc-v1' if ep.get('platform') == 'cc' else 'native-v1'
                 changed = self.db.execute('UPDATE deliveries SET envelope=? WHERE message_id=? AND envelope=?',
                     (json.dumps(local_envelope), mid, row['envelope'])).rowcount
                 self.db.commit()
@@ -1052,7 +1058,13 @@ class Host:
             if native_selected:
                 # Route selection precedes any terminal/composer operation.
                 # Missing consumer/identity/transport cannot fall back to paste.
-                if self.config.get('native_consumer_enabled') is True:
+                if ep.get('platform') == 'cc':
+                    try:
+                        from native_cc import prepare_pending
+                        prepare_pending(self, ep, mid)
+                    except (HubError, OSError, ValueError):
+                        self.delivery_status(ep['endpoint_id'], mid, 'adapter_error')
+                elif self.config.get('native_consumer_enabled') is True:
                     from native_publication import Publisher
                     from native_queue import QueueError
                     if self.native_publisher is None:

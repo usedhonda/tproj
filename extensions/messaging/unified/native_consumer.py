@@ -11,7 +11,7 @@ import time
 from native_notice import content_digest, prepare, verify, verify_record, validate_actor
 from protocol import HubError, success, NATIVE_CONTEXT_LIMIT
 
-BACKEND_VERSION = 4
+BACKEND_VERSION = 5
 
 TOKEN = re.compile(r'^\[from:tproj-native-notice\] \[tproj-native-notice:([A-Za-z0-9_-]{43})\]\n')
 
@@ -23,13 +23,16 @@ def owns(db, message_id):
 
 def _hook_binding(host, ep, payload=None):
     """Read the host-owned exact transcript, never a caller-selected path."""
-    if ep.get('platform') != 'cdx' or (payload is not None and not isinstance(payload, dict)):
-        raise HubError('identity_rejected', 'native Codex hook required')
+    if ep.get('platform') not in ('cdx', 'cc') or (payload is not None and not isinstance(payload, dict)):
+        raise HubError('identity_rejected', 'supported native hook required')
     rows = host.hub('diagnostic_identity', endpoint_ids=[ep['endpoint_id']]).get('endpoint_native', [])
     markers = [r for r in rows if r.get('endpoint_id') == ep['endpoint_id']]
     if len(markers) != 1:
         raise HubError('identity_rejected', 'unique native attestation required')
     native = markers[0]
+    if ep.get('platform') == 'cc':
+        from native_cc import transcript
+        return native, transcript(ep, native, payload)
     return native, _native_path(ep, native, payload)
 
 
@@ -81,11 +84,16 @@ def resolve(host, ep, req):
     """
     if host.config.get('native_consumer_enabled') is not True:
         raise HubError('unavailable', 'native consumer is not activated')
+    if ep.get('platform') == 'cc' and host.config.get('native_cc_enabled') is not True:
+        raise HubError('unavailable', 'CC native channel is not activated')
     payload = req.get('hook')
     if not isinstance(payload, dict):
         raise HubError('identity_rejected', 'native hook payload required')
     native, _ = _hook_binding(host, ep, payload)
     prompt = payload.get('prompt')
+    if ep.get('platform') == 'cc':
+        from native_cc import unwrap
+        prompt = unwrap(prompt)
     match = TOKEN.match(prompt) if isinstance(prompt, str) else None
     if not match:
         raise HubError('identity_rejected', 'complete native notice required')
@@ -146,7 +154,7 @@ def resolve(host, ep, req):
         candidate = original['message_id']
         saved_row = host.db.execute('SELECT * FROM deliveries WHERE message_id=?', (candidate,)).fetchone()
         envelope = json.loads(saved_row['envelope'])
-        envelope.update(_native_route='native-v1', _native_context_reference=mid)
+        envelope.update(_native_route='native-cc-v1' if ep.get('platform') == 'cc' else 'native-v1', _native_context_reference=mid)
         changed = host.db.execute("UPDATE deliveries SET state='dispatching',prompt_hash=NULL,envelope=?,updated=? WHERE message_id=? AND endpoint_id=? AND state='received' AND envelope=?",
             (json.dumps(envelope, ensure_ascii=False), time.time(), candidate, ep['endpoint_id'], saved_row['envelope'])).rowcount
         host.db.commit()
@@ -209,6 +217,12 @@ def recover(host, ep, message_id):
     if not own_notice:
         return False
     verify(host.db, ep, native, message_id, own_notice['token'])
+    if ep.get('platform') == 'cc':
+        from native_cc import recorded
+        from native_notice import _prompt
+        notice = host.db.execute('SELECT * FROM native_notice_metadata WHERE message_id=?', (reference_id,)).fetchone()
+        return recorded(path, native['native_id'], _prompt(notice), delivery['prompt_hash'],
+                        ep.get('project_path') or ep.get('path'))
     with path.open('rb') as f:
         end = f.seek(0, os.SEEK_END)
         start = max(0, end - 4 * NATIVE_CONTEXT_LIMIT)
@@ -256,7 +270,9 @@ def main():
         if not prompt.startswith('[from:tproj-native-notice]') and '[tproj-native-notice:' not in prompt:
             return 0
         if not TOKEN.match(prompt):
-            raise HubError('identity_rejected', 'malformed native notice')
+            from native_cc import unwrap
+            if not TOKEN.match(unwrap(prompt)):
+                raise HubError('identity_rejected', 'malformed native notice')
         import cli
         import task_role
         request = task_role._caller_request(payload)

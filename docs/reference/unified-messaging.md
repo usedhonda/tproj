@@ -1353,3 +1353,76 @@ A distinct previous owner defers the new endpoint's initial pin to the existing
 continuity/handoff decision, so an equal new thread label cannot preempt the
 old immutable session label. If independently different conversation retirement
 succeeds, ordinary first attestation can occur on the next discovery refresh.
+
+### CC native channel adapter (opt-in; no production activation implied)
+
+`native_cc.py` adds the CC-specific `native_cc_v1` Host capability. Both
+`native_cc_enabled` and `native_consumer_enabled` must be explicitly true in the
+recipient Host snapshot. Missing flags preserve the existing route; once a row
+is pinned to `native-cc-v1`, disabling flags cannot permit terminal injection.
+The owner Hub must advertise `native_cc_v1` before reference selection.
+The installer distributes the adapter but does not register an MCP server,
+change CC settings, opt in to development channels, or restart an AI session.
+
+A CC-spawned stdio MCP subscriber (`python3 …/native_cc.py`, server name
+`tproj-msg`) declares only `claude/channel`. It exposes no tools, permission
+relay, network listener, or provider calls. Its two-second readiness requests
+use the existing Host Unix peer credentials and authenticated process ancestry.
+A new route is selected only after an authenticated poll observed within 30
+seconds for that exact endpoint/incarnation/native, with both flags true. The
+Host also checks the live CC process UID/start and explicit `server:tproj-msg`
+channel opt-in argument, so an MCP process without channel opt-in cannot select
+the route. This is subscriber/opt-in evidence, not proof of listener acceptance
+or organization policy. CC endpoints with no such subscriber retain their
+existing route; previously native-pinned rows never fall back. Subscriber
+presence is metadata in the existing Host journal, not a mailbox.
+The Host's existing delivery scheduler alone claims originals and prepares
+reference tokens in its existing journal; the subscriber never creates a second
+mailbox or chooses a recipient/session supplied by channel metadata.
+
+Before publishing even a reference, the endpoint must have the same session ID
+in authenticated current registry/runtime evidence and the Hub's immutable
+`session_id` attestation. Missing or conflicting native evidence rejects only
+that receiver. There is no native-ID discovery from `resume --last`, pane tags,
+MCP request metadata, or a public caller-selected transcript path. CC may not
+flush a transcript until its first event, so reference preparation does not
+require a transcript that cannot exist yet. Body resolution does require it. Project cwd may move within that project,
+but cannot cross into sibling or nested repositories; the existing
+`matches_project` boundary is reused for hook/native receipt metadata.
+
+Configure `native_consumer.py` as the opted-in CC session's `UserPromptSubmit`
+command hook. Resolution requires the entire generated
+`<channel source="tproj-msg">` wrapper, not an XML substring or caller-provided
+origin flag. The Host independently locates the unique same-UID, non-symlink
+native transcript, checks the encoded project directory, session IDs, available
+cwd/CLI metadata and non-sidechain records, then uses the existing token,
+immutable content digest, current actor/incarnation and transactional
+`native_begin_present` cancellation/expiry gate. The content remains external
+peer data, not direct user approval, Goal, role or new execution authority;
+existing independently authenticated user carry remains separate.
+
+Only one unreserved reference is outstanding per endpoint. Bodies coalesce in
+the existing one-shot resolver, not by concatenating channel wrappers. The
+journal CAS precedes returning a reference to stdio. A lost response or absent
+hook may repeat that same immutable reference after 30 seconds; it must never
+repeat an issued body. Prepared/unknown references use the existing waiting
+and unknown diagnostics, with incarnation/native-bound observation metadata.
+A stale subscriber on an already pinned row reports
+`native_subscriber_unavailable` through normal `diagnose`, without falling back
+or marking a body presented. A missing initial transcript fails closed without a
+body, and may become resolvable when the same reference is retained later.
+
+A stdio write is not an acknowledgement. Receipt recovery requires a retained
+native user record with `isMeta=true`, `isSidechain=false`, the exact full
+wrapper and bound session, plus its **direct `parentUuid` child** attachment
+of type `hook_additional_context`, with `hookName` and `hookEvent` both
+`UserPromptSubmit`. That child's single content entry must match the digest of
+the issued full context. Only then can the existing Host receipt path report
+`presented`; this is context-recorded evidence, not human/model consumption,
+work completion, or an explicit ACK. Missing metadata stays unknown.
+
+This is same-user native/process/registry correlation, not provider-signed
+identity or protection against a malicious OS account owner. The integration
+checks do not establish the full provider/version/host/fault acceptance matrix.
+The channel protocol itself is documented in the
+[official CC channel reference](https://code.claude.com/docs/en/channels-reference).
