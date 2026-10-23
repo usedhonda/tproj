@@ -30,5 +30,8 @@ non-UUID selector does not fall back to rollout files.
 The host may adopt an already-running endpoint without restarting Codex, tmux,
 or the shared daemon. Adoption preserves the existing endpoint ID so pending
 message IDs and replies remain valid. `tproj-msg-unified whoami` and `doctor`
-are read-only diagnostics; `--retry` retains the original submission ID/body
-while refreshing native caller context.
+use normal caller authentication: they may refresh discovery and persist a
+verified native attestation. They do not select a preferred recipient, grant
+historical access or acknowledge messages. Use `diagnose` for the separate
+strictly read-only delivery-metadata path. `--retry` retains the original
+submission ID/body while refreshing native caller context.
