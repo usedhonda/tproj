@@ -29,6 +29,73 @@ class FederationTests(unittest.TestCase):
                 if owner in self.down:raise HubError('host_unavailable','offline')
                 return self.hubs[owner].dispatch(dict(args,op='peer_'+op,host_id=host,host_token=host+'-token',protocol=1))
             hub.remote=remote
+    def retire_alias(self, owner, alias='retired', successor='b'):
+        hub = self.hubs[owner]
+        hub.directory_import(dict(admin_token='admin', projects=[dict(project_id=owner+'-'+alias,
+            alias=alias, host_id=owner, path='/retired/'+alias)]))
+        hub.directory_retire(dict(admin_token='admin', alias=alias, successor=successor))
+
+    def test_retired_alias_across_owners_and_same_id_retry_without_network(self):
+        self.retire_alias('a')
+        for sender in ('a', 'b', 'c'):
+            with self.subTest(sender=sender):
+                mid = 'redirect-'+sender
+                result = self.send(sender, mid, 'retired.cdx')
+                self.assertEqual((result['renamed_from'], result['renamed_to']), ('retired.cdx', 'b.cdx'))
+                stored = self.hubs['b']._row('SELECT * FROM messages WHERE message_id=?', (mid,))
+                self.assertEqual(stored['recipient_endpoint'], 'bcdx')
+                self.assertEqual(stored['body'], 'hello')
+        # Actual incident shape: sender/recipient B, retired namespace owner A.
+        self.down.add('a')
+        self.calls.clear()
+        result = self.send('b', 'redirect-b', 'retired.cdx')
+        self.assertTrue(result['duplicate'])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.hubs['b']._row("SELECT COUNT(*) FROM messages WHERE message_id='redirect-b'")[0], 1)
+        with self.assertRaisesRegex(HubError, 'different payload'):
+            self.send('b', 'redirect-b', 'retired.cdx', body='changed')
+
+    def test_alias_redirect_cannot_expand_service_scope(self):
+        self.retire_alias('a')
+        for sender in ('a', 'b', 'c'):
+            req = dict(op='submit', host_id=sender, host_token=sender+'-token',
+                authorized_targets=['retired.cdx'], message=dict(message_id='denied-'+sender,
+                    sender_endpoint=sender+'cc', target='retired.cdx', body='scoped', kind='chat'))
+            with self.subTest(sender=sender), self.assertRaises(HubError) as raised:
+                self.hubs[sender].dispatch(req)
+            self.assertEqual(raised.exception.code, 'scope_denied')
+            self.assertIsNone(self.hubs[sender]._row('SELECT * FROM messages WHERE message_id=?', ('denied-'+sender,)))
+            req['authorized_targets'].append('b.cdx')
+            self.assertEqual(self.hubs[sender].dispatch(req)['message_id'], 'denied-'+sender)
+
+        # New Hub + old Host must not make a KAI redirect bypass canonical scope.
+        owner = self.hubs['b']
+        owner.directory_import(dict(admin_token='admin', services=[dict(participant_id='service',
+            address='service', host_id='b', kind='kai')]))
+        owner.register(dict(host_id='b', host_token='b-token', endpoint_id='service',
+            participant_id='service', session='s', pane=None, pid=101, pid_start=10,
+            runtime_id='s', platform='kai'))
+        req = dict(host_id='b', host_token='b-token', message=dict(message_id='old-host',
+            sender_endpoint='service', target='retired.cdx', body='scoped', kind='chat'))
+        with self.assertRaises(HubError) as raised: owner.submit(req)
+        self.assertEqual(raised.exception.code, 'unsupported')
+        self.assertIsNone(owner._row("SELECT * FROM messages WHERE message_id='old-host'"))
+
+    def test_redirect_chain_or_competing_owner_is_rejected(self):
+        self.retire_alias('a', successor='middle')
+        owner = self.hubs['a']
+        old_req = dict(op='peer_resolve', host_id='b', host_token='b-token', protocol=1, address='retired.cdx')
+        with self.assertRaises(HubError): owner.dispatch(old_req)
+        proof = owner.dispatch(dict(old_req, include_alias_redirect=True))
+        self.assertEqual(proof, {'renamed_from': 'retired.cdx', 'renamed_to': 'middle.cdx'})
+        self.retire_alias('c', alias='middle', successor='b')
+        with self.assertRaisesRegex(HubError, 'chain'):
+            self.hubs['b'].resolve_destination('retired.cdx')
+        self.retire_alias('c', successor='b')
+        with self.assertRaises(HubError) as raised:
+            self.hubs['b'].resolve_destination('retired.cdx')
+        self.assertEqual(raised.exception.code, 'ambiguous_target')
+
     def test_concurrent_writable_legacy_migration_is_serialized(self):
         path = Path(self.tmp.name) / 'legacy.db'
         cfg = {'host_id': 'legacy', 'hosts': {'legacy': 'fixture-token'}}

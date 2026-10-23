@@ -304,6 +304,21 @@ A project's alias is its address (`<alias>.cc`, `<alias>.cdx`). Rules:
   `NEW.cc` and the result carries `renamed_from` / `renamed_to` so the sender
   learns the new name. A retry of the same message ID with the old name is the
   same message.
+- Cross-host senders obtain the redirect only from the enrolled owner of the
+  retired namespace, then resolve its successor through the normal authoritative
+  owner/recipient selection. Peers return reference-only redirect metadata only
+  when the caller opts in with `include_alias_redirect=true`; older callers keep
+  their former response shape. `federated_alias_redirect_v1` identifies loaded
+  support. Unknown aliases, redirect chains and competing owners are rejected;
+  directory names, grants and historical reply pins are never changed.
+- The Host passes its fresh service send scope as private authenticated metadata.
+  `service_alias_scope_v1` identifies the loaded Host support. A KAI redirect
+  without current Host scope metadata fails closed as `unsupported` during a
+  mixed-version upgrade; ordinary canonical-address traffic remains usable.
+  A renamed successor must also be in that scope before Hub message/outbox
+  insertion. A public request cannot supply its own scope. Host submission journals
+  retain the caller's original target/body/ID. Accepted duplicate reconciliation
+  does not repeat name resolution or require the retired owner to be online.
 - Retirement never terminates sessions or deletes messages and endpoints.
 - Pane labels (`@alias`, titles) follow the workspace; a session that predates
   an alias change is re-tagged with `tproj --repair`.

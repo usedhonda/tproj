@@ -18,6 +18,20 @@ from service_policy_migrate import migrate
 
 
 class UnifiedHostServicesTest(unittest.TestCase):
+    def test_service_send_scope_is_fresh_host_metadata_not_public_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self.host(tmp)
+            self.addCleanup(host.db.close)
+            calls = []
+            host.hub = lambda op, **args: calls.append((op, args)) or {'state': 'queued'}
+            scope = ['retired.cdx', 'new.cdx']
+            with patch.object(host, 'service_policy', return_value=scope):
+                host.submit({'endpoint_id': 'service-endpoint', 'service_id': 'kai'},
+                    dict(submission_id='stable-redirect', target='retired.cdx', body='read only',
+                         authorized_targets=['arbitrary.cdx']))
+            self.assertEqual(calls[0][1]['authorized_targets'], scope)
+            self.assertEqual(calls[0][1]['message']['target'], 'retired.cdx')
+
     def test_endpoint_failure_cannot_starve_other_recipients(self):
         import time
         import sqlite3
@@ -338,8 +352,14 @@ class UnifiedHostServicesTest(unittest.TestCase):
             host.hub = hub
             with patch.object(host_mod, 'adopt_native_conversation', return_value=[ep]), \
                  patch.object(host_mod, 'bind_caller', return_value=ep):
-                self.assertEqual(host.caller(1, 1, {'conversation': {'thread_id': 'untrusted'}}), ep)
-                self.assertEqual(calls, [('native_attest', {'endpoint_id': 'native', 'native_kind': 'thread_id', 'native_id': 'verified-thread'})])
+                with self.assertRaises(HubError) as rejected:
+                    host.caller(1, 1, {'conversation': {'thread_id': 'untrusted'}})
+                self.assertEqual(rejected.exception.code, 'identity_rejected')
+                self.assertNotIn('native_attest', [op for op, _ in calls])
+                calls.clear()
+                self.assertEqual(host.caller(1, 1, {}), ep)
+                self.assertEqual([args for op, args in calls if op == 'native_attest'],
+                    [{'endpoint_id': 'native', 'native_kind': 'thread_id', 'native_id': 'verified-thread'}])
                 host.hub = lambda *a, **k: (_ for _ in ()).throw(HubError('identity_rejected', 'conflict'))
                 with self.assertRaises(HubError): host.caller(1, 1, {})
             host.db.close()

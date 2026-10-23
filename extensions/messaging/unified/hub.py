@@ -125,9 +125,20 @@ class Hub:
         msg = req.get("message") or {}; target = msg.get("target")
         new = self._redirect_target(target) if isinstance(target, str) and target else None
         if not new: return self.submit(req)
+        sender = self._row('SELECT platform FROM endpoints WHERE endpoint_id=?', (msg.get('sender_endpoint'),))
+        self._redirect_scope(req, new, scope_required=bool(sender and sender['platform'] == 'kai'))
         # Rewrite before hashing so a retry of the same ID with the old name stays the same message.
         out = self.submit(dict(req, message=dict(msg, target=new)))
         return dict(out, renamed_from=target, renamed_to=new) if isinstance(out, dict) else out
+    @staticmethod
+    def _redirect_scope(req, destination, *, scope_required=False):
+        scope = req.get('authorized_targets')
+        if scope_required and scope is None:
+            raise HubError('unsupported', 'current Host service scope is required for alias redirect')
+        if scope is not None and (not isinstance(scope, list)
+                or any(not isinstance(x, str) for x in scope) or destination not in scope):
+            raise HubError('scope_denied', 'renamed target is outside authorized service policy')
+
     def directory_retire(self, req):
         """Owner-side retirement of a local project alias that now lives elsewhere under `successor`."""
         self._auth(req, True); alias, successor = str(req.get("alias") or ""), str(req.get("successor") or "")

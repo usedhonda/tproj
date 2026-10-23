@@ -316,7 +316,30 @@ class FederatedHub(Hub):
             evidence['routing_revision'] = pref['revision'] if pref else 0
         return evidence
 
-    def resolve_destination(self, address):
+    def _owned_alias_redirect(self, address):
+        """Only an operator-retired namespace owned by this Hub may redirect."""
+        target = self._redirect_target(address)
+        if not target: return None
+        base = address.rpartition('.')[0]
+        project = self._row('SELECT host_id FROM projects WHERE alias=?', (base,))
+        if not project or project['host_id'] != self.local_id:
+            raise HubError('identity_rejected', 'alias redirect lacks local ownership')
+        return dict(renamed_from=address, renamed_to=target)
+
+    def _follow_alias_redirect(self, address, target, allowed):
+        if not allowed:
+            raise HubError('unknown_target', 'alias redirect chain is not supported')
+        result = self.resolve_destination(target, allow_redirect=False)
+        return dict(result, renamed_from=address, renamed_to=target)
+
+    @staticmethod
+    def _rename_result(result, evidence):
+        return dict(result, **{key: evidence[key] for key in ('renamed_from', 'renamed_to') if key in evidence})
+
+    def resolve_destination(self, address, *, allow_redirect=True):
+        redirect = self._owned_alias_redirect(address)
+        if redirect:
+            return self._follow_alias_redirect(address, redirect['renamed_to'], allow_redirect)
         try:
             return self.local_resolve(address)
         except HubError as exc:
@@ -325,7 +348,7 @@ class FederatedHub(Hub):
         matches, unavailable = [], []
         # Query authoritative owners, never foreign evidence rows.
         def fetch(host_id):
-            try: return self.remote(host_id, 'resolve', address=address), None
+            try: return self.remote(host_id, 'resolve', address=address, include_alias_redirect=True), None
             except HubError as exc: return None, exc
         with ThreadPoolExecutor(max_workers=max(1, min(8, len(self.peers())))) as pool:
             for evidence, error in pool.map(fetch, self.peers()):
@@ -347,7 +370,14 @@ class FederatedHub(Hub):
             raise HubError('host_unavailable', 'remote destination unresolved: ' + ', '.join(causes))
         if not matches:
             raise HubError('unknown_target', 'unknown target')
-        return matches[0]
+        found = matches[0]
+        if 'renamed_to' in found:
+            if (set(found) != {'renamed_from', 'renamed_to'} or found['renamed_from'] != address
+                    or not isinstance(found['renamed_to'], str)
+                    or found['renamed_to'].rpartition('.')[2] != address.rpartition('.')[2]):
+                raise HubError('identity_rejected', 'invalid owner alias redirect')
+            return self._follow_alias_redirect(address, found['renamed_to'], allow_redirect)
+        return found
 
     def prepare_recovery_reply(self, req):
         """Resolve/capability-probe a reply before acquiring any write lock."""
@@ -380,7 +410,9 @@ class FederatedHub(Hub):
             if self.db.in_transaction:
                 saved_message = self._row('SELECT state FROM messages WHERE message_id=?', (mid,))
                 return {'message_id': mid, 'state': saved_message['state'], 'duplicate': True}
-            return self.flush_one(queued)
+            return self._rename_result(self.flush_one(queued), saved['recipient'])
+        if self._row('SELECT 1 FROM messages WHERE message_id=?', (mid,)):
+            return super().submit(req)
         if msg.get('in_reply_to'):
             original = self._row('SELECT * FROM messages WHERE message_id=?', (msg['in_reply_to'],))
             if not original or not self._authorize_reply_sender(sender, original, msg):
@@ -404,8 +436,17 @@ class FederatedHub(Hub):
             target = self._address(msg.get('target', ''), sender['endpoint_id'])
             evidence = self.resolve_destination(target)
             owner = evidence['endpoint']['host_id']
+            if evidence.get('renamed_to'):
+                self._redirect_scope(req, evidence['renamed_to'], scope_required=sender['platform'] == 'kai')
             if owner == self.local_id:
-                return super().submit(req)
+                if not evidence.get('renamed_to'):
+                    return super().submit(req)
+                original = self._participant
+                try:
+                    self._participant = lambda address: evidence['participant'] if address == target else original(address)
+                    return self._rename_result(super().submit(req), evidence)
+                finally:
+                    self._participant = original
         # Commit the accepted message and its outbound retry record atomically.
         owned = not self.db.in_transaction
         if owned: self._tx()
@@ -443,7 +484,7 @@ class FederatedHub(Hub):
             self._participant, self._new_message_recipient, self._reply_endpoint = original_resolver, original_endpoint, original_reply
         if not owned:
             return accepted
-        return self.flush_one(self._row('SELECT * FROM federated_outbox WHERE message_id=?', (mid,)))
+        return self._rename_result(self.flush_one(self._row('SELECT * FROM federated_outbox WHERE message_id=?', (mid,))), evidence)
 
     def flush_one(self, row):
         if row['state'] == 'cancel_pending':
@@ -631,7 +672,9 @@ class FederatedHub(Hub):
                 return {'peer_directory_prepare': prepare, 'peer_directory_commit': commit,
                         'peer_directory_status': status, 'peer_directory_abort': abort}[op](self, req)
             if op == 'peer_messaging_capabilities':
-                return super().messaging_capabilities(req)
+                result = super().messaging_capabilities(req)
+                result['capabilities'].append('federated_alias_redirect_v1')
+                return result
             if op == 'peer_diagnose':
                 proof = req.get('diagnostic_party')
                 if proof is None:
@@ -657,7 +700,11 @@ class FederatedHub(Hub):
                 return dispatch(self, req, peer=True)
             if op == 'peer_directory': return self.local_directory()
             if op == 'peer_repo': return self.peer_repo(req, owner)
-            if op == 'peer_resolve': return self.local_resolve(req.get('address'), req.get('endpoint_id'))
+            if op == 'peer_resolve':
+                if req.get('include_alias_redirect') is True and req.get('address') and not req.get('endpoint_id'):
+                    redirect = self._owned_alias_redirect(req['address'])
+                    if redirect: return redirect
+                return self.local_resolve(req.get('address'), req.get('endpoint_id'))
             if op == 'peer_accept': return self.accept(req)
             if op == 'peer_cancel':
                 # Accept the original immutable envelope if ingress raced the
@@ -718,6 +765,7 @@ class FederatedHub(Hub):
             return capabilities(self, req)
         if op == 'messaging_capabilities':
             result = super().messaging_capabilities(req)
+            result['capabilities'].append('federated_alias_redirect_v1')
             top = self.topology()
             hosts = top.get('hosts', []) if top.get('mode') == 'multi' else []
             if not isinstance(hosts, list):

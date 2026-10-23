@@ -22,7 +22,7 @@ from identity import (IdentityError, adopt_native_conversation, bind_caller, dis
 from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
 from receipt import normalize_prompt, codex_transcript_presented
 
-HOST_BACKEND_VERSION = 12
+HOST_BACKEND_VERSION = 13
 WIRE_LIMIT = 262144
 
 
@@ -623,7 +623,11 @@ class Host:
             classified = resource_error(exc, 'local_persistence')
             raise classified or HubError('unavailable', 'host journal unavailable') from None
         try:
-            return self.hub('submit', message=envelope)
+            fields = {}
+            if not reply and ep.get('service_id'):
+                scope = self.service_policy(req)
+                if scope is not None: fields['authorized_targets'] = scope
+            return self.hub('submit', message=envelope, **fields)
         except (OSError, sqlite3.Error) as exc:
             raise resource_error(exc, 'authority_rpc') or HubError('unavailable', 'authority RPC unavailable') from None
 
@@ -784,7 +788,7 @@ class Host:
                     'task_master': self.hub('task_capabilities')}
         if op == 'messaging_capabilities':
             own = ['service_policy_v1', 'read_only_diagnose', 'diagnostic_identity', 'query_only_service',
-                   'resource_exhausted', 'recipient_recovery_v1', 'native_cc_v1']
+                   'resource_exhausted', 'recipient_recovery_v1', 'native_cc_v1', 'service_alias_scope_v1']
             hub_caps = self.hub('messaging_capabilities')
             from native_consumer import BACKEND_VERSION
             return {'host_capabilities': own, 'messaging_owner': hub_caps,

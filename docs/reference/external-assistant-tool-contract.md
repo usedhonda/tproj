@@ -83,6 +83,16 @@ has explicitly consumed the message; the recipient check and durable receipt
 are required. An acknowledgement from another endpoint, or a stale endpoint
 incarnation, fails closed.
 
+### Retired project addresses
+
+An operator-configured one-hop project-alias redirect works across enrolled hosts.
+It does not add a new alias or service grant: both the submitted address and its
+canonical successor must be authorized by the current Host service policy.
+Directory/path basenames and similar-looking projects are not substitute targets.
+The existing minimal MCP send result remains unchanged; native submit results may
+also expose `renamed_from` / `renamed_to`. A completed corrected business message
+must not be replayed merely because an older failed name is now resolvable.
+
 ## Error contract
 
 The local host RPC currently uses the structured error shape
