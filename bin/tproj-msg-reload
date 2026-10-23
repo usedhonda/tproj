@@ -22,7 +22,7 @@ REMOTE="${TPROJ_RELOAD_REMOTE:-macmini}"
 # One reused SSH connection: a slow link costs one handshake, not one per file.
 SSHO=(-o BatchMode=yes -o ConnectTimeout=20 -o ControlMaster=auto -o "ControlPath=$HOME/.ssh/tproj-rl-%C" -o ControlPersist=3m)
 APP="plugin_asdk_app_6abe7ea4fa6c81919d9bf52ca9e6cf9a"
-UNI_FILES="cli.py host.py hub.py identity.py protocol.py policy.py receipt.py federation.py directory.py enrollment.py repo_access.py repo_access_policy.py repo_write.py runtime.py"
+UNI_FILES="cli.py recipient.py host.py hub.py identity.py protocol.py policy.py receipt.py federation.py directory.py enrollment.py repo_access.py repo_access_policy.py repo_write.py runtime.py"
 
 say() { echo "[reload] $*"; }
 

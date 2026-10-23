@@ -60,9 +60,110 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(result['peers']['b']['error'], 'configuration_error')
         self.assertTrue(result['peers']['c']['available'])
         self.assertIn('native_continuity', result['peers']['c']['capabilities'])
-        self.assertEqual(result['native_runtime'], {'hub_version': 1})
-        self.assertEqual(result['peers']['c']['native_runtime'], {'hub_version': 1})
+        self.assertEqual(result['native_runtime'], {'hub_version': 3})
+        self.assertEqual(result['peers']['c']['native_runtime'], {'hub_version': 3})
         self.assertIn('native_pending', result['peers']['c']['capabilities'])
+
+    def test_owner_route_selection_and_accept_revision_are_independent_of_reply_pins(self):
+        owner = self.hubs['b']
+        auth = dict(host_id='b', host_token='b-token')
+        owner.register(dict(auth, endpoint_id='tui', participant_id='b:cdx', session='b',
+            pane='%2', pid=201, pid_start=11, runtime_id='tui', platform='cdx'))
+        owner.attest_native(dict(auth, endpoint_id='tui', native_kind='thread_id', native_id='native'))
+        candidate = owner.dispatch(dict(auth, op='recipient_observe', observed_endpoint='tui'))['candidate']
+        owner.dispatch(dict(auth, op='recipient_select', actor_endpoint='tui', operation_id='select',
+            target='b.cdx', candidate=candidate, expected_revision=0))
+        source = self.hubs['a']
+        request = dict(host_id='a', host_token='a-token', message=dict(message_id='chosen',
+            sender_endpoint='acc', target='b.cdx', body='peer data'))
+        source.submit(request)
+        self.assertEqual(owner._row("SELECT recipient_endpoint FROM messages WHERE message_id='chosen'")[0], 'tui')
+        snapshot = owner.local_resolve('b.cdx')
+        self.assertEqual(snapshot['routing_revision'], 1)
+        owner.dispatch(dict(auth, op='recipient_clear', actor_endpoint='tui', operation_id='clear',
+            target='b.cdx', expected_revision=1))
+        with self.assertRaises(HubError): owner.local_resolve('b.cdx')
+        # History and explicit endpoint lookup do not consult the new preference.
+        self.assertEqual(owner.local_resolve(endpoint_id='bcdx')['endpoint']['endpoint_id'], 'bcdx')
+
+    def test_recovery_reply_is_authorized_only_by_original_recipient_owner(self):
+        source = self.hubs['a']; owner = self.hubs['b']
+        source.submit(dict(host_id='a',host_token='a-token',message=dict(message_id='recover-original',
+            sender_endpoint='acc',target='b.cdx',body='peer data')))
+        auth = dict(host_id='b',host_token='b-token')
+        owner.register(dict(auth, endpoint_id='recovery-tui',participant_id='b:cdx',session='b',pane='%2',
+            pid=201,pid_start=11,runtime_id='tui',platform='cdx'))
+        owner.attest_native(dict(auth, endpoint_id='recovery-tui',native_kind='thread_id',native_id='other-native'))
+        key = owner.dispatch(dict(auth,op='recipient_observe',observed_endpoint='recovery-tui'))['candidate']
+        grant = owner.dispatch(dict(auth,op='recovery_grant',actor_endpoint='recovery-tui',operation_id='grant',
+            candidate=key,message_id='recover-original',expected_revision=0,allow_read=True,allow_reply=True))
+        out = owner.dispatch(dict(auth,op='recovery_reply',actor_endpoint='recovery-tui',operation_id='reply-op',
+            grant_id=grant['grant_id'],message_id='recover-original',submission_id='recovered-reply',body='answer'))
+        self.assertEqual(out['message_id'],'recovered-reply')
+        self.assertIsNotNone(source._row("SELECT * FROM messages WHERE message_id='recovered-reply'"))
+        self.assertIsNone(source._row('SELECT * FROM message_recovery_grants WHERE grant_id=?',(grant['grant_id'],)))
+        evidence = source.response_evidence(source._row("SELECT * FROM messages WHERE message_id='recover-original'"))
+        self.assertEqual(evidence['recipient_reply_count'],0)
+        self.assertEqual(evidence['authorized_recovery_reply_ids'],['recovered-reply'])
+
+    def test_slow_recovery_reply_preflight_does_not_block_unrelated_local_submit(self):
+        self._slow_recovery_case(False)
+
+    def test_pending_recovery_retry_does_not_flush_inside_owner_write_transaction(self):
+        self._slow_recovery_case(True)
+
+    def _slow_recovery_case(self, pending):
+        source = self.hubs['a']; owner = self.hubs['b']
+        source.submit(dict(host_id='a',host_token='a-token',message=dict(message_id='slow-original',
+            sender_endpoint='acc',target='b.cdx',body='peer data')))
+        auth = dict(host_id='b',host_token='b-token')
+        owner.attest_native(dict(auth,endpoint_id='bcdx',native_kind='thread_id',native_id='native'))
+        key = owner.dispatch(dict(auth,op='recipient_observe',observed_endpoint='bcdx'))['candidate']
+        grant = owner.dispatch(dict(auth,op='recovery_grant',actor_endpoint='bcdx',operation_id='slow-grant',
+            candidate=key,message_id='slow-original',expected_revision=0,allow_read=True,allow_reply=True))
+        if pending:
+            original = owner.remote
+            def unavailable(host,op,**args):
+                if op=='accept': raise HubError('host_unavailable','fixture offline')
+                return original(host,op,**args)
+            owner.remote=unavailable
+            owner.dispatch(dict(auth,op='recovery_reply',actor_endpoint='bcdx',operation_id='initial-reply',
+                grant_id=grant['grant_id'],message_id='slow-original',submission_id='slow-answer',body='answer'))
+            owner.remote=original
+            self.assertEqual(owner._row("SELECT state FROM federated_outbox WHERE message_id='slow-answer'")[0],'pending')
+        other = FederatedHub(owner.db_path,owner.config)
+        self.addCleanup(other.close)
+        entered = threading.Event(); release = threading.Event(); committed = threading.Event(); failures=[]
+        original_remote = owner.remote
+        def remote(host,op,**args):
+            if op==('accept' if pending else 'resolve'):
+                entered.set(); release.wait(5)
+                raise HubError('host_unavailable','fixture timeout')
+            return original_remote(host,op,**args)
+        owner.remote=remote
+        def recovery():
+            try: owner.dispatch(dict(auth,op='recovery_reply',actor_endpoint='bcdx',operation_id='slow-reply',
+                grant_id=grant['grant_id'],message_id='slow-original',submission_id='slow-answer',body='answer'))
+            except HubError: pass
+            except Exception as exc: failures.append(type(exc).__name__)
+        def local():
+            try:
+                other.submit(dict(auth,message=dict(message_id='unrelated-local',sender_endpoint='bcc',
+                    target='b.cc',body='local data')))
+                committed.set()
+            except Exception as exc: failures.append(type(exc).__name__)
+        first=threading.Thread(target=recovery); second=threading.Thread(target=local)
+        first.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            second.start()
+            self.assertTrue(committed.wait(2),'remote preflight held the owner write lock')
+        finally:
+            release.set(); first.join(3)
+            if second.ident:second.join(3)
+        self.assertEqual(failures,[])
+        proof = owner._row("SELECT * FROM message_recovery_replies WHERE message_id='slow-answer'")
+        self.assertEqual(proof is not None,pending)
 
     def test_accepted_retry_preserves_result_after_recipient_revocation(self):
         sender, recipient = self.hubs['a'], self.hubs['b']

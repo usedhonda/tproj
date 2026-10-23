@@ -21,10 +21,12 @@ try:
     from .protocol import HubError, MAX_REQUEST, MAX_TTL, serve_socket, success, resource_error
     from .policy import check_policy
     from .native_notice import content_digest
+    from . import recipient
 except ImportError:  # allow the installed single-file entrypoint to be invoked directly
     from protocol import HubError, MAX_REQUEST, MAX_TTL, serve_socket, success, resource_error
     from policy import check_policy
     from native_notice import content_digest
+    import recipient
 
 
 HUB_NATIVE_VERSION = 3
@@ -55,7 +57,7 @@ CREATE TABLE IF NOT EXISTS messages (message_id TEXT PRIMARY KEY, thread_id TEXT
 CREATE TABLE IF NOT EXISTS receipts (message_id TEXT PRIMARY KEY, state TEXT NOT NULL, evidence TEXT, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS native_delivery_owners (message_id TEXT PRIMARY KEY REFERENCES messages(message_id), original_recipient TEXT NOT NULL, actor_endpoint TEXT NOT NULL, actor_incarnation TEXT NOT NULL, content_hash TEXT NOT NULL, generation INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS message_recipient ON messages(recipient_endpoint, state, expires_at);
-"""
+""" + recipient.SCHEMA
 
 
 class Hub:
@@ -352,7 +354,24 @@ class Hub:
         self.db.execute("INSERT INTO endpoints(endpoint_id,participant_id,host_id,session,pane,pid,pid_start,runtime_id,platform,incarnation,last_heartbeat,retired) VALUES(?,?,?,?,?,?,?,?,?,?,?,0) ON CONFLICT(endpoint_id) DO UPDATE SET participant_id=excluded.participant_id,session=excluded.session,pane=excluded.pane,pid=excluded.pid,pid_start=excluded.pid_start,runtime_id=excluded.runtime_id,platform=excluded.platform,incarnation=excluded.incarnation,last_heartbeat=excluded.last_heartbeat,retired=0", (req["endpoint_id"],req["participant_id"],host,req["session"],req["pane"],req["pid"],str(req["pid_start"]),req["runtime_id"],req["platform"],inc,now))
         return {"endpoint_id": req["endpoint_id"], "incarnation": inc}
 
-    def submit(self, req):
+    def _new_message_recipient(self, participant):
+        return recipient.new_message_recipient(self, participant)
+
+    def _authorize_reply_sender(self, sender, original, message):
+        return self._same_native_party(sender, original['recipient_endpoint']) or recipient.reply_authorized(self, sender, original, message)
+
+    def submit(self, req, *, prepared=None):
+        owned = not self.db.in_transaction
+        if owned: self._tx()
+        try:
+            result = self._submit_unlocked(req)
+            if owned: self._commit()
+            return result
+        except Exception:
+            if owned: self._rollback()
+            raise
+
+    def _submit_unlocked(self, req):
         host = self._auth(req); msg = req.get("message") or {}; sender = self._host_endpoint(host, msg.get("sender_endpoint"))
         mode = self._maintenance()
         if mode == "stopped": raise HubError("maintenance", "hub delivery is paused")
@@ -373,7 +392,7 @@ class Hub:
         if msg.get("sender_endpoint") != sender["endpoint_id"]: raise HubError("identity_rejected", "sender endpoint mismatch")
         if msg.get("in_reply_to"):
             original = self._row("SELECT * FROM messages WHERE message_id=?", (msg["in_reply_to"],))
-            if not original or not self._same_native_party(sender, original["recipient_endpoint"]):
+            if not original or not self._authorize_reply_sender(sender, original, msg):
                 raise HubError("identity_rejected", "reply sender is not original recipient")
             recipient = self._reply_endpoint(original["sender_endpoint"])
             if not recipient or recipient["retired"]:
@@ -384,7 +403,7 @@ class Hub:
             msg = dict(msg, thread_id=original["thread_id"])
         else:
             target = self._address(target, sender["endpoint_id"])
-            recipient = self._endpoint_for_send(self._participant(target))
+            recipient = self._new_message_recipient(self._participant(target))
         check_policy(self.db, sender["endpoint_id"], target, body, self._now(), msg.get("in_reply_to"))
         created = self._now(); expires = created + ttl
         self.db.execute("INSERT INTO messages(message_id,thread_id,in_reply_to,sender_endpoint,target_address,recipient_endpoint,body,kind,created_at,expires_at,payload_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (mid,msg.get("thread_id") or mid,msg.get("in_reply_to"),sender["endpoint_id"],target,recipient["endpoint_id"],body,msg.get("kind","chat"),created,expires,ph))
@@ -569,6 +588,8 @@ class Hub:
         self._tx()
         try:
             ep=self._host_endpoint(host,req.get("endpoint_id"))
+            if not recipient.presentation_allowed(self, ep):
+                raise HubError('endpoint_unavailable', 'another surface holds this native MSG consumer fence')
             limit=min(max(int(req.get("limit",100)),1),1000)
             # Optional keyset scan on the existing immutable insertion sequence.
             # Default callers retain their historical created-at ordering.
@@ -632,6 +653,8 @@ class Hub:
             msg = self._row("SELECT * FROM messages WHERE message_id=?", (req.get("message_id"),))
             if not msg: raise HubError("not_found", "message not found")
             owner = self._delivery_actor(msg, ep, native=native)
+            if not recipient.presentation_allowed(self, ep):
+                raise HubError('endpoint_unavailable', 'MSG presentation surface was revoked')
             if native:
                 marker = self._row("SELECT * FROM endpoint_native WHERE endpoint_id=?", (ep["endpoint_id"],))
                 if (ep["platform"] != "cdx" or not marker
@@ -733,8 +756,11 @@ class Hub:
         count = self._row('SELECT COUNT(*) AS n FROM messages WHERE ' + where, args)['n']
         ids = [row['message_id'] for row in self.db.execute(
             'SELECT message_id FROM messages WHERE ' + where + ' ORDER BY created_at,message_id LIMIT 20', args)]
+        recovery_ids = [r[0] for r in self.db.execute('SELECT message_id FROM message_recovery_replies '
+                       'WHERE original_id=? ORDER BY message_id LIMIT 20', (message['message_id'],))]
         return {'recipient_reply_count': count, 'recipient_reply_message_ids': ids,
-                'response_state': 'recipient_replied' if count else 'unconfirmed'}
+                'response_state': 'recipient_replied' if count else 'unconfirmed',
+                'authorized_recovery_reply_ids': recovery_ids}
 
     def delivery_summary(self, message, response):
         """Read-only lifecycle projection; never rewrite uncertain delivery effects."""
@@ -867,11 +893,14 @@ class Hub:
         self._auth(req)
         return {'capabilities': ['native_attest', 'native_continuity',
                                 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted',
-                                'native_begin_present', 'native_pending', 'native_drain', 'native_handoff'],
+                                'native_begin_present', 'native_pending', 'native_drain', 'native_handoff', recipient.CAPABILITY],
                 'native_runtime': {'hub_version': HUB_NATIVE_VERSION}, 'peers': {}}
 
     def dispatch(self, req):
         op=req.get("op")
+        if op in ('recipient_observe', 'recipient_list', 'recipient_select', 'recipient_clear',
+                  'recovery_grant', 'recovery_read', 'recovery_revoke', 'recovery_reply'):
+            return recipient.dispatch(self, req)
         if op in ('messaging_capabilities', 'peer_messaging_capabilities'):
             return self.messaging_capabilities(req)
         if op == 'diagnostic_identity': return self.diagnostic_identity(req)

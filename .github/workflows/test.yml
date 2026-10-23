@@ -26,6 +26,7 @@ jobs:
         run: bash extensions/messaging/tests/test-target-resolution-hardening.sh
       - name: Native notice provenance and consumer
         run: |
+          python3 extensions/messaging/tests/test-recipient-recovery.py
           python3 extensions/messaging/tests/test-native-notice.py
           python3 extensions/messaging/tests/test-native-consumer.py
           python3 extensions/messaging/tests/test-native-queue.py

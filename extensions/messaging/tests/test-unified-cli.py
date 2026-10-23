@@ -8,6 +8,27 @@ from extensions.messaging.unified import cli
 
 
 class CliTest(unittest.TestCase):
+    def setUp(self):
+        # This fixture tests a caller without native context, regardless of
+        # the real test runner's current Codex conversation.
+        context = patch.object(cli, 'native_conversation_context', return_value={})
+        context.start()
+        self.addCleanup(context.stop)
+
+    def test_recipient_and_recovery_use_management_ops_not_send(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(cli, 'config', return_value={'socket':'fixture'}), \
+                patch.object(cli, 'rpc', return_value={}) as rpc, \
+                patch.object(cli, 'DEFAULT_SPOOL', Path(tmp)/'spool.json'):
+            self.assertEqual(cli.main(['recipient','select','project.cdx','--candidate','opaque',
+                                       '--expected-revision','0','--operation-id','choose']), 0)
+            request = rpc.call_args.args[1]
+            self.assertEqual((request['op'],request['target'],request['expected_revision']),
+                             ('recipient_select','project.cdx',0))
+            self.assertEqual(cli.main(['recovery','read','original','--grant','grant','--operation-id','read']), 0)
+            request = rpc.call_args.args[1]
+            self.assertEqual((request['op'],request['message_id'],request['grant_id']),
+                             ('recovery_read','original','grant'))
+
     def test_pending_explains_acceptance_and_no_ack_without_reroute(self):
         text = cli.format_pending({
             "total": 1,

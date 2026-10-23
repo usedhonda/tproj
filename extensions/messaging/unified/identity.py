@@ -450,6 +450,66 @@ def _process_descendants(root_pid: int) -> list[int]:
     return found
 
 
+def observe_tui_native(endpoint, *, sessions_root=None, inspect_process=_process_info,
+                       descendants=_process_descendants, open_files=None):
+    """Correlate an existing TUI's open rollout, never its argv's resume hint.
+
+    Called only for explicit recipient management, not every discovery tick.
+    No process environment or transcript body is read.
+    """
+    if endpoint.get('platform') != 'cdx' or not endpoint.get('pane'):
+        raise IdentityError('live TUI surface required')
+    root = Path(sessions_root or Path.home() / '.codex/sessions')
+    pid = int(endpoint['pid'])
+    before = dict(inspect_process(pid))
+    if (before.get('uid') != os.getuid()
+            or str(before.get('pid_start')) != str(endpoint.get('pid_start'))):
+        raise IdentityError('TUI process incarnation changed')
+    def files(process):
+        result = subprocess.run(['lsof', '-n', '-P', '-p', str(process), '-Fn'],
+                                capture_output=True, text=True, timeout=5)
+        return [line[1:] for line in result.stdout.splitlines() if line.startswith('n')]
+    observations = set()
+    for current in [pid, *list(descendants(pid))[:32]]:
+        try:
+            live = dict(inspect_process(current))
+            command = str(live.get('command', '')).lower()
+            if (live.get('uid') != os.getuid() or 'app-server' in command
+                    or not any(token in command for token in ('codex', 'openai'))):
+                continue
+            for filename in (open_files or files)(current):
+                path = Path(filename)
+                if not path.name.startswith('rollout-') or path.suffix != '.jsonl':
+                    continue
+                try: relative = path.relative_to(root)
+                except ValueError: continue
+                if len(relative.parts) != 4 or any(p.is_symlink() for p in (path, *path.parents)):
+                    continue
+                with path.open('rb') as stream:
+                    if os.fstat(stream.fileno()).st_uid != os.getuid(): continue
+                    header = json.loads(stream.readline(65537))
+                meta = header.get('payload', {})
+                native = meta.get('id', '')
+                if (header.get('type') != 'session_meta' or not _NATIVE_THREAD_ID.fullmatch(native)
+                        or not path.name.endswith('-' + native + '.jsonl')
+                        or meta.get('originator') != 'codex-tui'
+                        or meta.get('source') not in ('cli', 'vscode')
+                        or meta.get('thread_source', 'user') != 'user'
+                        or not endpoint.get('project_path')
+                        or _canonical(meta.get('cwd')) != _canonical(endpoint['project_path'])):
+                    continue
+                after = dict(inspect_process(current))
+                if after.get('pid_start') == live.get('pid_start') and after.get('uid') == os.getuid():
+                    observations.add(native)
+        except (OSError, ValueError, TypeError, IdentityError, subprocess.SubprocessError):
+            continue
+    after = dict(inspect_process(pid))
+    if (after.get('pid_start') != before.get('pid_start') or after.get('uid') != os.getuid()
+            or len(observations) != 1):
+        raise IdentityError('unique live TUI native record unavailable')
+    return dict(thread_id=next(iter(observations)))
+
+
 def discover_tmux_endpoints(host_id: str, projects: Iterable[Mapping[str, Any]],
                             existing: Iterable[Mapping[str, Any]] = (), *,
                             panes: Callable[[], Iterable[Mapping[str, Any]]] = _tmux_rows,

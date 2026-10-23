@@ -162,6 +162,7 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tproj-msg-unified", epilog="diagnose MESSAGE_ID: read-only delivery metadata for a party or configured maintenance operator; never resends")
     p.add_argument("target", nargs="?")
     p.add_argument("body", nargs="?")
+    p.add_argument("rest", nargs="*")
     p.add_argument("--stdin", action="store_true")
     p.add_argument("--session")
     p.add_argument("--as", dest="claimed_alias")
@@ -171,6 +172,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--list", action="store_true")
     p.add_argument("--status", action="store_true")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--candidate")
+    p.add_argument("--expected-revision", type=int)
+    p.add_argument("--grant", dest="grant_id")
+    p.add_argument("--allow-read", action="store_true")
+    p.add_argument("--allow-reply", action="store_true")
+    p.add_argument("--ttl-sec", type=int, default=3600)
+    p.add_argument("--operation-id")
+    p.add_argument("--submission-id")
     return p
 
 
@@ -186,7 +195,31 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         cfg = config()
-        if args.retry:
+        if args.target in ('recipient', 'recovery'):
+            commands = {'recipient': ('list', 'select', 'clear'),
+                        'recovery': ('grant', 'read', 'revoke', 'reply')}
+            if args.body not in commands[args.target] or len(args.rest) != 1:
+                raise ClientError('recipient list/select/clear TARGET; recovery grant/read/reply MESSAGE_ID or revoke GRANT_ID', 'invalid_argument')
+            op = args.target + '_' + args.body
+            req = _caller_request(op, session=args.session, **{'as': args.claimed_alias})
+            req['target' if args.target == 'recipient' else 'grant_id' if args.body == 'revoke' else 'message_id'] = args.rest[0]
+            if args.candidate: req['candidate'] = args.candidate
+            if args.expected_revision is not None: req['expected_revision'] = args.expected_revision
+            if args.grant_id: req['grant_id'] = args.grant_id
+            if op == 'recovery_grant':
+                req.update(allow_read=args.allow_read, allow_reply=args.allow_reply, ttl_sec=args.ttl_sec)
+                req.setdefault('expected_revision', 0)
+            if op == 'recovery_reply':
+                if not args.stdin or not args.submission_id:
+                    raise ClientError('recovery reply requires --stdin and --submission-id', 'invalid_argument')
+                req.update(body=sys.stdin.read(), submission_id=args.submission_id)
+            if op != 'recipient_list':
+                req['operation_id'] = args.operation_id or str(uuid.uuid4())
+                req, _ = submission(req)
+            result = rpc(cfg['socket'], req)
+        elif args.rest:
+            raise ClientError('unexpected positional arguments', 'invalid_argument')
+        elif args.retry:
             req, _ = submission({"session": args.session, "as": args.claimed_alias}, retry=args.retry)
             result = rpc(cfg["socket"], req)
         elif args.list or args.status:

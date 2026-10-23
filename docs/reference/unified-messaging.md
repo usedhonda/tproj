@@ -132,6 +132,80 @@ from these minimum cutover proofs; queued probes are not passing evidence.
 
 ## Presentation recovery and active recipients
 
+### Explicit TUI recipient and exact-message recovery (recipient_recovery_v1)
+
+The recipient owner Hub may store an explicit preference for one authenticated
+TUI surface. This is separate from endpoint retirement and does not declare an
+app-server process dead. A candidate is an opaque owner-issued observation of
+an endpoint incarnation and native kind/ID. Host management verifies the live
+UID/PID-start and either a unique open Codex TUI rollout header/project or an
+existing caller-attested immutable incarnation with its exact CLI header. A resume hint,
+pane tag, heartbeat or caller-chosen native ID is not that proof. Candidate
+observations expire after 120 seconds; selections persist until explicit
+select/clear. A missing, stale or retired selected surface fails closed without
+falling back to another process, including another surface of the same native.
+
+Use `tproj-msg recipient list TARGET`, then `recipient select TARGET
+--candidate KEY --expected-revision N`; `recipient clear TARGET
+--expected-revision N` removes the preference with CAS. Management operations
+carry stable operation IDs and authenticated issuer metadata, not proof of a
+physical human click. Agents must not infer permission to run them from a peer
+message. Same-UID malicious code is outside the existing local trust boundary.
+Management without native selectors/context uses the owner-local Unix peer UID
+and Host-observed PID/start, recorded as an operator rather than a native party.
+An invalid native claim never falls back to operator mode. Service credentials
+cannot use these controls. Historical read/reply always requires the authorized
+native caller; an operator can issue/revoke a grant but cannot consume its body.
+
+Preferences are read only by the new-message resolver. Historical party checks,
+reply routing, query/diagnose and receipts do not consult them. The owner checks
+selection revision and exact endpoint inside acceptance; foreign senders cannot
+choose an endpoint or refresh the selection. Accepted originals remain immutable.
+For multiple surfaces of the selected native, claim and presentation reservation
+fence nonselected MSG writers. Already unknown or reserved effects remain unknown
+or reserved: this fence does not undo a provider call or promise exactly-once
+model execution. Other native conversations retain their historical rights.
+
+An explicitly authorized operator can grant access to one retained message:
+`tproj-msg recovery grant MESSAGE_ID --candidate KEY --allow-read` (optionally
+`--allow-reply`). Default access lifetime is one hour, maximum 24 hours, independent
+of the original message TTL. The grant fixes the original digest/recipient and
+the target host, participant and authenticated native identity. Only the Hub
+owning the original recipient issues or validates it, even when another Hub
+has a federated copy. It does not grant access to other message IDs or projects.
+Grants are not copied across federation.
+
+`recovery read MESSAGE_ID --grant GRANT_ID` returns historical external-peer
+data only to the authorized native caller. The original state, receipt, body,
+recipient and expiry remain unchanged. Expired/cancelled/uncertain originals
+may be explicitly read as archives, never requeued, acknowledged or promoted
+to presented by this operation. Each read is audited separately; body text is
+not stored in the management operation cache. A retried read rechecks the grant.
+`recovery revoke GRANT_ID --expected-revision N` fences subsequent reads/replies
+transactionally. Previously returned bytes cannot be revoked retroactively.
+
+Reply permission is opt-in. `recovery reply MESSAGE_ID --grant GRANT_ID
+--submission-id ID --stdin` commits a new linked reply, never masquerading as
+the original recipient or changing the original pin. It has distinct
+`authorized_recovery_reply_ids` provenance, not synthetic pinned-recipient
+response evidence. Authorization and the durable outgoing event are committed
+together by the original recipient owner. Revocation cannot cancel an event
+already accepted before it. Federation forwards only the accepted event's
+owner-attested provenance, not a reusable grant, and requires the recipient
+peer's recipient_recovery_v1 capability. Remote route/capability preflight is
+outside the write transaction; the grant is revalidated afterward inside it.
+One unavailable remote recipient must not hold the owner write lock or stall
+unrelated submit/heartbeat/receipt operations. Original-sender routing remains the
+existing historical/native routing, not the new-message preference.
+
+Unsupported owner backends reject these operations without legacy mutation
+fallback. Install the compatible Hub/schema before Host/CLI activation. New
+tables are additive and do not modify original rows; rollback must disable the
+new controls and revoke grants rather than delete audit/unknown state or replay
+messages. Source, installed and loaded capability evidence are separate from
+actual recipient consumption. This feature does not enable native consumer
+flags or provide app-surface queue transport.
+
 A bound recipient may consume its inbox during an active turn and explicitly
 acknowledge an observed message with `tproj-msg ack <message-id>`. This records
 presentation by the authenticated recipient; listing an inbox alone does not.

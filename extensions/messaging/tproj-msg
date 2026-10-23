@@ -178,6 +178,13 @@ Usage:
   tproj-msg whoami                     Show the bound current conversation
   tproj-msg doctor                     Diagnose current conversation binding
   tproj-msg cancel <id>                Cancel delivery before presentation starts
+  tproj-msg recipient list TARGET     List verified local TUI recipient candidates
+  tproj-msg recipient select TARGET --candidate KEY --expected-revision N
+  tproj-msg recipient clear TARGET --expected-revision N
+  tproj-msg recovery grant ID --candidate KEY --allow-read [--allow-reply]
+  tproj-msg recovery read ID --grant GRANT_ID
+  tproj-msg recovery revoke GRANT_ID --expected-revision N
+  tproj-msg recovery reply ID --grant GRANT_ID --submission-id ID --stdin
   tproj-msg message <id>               Show one message
   tproj-msg pending                    List what you sent that is not presented yet, by recipient
   tproj-msg ack <id>                   Acknowledge presentation of a message

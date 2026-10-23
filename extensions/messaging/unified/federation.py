@@ -309,8 +309,12 @@ class FederatedHub(Hub):
             p = self._participant(address)
             if p['host_id'] != self.local_id:
                 raise HubError('unknown_target', 'not owned by this host')
-            ep = self._endpoint_for_send(p)
-        return self.evidence(ep['endpoint_id'])
+            ep = self._new_message_recipient(p)
+        evidence = self.evidence(ep['endpoint_id'])
+        if address is not None:
+            pref = self._row('SELECT revision FROM recipient_preferences WHERE participant_id=?', (ep['participant_id'],))
+            evidence['routing_revision'] = pref['revision'] if pref else 0
+        return evidence
 
     def resolve_destination(self, address):
         try:
@@ -345,7 +349,23 @@ class FederatedHub(Hub):
             raise HubError('unknown_target', 'unknown target')
         return matches[0]
 
-    def submit(self, req):
+    def prepare_recovery_reply(self, req):
+        """Resolve/capability-probe a reply before acquiring any write lock."""
+        if self._row('SELECT 1 FROM federated_outbox WHERE message_id=?', (req.get('submission_id'),)):
+            return None  # Existing accepted event is reconciled only after commit.
+        original = self._row('SELECT * FROM messages WHERE message_id=?', (req['message_id'],))
+        if not original:
+            raise HubError('not_found', 'original unavailable')
+        evidence = self.evidence(original['sender_endpoint'])
+        owner = evidence['endpoint']['host_id']
+        if owner != self.local_id:
+            evidence = self.remote(owner, 'resolve', endpoint_id=original['sender_endpoint'])
+            caps = self.remote(owner, 'messaging_capabilities')
+            if 'recipient_recovery_v1' not in caps.get('capabilities', []):
+                raise HubError('unsupported', 'remote recovery reply capability unavailable')
+        return dict(original_sender=original['sender_endpoint'], evidence=evidence)
+
+    def submit(self, req, *, prepared=None):
         host = self._auth(req)
         if host != self.local_id:
             raise HubError('unauthorized', 'use authenticated peer ingress')
@@ -357,17 +377,29 @@ class FederatedHub(Hub):
             saved = json.loads(queued['payload'])
             if saved['message'] != msg:
                 raise HubError('id_conflict', 'message ID has different payload')
+            if self.db.in_transaction:
+                saved_message = self._row('SELECT state FROM messages WHERE message_id=?', (mid,))
+                return {'message_id': mid, 'state': saved_message['state'], 'duplicate': True}
             return self.flush_one(queued)
         if msg.get('in_reply_to'):
             original = self._row('SELECT * FROM messages WHERE message_id=?', (msg['in_reply_to'],))
-            if not original or not self._same_native_party(sender, original['recipient_endpoint']):
+            if not original or not self._authorize_reply_sender(sender, original, msg):
                 raise HubError('identity_rejected', 'not original recipient')
             evidence = self.evidence(original['sender_endpoint'])
             owner = evidence['endpoint']['host_id']
             if owner == self.local_id:
                 return super().submit(req)
-            evidence = self.remote(owner, 'resolve', endpoint_id=original['sender_endpoint'])
+            if prepared is not None:
+                if prepared['original_sender'] != original['sender_endpoint']:
+                    raise HubError('identity_rejected', 'prepared recovery route mismatch')
+                evidence = prepared['evidence']
+            else:
+                evidence = self.remote(owner, 'resolve', endpoint_id=original['sender_endpoint'])
             target = evidence['participant']['address']
+            if prepared is None and self._row('SELECT 1 FROM message_recovery_replies WHERE message_id=?', (mid,)):
+                caps = self.remote(owner, 'messaging_capabilities')
+                if 'recipient_recovery_v1' not in caps.get('capabilities', []):
+                    raise HubError('unsupported', 'remote recovery reply capability unavailable')
         else:
             target = self._address(msg.get('target', ''), sender['endpoint_id'])
             evidence = self.resolve_destination(target)
@@ -375,36 +407,42 @@ class FederatedHub(Hub):
             if owner == self.local_id:
                 return super().submit(req)
         # Commit the accepted message and its outbound retry record atomically.
-        self._tx()
+        owned = not self.db.in_transaction
+        if owned: self._tx()
         if msg.get('in_reply_to') and original['sender_endpoint'] != evidence['endpoint']['endpoint_id']:
             self.db.execute('UPDATE endpoints SET retired=1 WHERE endpoint_id=?', (original['sender_endpoint'],))
-        original_resolver, original_endpoint, original_reply = self._participant, self._endpoint_for_send, self._reply_endpoint
+        original_resolver, original_endpoint, original_reply = self._participant, self._new_message_recipient, self._reply_endpoint
         try:
             self.remember_evidence(evidence, owner)
             self._participant = lambda address: evidence['participant'] if address == target else original_resolver(address)
-            self._endpoint_for_send = lambda participant: evidence['endpoint'] if participant['participant_id'] == evidence['participant']['participant_id'] else original_endpoint(participant)
+            self._new_message_recipient = lambda participant: evidence['endpoint'] if participant['participant_id'] == evidence['participant']['participant_id'] else original_endpoint(participant)
             if msg.get('in_reply_to'):
                 # The enrolled owner resolved this exact historical endpoint;
                 # foreign rows alone are not continuity authority.
                 self._reply_endpoint = lambda endpoint_id: evidence['endpoint'] if endpoint_id == original['sender_endpoint'] else original_reply(endpoint_id)
             accepted = super().submit(req)
             if accepted.get('duplicate'):
-                self._commit()
+                if owned: self._commit()
                 return accepted
             stored = dict(self._row('SELECT * FROM messages WHERE message_id=?', (mid,)))
             payload = {'message': msg, 'record': stored, 'sender': self.evidence(sender['endpoint_id']), 'recipient': evidence}
+            recovery = self._row('SELECT * FROM message_recovery_replies WHERE message_id=?', (mid,))
+            if recovery:
+                payload['recovery_reply'] = dict(recovery)
             if msg.get('in_reply_to') and original['recipient_endpoint'] != sender['endpoint_id']:
                 # Same-native party access was checked above by the sender owner.
                 payload['reply_party'] = {'historical_endpoint': original['recipient_endpoint'],
                                           'current_endpoint': sender['endpoint_id']}
             self.db.execute('INSERT INTO federated_outbox(message_id,host_id,payload) VALUES(?,?,?)',
                             (mid, owner, json.dumps(payload, ensure_ascii=False)))
-            self._commit()
+            if owned: self._commit()
         except Exception:
-            self._rollback()
+            if owned: self._rollback()
             raise
         finally:
-            self._participant, self._endpoint_for_send, self._reply_endpoint = original_resolver, original_endpoint, original_reply
+            self._participant, self._new_message_recipient, self._reply_endpoint = original_resolver, original_endpoint, original_reply
+        if not owned:
+            return accepted
         return self.flush_one(self._row('SELECT * FROM federated_outbox WHERE message_id=?', (mid,)))
 
     def flush_one(self, row):
@@ -479,6 +517,17 @@ class FederatedHub(Hub):
         return result
 
     def accept(self, req):
+        owned = not self.db.in_transaction
+        if owned: self._tx()
+        try:
+            result = self._accept_unlocked(req)
+            if owned: self._commit()
+            return result
+        except Exception:
+            if owned: self._rollback()
+            raise
+
+    def _accept_unlocked(self, req):
         owner = self._auth(req)
         payload = req['payload']; record = payload['record']
         sender, recipient = payload['sender'], payload['recipient']
@@ -499,6 +548,13 @@ class FederatedHub(Hub):
                 raise HubError('identity_rejected', 'recorded message owner mismatch')
             return {'message_id': old['message_id'], 'state': old['state'], 'duplicate': True}
         self.local_resolve(endpoint_id=record['recipient_endpoint'])
+        if not record.get('in_reply_to'):
+            pref = self._row('SELECT * FROM recipient_preferences WHERE participant_id=?', (recipient['participant']['participant_id'],))
+            if pref and pref['revision']:
+                selected = self._new_message_recipient(recipient['participant'])
+                if (recipient.get('routing_revision') != pref['revision']
+                        or selected['endpoint_id'] != record['recipient_endpoint']):
+                    raise HubError('revision_conflict', 'recipient selection changed before owner acceptance')
         self.remember_evidence(sender, owner)
         if self._maintenance() == 'stopped':
             raise HubError('maintenance', 'mailbox paused')
@@ -517,6 +573,18 @@ class FederatedHub(Hub):
                     and service['participant_id'] == recipient['participant']['participant_id']
                     and self._endpoint_for_send(service)['endpoint_id'] == record['recipient_endpoint'])
             sender_matches = bool(original and original['recipient_endpoint'] == record['sender_endpoint'])
+            recovery = payload.get('recovery_reply')
+            if original and recovery:
+                historical = self.evidence(original['recipient_endpoint'])
+                sender_matches = bool(historical['endpoint']['host_id'] == owner
+                    and recovery.get('owner_host') == owner
+                    and recovery.get('message_id') == record['message_id']
+                    and recovery.get('original_id') == original['message_id']
+                    and recovery.get('actor_endpoint') == record['sender_endpoint']
+                    and isinstance(recovery.get('grant_id'), str)
+                    and historical['participant']['participant_id'] == sender['participant']['participant_id'])
+                if not sender_matches:
+                    raise HubError('identity_rejected', 'invalid owner-authorized recovery reply')
             if original and not sender_matches:
                 historical = self.evidence(original['recipient_endpoint'])
                 attested = payload.get('reply_party') or {}
@@ -530,6 +598,10 @@ class FederatedHub(Hub):
         check_policy(self.db, record['sender_endpoint'], record['target_address'], body, self._now(), record['in_reply_to'])
         cols = ('message_id','thread_id','in_reply_to','sender_endpoint','target_address','recipient_endpoint','body','kind','created_at','expires_at','payload_hash')
         self.db.execute('INSERT INTO messages('+','.join(cols)+') VALUES('+','.join('?' for _ in cols)+')', tuple(record[k] for k in cols))
+        if record.get('in_reply_to') and payload.get('recovery_reply'):
+            proof = payload['recovery_reply']
+            self.db.execute('INSERT INTO message_recovery_replies VALUES(?,?,?,?,?)',
+                            tuple(proof[k] for k in ('message_id','original_id','grant_id','owner_host','actor_endpoint')))
         return {'message_id': record['message_id'], 'state': 'queued'}
 
     def manage_update(self, req, origin):

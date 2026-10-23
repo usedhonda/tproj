@@ -338,9 +338,36 @@ class Host:
         if not self.endpoints or time.monotonic() - self.refreshed >= 10:
             self.refresh()
         try:
-            endpoints = adopt_native_conversation(self.endpoints, req.get('conversation') or {})
+            endpoints = [dict(e) for e in self.endpoints]
+            try:
+                identity = self.hub('diagnostic_identity', active_only=True)
+            except HubError as exc:
+                if exc.code != 'unknown_op': raise
+                identity = {}
+            markers = {r['endpoint_id']: r for r in identity.get('endpoint_native', [])}
+            for item in endpoints:
+                marker = markers.get(item['endpoint_id'])
+                if marker:
+                    item[marker['native_kind']] = marker['native_id']
+            # A direct TUI caller's ancestry can select its existing process
+            # before catalog adoption. A shared app-server still needs exact
+            # native context and follows the original fail-closed path.
+            try:
+                direct = bind_caller(pid, uid, endpoints, session=req.get('session'),
+                                     claimed_alias=req.get('as'))
+            except IdentityError:
+                direct = None
+            if direct and req.get('conversation'):
+                narrowed = adopt_native_conversation([direct], req['conversation'])
+                endpoints = [narrowed[0] if e['endpoint_id'] == direct['endpoint_id'] else e for e in endpoints]
+            else:
+                endpoints = adopt_native_conversation(endpoints, req.get('conversation') or {})
             ep = bind_caller(pid, uid, endpoints, session=req.get('session'),
                              claimed_alias=req.get('as'), conversation=req.get('conversation'))
+            if req.get('conversation') and (ep.get('thread_id') or ep.get('session_id')):
+                from identity import _conversation_matches
+                if not _conversation_matches(ep, req['conversation']):
+                    raise IdentityError('current native context conflicts with immutable endpoint')
             # Native fields come from authenticated registry/catalog adoption,
             # not the public request's selectors. Persist before any messaging.
             kind = 'thread_id' if ep.get('thread_id') else 'session_id'
@@ -370,6 +397,53 @@ class Host:
             return ep
         except IdentityError as exc:
             raise HubError('identity_rejected', str(exc)) from exc
+
+    def recipient_operation(self, ep, req):
+        """Explicit local management, not a service or peer-body authority."""
+        from recipient import CAPABILITY
+        caps = self.hub('messaging_capabilities')
+        if CAPABILITY not in caps.get('capabilities', []):
+            raise HubError('unsupported', 'recipient owner backend requires upgrade')
+        if req['op'] in ('recipient_list', 'recipient_select'):
+            from identity import observe_tui_native, _process_info
+            self.refresh()
+            directory = self.hub('directory_list')
+            paths = {p['project_id']: p['path'] for p in directory.get('projects', [])}
+            for candidate in self.endpoints:
+                if candidate.get('platform') != 'cdx' or not candidate.get('pane'):
+                    continue
+                if candidate.get('address') != req.get('target'):
+                    continue
+                candidate = dict(candidate)
+                candidate.setdefault('project_path', paths.get(candidate['participant_id'].rsplit(':', 1)[0]))
+                try:
+                    old = self.hub('diagnostic_identity', endpoint_ids=[candidate['endpoint_id']])
+                    markers = old.get('endpoint_native', [])
+                    try:
+                        native = observe_tui_native(candidate)
+                    except IdentityError:
+                        if len(markers) != 1:
+                            continue
+                        # An already caller-attested immutable incarnation is
+                        # also admissible when its exact CLI header is present.
+                        from native_consumer import _native_path
+                        _native_path(candidate, markers[0])
+                        native = {'thread_id': markers[0]['native_id']}
+                    kind = markers[0]['native_kind'] if len(markers) == 1 else 'thread_id'
+                    self.hub('native_attest', endpoint_id=candidate['endpoint_id'],
+                             native_kind=kind, native_id=native['thread_id'])
+                    current = _process_info(int(candidate['pid']))
+                    if (str(current['pid_start']) != str(candidate['pid_start'])
+                            or current.get('uid') != os.getuid()
+                            or not any(n in str(current.get('command', '')).lower() for n in ('codex', 'openai'))):
+                        continue
+                    self.hub('recipient_observe', observed_endpoint=candidate['endpoint_id'])
+                except (IdentityError, HubError, OSError, ValueError, KeyError, TypeError):
+                    continue
+        fields = {k: req[k] for k in ('target', 'candidate', 'expected_revision', 'operation_id',
+                  'message_id', 'grant_id', 'ttl_sec', 'allow_read', 'allow_reply', 'submission_id', 'body') if k in req}
+        return self.hub(req['op'], actor_endpoint=ep.get('endpoint_id'),
+                        **({'actor_operator': ep['operator']} if 'operator' in ep else {}), **fields)
 
     def caller_read_only(self, pid, uid, req):
         """Bind a live caller to persisted endpoint/native evidence without writes."""
@@ -710,7 +784,7 @@ class Host:
                     'task_master': self.hub('task_capabilities')}
         if op == 'messaging_capabilities':
             own = ['service_policy_v1', 'read_only_diagnose', 'diagnostic_identity', 'query_only_service',
-                   'resource_exhausted']
+                   'resource_exhausted', 'recipient_recovery_v1']
             hub_caps = self.hub('messaging_capabilities')
             from native_consumer import BACKEND_VERSION
             return {'host_capabilities': own, 'messaging_owner': hub_caps,
@@ -736,6 +810,20 @@ class Host:
             return self.hub('directory_all' if self.config.get('federated') else 'directory_list')
         if op == 'directory-sync':
             return self.hub('directory_update', projects=req['projects'], expected_revision=req['expected_revision'])
+        if op in ('recipient_list', 'recipient_select', 'recipient_clear', 'recovery_grant', 'recovery_revoke'):
+            if any(k in req for k in ('service_id', 'service_token')):
+                raise HubError('unauthorized', 'service credentials cannot manage recipient selection')
+            if req.get('conversation') or req.get('session') or req.get('as'):
+                return self.recipient_operation(self.caller(pid, uid, req), req)
+            # Explicit owner-local operator management, authenticated by the
+            # existing Unix peer UID boundary. Never falls back after a failed
+            # native claim and cannot consume historical bodies.
+            from identity import _process_info
+            observed = _process_info(pid)
+            if observed.get('uid') != uid or type(observed.get('pid_start')) is not int:
+                raise HubError('identity_rejected', 'operator process observation unavailable')
+            return self.recipient_operation({'operator': dict(uid=uid, pid=pid,
+                         pid_start=observed['pid_start'])}, req)
         is_service = isinstance(op, str) and op.startswith('service_')
         query_only_service = op == 'service_diagnose'
         self._query_only_service = query_only_service
@@ -744,6 +832,11 @@ class Host:
         if isinstance(op, str) and op.startswith('task_'):
             from task_host import dispatch
             return dispatch(self, ep, req)
+        if op in ('recipient_list', 'recipient_select', 'recipient_clear',
+                  'recovery_grant', 'recovery_read', 'recovery_revoke', 'recovery_reply'):
+            if is_service:
+                raise HubError('unauthorized', 'native caller required for recipient management')
+            return self.recipient_operation(ep, req)
         if op == 'service_whoami':
             result = {key: ep.get(key) for key in ('endpoint_id', 'participant_id', 'host_id', 'address',
                                                   'session', 'runtime_id', 'platform', 'incarnation')}
