@@ -1,5 +1,8 @@
 # Test audit — 2026-10-22
 
+Implementation follow-up: [F01–F17 remediation](test-audit-remediation.md). The
+ledger below remains the original audit snapshot.
+
 ## 結論
 
 現行の管理対象テスト **109ファイル / 19,444行**について、検査内容、本番接点、fixture・mock境界、重複、CIからの到達を台帳化した。**17件の改善・誤認防止事項**を特定した。これは17ファイルの削除提案ではない。同じファイルに有用な回帰検査と弱いassertが混在する。

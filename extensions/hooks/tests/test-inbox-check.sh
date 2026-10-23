@@ -555,14 +555,20 @@ teardown_tmp
 # "a_b","a.b") produce distinct task ids even in the same epoch minute. Also
 # verify tproj-task resolves such an id unambiguously.
 echo "Case R: injective task-id target token + tproj-task resolution"
-tt_tok() { printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n'; }
+generator=$(sed -n '/^generate_task_id() {$/,/^}$/p' "$REPO/extensions/messaging/tproj-msg")
+[[ -n "$generator" ]] || { echo "production task generator missing"; exit 1; }
 ids=()
+seq_fixture=$(mktemp -d)
 for t in a-b ab a_b a.b; do
-  ids+=("alias-$(tt_tok "$t")-29000000-01")
+  ids+=("$(
+    eval "$generator"
+    maybe_prune_task_seq() { :; } # GC is independent of target encoding.
+    MY_ALIAS=alias TARGET="$t" TASK_SEQ_ROOT="$seq_fixture" generate_task_id
+  )")
 done
+rm -r "$seq_fixture"
 uniq_count="$(printf '%s\n' "${ids[@]}" | sort -u | wc -l | tr -d ' ')"
-if [[ "$uniq_count" -eq 4 ]]; then PASS=$((PASS+1)); echo "  PASS: 4 collapse-prone targets -> 4 distinct task ids"; else FAIL=$((FAIL+1)); echo "  FAIL: 4 collapse-prone targets -> 4 distinct task ids (uniq=$uniq_count)"; fi
-if grep -q 'od -An -v -tx1' "$REPO/extensions/messaging/tproj-msg"; then PASS=$((PASS+1)); echo "  PASS: generate_task_id uses the injective od hex token"; else FAIL=$((FAIL+1)); echo "  FAIL: generate_task_id uses the injective od hex token"; fi
+if [[ "$uniq_count" -eq 4 ]]; then PASS=$((PASS+1)); echo "  PASS: production generator distinguishes all 4 targets"; else FAIL=$((FAIL+1)); echo "  FAIL: production generator collided (uniq=$uniq_count)"; fi
 # Blocker 2 (R4-3 cont.): with all four collapse-prone targets seeded at once in
 # the SAME owner, each id's status must return ITS OWN target (find_task must not
 # spuriously match the first target on tt_cache_get_task's empty-miss), and after

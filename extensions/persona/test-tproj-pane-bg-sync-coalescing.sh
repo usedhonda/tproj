@@ -20,7 +20,7 @@ hash -r
 export TPROJ_PANE_BG_NO_PATH_PREPEND=1
 export TPROJ_PANE_BG_WORK_ROOT="$ROOT"
 
-# Simulate a lock holder, then concurrent full and fast arrivals. Full priority
+# Simulate a lock holder, then sequential full and fast arrivals. Full priority
 # must remain queued after the later fast request.
 TPROJ_PANE_BG_WORK_ROOT="$ROOT" "$SCRIPT" sync --session demo >/dev/null
 TPROJ_PANE_BG_WORK_ROOT="$ROOT" "$SCRIPT" sync --session demo --fast >/dev/null

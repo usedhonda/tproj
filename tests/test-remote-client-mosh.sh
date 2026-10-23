@@ -10,7 +10,7 @@ printf '#!/bin/sh\necho "MOSH $*" >> "$LOG"\nexit "${MOSH_STATUS:-0}"\n' > "$tmp
 chmod 755 "$tmp/bin/"*
 mkdir -p "$tmp/home/bin"; cp "$tmp/bin/tproj-peer-ledger" "$tmp/home/bin/"
 run() { : > "$tmp/log"; HOME="$tmp/home" LOG="$tmp/log" PATH="$tmp/bin:$PATH" \
-  "$repo/bin/tproj-remote-client" attach "$1" /p/x cc </dev/null >/dev/null 2>&1 || true; }
+  "$repo/bin/tproj-remote-client" attach "$1" /p/x cc </dev/null >/dev/null 2>&1; }
 fail() { echo "FAIL: $1"; cat "$tmp/log"; exit 1; }
 
 run hostA
@@ -22,7 +22,7 @@ grep -q '^MOSH .*hostA -- /bin/sh -c .*tproj-remote-host attach' "$tmp/log" || f
 ! grep -q '^SSH ' "$tmp/log" || fail "successful mosh must not also run ssh"
 
 run hostB
-! grep -q '^MOSH' "$tmp/log" || fail "opt-in is per host"
+grep -q '^SSH .*hostB' "$tmp/log" && ! grep -q '^MOSH' "$tmp/log" || fail "opt-in is per host and other hosts use ssh"
 
 MOSH_STATUS=1 run hostA
 grep -q '^MOSH' "$tmp/log" && grep -q '^SSH .*hostA' "$tmp/log" || fail "quick mosh failure must fall back to ssh"

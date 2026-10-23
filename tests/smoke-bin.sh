@@ -9,8 +9,8 @@
 #      Caveat: zsh's no-exec (`-n`) mode still runs `$(...)` command
 #      substitutions at parse time, and a substitution whose no-exec subshell
 #      blocks can hang (observed on tproj-pane-focus-hook: `$(date +%H:%M:%S)`).
-#      So each zsh check is time-bounded; on timeout we fall back to `bash -n`,
-#      which parses those files cleanly enough to catch gross syntax errors.
+#      Each check is bounded. A zsh timeout is reported as degraded coverage,
+#      never as a successful check by a different shell parser.
 #   2. A couple of harmless, state-reading executions only
 #      (`tproj-pane-autozoom --status` / `--help`). No tmux state-changing
 #      command (select-pane / resize-pane / kill-pane / send-keys) is run.
@@ -25,6 +25,7 @@ BIN_DIR="$REPO_ROOT/bin"
 
 PASS=0
 FAIL=0
+DEGRADED=0
 
 pass() { printf 'PASS  %s\n' "$1"; PASS=$((PASS+1)); }
 fail() { printf 'FAIL  %s\n      %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
@@ -41,7 +42,17 @@ run_bounded() { # <seconds> <cmd...>
   if [[ -n "$timeout_bin" ]]; then
     "$timeout_bin" "$secs" "$@"
   else
-    "$@"
+    python3 - "$secs" "$@" <<'PYBOUND'
+import os, signal, subprocess, sys
+p = subprocess.Popen(sys.argv[2:], start_new_session=True)
+try:
+    rc = p.wait(timeout=float(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL)
+    p.wait()
+    rc = 124
+raise SystemExit(rc)
+PYBOUND
   fi
 }
 
@@ -64,12 +75,8 @@ for f in "$BIN_DIR"/*; do
       else
         rc=$?
         if [[ "$rc" -eq 124 ]]; then
-          # zsh -n hung on a parse-time command substitution; bash -n as fallback.
-          if err=$(bash -n "$f" 2>&1); then
-            pass "syntax:${base} (zsh -n timed out; bash -n fallback ok)"
-          else
-            fail "syntax:${base}" "zsh -n timeout AND bash -n failed: $(printf '%s' "$err" | tr '\n' '|')"
-          fi
+          DEGRADED=$((DEGRADED+1))
+          printf 'DEGRADED syntax:%s (zsh -n timeout; not verified by another parser)\n' "$base"
         else
           fail "syntax:${base} (zsh -n)" "$(printf '%s' "$err" | tr '\n' '|')"
         fi
@@ -178,5 +185,5 @@ env -u TMUX TMUX_TMPDIR="$cap_home" tmux kill-server >/dev/null 2>&1 || true
 rm -rf "$cap_home"
 
 echo "----"
-printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
+printf 'PASS=%d FAIL=%d DEGRADED=%d\n' "$PASS" "$FAIL" "$DEGRADED"
 [[ "$FAIL" -eq 0 ]]

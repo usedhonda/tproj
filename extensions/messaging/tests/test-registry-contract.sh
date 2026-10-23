@@ -2,19 +2,12 @@
 #
 # test-registry-contract.sh — model-role-router <-> tproj-msg registry contract.
 #
-# Phase A of the tproj-msg repair plan (fizzy-floating-bee.md). This suite is
-# DELIBERATELY separate from test-sendability-gate.sh: the gate suite fabricates
-# a full registry entry (pid + pid_start) inside its own harness, which HIDES the
-# real-world defect where the model-role-router peer path never writes pid_start.
-# This file asserts the end-to-end contract instead, so it is RED now and turns
-# GREEN once Phase B lands (router B1 + caller-verify self-recompute B2 + find
-# determinism B3). Keep it OUT of the gate suite so the 26-case green invariant
-# there is never coupled to this intentionally-failing contract.
-#
-# Fatal (suite-failing) contract assertions, all RED until Phase B:
-#   P1  router pane_peer() writes a pid_start key on the peer path   (B1)
-#   P2a recorded pid_start absent -> REJECT pid_start_unrecorded (fail-closed)
-# Fail-closed guards that must STAY green across Phase B:
+# Local producer/consumer contract; requires the sibling model-role-router.
+# P1 and P2 are fatal assertions. P3 is a non-gating observation only and
+# does not establish deterministic multi-candidate selection.
+#   P1  router accepts only registered, live PID-start-bound peers
+#   P2a recorded pid_start absent -> REJECT pid_start_unrecorded
+# Fail-closed consumer guards:
 #   P2b recorded pid_start present and matching        -> VERIFIED
 #   P2c recorded pid_start present but mismatching      -> REJECT
 # Observation only (Task 4, non-fatal): find_registry_state_file candidate pick.
@@ -29,7 +22,7 @@ set -uo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REAL_TPROJ_MSG="${1:-$SCRIPT_DIR/../tproj-msg}"
-ROUTER="${2:-/Users/usedhonda/projects/claude/general/system/model-role-router/model-role-router}"
+ROUTER="${2:-$SCRIPT_DIR/../../../../general/system/model-role-router/model-role-router}"
 
 if [[ ! -x "$REAL_TPROJ_MSG" ]]; then
   echo "FATAL: tproj-msg not found/executable at: $REAL_TPROJ_MSG" >&2
@@ -45,22 +38,15 @@ PASS=0; FAIL=0
 # --- sandbox -----------------------------------------------------------------
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/tproj-regcontract.XXXXXX")
 FAKE_DIR="$WORK/fixtures"; BIN_DIR="$WORK/bin"
-mkdir -p "$FAKE_DIR" "$BIN_DIR"
+mkdir -p "$FAKE_DIR" "$BIN_DIR" "$WORK/home"
+export HOME="$WORK/home"
+unset MODEL_ROLE_PEER_JSON
 SLEEP_PID=""
 trap '[[ -n "$SLEEP_PID" ]] && kill "$SLEEP_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # =============================================================================
-# P1 — router peer path must write pid_start (Debt P0-1 root cause, B1 target).
-#
-# pane_peer() constructs a fresh peer dict when no cached file exists (router
-# lines ~424-440); resolve_role() then persist_role()s that dict as the peer's
-# on-disk registry entry. If the constructed dict omits pid_start, every peer
-# registry file lands without it -> tproj-msg's verify_as_caller_identity treats
-# it as 0 -> pid_start_mismatch (structural 100% fail for external --as).
-# We drive the REAL router in-process with a hermetic tmux shim (a single peer
-# pane line) and an empty cache dir, then assert the constructed peer carries a
-# pid_start key. RED now (key absent); GREEN after B1.
-# =============================================================================
+# P1: current router never reconstructs an unregistered peer from pane tags.
+# A registered peer must retain its PID-start binding; test the real reader.
 if MODEL_ROLE_CACHE="$WORK/router-cache" ROUTER_PATH="$ROUTER" python3 - <<'PY'
 import importlib.util, os, sys
 from importlib.machinery import SourceFileLoader
@@ -72,32 +58,30 @@ spec = importlib.util.spec_from_loader("mrr", loader)
 mrr = importlib.util.module_from_spec(spec)
 loader.exec_module(mrr)
 
-# One live peer pane in the SAME column, different alias/pane -> construction path.
-# fmt fields: pane alias column platform_role pid dead model tier role epoch project
-peer_line = "%2\ttproj\t1\tcodex-p1\t99999\t0\tgpt-5.6-sol\tgpt-5.6\tunresolved\t0\t/proj"
-mrr.run_tmux = lambda args: peer_line
+# Supply observed process/liveness through the seam; no real pane is contacted.
+mrr.pid_alive = lambda pid, start=0: pid == 4242 and start in (0, 100)
+mrr.caller_ancestry = lambda pid: {4242}
+mrr.run_tmux = lambda args: "%2\ttest\t1\tcodex-p1\t4242\t0\tgpt-5.6-sol\tgpt-5.6\tunresolved\t0\t/proj\tnode"
+identity = {"alias": "test.cc", "column": "1", "session": "fixture", "pane_id": "%1"}
+assert mrr.pane_peer(identity) == {}, "pane tags must not create a binding"
+path = mrr.state_path({**identity, "alias": "test.cdx"})
+path.parent.mkdir(parents=True, exist_ok=True)
+import json
+for start in (None, 101, 100):
+    saved = {"alias": "test.cdx", "pid": 4242, "pid_start": start}
+    path.write_text(json.dumps(saved))
+    peer = mrr.pane_peer(identity)
+    assert peer == (saved if start == 100 else {}), (start, peer)
 
-identity = {
-    "alias": "tproj.cc",
-    "column": "1",
-    "session": "tproj-workspace",
-    "pane_id": "%1",
-}
-peer = mrr.pane_peer(identity)
-if not peer:
-    sys.stderr.write("router harness: pane_peer returned empty (fixture wrong)\n")
-    sys.exit(3)
-sys.stderr.write("router pane_peer keys: %s\n" % ",".join(sorted(peer.keys())))
-sys.exit(0 if "pid_start" in peer else 1)
 PY
 then
-  printf 'PASS  P1_router_peer_writes_pid_start\n'; PASS=$((PASS+1))
+  printf 'PASS  P1_router_requires_registered_live_pid_start\n'; PASS=$((PASS+1))
 else
   rc=$?
   if [[ "$rc" -eq 1 ]]; then
-    printf 'FAIL  P1_router_peer_writes_pid_start (RED until Phase B1: peer path omits pid_start)\n'
+    printf 'FAIL  P1_router_requires_registered_live_pid_start (peer path omits pid_start)\n'
   else
-    printf 'FAIL  P1_router_peer_writes_pid_start (harness error rc=%s)\n' "$rc"
+    printf 'FAIL  P1_router_requires_registered_live_pid_start (harness error rc=%s)\n' "$rc"
   fi
   FAIL=$((FAIL+1))
 fi
@@ -270,11 +254,8 @@ fi
 # deterministically prefer the live entry. Recorded, not asserted, to avoid a
 # flaky committed gate.
 res=$(run_verify multi_live_plus_dead)
-printf 'OBSERVE P3_find_multi_candidate: verdict=%s (non-fatal; B3 must make this VERIFY deterministically)\n' "$res"
+printf 'OBSERVE P3_find_multi_candidate: verdict=%s (non-gating observation; not a determinism assertion)\n' "$res"
 
 echo "----"
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
-printf 'NOTE: FAIL is EXPECTED in Phase A (P1 + P2a are the RED contract). Phase B turns them green.\n'
-# Phase A intentionally ships RED. Exit non-zero so CI/humans see the open
-# contract, but the individual PASS/FAIL lines above are the real signal.
 [[ "$FAIL" -eq 0 ]]

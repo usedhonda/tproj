@@ -158,7 +158,8 @@ class MailboxToolsTest(unittest.TestCase):
         self.assertEqual(result["thread_id"], "stable-1")
         self.assertEqual(self.calls[0]["service_id"], "kai")
         self.assertEqual(self.calls[0]["address"], "kai")
-        self.assertNotIn("target", {"service_id", "service_token", "address"})
+        self.assertEqual(self.calls[0]["target"], "voyager.cc")
+        self.assertEqual(self.calls[0]["submission_id"], "stable-1")
 
     def test_authorized_service_target_sends_once_and_rejects_out_of_scope_forms(self):
         result = self.tools.dispatch("tproj_send", {"target": "kai", "body": "x", "submission_id": "kai-out"})
@@ -262,7 +263,8 @@ class MailboxToolsTest(unittest.TestCase):
         self.assertEqual(reply["message_id"], "long-2")
         self.assertEqual([name for name, _scope in calls], ["tproj_send", "tproj_reply"])
 
-    def test_list_filters_to_authorized_scope(self):
+    def test_list_preserves_authoritative_host_projection(self):
+        # Scope filtering belongs to Host, not this adapter/mock.
         result = self.tools.dispatch("tproj_list", {})
         self.assertEqual(result, {"participants": [{"address": "voyager.cc", "kind": "cc", "available": True},
                                                      {"address": "secret.cc", "kind": "cc", "available": True}]})

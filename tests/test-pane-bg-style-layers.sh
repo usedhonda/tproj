@@ -74,6 +74,7 @@ out=$(layers --project "$TMP/bare")
   && pass "a project with no override file still inherits the baseline" \
   || fail "a project with no override file still inherits the baseline" "$out"
 
+# Literal regression lint, not generated API request coverage.
 # The OpenAI image-detail parameter is the string "auto". A whole-word vocabulary
 # rename (auto -> collab) once rewrote it, the API rejected the probe, and the
 # face-centred crop silently fell open -- every new pane came out too far away.

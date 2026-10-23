@@ -18,7 +18,7 @@ fail() { printf 'FAIL  %s\n      %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/consult-gate-test.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/bin" "$TMP/ig" "$TMP/cache/s1/3" "$TMP/proj"
+mkdir -p "$TMP/home" "$TMP/bin" "$TMP/ig" "$TMP/cache/s1/3" "$TMP/proj"
 
 # A fake router that is both an importable module and the CLI the guard shells out to.
 cat > "$TMP/bin/model-role-router" <<'ROUTER'
@@ -176,7 +176,10 @@ run_guard() {
 # and still exits 0, so asserting on rc would pass no matter what the gate decided.
 expect() {  # <name> <expect-block:yes|no>
   local out blocked=no
-  out=$(cd "$TMP/proj" && run_guard)
+  if ! out=$(cd "$TMP/proj" && run_guard); then
+    fail "$1" "hook failed instead of returning a decision"
+    return
+  fi
   printf '%s' "$out" | grep -q '"decision":"block"' && blocked=yes
   if [[ "$blocked" == "$2" ]]; then pass "$1"
   else fail "$1" "expected block=$2 got=$blocked out=$(printf '%s' "$out" | tr '\n' '|' | cut -c1-100)"; fi
@@ -239,7 +242,7 @@ reject() {  # <name> <flag...>
   local out rc
   # A target that cannot resolve, and the throwaway DB: if this rejection ever
   # regresses, the test must fail rather than deliver a real message to a peer.
-  out=$(TPROJ_MSG_DB_PATH="$DB" "$MSG" "$@" no-such-peer.cdx "probe" 2>&1); rc=$?
+  out=$(HOME="$TMP/home" TPROJ_MSG_DB_PATH="$DB" "$MSG" "$@" no-such-peer.cdx "probe" 2>&1); rc=$?
   if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q -- "--consult cannot be combined"; then
     pass "$name"
   else

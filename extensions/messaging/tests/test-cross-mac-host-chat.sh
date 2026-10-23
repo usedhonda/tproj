@@ -5,7 +5,10 @@ repo=$(cd "$(dirname "$0")/../../.." && pwd -P)
 msg="$repo/extensions/messaging/tproj-msg"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/bin"
+mkdir -p "$tmp/bin" "$tmp/home"
+export HOME="$tmp/home"
+unset TPROJ_MSG_HOST_CONFIG TPROJ_MSG_CLIENT_CONFIG
+# No enrollment latch/config: these are deliberately legacy transport tests.
 cat > "$tmp/bin/ssh" <<'EOF'
 #!/bin/sh
 echo invoked > "$SSH_CALLED_MARKER"

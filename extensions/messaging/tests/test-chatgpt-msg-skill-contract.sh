@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Focused contract coverage for the ChatGPT Phase 1 MSG skill boundary.
+# Document lint for the ChatGPT Phase 1 MSG skill wording; not runtime delivery coverage.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../../.." && pwd)

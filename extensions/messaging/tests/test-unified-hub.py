@@ -852,6 +852,9 @@ class HubTest(unittest.TestCase):
         self.send(); self.h.dispatch({"op":"claim","host_id":"b","host_token":"tb","endpoint_id":"eb"})
         out=self.h.dispatch({"op":"submit","host_id":"b","host_token":"tb","message":{"message_id":"reply","thread_id":"t","in_reply_to":"m1","sender_endpoint":"eb","target":"proj.cc","body":"back"}})
         self.assertEqual(out["state"],"queued")
+        original = self.h._row("SELECT sender_endpoint FROM messages WHERE message_id=?", ("m1",))
+        reply = self.h._row("SELECT recipient_endpoint,in_reply_to FROM messages WHERE message_id=?", ("reply",))
+        self.assertEqual(tuple(reply), (original[0], "m1"))
     def test_reply_to_restarted_openclaw_service_uses_sole_current_endpoint(self):
         self.h.dispatch({"op":"directory_import","admin_token":"adm","services":[{"participant_id":"gate","address":"gate","host_id":"a","kind":"openclaw"}]})
         self.reg("a","ta","gate-old","gate",3)

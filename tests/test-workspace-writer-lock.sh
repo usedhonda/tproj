@@ -42,14 +42,18 @@ projects:
     path: /work/stable
     alias: renamed
 YAML
-TPROJ_PROJECTS_TMP="$TMP/desired.yaml" TPROJ_PRESERVE_ENABLED=true yq eval -i '
-  . as $root |
-  (load(strenv(TPROJ_PROJECTS_TMP)).projects) as $desired |
-  ($root.projects // []) as $current |
-  $root | .projects = ($desired | map(. as $d |
-    (((($current[] | select((.project_id // "") == ($d.project_id // "")) | select(($d.project_id // "") != "")))
-      // ($current[] | select((.path // "") == ($d.path // "")) | select((.host // "") == ($d.host // "")))) // {}) * $d))
-' "$TMP/merge.yaml"
+# Extract the exact multiline literal passed to runCommand by the GUI save path.
+# This exercises its merge expression, not the rest of the GUI save lifecycle.
+expression=$(python3 - "$ROOT/apps/tproj/Sources/TprojApp/TprojApp.swift" <<'PYEXPR'
+from pathlib import Path
+import sys
+source = Path(sys.argv[1]).read_text().split('private func persistWorkspaceProjects(', 1)[1]
+expression, call = source.split('let expression = """', 1)[1].split('"""', 1)
+assert '["yq", "eval", "-i", expression, workspacePath]' in call
+print(expression.replace('\\"', '"'))
+PYEXPR
+)
+TPROJ_PROJECTS_TMP="$TMP/desired.yaml" TPROJ_PRESERVE_ENABLED=true yq eval -i "$expression" "$TMP/merge.yaml"
 [ "$(yq -r '.projects[0].manual_key' "$TMP/merge.yaml")" = keep ]
 [ "$(yq -r '.projects[0].lastActiveAt' "$TMP/merge.yaml")" = 200 ]
 [ "$(yq -r '.projects[0].alias' "$TMP/merge.yaml")" = renamed ]

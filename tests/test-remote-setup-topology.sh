@@ -43,7 +43,10 @@ fi
 grep -q '~/bin/tproj-msg: differs (CLI drift)' "$TMP/check.out"
 grep -q '~/bin/tproj-task: differs (CLI drift)' "$TMP/check.out"
 grep -q '~/bin/tproj-task-cache.sh: differs (CLI drift)' "$TMP/check.out"
-PATH="$TMP/bin:$PATH" "$ROOT/bin/tproj-remote-setup" check match >"$TMP/match.out" || true
+# Partial diagnostic: wrappers match, but skills/allow deliberately remain absent.
+if PATH="$TMP/bin:$PATH" "$ROOT/bin/tproj-remote-setup" check match >"$TMP/match.out"; then
+  echo "expected independent skills/allow drift" >&2; exit 1
+fi
 ! grep -q '~/bin/tproj-msg:' "$TMP/match.out"
 if PATH="$TMP/bin:$PATH" "$ROOT/bin/tproj-remote-setup" check missing >"$TMP/missing.out"; then exit 1; fi
 grep -q '~/bin/tproj-msg: missing' "$TMP/missing.out"

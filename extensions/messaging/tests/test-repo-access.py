@@ -123,7 +123,7 @@ class RepoAccessTest(unittest.TestCase):
         self.assertIn(self.code("read", path="tracked_link/passwd"), ("path_not_found", "path_denied"))
         self.assertIn(self.code("read", path="src/link.swift"), ("path_not_found", "path_denied"))
 
-    def test_symlink_swapped_in_after_the_tracked_check_is_not_followed(self):
+    def test_tracked_path_replaced_by_symlink_before_read_is_rejected(self):
         target = self.root / "docs" / "b.md"
         target.unlink(); target.symlink_to("/etc/hosts")
         self.assertIn(self.code("read", path="docs/b.md"), ("path_not_found", "path_denied"))
