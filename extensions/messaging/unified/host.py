@@ -22,7 +22,7 @@ from identity import (IdentityError, adopt_native_conversation, bind_caller, dis
 from protocol import HubError, success, failure, resource_error, NATIVE_CONTEXT_LIMIT
 from receipt import normalize_prompt, codex_transcript_presented
 
-HOST_BACKEND_VERSION = 13
+HOST_BACKEND_VERSION = 14
 WIRE_LIMIT = 262144
 
 
@@ -527,6 +527,8 @@ class Host:
         query_only = query_only or getattr(self, '_query_only_service', False)
         self._validate_service_registry()
         service_id, cfg = self._service_binding(req)
+        if type(cfg.get('read_only', False)) is not bool:
+            raise HubError('configuration_error', 'invalid service read-only policy')
         if not all(cfg.get(key) for key in ('token', 'address', 'participant_id')):
             raise HubError('identity_rejected', 'incomplete service binding')
         if uid != os.getuid() or not cfg.get('token') or not secrets.compare_digest(str(req.get('service_token', '')), cfg['token']):
@@ -557,19 +559,22 @@ class Host:
                   session=cfg['address'], pane='', pid=pid, pid_start=start,
                   runtime_id=f'{pid}:{start}', platform=platform, address=cfg['address'],
                   service_id=service_id)
-        # KAI is an enrolled service principal, not a process/conversation
+        # A generation-bound service is a principal, not a process/conversation
         # persona. Authenticate the current launchd process above on every call,
         # then retain its mailbox across process restarts within one enrollment.
         # Rotating the operator-owned generation revokes this continuity.
-        generation = cfg.get('binding_generation') if service_id == 'kai' else None
+        generation = cfg.get('binding_generation') if not legacy_binding else None
+        if not legacy_binding and 'binding_generation' in cfg and (
+                not isinstance(generation, str) or not generation or len(generation) > 256):
+            raise HubError('configuration_error', 'invalid service enrollment generation')
         if generation and req.get('binding_generation') != generation:
             raise HubError('stale_session', 'service enrollment generation revoked')
-        if query_only and service_id == 'kai' and req.get('binding_generation') != generation:
+        if query_only and generation and req.get('binding_generation') != generation:
             raise HubError('identity_rejected', 'current service enrollment evidence required')
         if generation:
             ep.update(endpoint_id=str(uuid.uuid5(uuid.NAMESPACE_URL,
                       f"{self.config['host_id']}:{service_id}:{cfg['participant_id']}:{generation}")),
-                      pid=0, pid_start=0, runtime_id=f'kai:{generation}')
+                      pid=0, pid_start=0, runtime_id=f'{service_id}:{generation}')
         identity = self.hub('diagnostic_identity', active_only=True) if query_only else None
         previous = identity['endpoints'] if identity is not None else self.hub('endpoints_list', active_only=True)['endpoints']
         if query_only:
@@ -788,7 +793,7 @@ class Host:
                     'task_master': self.hub('task_capabilities')}
         if op == 'messaging_capabilities':
             own = ['service_policy_v1', 'read_only_diagnose', 'diagnostic_identity', 'query_only_service',
-                   'resource_exhausted', 'recipient_recovery_v1', 'native_cc_v1', 'service_alias_scope_v1']
+                   'resource_exhausted', 'recipient_recovery_v1', 'native_cc_v1', 'service_alias_scope_v1', 'service_generation_v1']
             hub_caps = self.hub('messaging_capabilities')
             from native_consumer import BACKEND_VERSION
             return {'host_capabilities': own, 'messaging_owner': hub_caps,
@@ -834,6 +839,13 @@ class Host:
         self._query_only_service = query_only_service
         ep = self.service(pid, uid, req) if is_service else (
             self.caller_read_only(pid, uid, req) if op == 'diagnose' else self.caller(pid, uid, req))
+        if is_service:
+            _, service_cfg = self._service_binding(req)
+            read_only = service_cfg.get('read_only', False)
+            if read_only and op not in ('service_whoami', 'service_list', 'service_status',
+                    'service_inbox', 'service_message', 'service_diagnose',
+                    'service_repo_list', 'service_repo_tree', 'service_repo_read', 'service_repo_search'):
+                raise HubError('scope_denied', 'service is enrolled read-only')
         if isinstance(op, str) and op.startswith('task_'):
             from task_host import dispatch
             return dispatch(self, ep, req)

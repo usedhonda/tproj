@@ -32,17 +32,16 @@ def _text(value: Any, label: str) -> str:
     return value
 
 
-class KaiServiceBinding:
+class ServiceIdentity:
     """Static enrollment selected by the runtime, never by tool input."""
 
-    __slots__ = ("service_id", "address", "participant_id", "token", "allowed_addresses", "binding_generation")
+    __slots__ = ("service_id", "address", "participant_id", "allowed_addresses", "binding_generation")
 
     def __init__(self, service_id: str, address: str, participant_id: str,
-                 token: str, allowed_addresses: tuple[str, ...], binding_generation: str):
+                 allowed_addresses: tuple[str, ...], binding_generation: str):
         for value, label in ((service_id, "service identity"),
                              (address, "service address"),
                              (participant_id, "participant identity"),
-                             (token, "service credential"),
                              (binding_generation, "binding generation")):
             _text(value, label)
         if allowed_addresses is None:
@@ -57,9 +56,21 @@ class KaiServiceBinding:
         self.service_id = service_id
         self.address = address
         self.participant_id = participant_id
-        self.token = token
         self.allowed_addresses = scope
         self.binding_generation = binding_generation
+
+
+class ServiceBinding(ServiceIdentity):
+    """Parent-side identity plus credential; never used by the SSH child."""
+    __slots__ = ('token',)
+
+    def __init__(self, service_id, address, participant_id, token, allowed_addresses, binding_generation):
+        super().__init__(service_id, address, participant_id, allowed_addresses, binding_generation)
+        self.token = _text(token, 'service credential')
+
+
+# Existing integrations keep their source/API binding without a duplicate class.
+KaiServiceBinding = ServiceBinding
 
 
 class FixedConnectionAuthorizer:
@@ -72,9 +83,9 @@ class FixedConnectionAuthorizer:
     input or constrained by stale startup scope.
     """
 
-    def __init__(self, binding: KaiServiceBinding,
+    def __init__(self, binding: ServiceIdentity,
                  attestor: Callable[[], Mapping[str, Any]]):
-        if not isinstance(binding, KaiServiceBinding) or not callable(attestor):
+        if not isinstance(binding, ServiceIdentity) or not callable(attestor):
             raise ConnectionBindingError("trusted service binding required")
         self.binding = binding
         self.attestor = attestor
@@ -120,7 +131,7 @@ class FixedConnectionAuthorizer:
         if scope is None:
             scope = []
         return {
-            "principal": "kai-service",
+            "principal": self.binding.service_id + "-service",
             "service_id": self.binding.service_id,
             "address": self.binding.address,
             "participant_id": self.binding.participant_id,

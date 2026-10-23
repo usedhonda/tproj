@@ -446,6 +446,67 @@ class UnifiedHostServicesTest(unittest.TestCase):
                     host.service(100,os.getuid(),req)
             host.db.close()
 
+    def test_muse_generation_restart_revocation_and_service_separation(self):
+        from hub import Hub
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self.host(tmp); self.addCleanup(host.db.close)
+            host.config['services']['kai']['binding_generation'] = 'kai-generation'
+            host.config['services']['muse'] = dict(participant_id='muse-service', address='muse',
+                token='muse-token', launchd_label='com.example.muse', platform='muse',
+                binding_generation='muse-generation', allowed_addresses=[], read_only=True)
+            hub = Hub(Path(tmp)/'hub.db', dict(admin_token='admin', hosts={'host-a': 'token'}))
+            self.addCleanup(hub.close)
+            hub.directory_import(dict(admin_token='admin', services=[
+                dict(participant_id=x+'-service', address=x, host_id='host-a', kind=x) for x in ('kai','muse')]))
+            host.hub = lambda op, **args: hub.dispatch(dict(args, op=op, host_id='host-a', host_token='token'))
+            def request(service, generation=None):
+                return dict(service_id=service, service_token=service+'-token', address=service,
+                    binding_generation=generation or service+'-generation')
+            endpoints = []
+            for pid, start in ((100,42),(200,55)):
+                with patch.object(host_mod.subprocess, 'run', return_value=self.launchd(pid)), patch('identity._process_info', return_value={'pid_start':start}):
+                    endpoints.append(host.service(pid, os.getuid(), request('muse')))
+            self.assertEqual(endpoints[0]['endpoint_id'], endpoints[1]['endpoint_id'])
+            self.assertEqual(endpoints[0]['incarnation'], endpoints[1]['incarnation'])
+            self.assertEqual(endpoints[1]['runtime_id'], 'muse:muse-generation')
+            with patch.object(host_mod.subprocess,'run',return_value=self.launchd(200)), patch('identity._process_info',return_value={'pid_start':55}):
+                kai = host.service(200, os.getuid(), request('kai'))
+                self.assertNotEqual(kai['endpoint_id'], endpoints[1]['endpoint_id'])
+                self.assertEqual(kai['runtime_id'], 'kai:kai-generation')
+                for bad in (dict(request('muse'), binding_generation='kai-generation'),
+                            dict(request('muse'), service_token='kai-token'),
+                            dict(request('muse'), address='kai')):
+                    with self.assertRaises(HubError): host.service(200, os.getuid(), bad)
+                for op in ('service_send','service_reply','service_ack','service_begin_present'):
+                    with self.assertRaises(HubError) as rejected:
+                        host.dispatch(dict(request('muse'),op=op,read_only=False),200,os.getuid())
+                    self.assertEqual(rejected.exception.code,'scope_denied')
+                host.config['services']['muse']['binding_generation'] = 'rotated-generation'
+                with self.assertRaises(HubError): host.service(200,os.getuid(),request('muse'),query_only=True)
+                self.assertEqual(host.service(200,os.getuid(),request('kai'))['endpoint_id'], kai['endpoint_id'])
+            self.assertEqual(hub.db.execute('SELECT COUNT(*) FROM messages').fetchone()[0],0)
+
+    def test_muse_scope_sync_is_idempotent_and_mismatch_has_no_effect(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            host_path, client_path = Path(tmp)/'host.json', Path(tmp)/'parent.json'
+            identity = dict(address='muse',participant_id='muse-service',binding_generation='fixture-generation')
+            host_cfg = dict(services={'kai':{'unchanged':'keep'},'muse':dict(identity,token='fixture-token')})
+            client = dict(identity,service_id='muse',service_token='fixture-token',allowed_addresses=[])
+            host_path.write_text(json.dumps(host_cfg));host_path.chmod(0o600)
+            client_path.write_text(json.dumps(client));client_path.chmod(0o600)
+            before=host_path.read_bytes()
+            self.assertTrue(migrate(host_path,client_path,check=True)['migration_required'])
+            self.assertEqual(host_path.read_bytes(),before)
+            self.assertTrue(migrate(host_path,client_path)['changed'])
+            after=host_path.read_bytes()
+            self.assertFalse(migrate(host_path,client_path)['changed'])
+            self.assertEqual(host_path.read_bytes(),after)
+            self.assertEqual(json.loads(after)['services']['kai'],{'unchanged':'keep'})
+            client['binding_generation']='mismatch';client_path.write_text(json.dumps(client));client_path.chmod(0o600)
+            with self.assertRaises(HubError):migrate(host_path,client_path)
+            self.assertEqual(host_path.read_bytes(),after)
+
     def test_kai_cannot_be_declared_as_openclaw_platform(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)

@@ -21,12 +21,10 @@ from typing import Any, Mapping
 
 try:
     from .connection import FixedConnectionAuthorizer, KaiServiceBinding, ConnectionBindingError
-    from .events import KAIEventDelivery
     from .mailbox_tools import MailboxTools, socket_rpc, MailboxToolError
     from .server import MCPServer, run_stdio
 except ImportError:
     from connection import FixedConnectionAuthorizer, KaiServiceBinding, ConnectionBindingError
-    from events import KAIEventDelivery
     from mailbox_tools import MailboxTools, socket_rpc, MailboxToolError
     from server import MCPServer, run_stdio
 
@@ -56,8 +54,9 @@ def _required(value: Any, name: str) -> str:
 
 
 class ServiceRuntime:
-    def __init__(self, config: Mapping[str, Any]):
+    def __init__(self, config: Mapping[str, Any], *, events_enabled: bool = True):
         self.config = dict(config)
+        self.events_enabled = events_enabled
         binding = KaiServiceBinding(
             _required(config.get("service_id"), "service_id"),
             _required(config.get("address"), "address"),
@@ -68,8 +67,8 @@ class ServiceRuntime:
         )
         self.binding = binding
         self.host_socket = Path(_required(config.get("host_socket"), "host_socket")).expanduser()
-        self.state_path = Path(_required(config.get("event_state"), "event_state")).expanduser()
-        if self.host_socket.is_symlink() or self.state_path.is_symlink():
+        self.state_path = Path(_required(config.get("event_state"), "event_state")).expanduser() if events_enabled else None
+        if self.host_socket.is_symlink() or (self.state_path is not None and self.state_path.is_symlink()):
             raise RuntimeConfigError("unsafe runtime path")
         bridge = config.get("bridge_socket")
         self.bridge_socket = Path(bridge).expanduser() if bridge else None
@@ -107,13 +106,19 @@ class ServiceRuntime:
         tools = MailboxTools(service_id=self.binding.service_id, service_address=self.binding.address,
                              service_token=self.binding.token, authorizer=authorizer.authorize,
                              host_call=self._request)
-        events = self.events(authorizer)
+        events = self.events(authorizer) if self.events_enabled else None
         server = MCPServer(tools=tools, events=events)
-        server.event_pump_enabled = self.bridge_socket is None
+        server.event_pump_enabled = self.events_enabled and self.bridge_socket is None
         return server
 
     def events(self, authorizer: FixedConnectionAuthorizer | None = None) -> KAIEventDelivery:
+        if not self.events_enabled:
+            raise RuntimeConfigError("events are disabled for this service")
         if self._events is None:
+            try:
+                from .events import KAIEventDelivery
+            except ImportError:
+                from events import KAIEventDelivery
             if authorizer is None:
                 authorizer = FixedConnectionAuthorizer(self.binding, self._attest)
             event_auth = authorizer.event_authorizer(
@@ -303,10 +308,10 @@ def _remove_stale_bridge_socket(path: Path) -> None:
     path.unlink()
 
 
-def bridge(config: Mapping[str, Any]) -> int:
+def bridge(config: Mapping[str, Any], *, runtime_factory=None) -> int:
     # Validate all service settings before touching the bridge path. An invalid
     # launch must not destroy a listener owned by a healthy previous process.
-    runtime = ServiceRuntime(dict(config, bridge_socket=None))
+    runtime = (runtime_factory or ServiceRuntime)(dict(config, bridge_socket=None))
     path = Path(_required(config.get("bridge_socket"), "bridge_socket")).expanduser()
     if path.is_symlink():
         raise RuntimeConfigError("bridge socket must not be a symlink")
@@ -327,16 +332,28 @@ def bridge(config: Mapping[str, Any]) -> int:
             # Keep the bridge available while launchd/host startup converges; the
             # event pump retries the same attestation without exposing credentials.
             pass
-        events = runtime.events()
-        stop = threading.Event()
-        def pump() -> None:
-            while not stop.wait(1.0):
-                try:
-                    events.pump_once()
-                except Exception:
-                    continue
-        worker = threading.Thread(target=pump, name="kai-bridge-event-pump", daemon=True)
-        worker.start()
+        if getattr(runtime, 'events_enabled', True):
+            events = runtime.events()
+            stop = threading.Event()
+            def pump() -> None:
+                while not stop.wait(1.0):
+                    try:
+                        events.pump_once()
+                    except Exception:
+                        continue
+            worker = threading.Thread(target=pump, name="kai-bridge-event-pump", daemon=True)
+            worker.start()
+        else:
+            # Metadata-only liveness for polling services, not an event pump.
+            stop = threading.Event()
+            def heartbeat() -> None:
+                while not stop.wait(10.0):
+                    try:
+                        runtime._attest()
+                    except Exception:
+                        continue
+            worker = threading.Thread(target=heartbeat, name="service-bridge-heartbeat", daemon=True)
+            worker.start()
         listener = socket.socket(socket.AF_UNIX)
         listener.bind(str(path)); os.chmod(path, 0o600); listener.listen(16)
         bound_stat = path.stat()

@@ -315,7 +315,8 @@ class MailboxToolsTest(unittest.TestCase):
         from protocol import HubError
         with tempfile.TemporaryDirectory() as tmp:
             hub = Hub(Path(tmp) / "hub.db", {"admin_token": "admin", "hosts": {"h": "token"}})
-            host = Host({"journal": str(Path(tmp) / "journal.db"), "host_id": "h"}, recover=False)
+            host = Host({"journal": str(Path(tmp) / "journal.db"), "host_id": "h",
+                         "services": {"kai": {"read_only": False}}}, recover=False)
             self.addCleanup(hub.close); self.addCleanup(host.db.close)
             hub.dispatch(dict(op="directory_import", admin_token="admin",
                               projects=[dict(project_id="p", alias="voyager", host_id="h", path="/p")],

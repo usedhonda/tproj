@@ -377,12 +377,26 @@ This correlates trusted local conversations; it is not provider-signed identity
 or an isolation boundary against malicious same-UID code. See
 [conversation identity](unified-conversation-identity.md) for the current contract.
 
-KAI uses a separate enrolled service principal. Every service call still checks
+Generation-bound external services, including KAI and Muse, use separate
+enrolled service principals. Every service call still checks
 the private credential and current launchd main PID/start. Its mailbox endpoint
 is stable for the operator-owned enrollment generation, so an MSG bridge restart
 does not lose replies. Changing that generation creates a different endpoint;
-old KAI endpoints are not forwarded to the new enrollment. This continuity does
+old enrollment endpoints are not forwarded to the new enrollment. This continuity does
 not borrow OpenClaw identity or attest a cloud persona.
+
+The stable runtime ID is {service_id}:{binding_generation}, preserving the
+KAI representation. Non-legacy services with a configured generation use this
+same contract. Services without one, including legacy OpenClaw, retain their
+prior PID-bound behavior. The service_generation_v1 capability identifies
+loaded Host support. Configured generations must be nonempty bounded strings.
+
+A service configured with read_only=true cannot send, reply, acknowledge,
+claim, reserve presentation or mutate repository content through Host service
+operations. This operator policy is checked after service authentication and
+cannot be disabled through caller arguments. Muse P1 independently restricts
+its bridge/catalog and advertises no events. See its
+[read-only enrollment guide](../../extensions/messaging/external/muse-mcp/README.md).
 
 The host-owned `services.kai.allowed_addresses` is the outbound policy authority.
 Each host connection reads one validated, bounded, no-follow configuration file
@@ -396,7 +410,7 @@ consumer scope into the matching existing enrollment, once and idempotently;
 identity, token and generation are preserved, and competing edits or differing
 existing policies reject without replacement.
 
-Every KAI request carries the current enrollment generation; omitted or revoked
+Every generation-bound service request carries the current enrollment generation; omitted or revoked
 generation evidence is rejected before endpoint registration. Enrollment
 generation rotation is revocation, not native continuity. Old
 unpresented pending work becomes `stale_session`; dispatching or externally

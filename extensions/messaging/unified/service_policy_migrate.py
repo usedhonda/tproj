@@ -1,4 +1,4 @@
-"""One-time, idempotent migration of the existing operator-approved KAI scope."""
+"""Idempotent scope synchronization for an existing generation-bound service."""
 from __future__ import annotations
 
 import argparse
@@ -18,8 +18,8 @@ def migrate(host_path, consumer_path, check=False):
     config = load_config_snapshot(host_path)
     consumer = load_config_snapshot(consumer_path)
     service_id = consumer.get('service_id')
-    if service_id != 'kai':
-        raise HubError('configuration_error', 'KAI enrollment required')
+    if not isinstance(service_id, str) or not service_id:
+        raise HubError('configuration_error', 'explicit service enrollment required')
     service = config.get('services', {}).get(service_id)
     if not isinstance(service, dict):
         raise HubError('configuration_error', 'existing host enrollment required')

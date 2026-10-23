@@ -60,7 +60,13 @@ def _error(req_id: Any, code: int, message: str, data: Any = None) -> dict[str, 
 
 class MCPServer:
     def __init__(self, tools: MailboxTools | None = None, events: Any = None,
-                 conversation_resolver: ConversationToolResolver | None = None):
+                 conversation_resolver: ConversationToolResolver | None = None,
+                 tool_names: set[str] | None = None):
+        self.tool_names = TOOL_NAMES if tool_names is None else frozenset(tool_names)
+        if not self.tool_names or not self.tool_names.issubset(TOOL_NAMES):
+            raise ValueError("invalid tool subset")
+        self.catalog = [tool for tool in TOOL_CATALOG if tool['name'] in self.tool_names]
+        self.catalog_version = hashlib.sha256(json.dumps(self.catalog, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
         self.tools = tools
         self.events = events
         self.conversation_resolver = conversation_resolver
@@ -106,7 +112,7 @@ class MCPServer:
                 "capabilities": capabilities,
             }}
         if method == "tools/list":
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOL_CATALOG, "_meta": {"catalog_version": CATALOG_VERSION}}}
+            return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": self.catalog, "_meta": {"catalog_version": self.catalog_version}}}
         if method in ("events/list", "events/subscribe", "events/unsubscribe"):
             if self.conversation_resolver is not None:
                 return _error(req_id, -32000, "trusted conversation binding required",
@@ -157,6 +163,8 @@ class MCPServer:
         arguments = params.get("arguments", {})
         if not isinstance(name, str) or name not in TOOL_NAMES or not isinstance(arguments, dict):
             return _error(req_id, -32602, "Invalid tool name or arguments")
+        if name not in self.tool_names:
+            return _error(req_id, -32601, "Tool not available on this service")
         if (name == "tproj_capabilities" and self.tools is None
                 and self.conversation_resolver is None and not arguments):
             result = disconnected_capabilities()
