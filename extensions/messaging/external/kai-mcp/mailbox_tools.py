@@ -8,6 +8,7 @@ fails closed before a host socket is touched.
 from __future__ import annotations
 
 import json
+import errno
 import re
 import socket
 from typing import Any, Callable, Mapping
@@ -44,7 +45,34 @@ class MailboxToolError(Exception):
         acceptance = details.get("acceptance")
         if stage in RESOURCE_STAGES and acceptance == "unknown":
             return {"failure_stage": stage, "acceptance": "unknown"}
+        if (details.get('transport_layer') in ('host', 'service_bridge')
+                and details.get('transport_phase') in ('connect', 'send', 'receive', 'decode')
+                and details.get('transport_reason') in ('timeout', 'not_found', 'refused', 'connection_lost', 'invalid_response', 'io_error')
+                and details.get('attempt') in ('not_dispatched', 'outcome_unknown')
+                and acceptance == 'unknown'):
+            safe = {key: details[key] for key in ('transport_layer', 'transport_phase', 'transport_reason', 'attempt', 'acceptance')}
+            sid = details.get('submission_id')
+            if isinstance(sid, str) and 0 < len(sid) <= 128 and ID_RE.fullmatch(sid):
+                safe['submission_id'] = sid
+            if details.get('tool_dispatch') == 'not_started':
+                safe['tool_dispatch'] = 'not_started'
+            return safe
         return None
+
+
+def transport_failure(layer, phase, request, exc):
+    """Classify this attempt, never infer that an existing message was rejected."""
+    reason = ('timeout' if isinstance(exc, TimeoutError) else
+              'not_found' if getattr(exc, 'errno', None) == errno.ENOENT else
+              'refused' if getattr(exc, 'errno', None) == errno.ECONNREFUSED else
+              'connection_lost' if isinstance(exc, ConnectionError) else
+              'invalid_response' if isinstance(exc, ValueError) else 'io_error')
+    details = dict(transport_layer=layer, transport_phase=phase, transport_reason=reason,
+                   attempt='not_dispatched' if phase == 'connect' else 'outcome_unknown',
+                   acceptance='unknown')
+    if request.get('op') in ('service_send', 'service_reply'):
+        details['submission_id'] = request.get('submission_id')
+    return MailboxToolError('unavailable', 'service bridge unavailable' if layer == 'service_bridge' else 'host unavailable', details)
 
 
 def disconnected_capabilities() -> dict[str, Any]:
@@ -56,15 +84,18 @@ def disconnected_capabilities() -> dict[str, Any]:
 
 def socket_rpc(socket_path: str, request: Mapping[str, Any]) -> Any:
     """Call one local host request; no credentials are read by this helper."""
+    phase = 'connect'
     try:
         with socket.socket(socket.AF_UNIX) as sock:
             sock.settimeout(12)
             sock.connect(socket_path)
+            phase = 'send'
             sock.sendall((json.dumps(dict(request), ensure_ascii=False, separators=(",", ":")) + "\n").encode())
+            phase = 'receive'
             with sock.makefile("rb") as stream:
                 raw = stream.readline(WIRE_LIMIT + 1)
     except OSError as exc:
-        raise MailboxToolError("unavailable", f"host unavailable: {exc}") from exc
+        raise transport_failure('host', phase, request, exc) from exc
     if len(raw) > WIRE_LIMIT or not raw.endswith(b"\n"):
         raise MailboxToolError("unavailable", "invalid host response")
     try:
@@ -162,7 +193,11 @@ class MailboxTools:
             result = self.authorizer(name, args)
         except Exception as exc:
             if getattr(type(exc), "transport_unavailable", False):
-                raise MailboxToolError("unavailable", "trusted conversation service unavailable") from exc
+                # Attestation failed before dispatching the user's tool. Retain
+                # only the sanitized transport evidence from its trusted cause.
+                details = dict(getattr(exc.__cause__, 'details', None) or {})
+                details['tool_dispatch'] = 'not_started'
+                raise MailboxToolError("unavailable", "trusted conversation service unavailable", details) from exc
             if getattr(exc, "code", None) in {"configuration_error", "scope_denied", "resource_exhausted", "not_found"}:
                 raise MailboxToolError(exc.code, str(exc), getattr(exc, "details", None)) from exc
             raise MailboxToolError("identity_rejected", "trusted conversation authorization failed") from exc

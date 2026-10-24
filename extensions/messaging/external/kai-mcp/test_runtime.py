@@ -18,6 +18,64 @@ spec.loader.exec_module(module)
 
 
 class RuntimeTest(unittest.TestCase):
+    def test_transport_failure_distinguishes_absence_and_lost_accepted_response(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'bridge.sock'
+            with mock.patch.object(module.sys, 'stderr'):
+                with self.assertRaises(module.MailboxToolError) as absent:
+                    module._bridge_rpc(path, dict(op='call', request=dict(
+                        op='service_send', submission_id='same-id')))
+            self.assertEqual(absent.exception.details['attempt'], 'not_dispatched')
+            self.assertEqual(absent.exception.details['transport_reason'], 'not_found')
+            self.assertEqual(absent.exception.details['acceptance'], 'unknown')
+            listener = socket.socket(socket.AF_UNIX)
+            listener.bind(str(path)); listener.listen(1)
+            accepted = threading.Event(); finish = threading.Event(); requests = []
+            read_frame = module._read_bridge_frame
+            def owner():
+                with listener.accept()[0] as conn:
+                    requests.append(read_frame(conn))
+                    accepted.set(); finish.wait(2)
+            worker = threading.Thread(target=owner); worker.start()
+            def response_timeout(conn, deadline):
+                self.assertTrue(accepted.wait(1))
+                raise TimeoutError('private-exception')
+            try:
+                with mock.patch.object(module, '_read_bridge_frame', side_effect=response_timeout), mock.patch.object(module.sys, 'stderr') as stderr:
+                    with self.assertRaises(module.MailboxToolError) as failed:
+                        module._bridge_rpc(path, dict(op='call', request=dict(op='service_reply',
+                            submission_id='same-id', body='private-body', service_token='private-token')))
+                failure = failed.exception
+                self.assertEqual(failure.details, dict(transport_layer='service_bridge',
+                    transport_phase='receive', transport_reason='timeout', attempt='outcome_unknown',
+                    acceptance='unknown', submission_id='same-id'))
+                tools = mock.Mock(); tools.dispatch.side_effect = failure
+                result = module.MCPServer(tools=tools).handle(dict(id=1, method='tools/call',
+                    params=dict(name='tproj_reply', arguments={})))['result']
+                self.assertTrue(result['isError'])
+                self.assertEqual(result['structuredContent']['error']['details'], failure.details)
+                self.assertEqual(len(requests), 1)
+                self.assertNotIn('private-', str(stderr.write.call_args_list))
+            finally:
+                finish.set(); listener.close(); worker.join(2)
+
+    def test_host_timeout_and_attestation_preserve_safe_transport_evidence(self):
+        fake = mock.MagicMock(); fake.__enter__.return_value = fake
+        fake.makefile.return_value.__enter__.return_value.readline.side_effect = TimeoutError('private-path-or-token')
+        with mock.patch.object(module.socket, 'socket', return_value=fake):
+            with self.assertRaises(module.MailboxToolError) as caught:
+                module.socket_rpc('private-path', dict(op='service_reply', submission_id='original-id', body='private-body'))
+        self.assertEqual(caught.exception.details['transport_layer'], 'host')
+        self.assertEqual(caught.exception.details['attempt'], 'outcome_unknown')
+        self.assertNotIn('private-', str(caught.exception) + str(caught.exception.details))
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = module.ServiceRuntime(self.config(directory))
+            runtime._request = mock.Mock(side_effect=caught.exception)
+            with self.assertRaises(module.MailboxToolError) as failed:
+                runtime.server().tools.dispatch('tproj_list', {})
+            self.assertEqual(failed.exception.code, 'unavailable')
+            self.assertEqual(failed.exception.details['tool_dispatch'], 'not_started')
+
     def config(self, directory):
         return {
             "service_id": "kai", "address": "kai", "participant_id": "kai.service",

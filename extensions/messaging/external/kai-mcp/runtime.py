@@ -17,15 +17,16 @@ import socket
 import stat
 import threading
 import time
+import sys
 from typing import Any, Mapping
 
 try:
     from .connection import FixedConnectionAuthorizer, KaiServiceBinding, ConnectionBindingError
-    from .mailbox_tools import MailboxTools, socket_rpc, MailboxToolError
+    from .mailbox_tools import MailboxTools, socket_rpc, MailboxToolError, transport_failure
     from .server import MCPServer, run_stdio
 except ImportError:
     from connection import FixedConnectionAuthorizer, KaiServiceBinding, ConnectionBindingError
-    from mailbox_tools import MailboxTools, socket_rpc, MailboxToolError
+    from mailbox_tools import MailboxTools, socket_rpc, MailboxToolError, transport_failure
     from server import MCPServer, run_stdio
 
 
@@ -171,26 +172,48 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 
 def _bridge_rpc(path: Path, request: Mapping[str, Any]) -> Any:
+    phase = 'connect'
+    forwarded = request.get('request') if request.get('op') == 'call' else request
+    if not isinstance(forwarded, Mapping):
+        forwarded = {}
     try:
         with socket.socket(socket.AF_UNIX) as sock:
             sock.settimeout(12)
             sock.connect(str(path))
+            phase = 'send'
             sock.sendall(_encode_bridge_frame(dict(request)))
+            phase = 'receive'
             raw = _read_bridge_frame(sock, time.monotonic() + 12)
     except (OSError, ValueError, TimeoutError) as exc:
-        raise MailboxToolError("unavailable", "service bridge unavailable") from exc
+        failure = transport_failure('service_bridge', phase, forwarded, exc)
+        _bridge_audit('client_transport_failure', failure.details)
+        raise failure from exc
     try:
         response = json.loads(raw)
     except (ValueError, UnicodeDecodeError, TypeError) as exc:
-        raise MailboxToolError("unavailable", "invalid service bridge response") from exc
+        raise transport_failure('service_bridge', 'decode', forwarded, ValueError()) from exc
     if not isinstance(response, Mapping):
-        raise MailboxToolError("unavailable", "invalid service bridge response")
+        raise transport_failure('service_bridge', 'decode', forwarded, ValueError())
     if not response.get("ok"):
         error = response.get("error") or {}
         if not isinstance(error, Mapping):
             raise MailboxToolError("unavailable", "service bridge rejected")
         raise MailboxToolError(error.get("code", "unavailable"), error.get("message", "service bridge rejected"), error.get("details"))
     return response.get("result")
+
+
+def _bridge_audit(event, details=None, elapsed=None):
+    # Fixed keys/enums only. No request bodies, credentials, paths or exception
+    # strings. stderr is separate from the MCP protocol on stdout.
+    row = dict(event=event, at_unix=round(time.time(), 3))
+    if details:
+        row['details'] = MailboxToolError._safe_details(details)
+    if elapsed is not None:
+        row['elapsed_ms'] = round(elapsed * 1000)
+    try:
+        print(json.dumps(row, separators=(',', ':')), file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
 
 
 def _bridge_request(runtime: ServiceRuntime, request: Mapping[str, Any]) -> Any:
@@ -386,7 +409,15 @@ def bridge(config: Mapping[str, Any], *, runtime_factory=None) -> int:
                         request = json.loads(raw)
                         if not isinstance(request, Mapping):
                             raise ValueError("invalid bridge request")
-                        result = _bridge_request(runtime, request)
+                        dispatch_start = time.monotonic()
+                        try:
+                            result = _bridge_request(runtime, request)
+                        except Exception as exc:
+                            _bridge_audit('dispatch_failure', getattr(exc, 'details', None), time.monotonic() - dispatch_start)
+                            raise
+                        elapsed = time.monotonic() - dispatch_start
+                        if elapsed >= BRIDGE_CONNECTION_TIMEOUT:
+                            _bridge_audit('slow_dispatch', elapsed=elapsed)
                         response = {"ok": True, "result": result}
                     except MailboxToolError as exc:
                         error = {"code": exc.code, "message": exc.message}

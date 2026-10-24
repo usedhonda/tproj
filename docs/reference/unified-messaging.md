@@ -1455,3 +1455,34 @@ identity or protection against a malicious OS account owner. The integration
 checks do not establish the full provider/version/host/fault acceptance matrix.
 The channel protocol itself is documented in the
 [official CC channel reference](https://code.claude.com/docs/en/channels-reference).
+
+
+### External-service transport failures and acceptance uncertainty
+
+Mailbox errors retain `code=unavailable`; tool wrappers may independently label
+an MCP `isError` result as an argument error. Use the inner structured error,
+not the wrapper label, to classify transport failure.
+
+Sanitized `error.details` distinguishes `transport_layer` (`host` or
+`service_bridge`), `transport_phase` (`connect`, `send`, `receive`, `decode`),
+`transport_reason` and this attempt's dispatch state. `not_dispatched` means
+only that this socket attempt failed before sending, **not** that a retained
+submission ID was never accepted. After a write or missing response the attempt
+is `outcome_unknown`; acceptance stays `unknown`. A mutating call preserves its
+original `submission_id` for exact-ID diagnosis. Failed attestation additionally
+marks `tool_dispatch=not_started`. No body, credential, path or raw exception is
+included. No automatic replay or new ID is introduced.
+
+A timeout is not cancellation. The current external bridge/client wait is
+12 seconds while an inner Host/Hub RPC may wait 55 seconds, so a caller can time
+out before the owner finishes. Query the retained ID using the authenticated
+message/diagnose path and distinguish queued/adapter_received/presented from
+recipient reply evidence. Do not increase deadlines or restart a service as a
+substitute for finding the slow operation.
+
+Bridge stderr records timestamped, metadata-only transport failures and owner
+dispatch failures or dispatches taking at least the bridge's two-second frame
+budget. These are diagnostics, not liveness, receipt or acceptance evidence.
+Fast successful heartbeats are not logged. The change must be loaded in the
+specific service process before runtime evidence can be claimed; source and
+isolated tests do not establish production activation.
