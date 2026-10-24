@@ -119,8 +119,12 @@ class Host:
         CREATE TABLE IF NOT EXISTS submissions(message_id TEXT PRIMARY KEY, endpoint_id TEXT NOT NULL,
         envelope TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS delivery_diagnostics(message_id TEXT PRIMARY KEY, reason TEXT NOT NULL);''')
+            from submission_queue import init_schema
+            init_schema(self.db)
         # A process exit in the injection window must never trigger another injection.
         if recover and not self.read_only:
+            from submission_queue import hold_interrupted
+            hold_interrupted(self.db)
             self.db.execute("INSERT OR REPLACE INTO delivery_diagnostics SELECT message_id,'adapter_interrupted' FROM deliveries WHERE state='dispatching'")
             self.db.execute("UPDATE deliveries SET state='uncertain' WHERE state='dispatching'")
             self.db.commit()
@@ -603,28 +607,49 @@ class Host:
             raise HubError('scope_denied', 'target is outside authorized service policy')
         return scope
 
-    def submit(self, ep, req, reply=False):
+    def submit(self, ep, req, reply=False, *, trusted_origin=None):
+        if any(key in ('origin', 'external_origin', 'provenance', 'host_attested', 'verified')
+               or key.startswith('origin_') for key in req):
+            raise HubError('invalid_message', 'caller-supplied origin is not supported')
         mid = req.get('submission_id')
         if not isinstance(mid, str) or not mid or len(mid) > 128:
             raise HubError('invalid_message', 'persisted submission_id required')
         envelope = dict(message_id=mid, sender_endpoint=ep['endpoint_id'], body=req.get('body', ''), kind='chat')
+        if trusted_origin is not None:
+            envelope['external_origin'] = trusted_origin
         if reply:
-            original = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
+            original = self.hub('query_local' if req.get('defer_remote') is True else 'query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
             if not original.get('reader_is_recipient', original['recipient_endpoint'] == ep['endpoint_id']):
                 raise HubError('identity_rejected', 'not original recipient')
             envelope.update(in_reply_to=original['message_id'], thread_id=original['thread_id'])
         else:
             envelope['target'] = req.get('target')
+        from submission_queue import duplicate_work_receipt
+        fenced = duplicate_work_receipt(self, ep, envelope)
+        if fenced is not None: return fenced
+        if req.get('defer_remote') is True:
+            from submission_queue import enqueue
+            return enqueue(self, ep, req, envelope,
+                target_address=original['sender_address'] if reply else req.get('target'))
         serialized = json.dumps(envelope, sort_keys=True, ensure_ascii=False)
         try:
+            # Serialize legacy journal insertion against deferred enqueue. A
+            # duplicate check before this lock alone would have a TOCTOU gap.
+            self.db.execute('BEGIN IMMEDIATE')
+            fenced = duplicate_work_receipt(self, ep, envelope)
+            if fenced is not None:
+                self.db.commit()
+                return fenced
             old = self.db.execute('SELECT * FROM submissions WHERE message_id=?', (mid,)).fetchone()
             if old and (old['envelope'] != serialized or old['endpoint_id'] != ep['endpoint_id']):
                 raise HubError('id_conflict', 'submission ID has different payload or sender')
             self.db.execute('INSERT OR IGNORE INTO submissions VALUES(?,?,?)', (mid, ep['endpoint_id'], serialized))
             self.db.commit()
         except HubError:
+            self.db.rollback()
             raise
         except (OSError, sqlite3.Error) as exc:
+            self.db.rollback()
             classified = resource_error(exc, 'local_persistence')
             raise classified or HubError('unavailable', 'host journal unavailable') from None
         try:
@@ -846,6 +871,31 @@ class Host:
                     'service_inbox', 'service_message', 'service_diagnose',
                     'service_repo_list', 'service_repo_tree', 'service_repo_read', 'service_repo_search'):
                 raise HubError('scope_denied', 'service is enrolled read-only')
+        if op == 'service_telegram_ingress':
+            from telegram_ingress import TelegramIngressAuthority, TelegramIngressError, select_binding
+            service_id, cfg = self._service_binding(req)
+            if service_id != 'telegram':
+                raise HubError('identity_rejected', 'dedicated Telegram service required')
+            settings = cfg.get('telegram_ingress')
+            try:
+                if not isinstance(settings, dict):
+                    raise ValueError()
+                if settings.get('mode') != 'long_poll' or not cfg.get('binding_generation'):
+                    raise ValueError()
+                raw = req.get('raw_update')
+                if not isinstance(raw, str):
+                    raise ValueError()
+                binding = select_binding(settings, raw.encode('utf-8'))
+                authority = TelegramIngressAuthority(binding)
+                intent = authority.admit_authenticated_poll(raw.encode('utf-8'),
+                    verified_bot_id=req.get('verified_bot_id'), now=time.time())
+            except (ValueError, TypeError, KeyError, UnicodeError):
+                raise HubError('identity_rejected', 'Telegram ingress validation failed') from None
+            self.service_policy(req, intent.target)
+            return self.submit(ep, {'service_id': service_id,
+                                   'submission_id': intent.message_id,
+                                   'target': intent.target, 'body': intent.body},
+                               trusted_origin=intent.envelope()['external_origin'])
         if isinstance(op, str) and op.startswith('task_'):
             from task_host import dispatch
             return dispatch(self, ep, req)
@@ -868,10 +918,18 @@ class Host:
                     raise
                 result.update(allowed_addresses=[], policy_state='invalid', policy_revision=None)
             return result
+        if op in ('service_reconcile', 'service_cancel_submission'):
+            from submission_queue import control
+            return control(self, ep, req, 'reconcile' if op == 'service_reconcile' else 'cancel')
         if op == 'service_diagnose':
             if not isinstance(req.get('submission_id'), str) or not req['submission_id']:
                 raise HubError('invalid_message', 'submission ID required')
-            return self.hub('diagnose', endpoint_id=ep['endpoint_id'], message_id=req['submission_id'])
+            from submission_queue import local_view, legacy_diagnostic
+            pending = local_view(self, ep, req['submission_id'], diagnostic=True)
+            if pending is not None: return pending
+            legacy = legacy_diagnostic(self, ep, req['submission_id'])
+            if legacy is not None: return legacy
+            return self.hub('diagnose_local', endpoint_id=ep['endpoint_id'], message_id=req['submission_id'])
         if op in ('service_list', 'service_status'):
             if op == 'service_status' and (not isinstance(req.get('target'), str) or not req['target']):
                 raise HubError('invalid_request', 'target required')
@@ -931,7 +989,11 @@ class Host:
             return self.hub('inbox_notice', endpoint_id=ep['endpoint_id'],
                             cursor=req.get('cursor', 0), limit=3)
         if op in ('message', 'service_message'):
-            return self.hub('query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
+            if op == 'service_message':
+                from submission_queue import local_view
+                pending = local_view(self, ep, req['message_id'])
+                if pending is not None: return pending
+            return self.hub('query_local' if is_service else 'query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
         if op in ('ack', 'service_ack'):
             message = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
             if message['recipient_endpoint'] != ep['endpoint_id']:
@@ -1289,6 +1351,21 @@ def main():
             except (OSError, HubError, ValueError, subprocess.SubprocessError, sqlite3.Error): pass
             time.sleep(1)
     threading.Thread(target=delivery_loop,daemon=True).start()
+    def submission_loop():
+        # Separate from caller threads and recipient delivery; reload grants on
+        # every iteration. The work table contains only explicit new requests.
+        from submission_queue import work_once
+        while True:
+            worker = None
+            try:
+                worker = Host(load_config_snapshot(args.config, strict=True), recover=False)
+                work_once(worker, limit=1)
+            except (OSError, HubError, ValueError, sqlite3.Error):
+                print('deferred submission worker unavailable', file=sys.stderr, flush=True)
+            finally:
+                if worker: worker.db.close()
+            time.sleep(1)
+    threading.Thread(target=submission_loop,daemon=True).start()
     with socket.socket(socket.AF_UNIX) as server:
         server.bind(str(path)); os.chmod(path, 0o600); server.listen(16)
         while True:

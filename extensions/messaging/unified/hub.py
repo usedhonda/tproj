@@ -84,6 +84,14 @@ class Hub:
         if not self.read_only:
             try:
                 self.db.executescript(SCHEMA)
+                columns = {row[1] for row in self.db.execute('PRAGMA table_info(messages)')}
+                if 'external_origin_json' not in columns:
+                    try:
+                        self.db.execute('ALTER TABLE messages ADD COLUMN external_origin_json TEXT')
+                    except sqlite3.OperationalError:
+                        # Concurrent request constructors may race this additive migration.
+                        if 'external_origin_json' not in {r[1] for r in self.db.execute('PRAGMA table_info(messages)')}:
+                            raise
                 self.db.execute("INSERT OR IGNORE INTO metadata(key,value) VALUES('directory_revision','0')")
                 self.db.execute("INSERT OR IGNORE INTO metadata(key,value) VALUES('maintenance','open')")
             except (OSError, sqlite3.Error) as exc:
@@ -385,6 +393,9 @@ class Hub:
 
     def _submit_unlocked(self, req):
         host = self._auth(req); msg = req.get("message") or {}; sender = self._host_endpoint(host, msg.get("sender_endpoint"))
+        deadline = req.get('pending_deadline')
+        if deadline is not None and (type(deadline) not in (int, float) or not self._now() < deadline < float('inf')):
+            raise HubError('expired', 'deferred submission deadline elapsed')
         mode = self._maintenance()
         if mode == "stopped": raise HubError("maintenance", "hub delivery is paused")
         body = msg.get("body", "")
@@ -396,7 +407,14 @@ class Hub:
         mid, target = msg.get("message_id"), msg.get("target")
         if not mid or (not target and not msg.get("in_reply_to")): raise HubError("invalid_message", "message_id and target required")
         if mode == "probe" and mid not in set(self.config.get("probe_message_ids", [])): raise HubError("maintenance", "only configured probe messages are allowed")
-        canonical = json.dumps({k: msg.get(k) for k in ("thread_id","in_reply_to","sender_endpoint","target","body","kind","ttl_sec")}, sort_keys=True, separators=(",",":"))
+        origin = msg.get('external_origin')
+        if 'external_origin' in msg:
+            if not self._telegram_origin_active(origin, msg, sender):
+                raise HubError('identity_rejected', 'external origin is not authorized')
+        identity = {k: msg.get(k) for k in ("thread_id","in_reply_to","sender_endpoint","target","body","kind","ttl_sec")}
+        if origin is not None:
+            identity['external_origin'] = origin
+        canonical = json.dumps(identity, sort_keys=True, separators=(",",":"))
         ph = hashlib.sha256(canonical.encode()).hexdigest(); existing = self._row("SELECT * FROM messages WHERE message_id=?", (mid,))
         if existing:
             if existing["payload_hash"] != ph: raise HubError("id_conflict", "message ID has different payload")
@@ -418,7 +436,7 @@ class Hub:
             recipient = self._new_message_recipient(self._participant(target))
         check_policy(self.db, sender["endpoint_id"], target, body, self._now(), msg.get("in_reply_to"))
         created = self._now(); expires = created + ttl
-        self.db.execute("INSERT INTO messages(message_id,thread_id,in_reply_to,sender_endpoint,target_address,recipient_endpoint,body,kind,created_at,expires_at,payload_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (mid,msg.get("thread_id") or mid,msg.get("in_reply_to"),sender["endpoint_id"],target,recipient["endpoint_id"],body,msg.get("kind","chat"),created,expires,ph))
+        self.db.execute("INSERT INTO messages(message_id,thread_id,in_reply_to,sender_endpoint,target_address,recipient_endpoint,body,kind,created_at,expires_at,payload_hash,external_origin_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (mid,msg.get("thread_id") or mid,msg.get("in_reply_to"),sender["endpoint_id"],target,recipient["endpoint_id"],body,msg.get("kind","chat"),created,expires,ph,json.dumps(origin,sort_keys=True) if origin is not None else None))
         return {"message_id": mid, "state": "queued"}
 
     def inbox(self, req):
@@ -431,6 +449,31 @@ class Hub:
         result = {"messages":out,"next_cursor":out[-1]["sequence"] if out else cursor}
         self._check_message_response(result)
         return result
+
+    def submission_status(self, req):
+        """Sender-only, immutable-envelope check; never performs remote I/O."""
+        owner = self._auth(req)
+        actor = self._host_endpoint(owner, req.get('endpoint_id'))
+        msg = dict(req.get('message') or {})
+        if msg.get('sender_endpoint') != actor['endpoint_id']:
+            raise HubError('identity_rejected', 'submission actor mismatch')
+        row = self._row('SELECT message_id,state,thread_id,in_reply_to,sender_endpoint,payload_hash FROM messages WHERE message_id=?', (msg.get('message_id'),))
+        if not row: return {'found': False}
+        if row['sender_endpoint'] != actor['endpoint_id']:
+            raise HubError('identity_rejected', 'submission is owned by another sender')
+        target = msg.get('target')
+        redirect = self._redirect_target(target) if isinstance(target, str) else None
+        if redirect: msg['target'] = redirect
+        identity = {k: msg.get(k) for k in ('thread_id','in_reply_to','sender_endpoint','target','body','kind','ttl_sec')}
+        if 'external_origin' in msg: identity['external_origin'] = msg['external_origin']
+        digest = hashlib.sha256(json.dumps(identity,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        if row['payload_hash'] != digest:
+            raise HubError('id_conflict', 'submission envelope does not match durable Hub record')
+        outbox = self._row('SELECT 1 FROM sqlite_master WHERE type=\'table\' AND name=\'federated_outbox\'')
+        pending = bool(outbox and self._row("SELECT 1 FROM federated_outbox WHERE message_id=? AND state IN ('pending','cancel_pending')", (row['message_id'],)))
+        receipt = {'message_id': row['message_id'], 'state': row['state'], 'thread_id': row['thread_id'], 'delivery_pending': pending}
+        if row['in_reply_to']: receipt['in_reply_to'] = row['in_reply_to']
+        return {'found': True, 'receipt': receipt}
 
     def inbox_notice(self, req):
         """Read-only metadata for a native PostToolUse inbox notice.
@@ -504,6 +547,16 @@ class Hub:
                 item['delivery_actor'] = dict(endpoint_id=owner['actor_endpoint'], incarnation=owner['actor_incarnation'],
                     native_kind=owner['native_kind'], native_id=owner['native_id'], generation=owner['generation'],
                     original_recipient=owner['original_recipient'], content_hash=owner['content_hash'])
+            encoded_origin = item.pop('external_origin_json', None)
+            if encoded_origin is not None:
+                try:
+                    origin = json.loads(encoded_origin)
+                    sender = self._row('SELECT * FROM endpoints WHERE endpoint_id=?', (item['sender_endpoint'],))
+                    active = self._telegram_origin_active(origin, item, sender)
+                    item['external_origin'] = origin
+                    item['origin_binding_active'] = active
+                except (ValueError, TypeError, KeyError):
+                    item['origin_binding_active'] = False
             q = self._row("SELECT p.address FROM participants p JOIN endpoints e ON e.participant_id=p.participant_id WHERE e.endpoint_id=?", (item["sender_endpoint"],))
             item["sender_address"] = q[0] if q else None
             encoded = len(json.dumps(item, ensure_ascii=False).encode())
@@ -589,6 +642,23 @@ class Hub:
         except Exception:
             self._rollback()
             raise
+    def _telegram_origin_active(self, origin, message, sender):
+        try:
+            try:
+                from .telegram_ingress import TelegramOwnerBinding, validate_origin
+            except ImportError:
+                from telegram_ingress import TelegramOwnerBinding, validate_origin
+            if not sender or not isinstance(origin, dict):
+                return False
+            settings = self.config.get('telegram_ingress_bindings', {}).get(origin.get('binding_id'))
+            if (not isinstance(settings, dict) or settings.get('host_id') != sender['host_id']
+                    or settings.get('participant_id') != sender['participant_id']):
+                return False
+            binding = TelegramOwnerBinding(**settings['owner_binding'])
+            validate_origin(origin, message, binding, now=self._now())
+            return True
+        except (ValueError, TypeError, KeyError):
+            return False
 
     def claim(self, req):
         host=self._auth(req)
@@ -942,6 +1012,9 @@ class Hub:
             return {"endpoints": [dict(x) for x in self.db.execute(sql, (host,))]}
         if op=="directory_retire": return self.directory_retire(req)
         if op=="submit": return self._submit_redirected(req)
+        if op=='submission_status': return self.submission_status(req)
+        if op=='query_local': return Hub.dispatch(self,dict(req,op='query'))
+        if op=='diagnose_local': return self.diagnose(dict(req,op='diagnose'))
         if op=="inbox": return self.inbox(req)
         if op=="inbox_notice": return self.inbox_notice(req)
         if op=="native_pending": return self.native_pending(req)
@@ -998,7 +1071,7 @@ def main(argv=None):
     if factory is Hub:
         import threading
         def dispatch(req):
-            ro = req.get('op') in ('diagnose', 'peer_diagnose', 'diagnostic_identity', 'messaging_capabilities', 'peer_messaging_capabilities')
+            ro = req.get('op') in ('diagnose', 'peer_diagnose', 'diagnostic_identity', 'messaging_capabilities', 'peer_messaging_capabilities', 'submission_status', 'query_local', 'diagnose_local')
             instance=factory(args.db,args.config, read_only=ro)
             try: return instance.dispatch(req)
             finally: instance.close()
@@ -1007,7 +1080,7 @@ def main(argv=None):
     else:
         import threading
         def dispatch(req):
-            ro = req.get('op') in ('diagnose', 'peer_diagnose', 'diagnostic_identity', 'messaging_capabilities', 'peer_messaging_capabilities')
+            ro = req.get('op') in ('diagnose', 'peer_diagnose', 'diagnostic_identity', 'messaging_capabilities', 'peer_messaging_capabilities', 'submission_status', 'query_local', 'diagnose_local')
             instance=factory(args.db,args.config, read_only=ro)
             try: return instance.dispatch(req)
             finally: instance.close()

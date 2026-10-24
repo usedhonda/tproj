@@ -410,6 +410,8 @@ class FederatedHub(Hub):
             if self.db.in_transaction:
                 saved_message = self._row('SELECT state FROM messages WHERE message_id=?', (mid,))
                 return {'message_id': mid, 'state': saved_message['state'], 'duplicate': True}
+            if req.get('defer_flush') is True and queued['state'] == 'pending':
+                return {'message_id': mid, 'state': 'queued', 'duplicate': True, 'delivery_pending': True}
             return self._rename_result(self.flush_one(queued), saved['recipient'])
         if self._row('SELECT 1 FROM messages WHERE message_id=?', (mid,)):
             return super().submit(req)
@@ -484,6 +486,8 @@ class FederatedHub(Hub):
             self._participant, self._new_message_recipient, self._reply_endpoint = original_resolver, original_endpoint, original_reply
         if not owned:
             return accepted
+        if req.get('defer_flush') is True:
+            return self._rename_result(dict(accepted, delivery_pending=True), evidence)
         return self._rename_result(self.flush_one(self._row('SELECT * FROM federated_outbox WHERE message_id=?', (mid,))), evidence)
 
     def flush_one(self, row):
@@ -659,6 +663,13 @@ class FederatedHub(Hub):
 
     def dispatch(self, req):
         op = req.get('op', '')
+        if op == 'query_local':
+            view = super().dispatch(dict(req,op='query'))
+            recipient = self.evidence(view['recipient_endpoint'])['endpoint']
+            if recipient['host_id'] != self.local_id: view['remote_state'] = 'not_checked'
+            return view
+        if op == 'diagnose_local':
+            return dict(super().diagnose(dict(req,op='diagnose')), **self.outbox_diagnostic(req.get('message_id')))
         if op.startswith('peer_'):
             owner = self._auth(req)
             if req.get('protocol') != PROTOCOL or owner not in self.peers():

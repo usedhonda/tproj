@@ -1486,3 +1486,9 @@ budget. These are diagnostics, not liveness, receipt or acceptance evidence.
 Fast successful heartbeats are not logged. The change must be loaded in the
 specific service process before runtime evidence can be claimed; source and
 isolated tests do not establish production activation.
+
+
+Deferred writable-service send/reply receipt boundaries, single-flight work,
+positive-only reconciliation, cancellation fences and safe recovery are defined
+in [deferred service submissions](deferred-service-submissions.md). These rules
+apply to explicitly opted-in calls and never import historical unknown IDs.

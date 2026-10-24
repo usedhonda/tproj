@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import errno
+import hashlib
 import re
 import socket
 from typing import Any, Callable, Mapping
@@ -62,7 +63,7 @@ class MailboxToolError(Exception):
 
 def transport_failure(layer, phase, request, exc):
     """Classify this attempt, never infer that an existing message was rejected."""
-    reason = ('timeout' if isinstance(exc, TimeoutError) else
+    reason = ('timeout' if isinstance(exc, (TimeoutError, socket.timeout)) else
               'not_found' if getattr(exc, 'errno', None) == errno.ENOENT else
               'refused' if getattr(exc, 'errno', None) == errno.ECONNREFUSED else
               'connection_lost' if isinstance(exc, ConnectionError) else
@@ -117,7 +118,7 @@ class MailboxTools:
     normally a ``socket_rpc`` partial; tests inject a recorder.
     """
 
-    TOOLS = ("tproj_capabilities", "tproj_list", "tproj_status", "tproj_send", "tproj_inbox", "tproj_message", "tproj_reply", "tproj_ack", "tproj_diagnose",
+    TOOLS = ("tproj_reconcile", "tproj_cancel_submission", "tproj_capabilities", "tproj_list", "tproj_status", "tproj_send", "tproj_inbox", "tproj_message", "tproj_reply", "tproj_ack", "tproj_diagnose",
              "tproj_repo_list", "tproj_repo_tree", "tproj_repo_read", "tproj_repo_search",
              "tproj_repo_write", "tproj_repo_revert")
 
@@ -157,6 +158,10 @@ class MailboxTools:
         if name == "tproj_diagnose":
             return self._diagnose(args)
         ctx = self._authorize(name, args)
+        if name in ('tproj_reconcile', 'tproj_cancel_submission'):
+            self._keys(args, {'submission_id'})
+            sid=self._id(args['submission_id'], 'submission ID')
+            return self._host('service_reconcile' if name=='tproj_reconcile' else 'service_cancel_submission', submission_id=sid)
         if name in self.REPO_TOOLS:
             return self._repo(name, args)
         if name == "tproj_list": return self._list(args, ctx)
@@ -304,9 +309,9 @@ class MailboxTools:
     def _send(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, {"target", "body", "submission_id"})
         target = self._target(args, ctx); body = self._body(args["body"]); sid = self._id(args["submission_id"], "submission ID")
-        result = self._host("service_send", target=target, body=body, submission_id=sid) or {}
+        result = self._host("service_send", target=target, body=body, submission_id=sid, defer_remote=True) or {}
         return {"message_id": result.get("message_id", sid), "thread_id": result.get("thread_id", sid),
-                "state": result.get("state", "queued"), **({"duplicate": bool(result["duplicate"])} if "duplicate" in result else {})}
+                "state": result.get("state", "queued"), **self._submission_fields(result), **({"duplicate": bool(result["duplicate"])} if "duplicate" in result else {})}
 
     def _inbox(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, set(), {"cursor", "limit"})
@@ -329,7 +334,7 @@ class MailboxTools:
         item = self._host("service_message", message_id=mid) or {}
         # Query permits either party; inspecting our own outbound record must
         # not claim presentation on behalf of its recipient.
-        if item.get("target_address") == self.service_address and not self._begin_present(mid):
+        if item.get('state') != 'journaled' and item.get("target_address") == self.service_address and not self._begin_present(mid):
             raise MailboxToolError("not_found", "message is no longer available")
         return self._view(item)
 
@@ -354,10 +359,21 @@ class MailboxTools:
         # committed result or tempt a caller to resubmit it.
         view = self._host("service_message", message_id=original) or {}
         thread = view.get("thread_id", original)
-        result = self._host("service_reply", message_id=original, body=body, submission_id=sid) or {}
+        result = self._host("service_reply", message_id=original, body=body, submission_id=sid, defer_remote=True) or {}
         thread = result.get("thread_id") or thread
         return {"message_id": result.get("message_id", sid), "thread_id": thread, "in_reply_to": result.get("in_reply_to", original),
-                "state": result.get("state", "queued"), **({"duplicate": bool(result["duplicate"])} if "duplicate" in result else {})}
+                "state": result.get("state", "queued"), **self._submission_fields(result), **({"duplicate": bool(result["duplicate"])} if "duplicate" in result else {})}
+
+    @staticmethod
+    def _submission_fields(result):
+        keys=('receipt_stage','hub_acceptance','work_state','work_reason','delivery_pending','remote_state')
+        if 'receipt_stage' in result:
+            committed=result.get('hub_acceptance')=='committed'
+            if (result['receipt_stage'] != ('hub_message_committed' if committed else 'host_journaled')
+                    or result.get('hub_acceptance') not in ('committed','unconfirmed')
+                    or (not committed and result.get('state')!='journaled')):
+                raise MailboxToolError('unavailable','invalid submission receipt boundary')
+        return {key:result[key] for key in keys if key in result}
 
     def _ack(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, {"message_id"}); mid = self._id(args["message_id"])
@@ -375,6 +391,51 @@ class MailboxTools:
                "body": item["body"], "state": item["state"]}
         for source, dest in (("in_reply_to", "in_reply_to"), ("sender_address", "sender_address")):
             if item.get(source) is not None: out[dest] = item[source]
+        if 'external_origin' in item or 'origin_binding_active' in item:
+            origin = item.get('external_origin')
+            fields = {'version', 'channel', 'binding_id', 'owner_id', 'bot_id', 'user_id',
+                      'chat_id', 'message_id', 'update_id', 'generation', 'target', 'kind',
+                      'mailbox_message_id', 'body_sha256'}
+            valid = isinstance(origin, dict) and type(item.get('origin_binding_active')) is bool
+            if valid:
+                version = origin.get('version')
+                expected = fields | ({'chat_type'} if version == 2 else set())
+                valid = (type(version) is int and version in (1, 2) and set(origin) == expected
+                    and origin.get('channel') == 'telegram' and origin.get('kind') == 'chat'
+                    and origin.get('mailbox_message_id') == item['message_id']
+                    and origin.get('target') == item['target_address']
+                    and item['thread_id'] == item['message_id'] and not item.get('in_reply_to')
+                    and isinstance(item['body'], str)
+                    and not any(0xD800 <= ord(c) <= 0xDFFF for c in item['body']))
+            if valid:
+                for key in ('bot_id', 'user_id', 'message_id', 'generation'):
+                    value = origin.get(key)
+                    valid = valid and type(value) is int and 1 <= value <= 2**53-1
+                value = origin.get('update_id')
+                valid = valid and type(value) is int and 0 <= value <= 2**53-1
+                for key in ('binding_id', 'owner_id'):
+                    value = origin.get(key)
+                    valid = valid and isinstance(value, str) and 0 < len(value) <= 128
+                chat = origin.get('chat_id')
+                valid = valid and type(chat) is int
+                if version == 1:
+                    valid = valid and 1 <= chat <= 2**53-1
+                else:
+                    valid = (valid and -(2**53-1) <= chat < 0
+                             and origin.get('chat_type') in ('group', 'supergroup'))
+            if valid:
+                stable = json.dumps({'bot': origin['bot_id'], 'update': origin['update_id'],
+                    'binding': origin['binding_id'], 'generation': origin['generation']},
+                    ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+                valid = (origin['mailbox_message_id'] == 'telegram:' + hashlib.sha256(stable.encode()).hexdigest()
+                    and origin.get('body_sha256') == hashlib.sha256(item['body'].encode('utf-8')).hexdigest())
+            if not valid:
+                raise MailboxToolError('unavailable', 'host returned invalid external origin')
+            # This marker comes from authenticated Host/Hub evidence. Structural
+            # validation here never upgrades a false marker to owner authority.
+            out['external_origin'] = dict(origin)
+            out['origin_binding_active'] = item['origin_binding_active']
         for key in ('response_state', 'recipient_reply_count', 'recipient_reply_message_ids', 'delivery_summary'):
             if key in item: out[key] = item[key]
+        out.update(MailboxTools._submission_fields(item))
         return out

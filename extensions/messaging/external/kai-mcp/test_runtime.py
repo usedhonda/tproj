@@ -61,11 +61,12 @@ class RuntimeTest(unittest.TestCase):
 
     def test_host_timeout_and_attestation_preserve_safe_transport_evidence(self):
         fake = mock.MagicMock(); fake.__enter__.return_value = fake
-        fake.makefile.return_value.__enter__.return_value.readline.side_effect = TimeoutError('private-path-or-token')
+        fake.makefile.return_value.__enter__.return_value.readline.side_effect = socket.timeout('private-path-or-token')
         with mock.patch.object(module.socket, 'socket', return_value=fake):
             with self.assertRaises(module.MailboxToolError) as caught:
                 module.socket_rpc('private-path', dict(op='service_reply', submission_id='original-id', body='private-body'))
         self.assertEqual(caught.exception.details['transport_layer'], 'host')
+        self.assertEqual(caught.exception.details['transport_reason'], 'timeout')
         self.assertEqual(caught.exception.details['attempt'], 'outcome_unknown')
         self.assertNotIn('private-', str(caught.exception) + str(caught.exception.details))
         with tempfile.TemporaryDirectory() as directory:

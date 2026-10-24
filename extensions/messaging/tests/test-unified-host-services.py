@@ -481,9 +481,21 @@ class UnifiedHostServicesTest(unittest.TestCase):
                     with self.assertRaises(HubError) as rejected:
                         host.dispatch(dict(request('muse'),op=op,read_only=False),200,os.getuid())
                     self.assertEqual(rejected.exception.code,'scope_denied')
+                # A writable second service uses the same durable boundary;
+                # revoking its generation must fence queued work, not replay it.
+                host.config['services']['muse'].update(read_only=False, allowed_addresses=['kai'])
+                queued = host.dispatch(dict(request('muse'), op='service_send',
+                    target='kai', body='fixture', submission_id='muse-deferred',
+                    defer_remote=True), 200, os.getuid())
+                self.assertEqual(queued['receipt_stage'], 'host_journaled')
+                self.assertEqual(queued['hub_acceptance'], 'unconfirmed')
                 host.config['services']['muse']['binding_generation'] = 'rotated-generation'
                 with self.assertRaises(HubError): host.service(200,os.getuid(),request('muse'),query_only=True)
                 self.assertEqual(host.service(200,os.getuid(),request('kai'))['endpoint_id'], kai['endpoint_id'])
+                import submission_queue
+                submission_queue.work_once(host)
+                self.assertEqual(host.db.execute('SELECT state FROM submission_work WHERE message_id=?',
+                    ('muse-deferred',)).fetchone()[0], 'blocked')
             self.assertEqual(hub.db.execute('SELECT COUNT(*) FROM messages').fetchone()[0],0)
 
     def test_muse_scope_sync_is_idempotent_and_mismatch_has_no_effect(self):
@@ -553,7 +565,7 @@ class UnifiedHostServicesTest(unittest.TestCase):
 
             def hub(op, **args):
                 calls.append((op, args))
-                if op == "query":
+                if op in ("query", "query_local"):
                     return {"message_id": args["message_id"], "recipient_endpoint": ep["endpoint_id"]}
                 return {"messages": [], "next_cursor": 0} if op == "inbox" else {"state": "presented"}
 
@@ -561,7 +573,7 @@ class UnifiedHostServicesTest(unittest.TestCase):
             self.assertEqual(host.dispatch({"op": "service_inbox", "service_id": "kai"}, os.getpid(), os.getuid())["next_cursor"], 0)
             self.assertEqual(host.dispatch({"op": "service_message", "service_id": "kai", "message_id": "m1"}, os.getpid(), os.getuid())["message_id"], "m1")
             host.dispatch({"op": "service_ack", "service_id": "kai", "message_id": "m1"}, os.getpid(), os.getuid())
-            self.assertEqual([item[0] for item in calls], ["inbox", "query", "query", "receipt"])
+            self.assertEqual([item[0] for item in calls], ["inbox", "query_local", "query", "receipt"])
             host.db.close()
 
 
