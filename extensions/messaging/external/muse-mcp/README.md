@@ -73,3 +73,13 @@ a separate explicit operator operation. Preserve historical unknown outcomes.
 
 Check proves matching configuration and loaded Host support, not actual SSH
 access, cloud chat isolation or successful message delivery.
+
+## VM connector and receive phase
+
+The initial P1 prepare/apply contract above stays read-only. An already-approved
+writable enrollment can register its dedicated public key after exact current
+parent/client/Host/directory validation, without changing policy. The VM helpers,
+metadata-only inbox detection and native receive hook are specified in
+[the Muse MSG connector contract](../../../../docs/reference/muse-msg-connector.md).
+Use the fixed SSH stdio CLI and native hook APIs; do not substitute Slack/Issue
+relay, a public HTTPS endpoint, or copying parent credentials onto the VM.

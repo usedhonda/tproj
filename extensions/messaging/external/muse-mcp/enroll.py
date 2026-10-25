@@ -61,7 +61,7 @@ def service(parent):
     return dict(participant_id=parent['participant_id'], address='muse', platform='muse',
         token=parent['service_token'], binding_generation=parent['binding_generation'],
         launchd_label='local.tproj.muse-mailbox', allowed_addresses=parent['allowed_addresses'],
-        read_only=True)
+        read_only=parent['read_only'])
 
 
 def prepare(home, host_path, root, scope):
@@ -190,11 +190,29 @@ def apply(host_path, root, check=False, hub_path=None):
     return {'enrolled':True,'changed':True,'read_only':True}
 
 
+def key_enrollment(host_path, root, hub_path=None):
+    """Check an existing enrollment without reverting its approved write policy."""
+    parent = read(root/'parent.json')
+    if type(parent.get('read_only')) is not bool:
+        raise EnrollmentError('explicit enrollment policy required')
+    client = read(root/'client.json')
+    expected = {k: parent[k] for k in ('service_id','address','participant_id','bridge_socket','read_only')}
+    if client != expected or parent.get('service_id') != 'muse' or parent.get('address') != 'muse':
+        raise EnrollmentError('tokenless client differs from parent')
+    config = read(host_path)
+    host_ready(config)
+    if config.get('services', {}).get('muse') != service(parent):
+        raise EnrollmentError('registered Muse differs; nothing changed')
+    if not register_participant(config, hub_path or host_path.parent/'msg-hub.json', check=True):
+        raise EnrollmentError('matching directory participant is missing')
+    return True
+
+
 def install_key(home, root, public_key_path):
     """Register only a dedicated public key; never creates/reads a private key."""
     client = read(root/'client.json')
-    if client.get('read_only') is not True:
-        raise EnrollmentError('P1 must remain read-only')
+    if type(client.get('read_only')) is not bool:
+        raise EnrollmentError('explicit client policy required')
     lines = public_key_path.read_text().strip().splitlines()
     parts = lines[0].split() if len(lines)==1 else []
     if len(parts) < 2 or parts[0] != 'ssh-ed25519':
@@ -258,8 +276,7 @@ def main(argv=None):
             result=prepare(args.home,host,root,targets)
         elif args.install_key:
             if not args.public_key_file:raise EnrollmentError('dedicated VM public key required')
-            if not apply(host,root,check=True,hub_path=args.hub_config).get('enrolled'):
-                raise EnrollmentError('matching enrollment required before key installation')
+            key_enrollment(host,root,hub_path=args.hub_config)
             result=install_key(args.home,root,args.public_key_file)
         else:result=apply(host,root,check=args.check,hub_path=args.hub_config)
         print(json.dumps(result));return 0

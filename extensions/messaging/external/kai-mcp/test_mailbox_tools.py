@@ -16,6 +16,24 @@ connection_spec.loader.exec_module(connection)
 
 
 class MailboxToolsTest(unittest.TestCase):
+    def test_metadata_inbox_never_reserves_or_returns_a_body(self):
+        seen = []
+        def host(req):
+            seen.append(req['op'])
+            return {'messages': [{'message_id': 'fixture', 'thread_id': 'fixture',
+                'target_address': 'kai', 'body': 'never expose to detector',
+                'state': 'accepted', 'sequence': 8, 'expires_at': 9999,
+                'in_reply_to': None}], 'next_cursor': 8}
+        self.tools.host_call = host
+        result = self.tools.dispatch('tproj_inbox', {'metadata_only': True})
+        self.assertEqual(seen, ['service_inbox'])
+        self.assertEqual(result['messages'], [])
+        self.assertEqual(result['pending'][0]['message_id'], 'fixture')
+        self.assertNotIn('body', result['pending'][0])
+        self.assertNotIn('in_reply_to', result['pending'][0])
+        with self.assertRaises(module.MailboxToolError):
+            self.tools.dispatch('tproj_inbox', {'metadata_only': 'true'})
+
     def setUp(self):
         self.calls = []
 

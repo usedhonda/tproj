@@ -1492,3 +1492,10 @@ Deferred writable-service send/reply receipt boundaries, single-flight work,
 positive-only reconciliation, cancellation fences and safe recovery are defined
 in [deferred service submissions](deferred-service-submissions.md). These rules
 apply to explicitly opted-in calls and never import historical unknown IDs.
+
+### Muse VM reception
+
+The [Muse MSG connector contract](muse-msg-connector.md) defines dedicated
+SSH/stdio access and the native metadata-only receive hook. Optional
+`tproj_inbox(metadata_only=true)` detects messages without body retrieval,
+presentation reservation or ACK; ordinary inbox behavior is unchanged.

@@ -314,11 +314,25 @@ class MailboxTools:
                 "state": result.get("state", "queued"), **self._submission_fields(result), **({"duplicate": bool(result["duplicate"])} if "duplicate" in result else {})}
 
     def _inbox(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
-        self._keys(args, set(), {"cursor", "limit"})
+        self._keys(args, set(), {"cursor", "limit", "metadata_only"})
+        metadata_only = args.get('metadata_only', False)
+        if type(metadata_only) is not bool:
+            raise MailboxToolError('invalid_request', 'metadata_only must be boolean')
         cursor = args.get("cursor", 0); limit = args.get("limit", 100)
         if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0 or not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_LIMIT:
             raise MailboxToolError("invalid_request", "cursor and limit are out of bounds")
         result = self._host("service_inbox", cursor=cursor, limit=limit) or {}
+        if metadata_only:
+            # Detection and hook dry-runs must not reserve presentation or copy bodies.
+            pending = []
+            for item in result.get('messages', []):
+                if not isinstance(item, Mapping) or item.get('state') in CANCELLED_STATES:
+                    continue
+                pending.append({key: item[key] for key in (
+                    'message_id', 'thread_id', 'sender_address', 'state', 'sequence',
+                    'expires_at', 'in_reply_to') if key in item and item[key] is not None})
+            return {'messages': [], 'pending': pending, 'metadata_only': True,
+                    'next_cursor': int(result.get('next_cursor', cursor))}
         messages = []
         for item in result.get("messages", []):
             if not isinstance(item, Mapping) or item.get("state") in CANCELLED_STATES:
