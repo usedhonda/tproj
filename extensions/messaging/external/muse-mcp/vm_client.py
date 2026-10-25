@@ -31,10 +31,16 @@ def load_config(path):
 async def invoke(ssh_config, name=None, arguments=None, cursor=None):
     from mcp import Client
     from mcp.client.stdio import StdioServerParameters
+    # SDK's default child environment drops proxy context. Never fall back to
+    # another hook's saved short-lived proxy authorization. Inherit only this
+    # invocation's native runtime proxy, ephemerally, as ordinary subprocesses do.
+    proxy = os.environ.get('HTTPS_PROXY')
+    if not proxy:
+        raise ValueError('current runtime proxy context required')
     params = StdioServerParameters(command='ssh', args=[
         '-F', str(ssh_config), '-T', '-o', 'BatchMode=yes',
         '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes',
-        '-o', 'ConnectTimeout=5', 'tproj-msg-muse'])
+        '-o', 'ConnectTimeout=5', 'tproj-msg-muse'], env={'HTTPS_PROXY': proxy})
     # Legacy mode performs initialize once; never retry a tool call.
     async with asyncio.timeout(20):
         async with Client(params, mode='legacy', read_timeout_seconds=8) as client:

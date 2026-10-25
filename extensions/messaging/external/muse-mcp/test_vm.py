@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -15,6 +16,28 @@ import vm_poll
 
 @unittest.skipUnless(sys.version_info >= (3, 11), 'VM connector requires Python 3.11+')
 class VMTests(unittest.TestCase):
+    def test_stdio_child_inherits_only_current_runtime_proxy_not_other_secrets(self):
+        captured = {}
+        class Result:
+            tools = []
+            def model_dump(self, **kw): return {'tools': []}
+        class Client:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            async def list_tools(self, **kw): return Result()
+        def parameters(**kw): captured.update(kw); return object()
+        sdk = types.ModuleType('mcp'); sdk.Client = Client
+        client = types.ModuleType('mcp.client')
+        stdio = types.ModuleType('mcp.client.stdio'); stdio.StdioServerParameters = parameters
+        proxy = 'http://fixture-context:fixture@proxy.invalid:3128'
+        with patch.dict(sys.modules, {'mcp':sdk, 'mcp.client':client, 'mcp.client.stdio':stdio}), patch.dict(vm_client.os.environ, {'HTTPS_PROXY':proxy,'UNRELATED_SECRET':'never-forward'}, clear=True):
+            asyncio.run(vm_client.invoke(Path('fixed-profile')))
+            self.assertEqual(captured['env'], {'HTTPS_PROXY':proxy})
+            self.assertNotIn(proxy, captured['args'])
+        with patch.dict(sys.modules, {'mcp':sdk, 'mcp.client':client, 'mcp.client.stdio':stdio}), patch.dict(vm_client.os.environ, {}, clear=True):
+            with self.assertRaises(ValueError): asyncio.run(vm_client.invoke(Path('fixed-profile')))
+
     def test_empty_terminal_and_single_active_detection_survive_restart(self):
         row = dict(message_id='probe', thread_id='probe', sequence=8, state='accepted', expires_at=900)
         first = vm_poll.decide({}, {'pending':[row], 'next_cursor':8}, 100)

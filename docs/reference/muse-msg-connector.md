@@ -22,6 +22,9 @@ the VM. Pin the owner's SSH host key through an existing authenticated route.
 manage one SSH/stdio MCP session on Python 3.11+ using the pinned official SDK. The configuration
 contains only the fixed SSH profile and alias; SSH manages the VM-private key.
 Exactly the original eight mailbox tools are allowed. A call is never replayed.
+The SDK child inherits only the caller's current native HTTPS_PROXY context in
+ephemeral process environment; it is never saved or logged. If that context is
+absent, fail closed instead of using another invocation's saved authorization.
 An ambiguous write reports unknown and retains its original submission ID.
 Read back that ID before deciding on any subsequent operation.
 
