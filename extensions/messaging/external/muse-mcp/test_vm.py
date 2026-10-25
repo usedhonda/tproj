@@ -73,6 +73,40 @@ class VMTests(unittest.TestCase):
         self.assertEqual(first['decision'],'wake');self.assertEqual(again['decision'],'silent')
         self.assertEqual(again['state']['active'],state['active'])
 
+    def test_queued_pages_restart_outage_and_expiry_never_skip_next_message(self):
+        def row(mid, seq, **kw):
+            return dict(message_id=mid, thread_id=mid, sequence=seq,
+                        sender_address='project.cdx', state='accepted', expires_at=900, **kw)
+        first, second = row('first', 10), row('second', 11)
+        page = {'pending': [first, second], 'next_cursor': 100}
+        event = vm_poll.decide({'cursor': 9}, page, 100)
+        self.assertEqual(event['payload']['message_id'], 'first')
+        # Persist/reload exactly as a hook restart does. A later page cursor
+        # must not consume the second message before the first one is handled.
+        state = json.loads(json.dumps(event['state']))
+        self.assertEqual(state['cursor'], 9)
+        with patch.object(vm_poll, 'load_config', side_effect=OSError()):
+            failed = vm_poll.detect(Path('unused'), state, now=110)
+            repeated = vm_poll.detect(Path('unused'), failed['state'], now=120)
+        self.assertEqual(failed['decision'], 'wake')
+        self.assertEqual(repeated['decision'], 'silent')
+        resumed = vm_poll.decide(repeated['state'], page, 130)
+        self.assertEqual(resumed['decision'], 'silent')
+        self.assertNotIn('error_notified', resumed['state'])
+        for state_after_first in ['presented', 'expired', 'cancelled', 'uncertain']:
+            with self.subTest(state_after_first=state_after_first):
+                changed = dict(first, state=state_after_first)
+                if state_after_first == 'uncertain':
+                    changed['expires_at'] = 140
+                next_event = vm_poll.decide(resumed['state'],
+                    {'pending': [changed, second], 'next_cursor': 100}, 150)
+                self.assertEqual(next_event['payload']['message_id'], 'second')
+                self.assertEqual(next_event['state']['cursor'], 10)
+                done = vm_poll.decide(next_event['state'],
+                    {'pending': [], 'next_cursor': 100}, 160)
+                self.assertEqual(done['state'], {'cursor': 100})
+                self.assertEqual(done['decision'], 'silent')
+
 class KeyPolicyTests(unittest.TestCase):
     def test_key_install_checks_current_write_policy_without_changing_enrollment(self):
         spec=importlib.util.spec_from_file_location('enroll_key',Path(__file__).with_name('enroll.py'))

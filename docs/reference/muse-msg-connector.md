@@ -72,6 +72,35 @@ empty polling, a dry-run preserving state, one consumer restart and a simulated
 SSH failure without duplicate work. This does not prove full VM-replacement
 recovery or permanent availability.
 
+### Reliability evidence
+
+A roundtrip that needed an intervening human instruction proves that particular
+exchange, not unattended reliability. Keep these results separate. Unattended
+acceptance sends distinct short and long-body questions while the app stays
+closed, checks the actual answers and exact thread links, and includes a new
+recipient-originated question. Persist IDs before each call, record latency and
+any intervention, and do not replay a failed or uncertain probe. A safety hold
+is a failed unattended case, not permission to change identity or weaken checks.
+
+`test_vm.py` covers queued pages across notification-state reload, repeated
+outages, expiry/cancellation and clearing an active message without skipping the
+next one. `test_vm_stdio_faults.py` uses the pinned official SDK and real child
+processes against an isolated protocol fixture, not a mocked `invoke()`. The
+fixture saves acceptance but withholds the response. It verifies a bounded
+unknown result, original submission-ID retention, child cleanup, a subsequent
+successful exact-ID read and exactly one acceptance. It does not claim a live
+SSH-server outage or native Muse authorization proof.
+
+Run the latter with Python 3.11+ and the pinned SDK installed:
+
+```bash
+python extensions/messaging/external/muse-mcp/test_vm_stdio_faults.py -v
+```
+
+The dedicated Linux CI job installs the pinned requirements and runs it on
+Python 3.12. Dependency-free test discovery may skip it; a skip is not transport
+evidence. Actual native-message safety decisions remain a separate live gate.
+
 Rollback disables only the new native hook and restores only the isolated Muse
 package if necessary. Preserve notification state, immutable submission records,
 unknown outcomes and dedicated-key evidence. Do not roll back a mailbox DB or
