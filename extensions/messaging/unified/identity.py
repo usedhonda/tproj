@@ -407,6 +407,8 @@ def discover_endpoints(registry_root: str | os.PathLike[str], host_id: str,
             "pane": record.get("pane") or record.get("pane_id") or record.get("tmux_pane"),
             "pid": pid, "pid_start": start, "runtime_id": runtime, "platform": platform,
             "project_path": _canonical(path),
+            "directory_profile": {"model": record.get("model"), "model_observed_at": observed,
+                                  "model_source": "runtime_registry"},
             "thread_id": record.get("thread_id") or record.get("conversation_id"),
             "session_id": record.get("session_id") or record.get("codex_session_id"),
         })

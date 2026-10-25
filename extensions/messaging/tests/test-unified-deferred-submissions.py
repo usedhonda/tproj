@@ -47,6 +47,17 @@ class AsyncSubmission(unittest.TestCase):
   finally:separate.close()
   self.assertIsNone(self.hub._row('SELECT 1 FROM messages WHERE message_id="new"'))
 
+ def test_workspace_queue_needs_no_address_grant_and_old_scope_stays_bounded(self):
+  self.host.config['services']['kai'].update(messaging_scope='workspace',allowed_addresses=[])
+  self.send('mesh');self.assertEqual(json.loads(self.row('mesh')['scope']),None)
+  self.work();self.assertEqual(self.row('mesh')['state'],'hub_committed')
+  self.host.config['services']['kai'].pop('messaging_scope')
+  self.host.config['services']['kai']['allowed_addresses']=['fixture.cdx']
+  self.send('bounded')
+  self.host.config['services']['kai']['messaging_scope']='workspace'
+  self.hub.resolve_destination=lambda target:dict(self.hub.evidence('peer-ep'),renamed_to='other.cdx')
+  self.work();self.assertEqual(self.row('bounded')['reason'],'scope_denied')
+
  def test_reply_request_uses_local_original_and_resolve_runs_only_in_worker(self):
   result=self.send(reply=True);self.assertEqual(result['state'],'journaled');self.assertEqual(self.remote_calls,[])
   self.work();self.assertEqual(self.remote_calls,['resolve']);self.assertEqual(self.row()['state'],'hub_committed')

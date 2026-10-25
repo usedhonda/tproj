@@ -189,6 +189,8 @@ class MailboxTools:
             return result
         result.update(connection="available", binding="service_principal_valid",
                       messaging="available_for_enrolled_service")
+        if ctx.get("messaging_scope") == "workspace":
+            result["messaging_scope"] = "workspace"
         return result
 
     def _authorize(self, name: str, args: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -295,9 +297,15 @@ class MailboxTools:
         for item in result.get("participants", []):
             if not isinstance(item, Mapping):
                 continue
-            participants.append({"address": item["address"], "kind": item.get("kind", "participant"),
-                                 "available": bool(item.get("online", item.get("available", False)))})
-        return {"participants": participants}
+            row = {"address": item["address"], "kind": item.get("kind", "participant"),
+                   "available": bool(item.get("online", item.get("available", False)))}
+            for key in ('state', 'display_name', 'entity_type', 'project', 'repository', 'host',
+                        'harness', 'model', 'model_source', 'model_observed_at', 'model_current', 'main_side',
+                        'description', 'sessions'):
+                if key in item: row[key] = item[key]
+            participants.append(row)
+        return {"participants": participants, **{k: result[k] for k in ("checked_at", "complete") if k in result},
+                **({"messaging_scope": "workspace"} if ctx.get("messaging_scope") == "workspace" else {})}
 
     def _status(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, {"target"})

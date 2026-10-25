@@ -242,8 +242,14 @@ def main(argv: list[str] | None = None) -> int:
             if not args.all:
                 result = dict(result, participants=[r for r in result['participants'] if r['available']])
             if not args.json:
+                print('ADDRESS | TYPE | PROJECT | HARNESS | MODEL | STATE')
                 for row in result['participants']:
-                    print(row['address'] + ' ' + row['state'])
+                    fields = [row['address'], row.get('entity_type', row.get('kind', '?')),
+                              row.get('project') or '-', row.get('harness') or '?',
+                              (row.get('model') or 'unknown') +
+                              (' (last observed)' if row.get('model') and not row.get('model_current') else ''), row['state']]
+                    print(' | '.join(fields))
+                    if row.get('description'): print('  ' + row['description'])
                 if result.get('complete') is False:
                     print('Some owners could not be checked; unavailable destinations are not sendable.')
                 print('Current new-message routing snapshot; submit revalidates. Not a task approval.')

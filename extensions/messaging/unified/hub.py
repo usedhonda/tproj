@@ -141,7 +141,7 @@ class Hub:
     @staticmethod
     def _redirect_scope(req, destination, *, scope_required=False):
         scope = req.get('authorized_targets')
-        if scope_required and scope is None:
+        if scope_required and scope is None and req.get('messaging_scope') != 'workspace':
             raise HubError('unsupported', 'current Host service scope is required for alias redirect')
         if scope is not None and (not isinstance(scope, list)
                 or any(not isinstance(x, str) for x in scope) or destination not in scope):
@@ -372,6 +372,18 @@ class Hub:
         if old and any(str(old[k]) != str(req[k]) for k in ("host_id","participant_id","session","pane","pid","pid_start","runtime_id","platform")): raise HubError("identity_rejected", "endpoint identity is immutable")
         inc = old["incarnation"] if old and old["pid_start"] == str(req["pid_start"]) and old["runtime_id"] == req["runtime_id"] else str(uuid.uuid4())
         self.db.execute("INSERT INTO endpoints(endpoint_id,participant_id,host_id,session,pane,pid,pid_start,runtime_id,platform,incarnation,last_heartbeat,retired) VALUES(?,?,?,?,?,?,?,?,?,?,?,0) ON CONFLICT(endpoint_id) DO UPDATE SET participant_id=excluded.participant_id,session=excluded.session,pane=excluded.pane,pid=excluded.pid,pid_start=excluded.pid_start,runtime_id=excluded.runtime_id,platform=excluded.platform,incarnation=excluded.incarnation,last_heartbeat=excluded.last_heartbeat,retired=0", (req["endpoint_id"],req["participant_id"],host,req["session"],req["pane"],req["pid"],str(req["pid_start"]),req["runtime_id"],req["platform"],inc,now))
+        raw = req.get('directory_profile')
+        profile = {}
+        if isinstance(raw, dict):
+            for key in ('display_name', 'description', 'model', 'model_source', 'main_side'):
+                value = raw.get(key)
+                if isinstance(value, str) and 0 < len(value) <= 240 and not any(ord(c) < 32 for c in value):
+                    profile[key] = value
+            stamp = raw.get('model_observed_at')
+            if isinstance(stamp, (int, float)) and 0 < stamp <= now:
+                profile['model_observed_at'] = stamp
+        self.db.execute("INSERT OR REPLACE INTO metadata VALUES(?,?)",
+                        ('endpoint_profile:' + req['endpoint_id'], json.dumps(profile)))
         return {"endpoint_id": req["endpoint_id"], "incarnation": inc}
 
     def _new_message_recipient(self, participant):
@@ -430,6 +442,37 @@ class Hub:
             raise HubError('configuration_error', 'too many target candidates')
         return candidates
 
+    def target_profile(self, participant):
+        """Display-only owner metadata; never a prerequisite for routing."""
+        project = self._row('SELECT * FROM projects WHERE project_id=?', (participant['project_id'],))
+        sessions = []
+        selected = None
+        try:
+            selected = self._new_message_recipient(participant)['endpoint_id']
+        except HubError:
+            pass
+        for ep in self.db.execute('SELECT * FROM endpoints WHERE participant_id=? AND retired=0', (participant['participant_id'],)):
+            stored = self._row('SELECT value FROM metadata WHERE key=?', ('endpoint_profile:' + ep['endpoint_id'],))
+            profile = json.loads(stored[0]) if stored else {}
+            # A fresh heartbeat is not a fresh model observation.
+            stamp = profile.get('model_observed_at')
+            profile['model_current'] = bool(isinstance(stamp, (int, float))
+                                            and 0 <= self._now() - stamp <= 300)
+            sessions.append(dict(profile, session_id=ep['endpoint_id'], session=ep['session'],
+                pane=ep['pane'], harness=ep['platform'], last_seen=ep['last_heartbeat'],
+                selected=ep['endpoint_id'] == selected))
+        chosen = next((e for e in sessions if e['selected']), {})
+        return dict(display_name=chosen.get('display_name', participant['address']),
+                    entity_type='project_session' if project else 'agent',
+                    project=project['alias'] if project else None,
+                    repository=Path(project['path']).name if project else None,
+                    host=participant['host_id'], harness=chosen.get('harness'),
+                    model=chosen.get('model'), model_source=chosen.get('model_source'),
+                    model_observed_at=chosen.get('model_observed_at'),
+                    model_current=chosen.get('model_current', False),
+                    main_side=chosen.get('main_side'), description=chosen.get('description'),
+                    sessions=sessions)
+
     def target_directory(self, req):
         """One authenticated owner snapshot, for bounded federated discovery."""
         self._auth(req)
@@ -441,13 +484,14 @@ class Hub:
         parties = {p['address']: p for p in directory['participants']
                    if addresses is None or p['address'] in addresses}
         rows = self.target_status(dict(req, addresses=sorted(parties)))['participants']
-        return {'participants': [dict(r, kind=parties[r['address']]['kind']) for r in rows]}
+        return {'participants': [dict(r, kind=parties[r['address']]['kind'],
+            **self.target_profile(parties[r['address']])) for r in rows]}
 
     def send_targets(self, req):
         candidates = self._target_candidates(req, self.directory_list())
         addresses = [a for a, parties in candidates.items() if len(parties) == 1]
         states = {r['address']: r for r in self.target_status(dict(req, addresses=addresses))['participants']}
-        rows = [dict(states[a], kind=parties[0]['kind']) if len(parties) == 1 else
+        rows = [dict(states[a], kind=parties[0]['kind'], **self.target_profile(parties[0])) if len(parties) == 1 else
                 {'address': a, 'kind': 'participant', 'available': False,
                  'state': 'ambiguous_target' if parties else 'unknown_target'}
                 for a, parties in sorted(candidates.items())]

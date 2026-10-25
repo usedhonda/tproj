@@ -104,11 +104,53 @@ class SendTargetsTest(unittest.TestCase):
         tools = mailbox.MailboxTools(service_id='muse', service_address='muse', service_token='fixture',
             authorizer=lambda *args: {'allowed_addresses': ['old-cache.cc']},
             host_call=lambda request: h.dispatch(request, 1, os.getuid()))
-        self.assertEqual(tools.dispatch('tproj_list', {}), {
-            'participants': [{'address': 'b.cc', 'kind': 'cc', 'available': True}]})
+        listing = tools.dispatch('tproj_list', {})
+        self.assertEqual([r['address'] for r in listing['participants']], ['b.cc'])
+        self.assertEqual(listing['participants'][0]['harness'], 'cc')
+        self.assertTrue(listing['complete'])
         req.update(op='service_status', target='a.cdx')
         with self.assertRaises(HubError) as error: h.dispatch(req, 1, os.getuid())
         self.assertEqual(error.exception.code, 'scope_denied')
+
+    def test_workspace_mode_unifies_destinations_and_preserves_session_metadata(self):
+        h = Host({'host_id': 'a', 'journal': str(Path(self.tmp.name) / 'mesh.db'),
+            'services': {'muse': {'allowed_addresses': [], 'messaging_scope': 'workspace'}}}, recover=False)
+        self.addCleanup(h.db.close)
+        h.service = lambda *args: {'endpoint_id': 'acc'}
+        h.hub = lambda op, **kw: self.hubs['a'].dispatch(dict(kw, op=op, host_id='a', host_token='ta'))
+        a = self.hubs['a']
+        a.register(dict(host_id='a', host_token='ta', endpoint_id='acdx', participant_id='a:cdx',
+            platform='cdx', pid=10, pid_start=1, session='fixture', pane='%1', runtime_id='acdx',
+            directory_profile={'model':'fixture-model', 'model_observed_at':a._now(),
+                               'model_source':'runtime_registry', 'description':'Compiler work'}))
+        req = dict(op='service_list', service_id='muse', authorized_targets=[])
+        rows = h.dispatch(req, 1, os.getuid())['participants']
+        self.assertEqual({r['address'] for r in rows}, set(self.rows()))
+        row = next(r for r in rows if r['address']=='a.cdx')
+        self.assertEqual(row['model'], 'fixture-model')
+        self.assertEqual(row['repository'], 'a')
+        self.assertTrue(row['sessions'][0]['selected'])
+        self.assertNotIn('/fixture', json.dumps(rows))
+        self.assertIsNone(h.service_policy(req, 'b.cc'))
+        spec = importlib.util.spec_from_file_location('mesh_mailbox', ROOT / 'external/kai-mcp/mailbox_tools.py')
+        mailbox = importlib.util.module_from_spec(spec); spec.loader.exec_module(mailbox)
+        tools = mailbox.MailboxTools(service_id='muse', service_address='muse', service_token='fixture',
+            authorizer=lambda *args: {'messaging_scope':'workspace','allowed_addresses':[]},
+            host_call=lambda request: h.dispatch(request, 1, os.getuid()))
+        self.assertEqual(tools.dispatch('tproj_list', {})['messaging_scope'], 'workspace')
+        self.assertEqual(tools.dispatch('tproj_capabilities', {})['messaging_scope'], 'workspace')
+        # Normal send follows the same Host policy; no prior list or address grant.
+        h.submit = lambda ep, request, reply=False: h.hub('submit', message={
+            'message_id':'mesh-send', 'sender_endpoint':ep['endpoint_id'],
+            'target':request['target'], 'body':'fixture', 'kind':'chat'})
+        result = h.dispatch(dict(req, op='service_send', target='a.cdx'), 1, os.getuid())
+        self.assertEqual(result['message_id'], 'mesh-send')
+        a.db.execute("UPDATE metadata SET value=? WHERE key='endpoint_profile:acdx'",
+            (json.dumps({'model':'old-model','model_observed_at':a._now()-301}),))
+        self.assertEqual(self.rows()['a.cdx']['model'], 'old-model')
+        self.assertFalse(self.rows()['a.cdx']['model_current'])
+        self.assertTrue(self.rows()['a.cdx']['available'])
+        self.assertEqual(self.rows()['b.cc']['harness'], 'cc')  # federated metadata survives
 
     def test_cli_targets_carries_native_context_and_filters_without_writing(self):
         calls = []

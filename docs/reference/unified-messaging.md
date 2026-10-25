@@ -398,35 +398,45 @@ cannot be disabled through caller arguments. Muse P1 independently restricts
 its bridge/catalog and advertises no events. See its
 [read-only enrollment guide](../../extensions/messaging/external/muse-mcp/README.md).
 
-The host-owned `services.kai.allowed_addresses` is the outbound policy authority.
+#### Shared development MSG directory
 
-#### Current caller's new-message destinations
+Owner-configured development connections (`services.<id>.messaging_scope: workspace`)
+share the registered native peers' ordinary messaging destinations. New sessions
+need no per-address approval. This applies to enrolled development agents, not
+external ingress connections; omitted mode preserves their `allowed_addresses`
+policy. Public request fields cannot select this mode. Authentication, read-only
+operation limits, original-party replies and message-specific safety remain intact.
+Conversation access is not approval to execute a business task.
 
-Native callers use `tproj-msg targets` for currently sendable destinations and
-`tproj-msg targets --all --json` for the permitted set including unavailability
-reasons. Legacy `--list` remains the heartbeat directory, not this decision.
-Service callers use the existing `tproj_list`: `available` now means that the
-current Host scope permits a new message and the owner resolves its recipient,
-not merely that some endpoint recently heartbeated. `tproj_status` returns the
-same availability and its existing `state` field supplies a reason such as
-`no_recipient`, `ambiguous_target`, `endpoint_unavailable`, `maintenance` or
-`route_unverified` (owner could not be checked). No tool, credential, scope
-grant or body read is added.
+`tproj-msg targets` and workspace MCP `tproj_list` show currently sendable peers.
+`targets --all --json` also diagnoses stopped, ambiguous and unavailable routes.
+`status` and submit use the same owner recipient resolver; listing is not required
+before sending and never reserves delivery. A route changing after listing is a
+routing error, not missing user approval. Service attestation includes
+`messaging_scope=workspace`, propagated to MCP list/capabilities from the
+authenticated attestation (never caller arguments); its legacy `allowed_addresses=[]` field is not an
+empty workspace membership list. Host policy remains authoritative on every call.
+Deferred submissions snapshot unrestricted workspace mode as JSON null; a previously
+restricted submission keeps its original finite scope, including after migration.
 
-`send_targets_v1` is the backend capability. Discovery uses the same
-`_new_message_recipient` resolver as new submission, including current explicit
-recipient preference, and never changes that preference or reserves delivery.
-Each federated owner is queried once, in parallel, with a three-second transport
-budget. An unsupported, unreachable or malformed owner response cannot advertise
-its targets as ready; local verified targets remain usable. Native JSON marks
-partial owner coverage with `complete: false`. Host policy is re-read for each
-call; consumer caches and public request fields cannot expand the result.
+Rows preserve `address`, `kind`, `available` and add display name, entity type,
+project/repository name, host label, harness, observed model/source/time, main side,
+explicit description and receiving sessions. A row is a routable address; its
+`sessions` describe registered non-retired receivers, with the selected receiver
+marked. They are not endpoint-addressing bypasses or an inventory of unregistered
+provider chats. Shared service identity is not per-provider-chat attestation.
+Models come from process-validated runtime registry observations, not CC/Cdx labels
+or configured defaults. Observations older than five minutes retain the last observed model with
+`model_current=false`, rather than claiming it is current;
+missing optional metadata never blocks registration, listing or submission.
+Descriptions are explicit owner-provided metadata, never extracted conversations.
+No transcripts, credentials, process IDs or absolute repository paths are exposed.
 
-This is a routing/policy snapshot, not delivery, consumption, an idle-recipient
-claim, or approval for a business task. Submit still revalidates scope, routing
-and message-specific policy. Exact-party replies to already received messages
-remain separate from the new-message destination list. A caller should retrieve
-this list instead of asking the user again merely to learn its messaging targets.
+`send_targets_v1` queries each federated owner once with a three-second budget,
+without message writes or a database write lock. Partial coverage sets
+`complete=false`; local peers remain usable. Old peers lacking metadata still work.
+CLI JSON and MCP add optional fields; strict catalog schemas ship with their
+matching adapters. Legacy `--list` remains a heartbeat directory.
 
 Each host connection reads one validated, bounded, no-follow configuration file
 snapshot. Service list/status and actual send admission use that snapshot; the

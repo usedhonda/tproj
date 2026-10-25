@@ -141,6 +141,7 @@ class FixedConnectionAuthorizer:
             "allowed_addresses": list(scope),
             "policy_revision": observed.get("policy_revision"),
             "policy_state": policy_state,
+            "messaging_scope": observed.get("messaging_scope", "restricted"),
         }
 
     def event_authorizer(self, reader: Callable[[int], Mapping[str, Any]]):

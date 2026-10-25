@@ -66,7 +66,7 @@ def enqueue(host,ep,request,envelope,*,target_address,now=None):
  ident,cfg=host._service_binding(request)
  if ep.get('service_id')!=ident or cfg.get('read_only',False):raise HubError('scope_denied','deferred submission requires current writable service')
  scope=host.service_policy(request)
- if scope is None:raise HubError('configuration_error','explicit service scope required')
+ if scope is None and cfg.get('messaging_scope')!='workspace':raise HubError('configuration_error','explicit service scope required')
  body=envelope.get('body')
  if not isinstance(body,str) or any(ord(c)<32 and c not in '\n\t' for c in body) or '\x7f' in body:raise HubError('invalid_message','invalid deferred body')
  serialized=json.dumps(envelope,sort_keys=True,ensure_ascii=False)
@@ -137,10 +137,12 @@ def work_once(host,*,now=None,limit=4):
    cfg=(host.config.get('services') or {}).get(row['service_id'])
    if (not cfg or cfg.get('read_only',False) or binding_hash(row['service_id'],cfg)!=row['binding_hash']):raise HubError('stale_session','current enrollment no longer matches queued submission')
    current=host.service_policy({'service_id':row['service_id']})
-   permitted=sorted(set(json.loads(row['scope'])) & set(current or []))
-   if not envelope.get('in_reply_to') and row['target_address'] not in permitted:raise HubError('scope_denied','queued target no longer authorized')
+   original=json.loads(row['scope'])
+   permitted=(current if original is None else original) if current is None or original is None else sorted(set(original)&set(current))
+   if not envelope.get('in_reply_to') and permitted is not None and row['target_address'] not in permitted:raise HubError('scope_denied','queued target no longer authorized')
    submitted=True
    result=host.hub('submit',message=envelope,authorized_targets=permitted,
+                   messaging_scope='workspace' if permitted is None else 'restricted',
                    defer_flush=True,pending_deadline=row['expires_at'])
    # An RPC result alone is not substituted for a matching durable message.
    status=host.hub('submission_status',endpoint_id=row['endpoint_id'],message=envelope)
@@ -170,7 +172,9 @@ def control(host,ep,req,action):
      or binding_hash(ident,cfg)!=row['binding_hash']):
   raise HubError('stale_session','current writable binding no longer matches queued submission')
  scope=host.service_policy(req)
- if scope is None or row['target_address'] not in set(scope)&set(json.loads(row['scope'])):
+ original=json.loads(row['scope'])
+ if ((scope is not None and row['target_address'] not in scope) or
+     (original is not None and row['target_address'] not in original)):
   raise HubError('scope_denied','queued target is outside current and original scope')
  stored=host.db.execute('SELECT * FROM submissions WHERE message_id=?',(mid,)).fetchone()
  if not stored or stored['endpoint_id']!=ep['endpoint_id']:

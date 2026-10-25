@@ -310,7 +310,7 @@ class FederatedHub(Hub):
         for address, matches in sorted(candidates.items()):
             if len(matches) == 1:
                 row = matches[0]
-                rows.append({k: row[k] for k in ('address', 'kind', 'available', 'state')})
+                rows.append(row)
             else:
                 rows.append(dict(address=address, kind='participant', available=False, state=
                     'ambiguous_target' if matches else 'route_unverified' if partial else 'unknown_target'))

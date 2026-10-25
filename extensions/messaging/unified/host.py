@@ -262,6 +262,13 @@ class Host:
         discovered = reconciled
         registered_endpoints = []
         for ep in discovered:
+            profile = dict(ep.get('directory_profile') or {})
+            try:
+                mode = json.loads((Path(ep['project_path']) / '.local/role-mode.json').read_text())
+                if isinstance(mode, dict) and mode.get('main') in ('cc', 'cdx'): profile['main_side'] = mode['main']
+            except (OSError, ValueError, KeyError):
+                pass
+            ep['directory_profile'] = profile
             try:
                 registered = self.hub('endpoint_register', **ep)
             except HubError as exc:
@@ -562,7 +569,7 @@ class Host:
                   participant_id=cfg['participant_id'], host_id=self.config['host_id'],
                   session=cfg['address'], pane='', pid=pid, pid_start=start,
                   runtime_id=f'{pid}:{start}', platform=platform, address=cfg['address'],
-                  service_id=service_id)
+                  service_id=service_id, directory_profile=cfg.get('directory_profile', {}))
         # A generation-bound service is a principal, not a process/conversation
         # persona. Authenticate the current launchd process above on every call,
         # then retain its mailbox across process restarts within one enrollment.
@@ -602,6 +609,8 @@ class Host:
         service_id, cfg = self._service_binding(req)
         if service_id != 'kai' and 'allowed_addresses' not in cfg:
             return None  # Preserve the independent legacy OpenClaw contract.
+        if cfg.get('messaging_scope') == 'workspace':
+            return None  # Enrolled development peers share ordinary MSG destinations.
         scope = policy_scope(cfg)
         if target is not None and target not in scope:
             raise HubError('scope_denied', 'target is outside authorized service policy')
@@ -657,6 +666,8 @@ class Host:
             if not reply and ep.get('service_id'):
                 scope = self.service_policy(req)
                 if scope is not None: fields['authorized_targets'] = scope
+                elif self._service_binding(req)[1].get('messaging_scope') == 'workspace':
+                    fields['messaging_scope'] = 'workspace'
             return self.hub('submit', message=envelope, **fields)
         except (OSError, sqlite3.Error) as exc:
             raise resource_error(exc, 'authority_rpc') or HubError('unavailable', 'authority RPC unavailable') from None
@@ -911,8 +922,11 @@ class Host:
             result.update(service_id=service_id, binding_generation=cfg.get('binding_generation'))
             try:
                 scope = self.service_policy(req)
-                result.update(allowed_addresses=scope, policy_state='valid',
-                              policy_revision=policy_revision(scope) if scope is not None else None)
+                workspace = cfg.get('messaging_scope') == 'workspace'
+                public_scope = [] if workspace else scope
+                result.update(allowed_addresses=public_scope, policy_state='valid',
+                              messaging_scope='workspace' if workspace else 'restricted',
+                              policy_revision=policy_revision(public_scope) if public_scope is not None else None)
             except HubError as exc:
                 if exc.code != 'configuration_error':
                     raise
@@ -940,7 +954,8 @@ class Host:
             participants = [p for p in directory['participants']
                             if scope is None or p['address'] in scope]
             if op == 'service_list':
-                return dict(directory, participants=participants, projects=[])
+                return dict(directory, participants=[p for p in participants if p['available']]
+                            if scope is None else participants, projects=[])
             matches = [p for p in participants if p['address'] == req.get('target')]
             if len(matches) != 1:
                 raise HubError('unknown_target', 'unknown or ambiguous target')
