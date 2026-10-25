@@ -32,6 +32,9 @@ for line in sys.stdin:
     elif method == 'tools/list':
         result = {'tools': [{'name': name, 'inputSchema': {'type': 'object'}}
                             for name in ['tproj_send', 'tproj_message']]}
+        schema = root / 'message-schema.json'
+        if schema.exists():
+            result['tools'][1]['outputSchema'] = json.loads(schema.read_text())
     elif method == 'tools/call':
         params = request['params']; args = params['arguments']
         if params['name'] == 'tproj_send':
@@ -45,8 +48,12 @@ for line in sys.stdin:
             raise RuntimeError('unexpected tool')
         accepted = [json.loads(x) for x in (root / 'accepted.jsonl').read_text().splitlines()]
         rows = [x for x in accepted if x['submission_id'] == args['message_id']]
-        value = {'message_id': args['message_id'], 'state': 'accepted',
+        state = root / 'message-state'
+        value = {'message_id': args['message_id'], 'thread_id': args['message_id'],
+                 'target': 'muse', 'state': state.read_text() if state.exists() else 'accepted',
                  'body': rows[0]['body'], 'acceptance_count': len(rows)}
+        if (root / 'message-schema.json').exists():
+            value.pop('acceptance_count')
         result = {'content': [{'type': 'text', 'text': json.dumps(value)}],
                   'structuredContent': value, 'isError': False}
     else:
@@ -58,6 +65,30 @@ for line in sys.stdin:
 @unittest.skipUnless(sys.version_info >= (3, 11) and importlib.util.find_spec('mcp'),
                      'requires Python 3.11+ and pinned official mcp SDK')
 class StdioFaultTests(unittest.TestCase):
+    def test_already_dispatching_message_can_be_read_with_published_schema(self):
+        client = Path(__file__).with_name('vm_client.py')
+        catalog = json.loads(client.parent.parent.joinpath('kai-mcp/external-assistant-tools.json').read_text())
+        schema = next(t['outputSchema'] for t in catalog['tools'] if t['name'] == 'tproj_message')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_ssh = root / 'ssh'
+            fake_ssh.write_text('#!' + sys.executable + '\n' + SERVER)
+            fake_ssh.chmod(0o700)
+            profile = root / 'profile'; profile.write_text('Host tproj-msg-muse\n'); profile.chmod(0o600)
+            config = root / 'client.json'
+            config.write_text(json.dumps({'ssh_config': str(profile), 'ssh_host': 'tproj-msg-muse'})); config.chmod(0o600)
+            (root / 'message-schema.json').write_text(json.dumps(schema))
+            (root / 'message-state').write_text('dispatching')
+            (root / 'accepted.jsonl').write_text(json.dumps({'submission_id': 'pinned-message', 'body': 'fixture'}) + '\n')
+            args = root / 'args.json'; args.write_text(json.dumps({'message_id': 'pinned-message'}))
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ.get('PATH', ''),
+                       HTTPS_PROXY='http://fixture.invalid:3128')
+            result = subprocess.run([sys.executable, str(client), '--config', str(config),
+                'call-tool', '--name', 'tproj_message', '--arguments-file', str(args)],
+                env=env, capture_output=True, text=True, timeout=25)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)['structuredContent']['state'], 'dispatching')
+
     def test_lost_ack_after_acceptance_is_unknown_bounded_and_read_back_without_replay(self):
         client = Path(__file__).with_name('vm_client.py')
         with tempfile.TemporaryDirectory() as tmp:

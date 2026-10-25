@@ -101,6 +101,12 @@ The dedicated Linux CI job installs the pinned requirements and runs it on
 Python 3.12. Dependency-free test discovery may skip it; a skip is not transport
 evidence. Actual native-message safety decisions remain a separate live gate.
 
+Both `tproj_message` and `tproj_inbox` may return a message already in
+`dispatching` after a prior presentation reservation. Their published output
+schemas must accept that state. A repeat body read is not a resend or an ACK;
+the recipient still acknowledges only after consuming the body. Rejecting this
+legitimate response in SDK validation must not be mistaken for a network outage.
+
 Rollback disables only the new native hook and restores only the isolated Muse
 package if necessary. Preserve notification state, immutable submission records,
 unknown outcomes and dedicated-key evidence. Do not roll back a mailbox DB or
