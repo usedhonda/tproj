@@ -399,6 +399,35 @@ its bridge/catalog and advertises no events. See its
 [read-only enrollment guide](../../extensions/messaging/external/muse-mcp/README.md).
 
 The host-owned `services.kai.allowed_addresses` is the outbound policy authority.
+
+#### Current caller's new-message destinations
+
+Native callers use `tproj-msg targets` for currently sendable destinations and
+`tproj-msg targets --all --json` for the permitted set including unavailability
+reasons. Legacy `--list` remains the heartbeat directory, not this decision.
+Service callers use the existing `tproj_list`: `available` now means that the
+current Host scope permits a new message and the owner resolves its recipient,
+not merely that some endpoint recently heartbeated. `tproj_status` returns the
+same availability and its existing `state` field supplies a reason such as
+`no_recipient`, `ambiguous_target`, `endpoint_unavailable`, `maintenance` or
+`route_unverified` (owner could not be checked). No tool, credential, scope
+grant or body read is added.
+
+`send_targets_v1` is the backend capability. Discovery uses the same
+`_new_message_recipient` resolver as new submission, including current explicit
+recipient preference, and never changes that preference or reserves delivery.
+Each federated owner is queried once, in parallel, with a three-second transport
+budget. An unsupported, unreachable or malformed owner response cannot advertise
+its targets as ready; local verified targets remain usable. Native JSON marks
+partial owner coverage with `complete: false`. Host policy is re-read for each
+call; consumer caches and public request fields cannot expand the result.
+
+This is a routing/policy snapshot, not delivery, consumption, an idle-recipient
+claim, or approval for a business task. Submit still revalidates scope, routing
+and message-specific policy. Exact-party replies to already received messages
+remain separate from the new-message destination list. A caller should retrieve
+this list instead of asking the user again merely to learn its messaging targets.
+
 Each host connection reads one validated, bounded, no-follow configuration file
 snapshot. Service list/status and actual send admission use that snapshot; the
 consumer cache never grants access. Empty scope is valid (empty list and

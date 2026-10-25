@@ -808,8 +808,8 @@ class Host:
         if op == 'diagnostic_identity':
             return self.hub('diagnostic_identity', **{key: req[key] for key in ('active_only', 'endpoint_ids') if key in req})
         # Legacy service consumers must not take the public operator branch.
-        if op in ('list', 'status') and ('service_id' in req or 'service_token' in req):
-            op = 'service_' + op
+        if op in ('list', 'status', 'send_targets') and ('service_id' in req or 'service_token' in req):
+            op = 'service_list' if op == 'send_targets' else 'service_' + op
             req = dict(req, op=op)
         if op == 'runtime_capabilities':
             # UID authentication suffices for this operator-only read, not tasks.
@@ -817,7 +817,7 @@ class Host:
             return {'host_capabilities': runtime_capabilities(),
                     'task_master': self.hub('task_capabilities')}
         if op == 'messaging_capabilities':
-            own = ['service_policy_v1', 'read_only_diagnose', 'diagnostic_identity', 'query_only_service',
+            own = ['send_targets_v1', 'service_policy_v1', 'read_only_diagnose', 'diagnostic_identity', 'query_only_service',
                    'resource_exhausted', 'recipient_recovery_v1', 'native_cc_v1', 'service_alias_scope_v1', 'service_generation_v1']
             hub_caps = self.hub('messaging_capabilities')
             from native_consumer import BACKEND_VERSION
@@ -863,7 +863,7 @@ class Host:
         query_only_service = op == 'service_diagnose'
         self._query_only_service = query_only_service
         ep = self.service(pid, uid, req) if is_service else (
-            self.caller_read_only(pid, uid, req) if op == 'diagnose' else self.caller(pid, uid, req))
+            self.caller_read_only(pid, uid, req) if op in ('diagnose', 'send_targets') else self.caller(pid, uid, req))
         if is_service:
             _, service_cfg = self._service_binding(req)
             read_only = service_cfg.get('read_only', False)
@@ -934,7 +934,9 @@ class Host:
             if op == 'service_status' and (not isinstance(req.get('target'), str) or not req['target']):
                 raise HubError('invalid_request', 'target required')
             scope = self.service_policy(req, req.get('target') if op == 'service_status' else None)
-            directory = self.hub('directory_all' if self.config.get('federated') else 'directory_list')
+            fields = dict(endpoint_id=ep['endpoint_id'], authorized_targets=scope)
+            if op == 'service_status': fields['addresses'] = [req['target']]
+            directory = self.hub('send_targets', **fields)
             participants = [p for p in directory['participants']
                             if scope is None or p['address'] in scope]
             if op == 'service_list':
@@ -943,6 +945,8 @@ class Host:
             if len(matches) != 1:
                 raise HubError('unknown_target', 'unknown or ambiguous target')
             return matches[0]
+        if op == 'send_targets':
+            return self.hub('send_targets', endpoint_id=ep['endpoint_id'])
         if op == 'service_begin_present':
             if not isinstance(req.get('message_id'), str) or not req['message_id']:
                 raise HubError('invalid_message', 'message ID required')
@@ -1328,7 +1332,7 @@ def main():
                         if not isinstance(request, dict):
                             raise HubError('invalid_request', 'request object required')
                         read_only = request.get('op') in ('diagnose', 'diagnostic_identity',
-                                                          'service_diagnose', 'messaging_capabilities')
+                                                          'service_diagnose', 'messaging_capabilities', 'send_targets')
                         host = Host(load_config_snapshot(args.config, strict=True), recover=False, read_only=read_only)
                         result = success(host.dispatch(request, pid, uid))
                     except (HubError, IdentityError) as exc:

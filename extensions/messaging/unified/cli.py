@@ -180,6 +180,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--ttl-sec", type=int, default=3600)
     p.add_argument("--operation-id")
     p.add_argument("--submission-id")
+    p.add_argument('--all', action='store_true', help='targets: also show unavailable permitted destinations')
     return p
 
 
@@ -194,6 +195,10 @@ def _caller_request(op: str, **kwargs) -> dict:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.all and args.target != 'targets':
+            raise ClientError('--all is only supported with targets', 'invalid_argument')
+        if args.target == 'targets' and (args.retry or args.stdin or args.list or args.status or args.body):
+            raise ClientError('targets is read-only; use only --all, --json and caller selectors', 'invalid_argument')
         cfg = config()
         if args.target in ('recipient', 'recovery'):
             commands = {'recipient': ('list', 'select', 'clear'),
@@ -231,6 +236,18 @@ def main(argv: list[str] | None = None) -> int:
                 if context:
                     request["conversation"] = context
             result = rpc(cfg["socket"], request)
+        elif args.target == 'targets':
+            result = rpc(cfg['socket'], _caller_request('send_targets', session=args.session,
+                                                       **{'as': args.claimed_alias}))
+            if not args.all:
+                result = dict(result, participants=[r for r in result['participants'] if r['available']])
+            if not args.json:
+                for row in result['participants']:
+                    print(row['address'] + ' ' + row['state'])
+                if result.get('complete') is False:
+                    print('Some owners could not be checked; unavailable destinations are not sendable.')
+                print('Current new-message routing snapshot; submit revalidates. Not a task approval.')
+                return 0
         elif args.target in ("whoami", "doctor"):
             result = rpc(cfg["socket"], _caller_request(args.target, session=args.session, **{"as": args.claimed_alias}))
         elif args.target == "cancel":

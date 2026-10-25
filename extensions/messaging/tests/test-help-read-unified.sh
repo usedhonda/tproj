@@ -34,6 +34,7 @@ JSON
 enrolled_out=$(HOME="$enrolled_home" "$msg" --help)
 grep -Fq 'unified transport active' <<<"$enrolled_out" || fail "enrolled help missing unified banner"
 grep -Fq 'tproj-msg --status [target]' <<<"$enrolled_out" || fail "enrolled help missing --status"
+grep -Fq 'tproj-msg targets [--all] [--json]' <<<"$enrolled_out" || fail "enrolled help missing current caller targets"
 grep -Fq 'tproj-msg inbox --cursor <n> --limit <n> [--json]' <<<"$enrolled_out" || fail "enrolled help missing inbox"
 grep -Fq 'tproj-msg ack <id>' <<<"$enrolled_out" || fail "enrolled help missing ack"
 grep -Fq 'tproj-msg --retry <submission-id>' <<<"$enrolled_out" || fail "enrolled help missing --retry"

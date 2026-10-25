@@ -73,6 +73,18 @@ Cloud surface では、catalog に実在する次の MCP tools **だけ**を呼�
 
 ## 1. 宛先と自分の指定
 
+送信先は、その呼出元が現在取得した一覧から選ぶ。native CLI は
+`tproj-msg targets`（送信可能な先）、`tproj-msg targets --all --json`
+（許可範囲の不可理由を含む一覧）、MCP は既存の `tproj_list` の
+`available: true` を使う。MCP の個別理由は `tproj_status` の `state`。
+一覧は現在の送信権限と実際の新規宛先 resolver の読取り結果であり、
+`--list` の heartbeat 名簿とは区別する。宛先の存在・通信権限の確認だけを
+理由に、本人へ毎回問い合わせない。unknown/取得不能は利用可と推測せず、
+現在のエラーを保持する。一覧取得は送信・ACK・権限追加を行わない。
+
+これは通常 MSG の新規送信先の判定で、本文の業務実行・新規委任の承認ではない。
+受信済み元便への exact-ID reply の権利とも別。送信時に権限と宛先は再検証される。
+
 | 宛先 | 意味 |
 |---|---|
 | `cc` / `cdx` | 自分と同じプロジェクトの相方 |
@@ -109,7 +121,7 @@ EOF
 ```
 
 - 送信前の `--status` は必須ではない。
-- 宛先不明なら `tproj-msg --list`。
+- 宛先不明なら `tproj-msg targets`。
 - 本文は `--stdin` + 引用符付き `<<'EOF'`。バッククォートや `$` をシェルに展開させない。
 - 通常送信は受信 endpoint が利用可能なら自動提示される。wake や `--new-task` は送信経路に存在しない。
 - 入力中・作業中・下書き保護で提示が保留されても、上書き・force・旧方式で回避しない。
@@ -196,7 +208,7 @@ tproj-msg message <message-id>
 | 症状 | 対応 |
 |---|---|
 | `command not found` | `export PATH="$HOME/bin:$PATH"` 後、同じコマンドを実行 |
-| `unknown_target` | `--list` で名前を確認。似た別名へ置き換えない |
+| `unknown_target` | `targets --all --json` で現在の宛先と不可理由を確認。似た別名へ置き換えない |
 | `queued` のまま／返答なし | `message <ID>` を一度確認。提示未確認なら配達ログ・生存状態・ペインから保留／接続断／endpoint失効／配達故障を切り分け、許可範囲で安全に修復。提示済みなら返信待ち。ACK 不在だけで画面に出ていない・多忙・失敗とは断定しない。受付だけで完了扱いにせず、同じ ID を保ったまま非同期の返信を待ち、依存しない作業は続ける |
 | 結果不明で `Submission ID: <id>` が出た | 下記 `--retry` のみ。同じ ID・本文の再試行であり、新規送信を作らない |
 | `identity_rejected` | `whoami` / `doctor` で会話登録の不一致を確認。別名・他ペイン・旧方式で回避しない |

@@ -377,6 +377,82 @@ class Hub:
     def _new_message_recipient(self, participant):
         return recipient.new_message_recipient(self, participant)
 
+    def target_status(self, req):
+        """Owner-side, read-only new-message routing status; never reserve delivery."""
+        self._auth(req)
+        addresses = req.get('addresses')
+        if (not isinstance(addresses, list) or len(addresses) > 1024
+                or any(not isinstance(a, str) or not a for a in addresses)
+                or len(set(addresses)) != len(addresses)):
+            raise HubError('invalid_request', 'unique target addresses required')
+        rows = []
+        for address in addresses:
+            row = {'address': address, 'available': False, 'state': 'unknown_target'}
+            try:
+                party = self._participant(address)
+                if hasattr(self, 'local_id') and party['host_id'] != self.local_id:
+                    raise HubError('unknown_target', 'target belongs to another owner')
+                row['kind'] = party['kind']
+                if self._maintenance() in ('stopped', 'probe'):
+                    raise HubError('maintenance', 'ordinary new messages are paused')
+                self._new_message_recipient(party)
+                row.update(available=True, state='ready')
+            except HubError as exc:
+                known = {'unknown_target', 'no_recipient', 'ambiguous_target',
+                         'endpoint_unavailable', 'identity_rejected', 'maintenance'}
+                row['state'] = exc.code if exc.code in known else 'unavailable'
+            rows.append(row)
+        return {'participants': rows}
+
+    def _target_candidates(self, req, directory):
+        host = self._auth(req)
+        self._host_endpoint(host, req.get('endpoint_id'))
+        scope = req.get('authorized_targets')
+        if scope is not None and (not isinstance(scope, list)
+                or any(not isinstance(a, str) or not a for a in scope)
+                or len(set(scope)) != len(scope)):
+            raise HubError('configuration_error', 'invalid sender target scope')
+        requested = req.get('addresses')
+        if requested is not None and (not isinstance(requested, list)
+                or any(not isinstance(a, str) or not a for a in requested)):
+            raise HubError('invalid_request', 'target address list required')
+        if requested is not None and scope is not None and not set(requested) <= set(scope):
+            raise HubError('scope_denied', 'target is outside authorized service policy')
+        candidates = {}
+        for party in directory['participants']:
+            address = party['address']
+            if scope is not None and address not in scope: continue
+            if requested is not None and address not in requested: continue
+            candidates.setdefault(address, []).append(party)
+        for address in (requested if requested is not None else scope or []):
+            candidates.setdefault(address, [])
+        if len(candidates) > 1024:
+            raise HubError('configuration_error', 'too many target candidates')
+        return candidates
+
+    def target_directory(self, req):
+        """One authenticated owner snapshot, for bounded federated discovery."""
+        self._auth(req)
+        addresses = req.get('addresses')
+        if addresses is not None and (not isinstance(addresses, list)
+                or len(addresses) > 1024 or any(not isinstance(a, str) for a in addresses)):
+            raise HubError('invalid_request', 'target address list required')
+        directory = self.local_directory() if hasattr(self, 'local_id') else self.directory_list()
+        parties = {p['address']: p for p in directory['participants']
+                   if addresses is None or p['address'] in addresses}
+        rows = self.target_status(dict(req, addresses=sorted(parties)))['participants']
+        return {'participants': [dict(r, kind=parties[r['address']]['kind']) for r in rows]}
+
+    def send_targets(self, req):
+        candidates = self._target_candidates(req, self.directory_list())
+        addresses = [a for a, parties in candidates.items() if len(parties) == 1]
+        states = {r['address']: r for r in self.target_status(dict(req, addresses=addresses))['participants']}
+        rows = [dict(states[a], kind=parties[0]['kind']) if len(parties) == 1 else
+                {'address': a, 'kind': 'participant', 'available': False,
+                 'state': 'ambiguous_target' if parties else 'unknown_target'}
+                for a, parties in sorted(candidates.items())]
+        return {'participants': rows, 'checked_at': self._now(), 'complete': True}
+
     def _authorize_reply_sender(self, sender, original, message):
         return self._same_native_party(sender, original['recipient_endpoint']) or recipient.reply_authorized(self, sender, original, message)
 
@@ -974,7 +1050,7 @@ class Hub:
     def messaging_capabilities(self, req):
         self._auth(req)
         return {'capabilities': ['native_attest', 'native_continuity',
-                                'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted',
+                                'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted', 'send_targets_v1',
                                 'native_begin_present', 'native_pending', 'native_drain', 'native_handoff', recipient.CAPABILITY, 'native_cc_v1'],
                 'native_runtime': {'hub_version': HUB_NATIVE_VERSION}, 'peers': {}}
 
@@ -986,6 +1062,8 @@ class Hub:
         if op in ('messaging_capabilities', 'peer_messaging_capabilities'):
             return self.messaging_capabilities(req)
         if op == 'diagnostic_identity': return self.diagnostic_identity(req)
+        if op == 'send_targets': return self.send_targets(req)
+        if op == 'target_status': return self.target_status(req)
         if op == "task_capabilities":
             self._auth(req)
             from tasks import task_capabilities
@@ -1071,7 +1149,7 @@ def main(argv=None):
     if factory is Hub:
         import threading
         def dispatch(req):
-            ro = req.get('op') in ('diagnose', 'peer_diagnose', 'diagnostic_identity', 'messaging_capabilities', 'peer_messaging_capabilities', 'submission_status', 'query_local', 'diagnose_local')
+            ro = req.get('op') in ('diagnose', 'peer_diagnose', 'diagnostic_identity', 'messaging_capabilities', 'peer_messaging_capabilities', 'submission_status', 'query_local', 'diagnose_local', 'send_targets', 'target_status', 'peer_target_directory')
             instance=factory(args.db,args.config, read_only=ro)
             try: return instance.dispatch(req)
             finally: instance.close()
@@ -1080,7 +1158,7 @@ def main(argv=None):
     else:
         import threading
         def dispatch(req):
-            ro = req.get('op') in ('diagnose', 'peer_diagnose', 'diagnostic_identity', 'messaging_capabilities', 'peer_messaging_capabilities', 'submission_status', 'query_local', 'diagnose_local')
+            ro = req.get('op') in ('diagnose', 'peer_diagnose', 'diagnostic_identity', 'messaging_capabilities', 'peer_messaging_capabilities', 'submission_status', 'query_local', 'diagnose_local', 'send_targets', 'target_status', 'peer_target_directory')
             instance=factory(args.db,args.config, read_only=ro)
             try: return instance.dispatch(req)
             finally: instance.close()

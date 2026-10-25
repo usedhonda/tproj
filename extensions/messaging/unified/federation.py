@@ -101,7 +101,7 @@ class FederatedHub(Hub):
             'current_request_bytes': len(current.encode('utf-8')),
             'request_limit_bytes': MAX_REQUEST, 'expires_at': payload['record']['expires_at']}}
 
-    def remote(self, host_id, op, **args):
+    def remote(self, host_id, op, *, _timeout_seconds=None, **args):
         peer = self.peers().get(host_id)
         token = self.host_tokens.get(self.local_id)
         if not peer or not token:
@@ -114,7 +114,8 @@ class FederatedHub(Hub):
             proc = subprocess.run(['ssh'] + SSH_OPTIONS + ['-T', '--', alias,
                                    'PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" '
                                    'python3 "$HOME/lib/tproj-msg-unified/federation.py" --rpc'],
-                                  input=frame, capture_output=True, text=True, encoding='utf-8', timeout=SSH_CALL_SECONDS)
+                                  input=frame, capture_output=True, text=True, encoding='utf-8',
+                                  timeout=SSH_CALL_SECONDS if _timeout_seconds is None else _timeout_seconds)
             if proc.returncode:
                 raise HubError('host_unavailable', 'remote transport command failed')
             response = json.loads(proc.stdout)
@@ -268,6 +269,53 @@ class FederatedHub(Hub):
                     for key in ('projects', 'participants', 'services'):
                         result[key].extend(remote[key])
         return result
+
+    def send_targets(self, req):
+        wanted = self._target_candidates(req, {'participants': []})
+        addresses = sorted(wanted) if req.get('addresses') is not None or req.get('authorized_targets') is not None else None
+        if addresses == []:
+            return {'participants': [], 'checked_at': self._now(), 'complete': True}
+        candidates, partial = {}, False
+        known = {'ready', 'no_recipient', 'endpoint_unavailable', 'ambiguous_target',
+                 'maintenance', 'unknown_target', 'identity_rejected', 'unavailable'}
+        def fetch(owner):
+            try:
+                result = self.remote(owner, 'target_directory', addresses=addresses, _timeout_seconds=3)
+                rows = result.get('participants') if isinstance(result, dict) else None
+                if not isinstance(rows, list) or len(rows) > 1024:
+                    raise HubError('unavailable', 'invalid target status response')
+                seen = set()
+                for row in rows:
+                    if (not isinstance(row, dict) or type(row.get('available')) is not bool
+                            or not isinstance(row.get('address'), str) or not row['address']
+                            or row['address'] in seen or not isinstance(row.get('kind'), str)
+                            or (addresses is not None and row['address'] not in addresses)
+                            or row.get('state') not in known
+                            or row['available'] != (row['state'] == 'ready')):
+                        raise HubError('unavailable', 'invalid target status response')
+                    seen.add(row['address'])
+                return rows, False
+            except HubError as exc:
+                return [], True
+        for row in self.target_directory(dict(req, addresses=addresses))['participants']:
+            candidates.setdefault(row['address'], []).append(row)
+        # One bounded read per owner; no per-address network calls or write lock.
+        peers = list(self.peers())
+        with ThreadPoolExecutor(max_workers=max(1, min(8, len(peers)))) as pool:
+            for rows, failed in pool.map(fetch, peers):
+                partial |= failed
+                for row in rows: candidates.setdefault(row['address'], []).append(row)
+        for address in wanted: candidates.setdefault(address, [])
+        rows = []
+        for address, matches in sorted(candidates.items()):
+            if len(matches) == 1:
+                row = matches[0]
+                rows.append({k: row[k] for k in ('address', 'kind', 'available', 'state')})
+            else:
+                rows.append(dict(address=address, kind='participant', available=False, state=
+                    'ambiguous_target' if matches else 'route_unverified' if partial else 'unknown_target'))
+        return {'participants': rows,
+                'checked_at': self._now(), 'complete': not partial}
 
     def evidence(self, endpoint_id):
         ep = self._row('SELECT * FROM endpoints WHERE endpoint_id=?', (endpoint_id,))
@@ -686,6 +734,8 @@ class FederatedHub(Hub):
                 result = super().messaging_capabilities(req)
                 result['capabilities'].append('federated_alias_redirect_v1')
                 return result
+            if op == 'peer_target_directory':
+                return self.target_directory(req)
             if op == 'peer_diagnose':
                 proof = req.get('diagnostic_party')
                 if proof is None:

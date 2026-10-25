@@ -34,7 +34,9 @@ jobs:
       - name: Messaging sendability
         run: bash extensions/messaging/tests/test-sendability-gate.sh
       - name: Target resolution and liveness hardening
-        run: bash extensions/messaging/tests/test-target-resolution-hardening.sh
+        run: |
+          bash extensions/messaging/tests/test-target-resolution-hardening.sh
+          python3 extensions/messaging/tests/test-send-targets.py
       - name: Native notice provenance and consumer
         run: |
           python3 extensions/messaging/tests/test-recipient-recovery.py

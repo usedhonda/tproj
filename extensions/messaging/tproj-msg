@@ -169,6 +169,7 @@ tproj-msg - Inter-pane messaging (unified transport active)
 
 Usage:
   tproj-msg --status [target]          Show target directory entry (JSON; online = recent heartbeat)
+  tproj-msg targets [--all] [--json]   Current caller's new-message destinations; --all includes reasons
   tproj-msg --list                     List available targets
   tproj-msg <target> <message>         Send message
   tproj-msg --stdin <target>           Send message from stdin
