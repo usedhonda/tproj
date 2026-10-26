@@ -6063,96 +6063,192 @@ struct ContentView: View {
             }
     }
 
-    private func liveColumnActions(_ column: LiveColumn, compact: Bool) -> some View {
+    /// Fixed slot widths shared by live and waiting rows, so every row keeps the
+    /// same columns: name · mode · CC · Cdx · terminal · drop/add. Only the text
+    /// inside a slot changes with the panel width.
+    private struct WorkspaceRowSlots {
+        let mode: CGFloat
+        let cc: CGFloat
+        let cdx: CGFloat
+        let term: CGFloat
+        let last: CGFloat
+        let showDetail: Bool
+
+        static let compact = WorkspaceRowSlots(mode: 22, cc: 40, cdx: 44, term: 18, last: 14, showDetail: false)
+        static let wide = WorkspaceRowSlots(mode: 50, cc: 62, cdx: 66, term: 20, last: 16, showDetail: true)
+    }
+
+    /// Faint highlight under the pointer, for live and waiting rows alike.
+    private struct WorkspaceRowHover: ViewModifier {
+        @State private var isHovered = false
+
+        func body(content: Content) -> some View {
+            content
+                .overlay(
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(GhosttyTheme.current.foreground.opacity(isHovered ? 0.10 : 0))
+                        .allowsHitTesting(false)
+                )
+                .onHover { isHovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: isHovered)
+        }
+    }
+
+    private var workspaceRowSlots: WorkspaceRowSlots {
+        compactWorkspaceCards ? .compact : .wide
+    }
+
+    private func workspaceRowName(_ name: String, host: String?, dimmed: Bool, help: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(name)
+                .font(GhosttyTheme.current.font(size: 13, weight: .semibold))
+                .foregroundStyle(dimmed ? GhosttyTheme.current.textTertiary : GhosttyTheme.current.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if let host {
+                Text(host)
+                    .font(GhosttyTheme.current.font(size: 10, weight: .medium))
+                    .foregroundStyle(GhosttyTheme.current.accentYellow.opacity(dimmed ? 0.6 : 0.95))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        .help(help)
+    }
+
+    private func workspaceModePill(_ mode: RoleMode, dimmed: Bool = false) -> some View {
+        let slots = workspaceRowSlots
+        let name = roleModeBadgeLabel(mode: mode, main: "")
+        let tint = roleModeTint(mode)
+        return Text(slots.showDetail ? name : String(name.prefix(1)))
+            .font(GhosttyTheme.current.font(size: 10, weight: .semibold))
+            .lineLimit(1)
+            .foregroundStyle(tint.opacity(dimmed ? 0.6 : 0.95))
+            .frame(width: slots.mode, height: 16)
+            .background(Capsule(style: .continuous).fill(tint.opacity(dimmed ? 0.10 : 0.18)))
+            .contentShape(Capsule(style: .continuous))
+    }
+
+    /// The state word of a cache summary ("16m·3h" -> "16m"); nil when it carries
+    /// no state worth showing in the narrow badge.
+    private func workspaceBadgeDetail(_ text: String?) -> String? {
+        guard let text, let head = text.split(separator: "·").first.map(String.init),
+              !head.isEmpty, head != "Off", head != "--", head != "?" else { return nil }
+        return head
+    }
+
+    private func workspaceAgentBadge(
+        _ title: String,
+        detail: String?,
+        width: CGFloat,
+        running: Bool,
+        tint: Color,
+        mainTint: Color?
+    ) -> some View {
+        let label = workspaceRowSlots.showDetail ? detail.map { "\(title) \($0)" } ?? title : title
+        return HStack(spacing: 3) {
+            Circle()
+                .fill(running ? tint : GhosttyTheme.current.textTertiary.opacity(0.45))
+                .frame(width: 5, height: 5)
+            Text(label)
+                .lineLimit(1)
+        }
+        .font(GhosttyTheme.current.font(size: 10, weight: .semibold))
+        .foregroundStyle(running ? GhosttyTheme.current.textPrimary : GhosttyTheme.current.textTertiary)
+        .frame(width: width, height: 18)
+        .background(
+            Capsule(style: .continuous)
+                .fill(running ? tint.opacity(0.20) : GhosttyTheme.current.foreground.opacity(0.06))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(mainTint ?? .clear, lineWidth: 1)
+        )
+        .contentShape(Capsule(style: .continuous))
+    }
+
+    private func workspaceIconSlot(_ systemName: String, width: CGFloat, color: Color) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(color)
+            .frame(width: width, height: 18)
+            .contentShape(Rectangle())
+    }
+
+    private func liveColumnActions(_ column: LiveColumn) -> some View {
         // Conversation-main side + mode tint. This is the pane the user chose to
         // talk to, not necessarily the higher-tier or orchestrating side.
         let host = column.hostLabel.hasPrefix("remote@")
             ? String(column.hostLabel.dropFirst("remote@".count)) : nil
         let main = vm.roleModeMain(forProjectPath: column.projectPath, host: host)
-        let leadTint = roleModeTint(vm.roleMode(forProjectPath: column.projectPath, host: host))
-        let mainTint = leadTint
+        let mainTint = roleModeTint(vm.roleMode(forProjectPath: column.projectPath, host: host))
+        let slots = workspaceRowSlots
+        let cc = ccCacheSummary(column) ?? remoteProject(for: column).map(remoteCCCacheSummary)
+        let cdx = cdxCacheSummary(column)
+        let ccRunning = !column.claudePaneIDs.isEmpty
+        let cdxRunning = !column.codexPaneIDs.isEmpty
+        let dockTab = column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath)
+        let termOpen = dockTab || (column.hostLabel != "local" && column.terminalPaneID != nil)
+        // Only while the whole dock is hidden: a background tab of an open dock is not hidden.
+        let termHidden = dockTab && terminalDock.visibleProjectPath == nil
 
-        return HStack(spacing: 4) {
-                ActionButton("Cdx", tone: column.codexPaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cdx" ? mainTint : nil) {
-                    Task { await vm.toggleAIPane(role: "codex", for: column) }
-                }
-                .frame(width: compact ? 28 : 36)
-                ActionButton("CC", tone: column.claudePaneIDs.isEmpty ? .neutral : .primary, isEnabled: !vm.isBusy, dense: true, tint: main == "cc" ? mainTint : nil) {
-                    Task { await vm.toggleAIPane(role: "claude", for: column) }
-                }
-                .frame(width: compact ? 24 : 30)
-                ActionButton(compact ? "T" : "Term", tone: column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath) ? .primary : (column.terminalPaneID == nil ? .neutral : .primary), isEnabled: !vm.isBusy, dense: true,
-                             // Only while the whole dock is hidden: a background tab of an open dock is not hidden.
-                             tint: column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath) && terminalDock.visibleProjectPath == nil ? GhosttyTheme.current.accentYellow : nil) {
-                    if column.hostLabel == "local" {
-                        terminalDock.toggle(projectPath: column.projectPath, title: columnPrimaryName(column), in: (NSApp.delegate as? AppDelegate)?.mainWindow)
-                    } else {
-                        Task { await vm.toggleTerminal(for: column) }
-                    }
-                }
-                .frame(width: compact ? 24 : 40)
-                Button {
-                    Task { await vm.removeColumn(column) }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(GhosttyTheme.current.accentRed.opacity(0.8))
-                        .frame(width: compact ? 16 : 20, height: 18)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(vm.isBusy || vm.isDropPending(column.column))
-                .help("Drop column #\(column.column)")
-        }
-    }
-
-    private func liveColumnHeader(_ column: LiveColumn, compact: Bool) -> some View {
-        HStack(spacing: 4) {
-            Text("#\(column.column)")
-                .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
-                .foregroundStyle(GhosttyTheme.current.textPrimary)
-                .fixedSize()
-            pill(liveHostLabel(column), tint: column.hostLabel == "local" ? GhosttyTheme.current.accentGreen : GhosttyTheme.current.accentYellow)
-            if !compact {
-                Text(columnPrimaryName(column))
-                    .font(GhosttyTheme.current.font(size: 13, weight: .semibold))
-                    .foregroundStyle(GhosttyTheme.current.textPrimary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .help(columnAgentNamesText(column) ?? columnPrimaryName(column))
+        return HStack(spacing: 5) {
+            Button {
+                Task { await vm.toggleAIPane(role: "claude", for: column) }
+            } label: {
+                workspaceAgentBadge("CC", detail: ccRunning ? workspaceBadgeDetail(cc?.text) : nil, width: slots.cc,
+                                    running: ccRunning, tint: cc?.tint == GhosttyTheme.current.textTertiary ? GhosttyTheme.current.accentCyan : (cc?.tint ?? GhosttyTheme.current.accentCyan),
+                                    mainTint: main == "cc" ? mainTint : nil)
             }
-            Spacer(minLength: 0)
-            if !compact { liveColumnActions(column, compact: false) }
+            .buttonStyle(.plain)
+            .disabled(vm.isBusy)
+            .help(ccRunning ? "Hide CC pane" + (cc.map { "\nCache \($0.text)" } ?? "") : "Open CC pane")
+            Button {
+                Task { await vm.toggleAIPane(role: "codex", for: column) }
+            } label: {
+                workspaceAgentBadge("Cdx", detail: cdxRunning ? workspaceBadgeDetail(cdx?.text) : nil, width: slots.cdx,
+                                    running: cdxRunning, tint: cdx?.tint == GhosttyTheme.current.textTertiary ? GhosttyTheme.current.accentCyan : (cdx?.tint ?? GhosttyTheme.current.accentCyan),
+                                    mainTint: main == "cdx" ? mainTint : nil)
+            }
+            .buttonStyle(.plain)
+            .disabled(vm.isBusy)
+            .help(cdxRunning ? "Hide Cdx pane" + (cdx.map { "\nCache \($0.text)" } ?? "") : "Open Cdx pane")
+            Button {
+                if column.hostLabel == "local" {
+                    terminalDock.toggle(projectPath: column.projectPath, title: columnPrimaryName(column), in: (NSApp.delegate as? AppDelegate)?.mainWindow)
+                } else {
+                    Task { await vm.toggleTerminal(for: column) }
+                }
+            } label: {
+                workspaceIconSlot("terminal", width: slots.term,
+                                  color: termHidden ? GhosttyTheme.current.accentYellow
+                                    : (termOpen ? GhosttyTheme.current.accentCyan : GhosttyTheme.current.textSecondary))
+            }
+            .buttonStyle(.plain)
+            .disabled(vm.isBusy)
+            .help("Terminal")
+            Button {
+                Task { await vm.removeColumn(column) }
+            } label: {
+                workspaceIconSlot("xmark", width: slots.last, color: GhosttyTheme.current.accentRed.opacity(0.8))
+            }
+            .buttonStyle(.plain)
+            .disabled(vm.isBusy || vm.isDropPending(column.column))
+            .help("Drop column #\(column.column)")
         }
     }
 
     private func liveColumnRow(_ column: LiveColumn) -> some View {
         let isDragging = draggingColumnID == column.column
-        return ViewThatFits(in: .horizontal) {
-            if !compactWorkspaceCards {
-            VStack(alignment: .leading, spacing: 3) {
-                liveColumnHeader(column, compact: false)
-                columnSettingsPill(column)
-            }
-            .fixedSize(horizontal: true, vertical: false)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                liveColumnHeader(column, compact: true)
-                Text(columnPrimaryName(column))
-                    .font(GhosttyTheme.current.font(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(columnAgentNamesText(column) ?? columnPrimaryName(column))
-                HStack(spacing: 4) {
-                    columnSettingsPill(column, compact: true)
-                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                        .clipped()
-                    liveColumnActions(column, compact: true)
-                        .fixedSize()
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        let name = columnPrimaryName(column)
+        return HStack(spacing: 5) {
+            workspaceRowName(name, host: columnMeta(column), dimmed: false,
+                             help: "#\(column.column) " + (columnAgentNamesText(column) ?? name))
+            columnSettingsPill(column)
+            liveColumnActions(column)
         }
+        .frame(minHeight: 24)
         .padding(.vertical, 2)
         .padding(.leading, 10)   // accent bar との間隔確保
         .padding(.trailing, 2)
@@ -6167,6 +6263,7 @@ struct ContentView: View {
                 .frame(width: 2)
                 .shadow(color: GhosttyTheme.current.accentCyan.opacity(0.7), radius: 3, x: 0, y: 0)
         }
+        .modifier(WorkspaceRowHover())
         .overlay(
             isDragging
                 ? RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -6201,54 +6298,37 @@ struct ContentView: View {
     }
 
     private func inactiveProjectControls(_ project: WorkspaceProject) -> some View {
-        HStack(spacing: 4) {
+        let slots = workspaceRowSlots
+        return HStack(spacing: 5) {
             roleModeBadge(projectPath: project.path, host: project.type == "remote" ? project.host : nil)
-            Spacer()
             if project.type == "remote" {
                 remoteCCCacheMenu(project)
+            } else {
+                workspaceAgentBadge("CC", detail: nil, width: slots.cc, running: false,
+                                    tint: GhosttyTheme.current.accentCyan, mainTint: nil)
             }
-            ActionButton("Add", tone: .primary, isEnabled: !vm.isBusy, dense: true) {
+            workspaceAgentBadge("Cdx", detail: nil, width: slots.cdx, running: false,
+                                tint: GhosttyTheme.current.accentCyan, mainTint: nil)
+            workspaceIconSlot("terminal", width: slots.term, color: GhosttyTheme.current.textTertiary.opacity(0.5))
+            Button {
                 Task { await vm.addColumnByAlias(project.routingAlias) }
+            } label: {
+                workspaceIconSlot("plus", width: slots.last, color: GhosttyTheme.current.accentGreen)
             }
-            .frame(width: 38)
+            .buttonStyle(.plain)
+            .disabled(vm.isBusy)
+            .help("Add \(project.effectiveAlias) to the workspace")
         }
     }
 
     private func inactiveProjectRow(_ project: WorkspaceProject) -> some View {
-        ViewThatFits(in: .horizontal) {
-        if !compactWorkspaceCards {
-        HStack(spacing: 4) {
-            Text("--")
-                .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
-                .foregroundStyle(GhosttyTheme.current.textTertiary)
-            pill(project.type == "remote" ? "@\(project.host)" : "lcl",
-                 tint: project.type == "remote" ? GhosttyTheme.current.accentYellow : GhosttyTheme.current.accentGreen)
-            Text(project.effectiveAlias)
-                .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
-                .foregroundStyle(GhosttyTheme.current.textPrimary)
-                .lineLimit(1)
+        HStack(spacing: 5) {
+            workspaceRowName(project.effectiveAlias,
+                             host: project.type == "remote" ? "@\(project.host)" : nil,
+                             dimmed: true, help: project.effectiveAlias)
             inactiveProjectControls(project)
         }
-            .fixedSize(horizontal: true, vertical: false)
-        }
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-            Text("--")
-                .font(GhosttyTheme.current.font(size: 11, weight: .heavy, monospaced: true))
-                .foregroundStyle(GhosttyTheme.current.textTertiary)
-            pill(project.type == "remote" ? "@\(project.host)" : "lcl",
-                 tint: project.type == "remote" ? GhosttyTheme.current.accentYellow : GhosttyTheme.current.accentGreen)
-
-                }
-                Text(project.effectiveAlias)
-                    .font(GhosttyTheme.current.font(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(project.effectiveAlias)
-                inactiveProjectControls(project)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .frame(minHeight: 24)
         .padding(.vertical, 2)
         .padding(.leading, 10)     // liveColumnRow と揃える
         .padding(.trailing, 2)
@@ -6261,6 +6341,7 @@ struct ContentView: View {
                 .fill(GhosttyTheme.current.foreground.opacity(0.2))
                 .frame(width: 2)
         }
+        .modifier(WorkspaceRowHover())
     }
 
     @ViewBuilder
@@ -6675,13 +6756,16 @@ struct ContentView: View {
                     }
                 }
             } label: {
-                pill(roleModeBadgeLabel(mode: mode, main: main), tint: roleModeTint(mode))
+                workspaceModePill(mode, dimmed: true)
             }
-            .menuStyle(.borderlessButton)
+            // .button + .plain keeps the custom pill; borderlessButton redraws it as plain text.
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
             .fixedSize()
             .help(roleModeBadgeLabel(mode: mode, main: main))
         } else {
-            pill(roleModeBadgeLabel(mode: .collab, main: ""), tint: roleModeTint(.collab))
+            workspaceModePill(.collab, dimmed: true)
                 .opacity(0.5)
                 .help("role mode: collab (remote)")
         }
@@ -6760,11 +6844,12 @@ struct ContentView: View {
             }
             .disabled(vm.remoteCCCacheHours["\(project.host)|\(project.path)"] == nil || vm.isBusy)
         } label: {
-            Text("CC \(summary.text)")
-                .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
-                .foregroundStyle(summary.tint)
+            workspaceAgentBadge("CC", detail: workspaceBadgeDetail(summary.text), width: workspaceRowSlots.cc,
+                                running: false, tint: summary.tint, mainTint: nil)
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .fixedSize()
         .help(summary.help)
         .onAppear { Task { await vm.refreshRemoteCache(host: project.host) } }
@@ -6823,7 +6908,7 @@ struct ContentView: View {
     /// Every per-column setting behind one pill: role mode, main conversation and
     /// both agents' keep-warm. The popover stays open while settings change.
     @ViewBuilder
-    private func columnSettingsPill(_ column: LiveColumn, compact: Bool = false) -> some View {
+    private func columnSettingsPill(_ column: LiveColumn) -> some View {
         let isLocal = column.hostLabel == "local" && !column.projectPath.isEmpty
         let host = column.hostLabel.hasPrefix("remote@")
             ? String(column.hostLabel.dropFirst("remote@".count)) : nil
@@ -6840,25 +6925,11 @@ struct ContentView: View {
             } label: {
                 // Everything readable before clicking: mode (and main side), then each
                 // agent's cache state with its keep-warm setting, in that agent's color.
-                HStack(spacing: 6) {
-                    pill(roleModeBadgeLabel(mode: mode, main: main), tint: roleModeTint(mode))
-                    if let cc {
-                        Text("CC " + cc.text).foregroundStyle(cc.tint)
-                    }
-                    if let remoteCC {
-                        Text("CC " + remoteCC.text).foregroundStyle(remoteCC.tint)
-                    }
-                    if let cdx {
-                        Text("Cdx " + cdx.text).foregroundStyle(cdx.tint)
-                    }
-                    Image(systemName: "chevron.down").foregroundStyle(GhosttyTheme.current.textTertiary)
-                }
-                .font(GhosttyTheme.current.font(size: 10, weight: .medium, monospaced: true))
-                .lineLimit(1)
-                .contentShape(Rectangle())
+                // Mode only; each agent's cache state lives in its CC/Cdx badge.
+                workspaceModePill(mode)
             }
             .buttonStyle(.plain)
-            .fixedSize(horizontal: !compact, vertical: true)
+            .fixedSize()
             .popover(isPresented: Binding(
                 get: { cachePopoverColumn == column.column },
                 set: { if !$0 { cachePopoverColumn = nil } }
@@ -6910,7 +6981,7 @@ struct ContentView: View {
             .help([cc.map { "CC " + $0.text + "\n" + $0.help }, remoteCC.map { "CC " + $0.text + "\n" + $0.help }, cdx.map { "Cdx " + $0.text + "\n" + $0.help }]
                 .compactMap { $0 }.joined(separator: "\n\n"))
         } else {
-            pill(roleModeBadgeLabel(mode: .collab, main: ""), tint: roleModeTint(.collab))
+            workspaceModePill(.collab)
                 .opacity(0.5)
                 .help("role mode: collab (remote)")
         }
