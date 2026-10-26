@@ -74,10 +74,42 @@ def _attest_binding_release(hub, evidence, body):
     return dict(previous)
 
 
+def _resume_continuity(hub, evidence):
+    """Owner-only derivation; callers never nominate a previous identity."""
+    ep=evidence['endpoint'];party=evidence['participant']
+    marker=hub._row('SELECT * FROM endpoint_native WHERE endpoint_id=?',(ep['endpoint_id'],))
+    if not marker or ep.get('platform') not in ('cc','cdx') or ep.get('retired'):
+        raise HubError('identity_rejected','authenticated current native evidence unavailable')
+    common=dict(host_id=ep['host_id'],project_id=party['project_id'],
+                participant_id=ep['participant_id'],platform=ep['platform'],
+                native_kind=marker['native_kind'],native_id=marker['native_id'])
+    current=dict(common,endpoint_id=ep['endpoint_id'],incarnation=ep['incarnation'],retired=False)
+    rows=hub.db.execute('SELECT e.* FROM endpoints e JOIN endpoint_native n ON n.endpoint_id=e.endpoint_id '
+        'WHERE e.host_id=? AND e.participant_id=? AND e.platform=? AND e.retired=1 '
+        'AND n.native_kind=? AND n.native_id=? ORDER BY e.endpoint_id LIMIT 129',
+        (ep['host_id'],ep['participant_id'],ep['platform'],marker['native_kind'],marker['native_id'])).fetchall()
+    if len(rows)>128:raise HubError('identity_rejected','historical native evidence exceeds bounded continuation')
+    previous=[dict(common,endpoint_id=r['endpoint_id'],incarnation=r['incarnation'],retired=True) for r in rows]
+    return dict(current=current,previous=previous)
+
+
+def _validate_resume_continuity(evidence, proof):
+    if not isinstance(proof,dict) or not isinstance(proof.get('current'),dict):
+        raise HubError('identity_rejected','owner-attested native continuation unavailable')
+    ep=evidence.get('endpoint') or {};party=evidence.get('participant') or {};current=proof['current']
+    if (any(current.get(k)!=ep.get(k) for k in ('endpoint_id','incarnation','host_id','participant_id','platform'))
+            or current.get('project_id')!=party.get('project_id')
+            or current.get('participant_id')!=party.get('participant_id')
+            or current.get('retired') is not False or ep.get('retired')):
+        raise HubError('identity_rejected','native continuation actor evidence differs')
+    return proof
+
+
 def dispatch(hub, req, peer=False):
     from tasks import TaskAuthority, TaskAuthorityError
     origin = hub._auth(req)
     selected = master(hub)
+    resume_proof = None
     if peer:
         if req.get('task_protocol') != TASK_PROTOCOL:
             raise HubError('incompatible_peer','formal task protocol is unsupported')
@@ -92,6 +124,10 @@ def dispatch(hub, req, peer=False):
         body=dict(req.get('request') or {})
         if not str(body.get('op','')).startswith('task_'):
             raise HubError('invalid_request','formal task operation required')
+        if '_resume_proof' in body:
+            raise HubError('invalid_request','caller-supplied native continuation is forbidden')
+        if body.get('op') in ('task_resume','task_resume_status'):
+            resume_proof=_validate_resume_continuity(evidence,evidence.get('resume_continuity'))
         if body.get('op') in ('task_binding_release_check', 'task_cancelled_release_check') and (
                 body.get('previous') is not None or body.get('native_id') is not None):
             previous = body.get('previous')
@@ -112,6 +148,10 @@ def dispatch(hub, req, peer=False):
             raise HubError('unauthorized','formal tasks require local host ingress')
         evidence=hub.local_resolve(endpoint_id=req.get('endpoint_id'))
         body={k:v for k,v in req.items() if k not in ('host_token','host_id','endpoint_id')}
+        if '_resume_proof' in body or 'resume_continuity' in body:
+            raise HubError('invalid_request','caller-supplied native continuation is forbidden')
+        if body.get('op') in ('task_resume','task_resume_status'):
+            resume_proof=_resume_continuity(hub,evidence)
         for field in ('executor','target'):
             if field not in body:continue
             value=body[field]
@@ -124,6 +164,8 @@ def dispatch(hub, req, peer=False):
             _attest_binding_release(hub, evidence, body)
         if selected != hub.local_id:
             actor_evidence = evidence
+            if resume_proof is not None:
+                actor_evidence=dict(evidence,resume_continuity=resume_proof)
             if body.get('op') in ('task_binding_release_check', 'task_cancelled_release_check') and (
                     body.get('previous') is not None or body.get('native_id') is not None):
                 actor_evidence = dict(evidence, binding_release={
@@ -132,8 +174,10 @@ def dispatch(hub, req, peer=False):
             if not isinstance(response,dict) or response.get('task_protocol') != TASK_PROTOCOL or 'result' not in response:
                 raise HubError('incompatible_peer','task master did not confirm formal task protocol')
             return response['result']
+    if resume_proof is not None:
+        body['_resume_proof']=resume_proof
     try:
-        result = TaskAuthority(hub.db).dispatch(body,actor(evidence))
+        result = TaskAuthority(hub.db,initialize=body.get('op')!='task_resume_status').dispatch(body,actor(evidence))
         return {'task_protocol':TASK_PROTOCOL,'result':result} if peer else result
     except TaskAuthorityError as exc:
         raise HubError(exc.code,str(exc)) from None

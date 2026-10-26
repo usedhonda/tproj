@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS task_assignments (
  host_id TEXT NOT NULL, epoch INTEGER NOT NULL,
  PRIMARY KEY(task_id,endpoint,incarnation,host_id,epoch))
 ;
+CREATE TABLE IF NOT EXISTS task_resumptions (
+ task_id TEXT NOT NULL, endpoint TEXT NOT NULL, incarnation TEXT NOT NULL,
+ from_epoch INTEGER NOT NULL, roles TEXT NOT NULL, PRIMARY KEY(task_id,endpoint,incarnation,from_epoch))
+;
 CREATE INDEX IF NOT EXISTS task_events_task ON task_events(task_id,event_id);
 CREATE INDEX IF NOT EXISTS task_ops_task ON task_operations(task_id,state);
 """
@@ -79,10 +83,12 @@ def _hash(value: Any) -> str:
 class TaskAuthority:
     """SQLite-backed task authority.  ``db`` may be a path or sqlite connection."""
 
-    def __init__(self, db: str | os.PathLike | sqlite3.Connection):
+    def __init__(self, db: str | os.PathLike | sqlite3.Connection, *, initialize=True):
         self.db = sqlite3.connect(str(db), isolation_level=None, check_same_thread=False) if isinstance(db, (str, os.PathLike)) else db
         self.db.row_factory = sqlite3.Row
-        self.db.executescript(SCHEMA)
+        if initialize:self.db.executescript(SCHEMA)
+        elif not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'").fetchone():
+            raise TaskAuthorityError("not_found", "task ledger has not been initialized")
 
     def close(self):
         self.db.close()
@@ -126,9 +132,9 @@ class TaskAuthority:
         if op.startswith("handoff_"): op = op[8:]
         fn = getattr(self, f"_op_{op}", None)
         if not fn: raise TaskAuthorityError("unsupported", "unsupported task operation")
-        if op not in ("approval", "submit", "status", "list", "active", "end_operation") and (not isinstance(req.get("expected_epoch"), int) or isinstance(req.get("expected_epoch"), bool)):
+        if op not in ("approval", "submit", "status", "list", "active", "end_operation", "resume_status") and (not isinstance(req.get("expected_epoch"), int) or isinstance(req.get("expected_epoch"), bool)):
             raise TaskAuthorityError("epoch_required", "expected_epoch is required")
-        self.db.execute("BEGIN IMMEDIATE")
+        self.db.execute("BEGIN" if op == "resume_status" else "BEGIN IMMEDIATE")
         try:
             result = fn(dict(req), actor)
             self.db.execute("COMMIT")
@@ -204,6 +210,89 @@ class TaskAuthority:
                 (row["task_id"], actor["endpoint_id"], actor["incarnation"])).fetchall()
         ]
         return result
+
+    def _resume_roles(self, req, row, actor):
+        proof = req.get('_resume_proof')
+        if not isinstance(proof, dict) or not isinstance(proof.get('current'), dict):
+            raise TaskAuthorityError('identity_rejected', 'owner-attested native continuation required')
+        current = proof['current']
+        if (any(current.get(k) != actor[k] for k in ('endpoint_id','incarnation','host_id','project_id'))
+                or current.get('platform') not in ('cc','cdx')
+                or current.get('native_kind') not in ('thread_id','session_id')
+                or not current.get('native_id') or not current.get('participant_id')
+                or current.get('retired') is not False):
+            raise TaskAuthorityError('identity_rejected', 'native continuation actor differs')
+        prior = proof.get('previous')
+        if not isinstance(prior, list) or len(prior) > 128:
+            raise TaskAuthorityError('identity_rejected', 'invalid historical native continuation')
+        for old in prior:
+            if (not isinstance(old,dict) or old.get('retired') is not True
+                    or old.get('endpoint_id') == current['endpoint_id']
+                    or not old.get('endpoint_id') or not old.get('incarnation')
+                    or any(old.get(k) != current.get(k) for k in
+                           ('host_id','project_id','participant_id','platform','native_kind','native_id'))):
+                raise TaskAuthorityError('identity_rejected', 'historical native continuation differs')
+        moving, present = [], []
+        for role in ('owner','executor'):
+            saved = tuple(row[role+'_'+k] for k in ('endpoint','incarnation','host_id'))
+            if saved == tuple(actor[k] for k in ('endpoint_id','incarnation','host_id')):
+                if role == 'owner' and row['owner_project_id'] != actor['project_id']:
+                    raise TaskAuthorityError('identity_rejected', 'owner project differs')
+                present.append(role)
+            elif any(saved == tuple(old[k] for k in ('endpoint_id','incarnation','host_id')) for old in prior):
+                if role == 'owner' and row['owner_project_id'] != actor['project_id']:
+                    raise TaskAuthorityError('identity_rejected', 'owner project differs')
+                moving.append(role)
+        if not moving and not present:
+            raise TaskAuthorityError('not_visible', 'no matching native task role')
+        return moving, present
+
+    def _resume_snapshot(self, row, actor, moving, present):
+        handoff = self.db.execute('SELECT * FROM task_handoffs WHERE task_id=?',(row['task_id'],)).fetchone()
+        count = self.db.execute("SELECT COUNT(*) FROM task_operations WHERE task_id=? AND state='open'",(row['task_id'],)).fetchone()[0]
+        blocked = ('task_frozen' if row['status']=='frozen' else
+                   'task_terminal' if row['status'] in ('reported','cancelled') else
+                   'operations_open' if count else
+                   'handoff_pending' if handoff and handoff['state'] in ('prepared','released','accepted') else None)
+        return dict(task=self._view(row), handoff=dict(handoff) if handoff else None,
+                    open_operations=count, resume_roles=moving, current_roles=present,
+                    resume_required=bool(moving), resume_allowed=blocked is None, resume_blocked=blocked)
+
+    def _op_resume_status(self, req, actor):
+        row=self._task(str(req.get('task_id')))
+        moving,present=self._resume_roles(req,row,actor)
+        return self._resume_snapshot(row,actor,moving,present)
+
+    def _op_resume(self, req, actor):
+        row=self._task(str(req.get('task_id')))
+        moving,present=self._resume_roles(req,row,actor)
+        snapshot=self._resume_snapshot(row,actor,moving,present)
+        if not snapshot['resume_allowed']:
+            raise TaskAuthorityError(snapshot['resume_blocked'], 'task continuation is not quiescent and active')
+        saved=self.db.execute('SELECT roles FROM task_resumptions WHERE task_id=? AND endpoint=? AND incarnation=? AND from_epoch=?',
+            (row['task_id'],actor['endpoint_id'],actor['incarnation'],req['expected_epoch'])).fetchone()
+        if saved:
+            roles=json.loads(saved['roles'])
+            if moving or not set(roles).issubset(present):
+                raise TaskAuthorityError('stale_executor','resumed role is no longer assigned to this actor')
+            return dict(snapshot,resumed=True,duplicate=True,resumed_roles=roles)
+        self._epoch(req,row)
+        if not moving:
+            return dict(snapshot,resumed=False,duplicate=True,resumed_roles=[])
+        assignments=', '.join(role+'_endpoint=?, '+role+'_incarnation=?, '+role+'_host_id=?' for role in moving)
+        values=[]
+        for role in moving:values.extend(actor[k] for k in ('endpoint_id','incarnation','host_id'))
+        epoch=row['epoch']+1
+        changed=self.db.execute('UPDATE tasks SET '+assignments+',epoch=?,updated_at=? WHERE task_id=? AND epoch=?',
+            (*values,epoch,time.time(),row['task_id'],row['epoch'])).rowcount
+        if changed != 1:raise TaskAuthorityError('epoch_conflict','task epoch changed')
+        current=self._task(row['task_id'])
+        self.db.execute('INSERT OR IGNORE INTO task_assignments VALUES(?,?,?,?,?)',
+            (row['task_id'],current['executor_endpoint'],current['executor_incarnation'],current['executor_host_id'],epoch))
+        self.db.execute('INSERT INTO task_resumptions VALUES(?,?,?,?,?)',
+            (row['task_id'],actor['endpoint_id'],actor['incarnation'],row['epoch'],json.dumps(moving)))
+        self._event(row['task_id'],'resume',actor,epoch,{'roles':moving,'from_epoch':row['epoch']})
+        return dict(self._resume_snapshot(current,actor,[],moving),resumed=True,duplicate=False,resumed_roles=moving)
 
     def _op_list(self, req, actor):
         rows=self.db.execute("SELECT * FROM tasks ORDER BY created_at").fetchall()

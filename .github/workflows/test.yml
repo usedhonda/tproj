@@ -56,6 +56,14 @@ jobs:
           python3 extensions/messaging/tests/test-native-cc.py
           python3 extensions/messaging/tests/test-native-queue.py
           python3 extensions/messaging/tests/test-native-publication.py
+      - name: Same-native formal task continuation
+        run: |
+          export PYTHONPATH=.
+          python3 extensions/messaging/tests/test-task-resume.py
+          python3 tests/test-unified-tasks.py
+          python3 tests/test-unified-task-integration.py
+          python3 extensions/messaging/tests/test-unified-task-cli.py
+          python3 extensions/messaging/tests/test-task-binding-release.py
       - name: Role handoff
         run: bash extensions/messaging/tests/test-role-handoff.sh
       - name: Desktop mailbox

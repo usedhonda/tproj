@@ -258,3 +258,55 @@ ordinary work. Goal continuation, missing display claims and old unrelated task
 markers cannot require another user "continue". Explicit task cancellation and
 freeze still protect that task; unknown effects still require resource-specific
 completion evidence or isolation, not a conversation-wide ban.
+
+
+## Same-native task continuation
+
+`tproj-task resume TASK --check` is a read-only preview of authoritative status,
+epoch, requester/executor matches, global open operations, and pending handoff.
+It creates no schema, binding, marker, receipt, or task transition. Unlike normal
+status, it can recognize the current authenticated native conversation's retired
+assignment. Callers cannot supply a previous endpoint, role, native ID, or proof.
+
+`tproj-task resume TASK --epoch N` replaces only roles proved to be the caller's
+own former identity. The owner ingress derives continuity from its immutable
+`endpoint_native` records: same host, project, participant, platform, native kind
+and ID; former endpoint retired, current endpoint live. This does not infer death
+from heartbeat age or alias equality. Each role is matched independently; resuming
+the requester never grants executor rights. Both roles move only if both saved
+tuples match the attested predecessor. Other native conversations require normal
+handoff, not resume. Same-endpoint incarnation-only recovery without an immutable
+retired predecessor record is not inferred by this operation.
+
+The canonical task master accepts continuity only from the authenticated enrolled
+owner host's evidence, not request fields. It does not call a waiting origin back
+inside a transaction. Preview uses a read transaction. Mutation requires expected
+epoch, no open operations, no pending handoff, and neither frozen nor cancelled/
+reported status. It atomically updates only matching role tuples, epoch, timestamp,
+assignment history, event, and durable resumption receipt. Task ID, payload, status,
+approval, intent and scope remain unchanged. No endpoint revival or new task occurs.
+
+An exact retry with the original epoch returns its durable receipt without another
+epoch advance, provided those roles still belong to this caller and the task is
+still resumable. Another role's subsequent resume may advance the global epoch;
+the receipt returns that current epoch for local synchronization. Handoff, freeze,
+cancellation and report cannot be bypassed by replay. Already-current roles can
+synchronize the canonical local binding at the current epoch without a task mutation.
+
+Only after a confirmed authoritative result does the native Host commit its local
+binding and presence marker, removing only former same-task/same-native rows.
+A different current binding is never overwritten. A lost master response creates
+no local binding; retry the same task and epoch to recover the receipt and finish
+the local commit. If another-task binding races with that commit, do not delete it:
+resolve it through that task's canonical detach/release lifecycle, then retry this
+same task and original epoch. The master receipt remains durable. Unknown outcomes are not proof of failure. The binding remains
+ledger/legacy-operation context, never a conversation-wide tool permission or a
+role change. Requester and executor must each use their own authenticated session.
+After one role advances the epoch, another current role uses a current-epoch noop
+resume if its local ledger binding requires synchronization.
+
+Deploy `tasks.py` and `task_transport.py` to the master and owner ingress before
+`task_host.py`, `task_cli.py` and the `tproj-task` launcher. The Host checks loaded
+master capabilities `task_resume` and `task_resume_status` before any binding
+change; old/unavailable masters leave existing diagnostics and bindings unchanged.
+The focused continuation regression is `extensions/messaging/tests/test-task-resume.py`.

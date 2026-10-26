@@ -23,7 +23,7 @@ except ImportError:  # installed launcher executes this file directly
 
 
 TASK_OPS = {"approval", "submit", "status", "list", "ack", "progress", "done",
-            "block", "verify", "report", "cancel", "freeze", "unfreeze", "binding-status", "release-cancelled"}
+            "block", "verify", "report", "cancel", "freeze", "unfreeze", "binding-status", "release-cancelled", "resume"}
 HANDOFF_OPS = {"prepare_handoff", "release_handoff", "accept_handoff", "commit_handoff"}
 
 
@@ -69,6 +69,10 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("task_id")
     r.add_argument("--epoch", required=True, type=int, dest="expected_epoch")
     r.add_argument("--tool-use-id", required=True)
+    resume=sub.add_parser('resume',help='continue an existing task in the authenticated same native conversation')
+    resume.add_argument('task_id')
+    resume.add_argument('--epoch',type=int,dest='expected_epoch')
+    resume.add_argument('--check',action='store_true',help='read-only role/epoch/quiescence preview; no binding change')
     sub.add_parser("list")
     sub.add_parser("binding-status", help="read-only native marker and formal binding correlation")
     h = sub.add_parser("handoff", help="prepare, release, accept, or commit a handoff")
@@ -130,6 +134,13 @@ def main(argv: list[str] | None = None) -> int:
             result = request("list")
         elif args.command == "binding-status":
             result = request("binding_status")
+        elif args.command == 'resume':
+            if args.check:
+                if args.expected_epoch is not None:raise cli.ClientError('--check does not accept --epoch','invalid_argument')
+                result=request('resume_status',task_id=args.task_id)
+            else:
+                if args.expected_epoch is None:raise cli.ClientError('resume requires --epoch','invalid_argument')
+                result=request('resume',task_id=args.task_id,expected_epoch=args.expected_epoch)
         elif args.command == "handoff":
             op = {"prepare": "prepare_handoff", "release": "release_handoff",
                   "accept": "accept_handoff", "commit": "commit_handoff"}[args.action]

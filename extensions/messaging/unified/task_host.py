@@ -12,7 +12,7 @@ from task_approval import attest, digest
 
 def runtime_capabilities():
     """Capabilities of this loaded host task implementation, not files on disk."""
-    return ['task_retired_operation', 'task_binding_status']
+    return ['task_retired_operation', 'task_binding_status', 'task_resume', 'task_resume_status']
 
 
 def _file_change_witness(ep, tool_use_id, created_at, home=None):
@@ -325,10 +325,61 @@ def _binding_status(host, ep):
     }
 
 
+def _resume(host, ep, req):
+    allowed={'op','task_id','expected_epoch','conversation','as','session'}
+    if set(req)-allowed:raise HubError('invalid_request','resume accepts no identity or proof selectors')
+    tid=req.get('task_id')
+    if not isinstance(tid,str) or not tid:raise HubError('invalid_request','task ID required')
+    capabilities=host.hub('task_capabilities').get('capabilities',[])
+    if not all(op in capabilities for op in ('task_resume','task_resume_status')):
+        raise HubError('unsupported','task master requires same-native resume support')
+    if req['op']=='task_resume_status':
+        return host.hub('task_resume_status',endpoint_id=ep['endpoint_id'],task_id=tid)
+    epoch=req.get('expected_epoch')
+    if type(epoch) is not int:raise HubError('epoch_required','expected_epoch is required')
+    native_id=str(ep.get('thread_id') or ep.get('session_id') or '')
+    if not native_id:raise HubError('identity_rejected','current native identity required')
+    try:
+        bound=host.db.execute('SELECT * FROM formal_task_binding WHERE (endpoint_id=? OR native_id=?) AND task_id!=?',(ep['endpoint_id'],native_id,tid)).fetchone()
+    except Exception as exc:
+        if 'no such table' not in str(exc).lower():raise
+        bound=None
+    if bound and bound['task_id']!=tid:
+        raise HubError('task_active','another current task binding must not be replaced')
+    # No local marker/binding changes precede the authoritative, idempotent CAS.
+    result=host.hub('task_resume',endpoint_id=ep['endpoint_id'],task_id=tid,expected_epoch=epoch)
+    task=result.get('task') or {}
+    roles=[role for role in ('owner','executor') if
+           tuple(task.get(role+'_'+k) for k in ('endpoint','incarnation','host_id')) ==
+           tuple(ep.get(k) for k in ('endpoint_id','incarnation','host_id'))]
+    if not roles or type(task.get('epoch')) is not int:
+        raise HubError('identity_rejected','master did not confirm this actor continuation')
+    marker=binding_marker(native_id)
+    host.db.execute('CREATE TABLE IF NOT EXISTS formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, task_id TEXT NOT NULL, epoch INTEGER NOT NULL, native_id TEXT NOT NULL)')
+    host.db.execute('BEGIN IMMEDIATE')
+    try:
+        current=host.db.execute('SELECT * FROM formal_task_binding WHERE (endpoint_id=? OR native_id=?) AND task_id!=?',(ep['endpoint_id'],native_id,tid)).fetchone()
+        if current and current['task_id']!=tid:
+            raise HubError('task_active','another task bound while continuation was committing')
+        marker.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        with marker.open('ab') as handle:handle.flush();os.fsync(handle.fileno())
+        host.db.execute('INSERT INTO formal_task_binding VALUES(?,?,?,?,?) ON CONFLICT(endpoint_id) DO UPDATE SET incarnation=excluded.incarnation,task_id=excluded.task_id,epoch=excluded.epoch,native_id=excluded.native_id',
+            (ep['endpoint_id'],ep['incarnation'],tid,task['epoch'],native_id))
+        host.db.execute('DELETE FROM formal_task_binding WHERE native_id=? AND task_id=? AND endpoint_id!=?',
+            (native_id,tid,ep['endpoint_id']))
+        host.db.commit()
+    except Exception:
+        if host.db.in_transaction:host.db.rollback()
+        raise
+    return dict(result,binding_committed=True,binding_roles=roles)
+
+
 def dispatch(host, ep, req):
     op=req['op']
     if op == 'task_binding_status':
         return _binding_status(host, ep)
+    if op in ('task_resume','task_resume_status'):
+        return _resume(host,ep,req)
     host.db.execute('CREATE TABLE IF NOT EXISTS formal_task_binding(endpoint_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, task_id TEXT NOT NULL, epoch INTEGER NOT NULL, native_id TEXT NOT NULL)')
     host.db.execute('CREATE TABLE IF NOT EXISTS formal_task_retired(task_id TEXT NOT NULL, epoch INTEGER NOT NULL, native_id TEXT NOT NULL, tool_use_id TEXT NOT NULL, PRIMARY KEY(task_id,epoch,native_id,tool_use_id))')
     host.db.execute('CREATE TABLE IF NOT EXISTS formal_cancelled_release(endpoint_id TEXT NOT NULL, incarnation TEXT NOT NULL, task_id TEXT NOT NULL, epoch INTEGER NOT NULL, native_id TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(endpoint_id,task_id,epoch))')
