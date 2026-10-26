@@ -9,42 +9,42 @@ alone is not complete messaging coverage.
 
 | ID | Scenario | Isolated proof | Real use / remaining boundary |
 | --- | --- | --- | --- |
-| R01 | Same-project CC/Cdx conversation | `test-unified-integration.py` | Established. Exact linked reply and recipient read/ACK; not just queued. |
-| R02 | Different project on same host | `test-unified-hub.py` | Established. Original recipient and thread remain pinned. |
-| R03 | Native peer across physical owners | `test-unified-federation.py` | Not exercised in this review. SQLite/direct-remote fixture is not a real SSH outage. |
-| R04 | External MCP and native peer, both directions | `test-unified-host-services.py` | Established. Read/ACK evidence and service-generation continuity are separate. |
-| R05 | External MCP peers talking to each other | `test_runtime.py` | Established by both peer reports. Report identifies real conversation, not just transport acceptance. |
-| R06 | Side-chat initiates to newly listed project | `test-send-targets.py` | In progress. Old address memory must not override authenticated workspace policy. |
-| R07 | Shared list and new-send routing agree | `test-send-targets.py` | Established. Ready is a route snapshot, not end-to-end delivery. |
-| R08 | Missing/stale model and descriptive metadata | `test-send-targets.py` | Established. Metadata is never a routing/approval prerequisite. |
-| R09 | Duplicate live endpoints and explicit preference | `test-recipient-recovery.py` | Historical incident only. Never guess a receiver by heartbeat freshness. |
-| R10 | Read-only connection and service separation | `test-unified-host-services.py` | No destructive live probe. Writable workspace does not bypass read-only enrollment. |
-| R11 | Wrong native thread/UID/participant | `test-unified-identity.py` | No identity-switch live probe. Rejection leaves unrelated sessions usable. |
-| R12 | Same ID/same payload duplicate | `test-unified-hub.py` | Historical real usage. Idempotent acceptance is not repeated delivery. |
-| R13 | Same ID/changed payload conflict | `test-unified-deferred-submissions.py` | No conflicting live write. Preserve the existing original. |
-| R14 | Submission accepted but response lost | `test_vm_stdio_faults.py` | Historical observed timeout. Exact-ID lookup; never a fresh-ID replay. |
-| R15 | Host journaled then Hub committed | `test-unified-deferred-submissions.py` | Established in recent peer reports. Unconfirmed journal receipt is not rejection. |
-| R16 | Peer absent, DNS/SSH/bridge timeout | `test_runtime.py` | Observed intermittent management SSH reset. Management SSH reset alone does not explain model-turn silence. |
-| R17 | One slow or broken recipient | `test-unified-host-services.py` | No deliberate production outage. Other recipients and heartbeats continue. |
-| R18 | Concurrent workers/DB write-lock isolation | `test-unified-federation.py` | No production lock stress. Preflight/network outside write transactions. |
-| R19 | Growing history and linked reply lookup | `test-unified-hub.py` | Reviewer found real scan cost. Covering reply index; no data purge. |
-| R20 | Valid large/Unicode/multibyte body | `test-unified-federation.py` | No large live probe. Preserve exact body; use encoded response size. |
-| R21 | New body fits request but not response | `test-unified-hub.py` | No poisoned live write. Reject before commit, not by blanket 200 KB limit. |
-| R22 | Historical unreadable row before a normal row | `test-unified-hub.py` | No live row rewriting. Metadata error, cursor advance, no fake empty body/ACK. |
-| R23 | Inbox pagination and later arrivals | `test-unified-cli.py` | Routine inbox usage. No cursor skip or first-row starvation. |
-| R24 | Native notification/consumption/publication/ACK lost | `test-native-publication.py` | Earlier real native receipts. Unknown publication is not safe to replay. |
-| R25 | Subscriber opt-in, both feature flags and no fallback | `test-native-cc.py` | No flag manipulation live. Do not pin an unobserved subscriber. |
-| R26 | Process restart, same generation | `test-unified-host-services.py` | Observed targeted process reloads. Keep mailbox identity; do not borrow another chat. |
-| R27 | Different incarnation/native and old pinned recovery | `test-recipient-recovery.py` | Not exercised live this review. Isolated proof only; authenticated continuity required. |
-| R28 | Token/generation revoked while work pending | `test-unified-deferred-submissions.py` | No revocation live probe. Revocation cannot retroactively turn unknown into nonacceptance. |
-| R29 | Expired original and late reply/receipt | `test-unified-hub.py` | Historical incidents. Keep unknown/late evidence distinct from active delivery. |
-| R30 | Cancel races claim/commit/reconnect | `test-unified-deferred-submissions.py` | No production cancellation race. Durable cancellation fence and too-late semantics. |
-| R31 | Mixed backend and strict MCP schemas | `test-runtime-compatibility.py` | Earlier dispatching-schema incident. Unknown older backend behavior is not claimed current-ready. |
-| R32 | Owner mirror versus recipient-owner state | `test-unified-hub.py` | Real mirror mismatch observed. Explicit local_copy/owner_verified display, no hidden RPC. |
-| R33 | Existing writable workspace enrollment recheck | `test_muse.py` | Not applied to live credentials. Preserve mode, keys and read-only policy. |
-| R34 | Legacy address memory and multi-step safety refusal | `test_connection.py` | Reproduced; single-step list succeeds. Normal communication is not business-task authorization. |
-| R35 | External ingress and normal development peers | `test-unified-telegram-compatibility.py` | Transport acceptance only for recent ingress report. Do not generalize workspace scope to inbound external users. |
-| R36 | Installed versus loaded/current source | `test-runtime-installer.sh` | Both owners match recorded feature stages. Seven pre-existing unrelated distribution differences retained. |
+| R01 | Same-project CC/Cdx conversation | [test-unified-integration.py](../../extensions/messaging/tests/test-unified-integration.py) | Established. Exact linked reply and recipient read/ACK; not just queued. |
+| R02 | Different project on same host | [test-unified-hub.py](../../extensions/messaging/tests/test-unified-hub.py) | Established. Original recipient and thread remain pinned. |
+| R03 | Native peer across physical owners | [test-unified-federation.py](../../extensions/messaging/tests/test-unified-federation.py) | Owner acceptance observed; presentation held by draft protection. Actual native reply remains unconfirmed; SQLite fixtures are not a physical SSH outage. |
+| R04 | External MCP and native peer, both directions | [test-unified-host-services.py](../../extensions/messaging/tests/test-unified-host-services.py) | Established. Read/ACK evidence and service-generation continuity are separate. |
+| R05 | External MCP peers talking to each other | [test_runtime.py](../../extensions/messaging/external/kai-mcp/test_runtime.py) | Established by both peer reports. Report identifies real conversation, not just transport acceptance. |
+| R06 | Side-chat initiates to newly listed project | [test-send-targets.py](../../extensions/messaging/tests/test-send-targets.py) | Current authenticated list confirmed by receiver; initiation outcome still unconfirmed. Recipient-side follow-up is busy; old address memory must not override live policy. |
+| R07 | Shared list and new-send routing agree | [test-send-targets.py](../../extensions/messaging/tests/test-send-targets.py) | Established. Ready is a route snapshot, not end-to-end delivery. |
+| R08 | Missing/stale model and descriptive metadata | [test-send-targets.py](../../extensions/messaging/tests/test-send-targets.py) | Established. Metadata is never a routing/approval prerequisite. |
+| R09 | Duplicate live endpoints and explicit preference | [test-recipient-recovery.py](../../extensions/messaging/tests/test-recipient-recovery.py) | Historical incident only. Never guess a receiver by heartbeat freshness. |
+| R10 | Read-only connection and service separation | [test-unified-host-services.py](../../extensions/messaging/tests/test-unified-host-services.py) | No destructive live probe. Writable workspace does not bypass read-only enrollment. |
+| R11 | Wrong native thread/UID/participant | [test-unified-identity.py](../../extensions/messaging/tests/test-unified-identity.py) | No identity-switch live probe. Rejection leaves unrelated sessions usable. |
+| R12 | Same ID/same payload duplicate | [test-unified-hub.py](../../extensions/messaging/tests/test-unified-hub.py) | Historical real usage. Idempotent acceptance is not repeated delivery. |
+| R13 | Same ID/changed payload conflict | [test-unified-deferred-submissions.py](../../extensions/messaging/tests/test-unified-deferred-submissions.py) | No conflicting live write. Preserve the existing original. |
+| R14 | Submission accepted but response lost | [test_vm_stdio_faults.py](../../extensions/messaging/external/muse-mcp/test_vm_stdio_faults.py) | Historical observed timeout. Exact-ID lookup; never a fresh-ID replay. |
+| R15 | Host journaled then Hub committed | [test-unified-deferred-submissions.py](../../extensions/messaging/tests/test-unified-deferred-submissions.py) | Established in recent peer reports. Unconfirmed journal receipt is not rejection. |
+| R16 | Peer absent, DNS/SSH/bridge timeout | [test_runtime.py](../../extensions/messaging/external/kai-mcp/test_runtime.py) | Observed intermittent management SSH reset. Management SSH reset alone does not explain model-turn silence. |
+| R17 | One slow or broken recipient | [test-unified-host-services.py](../../extensions/messaging/tests/test-unified-host-services.py) | No deliberate production outage. Other recipients and heartbeats continue. |
+| R18 | Concurrent workers/DB write-lock isolation | [test-unified-federation.py](../../extensions/messaging/tests/test-unified-federation.py) | No production lock stress. Preflight/network outside write transactions. |
+| R19 | Growing history and linked reply lookup | [test-unified-hub.py](../../extensions/messaging/tests/test-unified-hub.py) | Reviewer found real scan cost. Covering reply index; no data purge. |
+| R20 | Valid large/Unicode/multibyte body | [test-unified-federation.py](../../extensions/messaging/tests/test-unified-federation.py) | No large live probe. Preserve exact body; use encoded response size. |
+| R21 | New body fits request but not response | [test-unified-hub.py](../../extensions/messaging/tests/test-unified-hub.py) | No poisoned live write. Reject before commit, not by blanket 200 KB limit. |
+| R22 | Historical unreadable row before a normal row | [test-unified-hub.py](../../extensions/messaging/tests/test-unified-hub.py) | No live row rewriting. Metadata error, cursor advance, no fake empty body/ACK. |
+| R23 | Inbox pagination and later arrivals | [test-unified-cli.py](../../extensions/messaging/tests/test-unified-cli.py) | Routine inbox usage. No cursor skip or first-row starvation. |
+| R24 | Native notification/consumption/publication/ACK lost | [test-native-publication.py](../../extensions/messaging/tests/test-native-publication.py) | Earlier real native receipts. Unknown publication is not safe to replay. |
+| R25 | Subscriber opt-in, both feature flags and no fallback | [test-native-cc.py](../../extensions/messaging/tests/test-native-cc.py) | No flag manipulation live. Do not pin an unobserved subscriber. |
+| R26 | Process restart, same generation | [test-unified-host-services.py](../../extensions/messaging/tests/test-unified-host-services.py) | Observed targeted process reloads. Keep mailbox identity; do not borrow another chat. |
+| R27 | Different incarnation/native and old pinned recovery | [test-recipient-recovery.py](../../extensions/messaging/tests/test-recipient-recovery.py) | Not exercised live this review. Isolated proof only; authenticated continuity required. |
+| R28 | Token/generation revoked while work pending | [test-unified-deferred-submissions.py](../../extensions/messaging/tests/test-unified-deferred-submissions.py) | No revocation live probe. Revocation cannot retroactively turn unknown into nonacceptance. |
+| R29 | Expired original and late reply/receipt | [test-unified-hub.py](../../extensions/messaging/tests/test-unified-hub.py) | Historical incidents. Keep unknown/late evidence distinct from active delivery. |
+| R30 | Cancel races claim/commit/reconnect | [test-unified-deferred-submissions.py](../../extensions/messaging/tests/test-unified-deferred-submissions.py) | No production cancellation race. Durable cancellation fence and too-late semantics. |
+| R31 | Mixed backend and strict MCP schemas | [test-runtime-compatibility.py](../../extensions/messaging/tests/test-runtime-compatibility.py) | Earlier dispatching-schema incident. Unknown older backend behavior is not claimed current-ready. |
+| R32 | Owner mirror versus recipient-owner state | [test-unified-hub.py](../../extensions/messaging/tests/test-unified-hub.py) | Real mirror mismatch observed. Explicit local_copy/owner_verified display, no hidden RPC. |
+| R33 | Existing writable workspace enrollment recheck | [test_muse.py](../../extensions/messaging/external/muse-mcp/test_muse.py) | Not applied to live credentials. Preserve mode, keys and read-only policy. |
+| R34 | Legacy address memory and multi-step safety refusal | [test_connection.py](../../extensions/messaging/external/kai-mcp/test_connection.py) | Reproduced; single-step list succeeds. Normal communication is not business-task authorization. |
+| R35 | External ingress and normal development peers | [test-unified-telegram-compatibility.py](../../extensions/messaging/tests/test-unified-telegram-compatibility.py) | Transport acceptance only for recent ingress report. Do not generalize workspace scope to inbound external users. |
+| R36 | Installed versus loaded/current source | [test-runtime-installer.sh](../../extensions/messaging/tests/test-runtime-installer.sh) | Both owners match recorded feature stages. Seven pre-existing unrelated distribution differences retained. |
 
 ## Reviewed findings and disposition
 
@@ -80,3 +80,19 @@ belong in the ignored local execution record, not this shared document.
   third owner is not covered by that activation evidence.
 - Restart/recovery, expiry/cancel races and physical network loss are validated
   with isolated real SQLite/socket/SDK boundaries, not forced on working sessions.
+
+## Checkpoint evidence
+
+The independent peer reviewed the original source and the integrated fix. No P0/P1
+or mandatory correction remained in the second review. The required workflow now
+contains 16 shell groups including the omitted core lifecycle suites; all passed.
+Two official-SDK fault tests also passed. Both installed owner variants passed the
+large-body/nonstarvation/index fixture before activation. After targeted activation,
+both live databases exposed the reply index and used it in the query plan; the live
+directory returned 20 ready targets with complete coverage. Credentials, enrollment
+generations and native development sessions were not changed.
+
+Normal side-chat replies and external-peer conversations are confirmed. A separate
+new-initiation question and native cross-owner conversation remain distinct from
+those successes: model-turn silence, busy and draft protection are not fabricated
+transport failures or reasons to overwrite another session's input.
