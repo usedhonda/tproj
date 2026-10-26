@@ -103,9 +103,9 @@ projects:
 #     prev2_fg: colour175
 #     prev2_bg: colour237
 #   window_text:
-#     active_fg: default
+#     active_fg: colour231
 #     active_bg: terminal
-#     inactive_fg: colour250
+#     inactive_fg: colour231
 #     inactive_bg: terminal
 #
 # --- GUI settings ---
