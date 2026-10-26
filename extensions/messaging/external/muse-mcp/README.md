@@ -46,7 +46,8 @@ The helper prepares a new plist without starting services. After apply:
 
 The plist uses python3 -I and the private parent config/bridge.
 Test initialization/tools/list through the separate tokenless client config.
-Do not send messages in P1. A body read requiring a presentation reservation
+Do not send messages during a new read-only P1 enrollment. This is an enrollment
+phase, not a permanent restriction on an already writable workspace connection. A body read requiring a presentation reservation
 also remains unavailable while enrolled read-only.
 
 ## Dedicated SSH key
@@ -60,7 +61,12 @@ The helper rejects a key carrying another grant, preserves unrelated entries,
 and adds restrict plus one forced tokenless stdio command. No listener,
 interactive shell, PTY or forwarding is added. The child has no parent token.
 
-VM connector/discovery are P2. Sending and enabling message operations are P3.
+VM connector/discovery are P2. Initially enabling message operations is P3.
+These phase labels do not add per-session or per-destination approvals to normal
+conversation after activation. Current workspace communication follows the
+[shared MSG contract](../../../../docs/reference/unified-messaging.md).
+Preparing/checking an existing workspace enrollment preserves its mode and approved
+read-only/writable policy rather than reverting it to P1.
 Missing dedicated public key or operator-selected scope leaves P1 incomplete.
 
 ## Continuity / revocation

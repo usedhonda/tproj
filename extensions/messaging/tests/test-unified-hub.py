@@ -131,7 +131,7 @@ class HubTest(unittest.TestCase):
         ro = Hub(path, {'admin_token': 'adm', 'hosts': {'a': 'ta'}}, read_only=True)
         self.addCleanup(ro.close)
         self.assertEqual(ro.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'ta'})['capabilities'],
-                         ['native_attest', 'native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted', 'native_begin_present', 'native_pending', 'native_drain', 'native_handoff', 'recipient_recovery_v1', 'native_cc_v1'])
+                         ['native_attest', 'native_continuity', 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted', 'send_targets_v1', 'native_begin_present', 'native_pending', 'native_drain', 'native_handoff', 'recipient_recovery_v1', 'native_cc_v1'])
         self.assertEqual(ro.dispatch({'op': 'messaging_capabilities', 'host_id': 'a', 'host_token': 'ta'})['peers'], {})
         with self.assertRaises(HubError) as caught:
             ro.dispatch({'op': 'diagnose', 'host_id': 'a', 'host_token': 'ta', 'message_id': 'missing'})
@@ -804,17 +804,36 @@ class HubTest(unittest.TestCase):
         second=self.h.dispatch(dict(request,cursor=first["next_cursor"]))
         self.assertEqual([m["message_id"] for m in second["messages"]],["small-next"])
         self.assertGreater(second["next_cursor"],first["next_cursor"])
-    def test_message_exceeding_response_frame_fails_explicitly(self):
+    def test_oversized_admission_rejects_before_commit_and_legacy_row_does_not_starve(self):
         body="x" * (MAX_REQUEST-300)
         request={"op":"submit","host_id":"a","host_token":"ta","message":{"message_id":"too-large","thread_id":"t","sender_endpoint":"ea","target":"cdx","body":body,"kind":"chat"}}
         self.assertLessEqual(len((json.dumps(request,ensure_ascii=False)+"\n").encode()),MAX_REQUEST)
-        self.h.dispatch(request)
+        with self.assertRaises(HubError) as caught: self.h.dispatch(request)
+        self.assertEqual(caught.exception.code, 'invalid_message')
+        self.assertIsNone(self.h._row("SELECT 1 FROM messages WHERE message_id='too-large'"))
+        # Model an original persisted by an older owner without rewriting it on upgrade.
+        self.send(mid='historical-large',body='historical')
+        self.h.db.execute("UPDATE messages SET body=? WHERE message_id='historical-large'",(body,))
+        self.send(mid='later-small',body='still flows')
         recipient={"host_id":"b","host_token":"tb","endpoint_id":"eb"}
-        for op in ("inbox","query"):
-            with self.assertRaises(HubError) as caught:
-                self.h.dispatch(dict(recipient,op=op,message_id="too-large"))
-            self.assertEqual(caught.exception.code,"response_too_large")
-            self.assertNotIn(body,str(caught.exception))
+        for op in ('inbox','claim'):
+            result=self.h.dispatch(dict(recipient,op=op))
+            self.assertEqual([m['message_id'] for m in result['messages']],['later-small'])
+            self.assertEqual(result['messages'][0]['body'],'still flows')
+            self.assertEqual(result['message_errors'][0]['message_id'],'historical-large')
+            self.assertEqual(result['message_error_count'],1)
+            self.assertNotIn(body,json.dumps(result))
+        self.assertEqual(self.h._row("SELECT state FROM messages WHERE message_id='historical-large'")[0],'accepted')
+        with self.assertRaises(HubError) as caught:
+            self.h.dispatch(dict(recipient,op='query',message_id='historical-large'))
+        self.assertEqual(caught.exception.code,'response_too_large')
+
+    def test_reply_lookup_uses_covering_index_instead_of_history_scan(self):
+        plan=self.h.db.execute('EXPLAIN QUERY PLAN SELECT 1 FROM messages reply WHERE reply.in_reply_to=? AND reply.sender_endpoint=?',('original','recipient')).fetchall()
+        text=' '.join(str(tuple(row)) for row in plan)
+        self.assertIn('message_reply',text)
+        self.assertNotIn('SCAN reply',text)
+
     def test_outbox_lists_only_my_unfinished_sends_without_bodies(self):
         self.send(mid="o1",body="private-outbox-sentinel")
         self.send(mid="o2",body="second")
@@ -823,6 +842,8 @@ class HubTest(unittest.TestCase):
         self.assertTrue(all(m["state"] in ("accepted","queued") for m in mine["messages"]))
         self.assertEqual(mine["messages"][0]["recipient_host_id"],"b")
         self.assertEqual(mine["messages"][0]["recipient_kind"],"cdx")
+        self.assertEqual(mine["messages"][0]["state_scope"],"local_copy")
+        self.assertFalse(mine["messages"][0]["owner_verified"])
         self.assertNotIn("private-outbox-sentinel",str(mine))
         # The recipient sent nothing, so its outbox is empty.
         theirs=self.h.dispatch({"op":"outbox","host_id":"b","host_token":"tb","endpoint_id":"eb"})

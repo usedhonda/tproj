@@ -138,7 +138,8 @@ class FixedConnectionAuthorizer:
             "binding_generation": observed["binding_generation"],
             "binding_id": observed["binding_id"],
             "incarnation": observed["incarnation"],
-            "allowed_addresses": list(scope),
+            **({"new_message_targets": "tproj_list available participants"}
+               if observed.get("messaging_scope") == "workspace" else {"allowed_addresses": list(scope)}),
             "policy_revision": observed.get("policy_revision"),
             "policy_state": policy_state,
             "messaging_scope": observed.get("messaging_scope", "restricted"),

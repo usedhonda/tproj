@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS messages (message_id TEXT PRIMARY KEY, thread_id TEXT
 CREATE TABLE IF NOT EXISTS receipts (message_id TEXT PRIMARY KEY, state TEXT NOT NULL, evidence TEXT, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS native_delivery_owners (message_id TEXT PRIMARY KEY REFERENCES messages(message_id), original_recipient TEXT NOT NULL, actor_endpoint TEXT NOT NULL, actor_incarnation TEXT NOT NULL, content_hash TEXT NOT NULL, generation INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS message_recipient ON messages(recipient_endpoint, state, expires_at);
+CREATE INDEX IF NOT EXISTS message_reply ON messages(in_reply_to, sender_endpoint);
 """ + recipient.SCHEMA
 
 
@@ -557,6 +558,7 @@ class Hub:
         check_policy(self.db, sender["endpoint_id"], target, body, self._now(), msg.get("in_reply_to"))
         created = self._now(); expires = created + ttl
         self.db.execute("INSERT INTO messages(message_id,thread_id,in_reply_to,sender_endpoint,target_address,recipient_endpoint,body,kind,created_at,expires_at,payload_hash,external_origin_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (mid,msg.get("thread_id") or mid,msg.get("in_reply_to"),sender["endpoint_id"],target,recipient["endpoint_id"],body,msg.get("kind","chat"),created,expires,ph,json.dumps(origin,sort_keys=True) if origin is not None else None))
+        self._validate_admission(mid)
         return {"message_id": mid, "state": "queued"}
 
     def inbox(self, req):
@@ -565,8 +567,11 @@ class Hub:
         cursor = int(req.get("cursor") or 0)
         limit = min(max(int(req.get("limit", 100)), 1), 100)
         rows = self.db.execute("SELECT rowid AS sequence,* FROM messages WHERE recipient_endpoint=? AND rowid>? ORDER BY rowid LIMIT ?", (ep["endpoint_id"], cursor, limit)).fetchall()
-        out = self.message_views(rows, response_kind="inbox")
-        result = {"messages":out,"next_cursor":out[-1]["sequence"] if out else cursor}
+        errors = []
+        out = self.message_views(rows, response_kind="inbox", errors=errors)
+        advanced = [m['sequence'] for m in out] + [e['sequence'] for e in errors]
+        result = {"messages":out,"next_cursor":max(advanced) if advanced else cursor}
+        result.update(self._page_errors(errors))
         self._check_message_response(result)
         return result
 
@@ -649,7 +654,13 @@ class Hub:
             "AND m.state IN ('accepted','queued','adapter_received','dispatching','uncertain') "
             "ORDER BY m.created_at LIMIT ?",
             (ep["participant_id"], now, now - 7 * 86400, limit)).fetchall()
-        return {"messages": [dict(r) for r in rows], "now": now}
+        items = []
+        for row in rows:
+            item = dict(row)
+            owner = item.get("recipient_host_id") == host
+            item.update(state_scope="recipient_owner" if owner else "local_copy", owner_verified=owner)
+            items.append(item)
+        return {"messages": items, "now": now}
 
     def _check_message_response(self, result):
         # The host uses default JSON separators; this also bounds the smaller
@@ -657,7 +668,30 @@ class Hub:
         if len((json.dumps(success(result), ensure_ascii=False) + "\n").encode()) > MAX_REQUEST:
             raise HubError("response_too_large", "message response exceeds wire limit")
 
-    def message_views(self, rows, response_kind="messages"):
+    def _validate_admission(self, message_id):
+        """Do not commit an original whose full body cannot be consumed."""
+        row = self._row('SELECT rowid AS sequence,* FROM messages WHERE message_id=?', (message_id,))
+        try:
+            item = self.message_views([row], response_kind='query')[0]
+            response = self.response_evidence(row)
+            item.update(response)
+            item['delivery_summary'] = self.delivery_summary(row, response)
+            item['reader_is_recipient'] = True
+            # Reserve a small envelope allowance for later receipt/actor metadata,
+            # not a blanket byte cap on otherwise deliverable message bodies.
+            view = {'messages': [item], 'next_cursor': 9223372036854775807}
+            if len((json.dumps(success(view), ensure_ascii=False) + '\n').encode()) > MAX_REQUEST - 2048:
+                raise HubError('response_too_large', 'message response exceeds wire limit')
+        except HubError as exc:
+            if exc.code != 'response_too_large': raise
+            raise HubError('invalid_message', 'message cannot fit the response wire limit') from None
+
+    @staticmethod
+    def _page_errors(errors):
+        if not errors: return {}
+        return dict(message_errors=errors[:4], message_error_count=len(errors))
+
+    def message_views(self, rows, response_kind="messages", *, errors=None):
         out = []
         size = 0
         for row in rows:
@@ -681,10 +715,16 @@ class Hub:
             item["sender_address"] = q[0] if q else None
             encoded = len(json.dumps(item, ensure_ascii=False).encode())
             if size + encoded > 200000:
-                if out: break
                 result = item if response_kind == "query" else {"messages": [item]}
                 if response_kind == "inbox": result["next_cursor"] = item["sequence"]
-                self._check_message_response(result)
+                try:
+                    self._check_message_response(result)
+                except HubError as exc:
+                    if exc.code != 'response_too_large' or errors is None: raise
+                    errors.append(dict(message_id=item['message_id'], sequence=item.get('sequence', 0),
+                                       error='response_too_large'))
+                    continue
+                if out: break
                 out.append(item)
                 break
             out.append(item); size += encoded
@@ -801,14 +841,16 @@ class Hub:
             rows=self.db.execute("SELECT m.rowid AS sequence,m.* FROM messages m LEFT JOIN native_delivery_owners o ON o.message_id=m.message_id WHERE COALESCE(o.actor_endpoint,m.recipient_endpoint)=? AND (o.message_id IS NULL OR o.actor_incarnation=?) AND m.expires_at>? AND m.state IN ('accepted','queued','adapter_received') AND NOT EXISTS (SELECT 1 FROM messages reply WHERE reply.in_reply_to=m.message_id AND reply.sender_endpoint=COALESCE(o.actor_endpoint,m.recipient_endpoint))" + boundary + " ORDER BY " + order + " LIMIT ?", params).fetchall()
             scanned_sequence = rows[-1]['sequence'] if rows else 0
             if self._maintenance() == "probe": rows=[r for r in rows if r["message_id"] in set(self.config.get("probe_message_ids", []))]
-            rows=self.message_views(rows)
+            errors = []
+            rows=self.message_views(rows, errors=errors)
             for r in rows: self.db.execute("UPDATE messages SET state='adapter_received',adapter_received_at=? WHERE message_id=?",(now,r["message_id"]))
             self._commit()
         except Exception:
             self._rollback(); raise
-        result = {"messages": rows}
+        result = {"messages": rows, **self._page_errors(errors)}
         if after is not None:
-            result['next_sequence'] = rows[-1]['sequence'] if rows else scanned_sequence
+            advanced = [r['sequence'] for r in rows] + [e['sequence'] for e in errors]
+            result['next_sequence'] = max(advanced) if advanced else scanned_sequence
         return result
 
     def receipt(self, req):

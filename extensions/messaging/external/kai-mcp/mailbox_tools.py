@@ -330,6 +330,7 @@ class MailboxTools:
         if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0 or not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_LIMIT:
             raise MailboxToolError("invalid_request", "cursor and limit are out of bounds")
         result = self._host("service_inbox", cursor=cursor, limit=limit) or {}
+        errors = {k: result[k] for k in ('message_errors', 'message_error_count') if k in result}
         if metadata_only:
             # Detection and hook dry-runs must not reserve presentation or copy bodies.
             pending = []
@@ -340,7 +341,7 @@ class MailboxTools:
                     'message_id', 'thread_id', 'sender_address', 'state', 'sequence',
                     'expires_at', 'in_reply_to') if key in item and item[key] is not None})
             return {'messages': [], 'pending': pending, 'metadata_only': True,
-                    'next_cursor': int(result.get('next_cursor', cursor))}
+                    'next_cursor': int(result.get('next_cursor', cursor)), **errors}
         messages = []
         for item in result.get("messages", []):
             if not isinstance(item, Mapping) or item.get("state") in CANCELLED_STATES:
@@ -349,7 +350,7 @@ class MailboxTools:
             if not isinstance(mid, str) or not self._begin_present(mid):
                 continue
             messages.append(item)
-        return {"messages": [self._view(item) for item in messages], "next_cursor": int(result.get("next_cursor", cursor))}
+        return {"messages": [self._view(item) for item in messages], "next_cursor": int(result.get("next_cursor", cursor)), **errors}
 
     def _message(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
         self._keys(args, {"message_id"}); mid = self._id(args["message_id"])

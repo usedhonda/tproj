@@ -37,6 +37,17 @@ jobs:
         run: |
           bash extensions/messaging/tests/test-target-resolution-hardening.sh
           python3 extensions/messaging/tests/test-send-targets.py
+      - name: Unified core lifecycle
+        run: |
+          python3 extensions/messaging/tests/test-unified-hub.py
+          python3 extensions/messaging/tests/test-unified-federation.py
+          python3 extensions/messaging/tests/test-unified-integration.py
+          python3 extensions/messaging/tests/test-unified-cli.py
+          python3 extensions/messaging/tests/test-unified-identity.py
+          python3 extensions/messaging/tests/test-unified-policy.py
+          python3 extensions/messaging/tests/test-unified-pending.py
+          python3 extensions/messaging/tests/test-unified-terminal-freshness.py
+          python3 extensions/messaging/tests/test-runtime-compatibility.py
       - name: Native notice provenance and consumer
         run: |
           python3 extensions/messaging/tests/test-recipient-recovery.py

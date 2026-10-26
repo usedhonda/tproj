@@ -1538,3 +1538,25 @@ The [Muse MSG connector contract](muse-msg-connector.md) defines dedicated
 SSH/stdio access and the native metadata-only receive hook. Optional
 `tproj_inbox(metadata_only=true)` detects messages without body retrieval,
 presentation reservation or ACK; ordinary inbox behavior is unchanged.
+
+### Response framing and historical oversized originals
+
+Admission checks the encoded complete message view against the response frame,
+including a 2 KiB lifecycle-envelope allowance. It does not impose a 200 KB body
+cap; deliverable large and Unicode bodies remain byte-exact. An unreadable new
+original is rejected with `invalid_message` before its transaction commits, on
+both the sender Hub and recipient owner accept path.
+
+Historical rows that already exceed the frame stay unchanged. Collection reads
+(inbox/claim) skip only those rows, report `message_errors` (up to four metadata
+entries) and `message_error_count`, and advance the inbox cursor or native keyset past them. Legacy direct claim
+callers must page with after_sequence to progress through an error-only page. They
+never synthesize an empty body, ACK or terminal delivery. Exact-ID query continues
+to fail explicitly with `response_too_large`. Later ordinary messages keep flowing.
+An index on reply linkage avoids scanning all history while claim holds its lock.
+
+Outbox rows label state_scope=local_copy and owner_verified=false for a remote
+recipient; a sender mirror is not a fresh owner receipt. Local-owner rows label
+recipient_owner. This display adds no remote calls. Session IDs and panes are
+descriptive identifiers, not credentials or identity/route overrides. They stay
+visible because the directory helps choose among registered sessions.

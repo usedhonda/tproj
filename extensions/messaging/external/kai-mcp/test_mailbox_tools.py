@@ -61,6 +61,21 @@ class MailboxToolsTest(unittest.TestCase):
         self.tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
                                           authorizer=self.authorizer, host_call=self.host)
 
+    def test_oversized_historical_metadata_error_is_visible_without_body_or_reservation(self):
+        error={'message_id':'historical','sequence':7,'error':'response_too_large'}
+        calls=[]
+        def host(req):
+            calls.append(req['op'])
+            return {'messages':[],'next_cursor':7,'message_errors':[error],'message_error_count':1}
+        self.tools.host_call=host
+        for args in ({},{'metadata_only':True}):
+            result=self.tools.dispatch('tproj_inbox',args)
+            self.assertEqual(result['next_cursor'],7)
+            self.assertEqual(result['message_errors'],[error])
+            self.assertEqual(result['message_error_count'],1)
+            self.assertEqual(result['messages'],[])
+        self.assertEqual(calls,['service_inbox','service_inbox'])
+
     def test_message_preserves_response_evidence_without_synthesizing_ack(self):
         item = {'message_id':'original','thread_id':'thread','target_address':'voyager.cc',
                 'body':'example','state':'uncertain','response_state':'recipient_replied',

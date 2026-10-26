@@ -695,6 +695,7 @@ class FederatedHub(Hub):
             proof = payload['recovery_reply']
             self.db.execute('INSERT INTO message_recovery_replies VALUES(?,?,?,?,?)',
                             tuple(proof[k] for k in ('message_id','original_id','grant_id','owner_host','actor_endpoint')))
+        self._validate_admission(record['message_id'])
         return {'message_id': record['message_id'], 'state': 'queued'}
 
     def manage_update(self, req, origin):

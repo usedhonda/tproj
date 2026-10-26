@@ -22,6 +22,19 @@ class ConnectionAuthorizerTest(unittest.TestCase):
         binding = module.KaiServiceBinding("kai", "kai", "kai.service", "secret", ("voyager.cc",), "gen-1")
         self.authorizer = module.FixedConnectionAuthorizer(binding, lambda: dict(self.observed))
 
+    def test_workspace_policy_is_not_exposed_as_an_empty_allowlist(self):
+        self.observed.update(messaging_scope='workspace',allowed_addresses=[],
+            policy_revision=hashlib.sha256(b'[]').hexdigest())
+        for op in ('tproj_list','tproj_status','tproj_send'):
+            result=self.authorizer.authorize(op,{'target':'new-project.cc'})
+            self.assertNotIn('allowed_addresses',result)
+            self.assertEqual(result['messaging_scope'],'workspace')
+            self.assertEqual(result['new_message_targets'],'tproj_list available participants')
+        catalog=json.loads((ROOT/'external-assistant-tools.json').read_text())
+        for t in catalog['tools']:
+            if t['name'] in ('tproj_send','tproj_status'):
+                self.assertIn('No per-destination user approval',t['description'])
+
     def test_fixed_scope_and_host_incarnation_are_returned(self):
         result = self.authorizer.authorize("tproj_send", {"target": "voyager.cc"})
         self.assertEqual(result["principal"], "kai-service")

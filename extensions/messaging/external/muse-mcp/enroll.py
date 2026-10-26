@@ -57,11 +57,14 @@ def encoded(value):
     return (json.dumps(value, sort_keys=True, indent=2)+'\n').encode()
 
 
-def service(parent):
-    return dict(participant_id=parent['participant_id'], address='muse', platform='muse',
+def service(parent, current=None):
+    result = dict(participant_id=parent['participant_id'], address='muse', platform='muse',
         token=parent['service_token'], binding_generation=parent['binding_generation'],
         launchd_label='local.tproj.muse-mailbox', allowed_addresses=parent['allowed_addresses'],
         read_only=parent['read_only'])
+    if current and current.get('messaging_scope') == 'workspace':
+        result['messaging_scope'] = 'workspace'
+    return result
 
 
 def prepare(home, host_path, root, scope):
@@ -71,10 +74,13 @@ def prepare(home, host_path, root, scope):
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     if root.stat().st_mode & 0o077:
         raise EnrollmentError('private enrollment directory required')
+    existing = cfg.get('services', {}).get('muse')
+    workspace = bool(existing and existing.get('messaging_scope') == 'workspace')
     parent_path = root/'parent.json'
     if parent_path.exists():
         parent = read(parent_path)
-        if parent.get('allowed_addresses') != scope or parent.get('read_only') is not True:
+        if ((parent.get('allowed_addresses') != scope and not workspace)
+                or (parent.get('read_only') is not True and not workspace)):
             raise EnrollmentError('existing candidate scope differs; nothing changed')
     else:
         if 'muse' in cfg.get('services', {}):
@@ -83,7 +89,7 @@ def prepare(home, host_path, root, scope):
             service_token=secrets.token_urlsafe(32), binding_generation=secrets.token_urlsafe(32),
             allowed_addresses=scope, read_only=True, host_socket=cfg['socket'],
             bridge_socket=str(root/'mailbox.sock'))
-    candidate = service(parent)
+    candidate = service(parent, existing)
     for sid, prior in [*cfg.get('services', {}).items(), *([('openclaw',cfg['service'])] if cfg.get('service') else [])]:
         if sid != 'muse' and (prior.get('address') == candidate['address']
                              or prior.get('participant_id') == candidate['participant_id']):
@@ -110,7 +116,7 @@ def prepare(home, host_path, root, scope):
     for path, data in expected.items():
         atomic(path, data)
     atomic(manifest_path, encoded(manifest))
-    return {'prepared': True, 'read_only': True, 'scope_count':len(scope), 'host_changed':False}
+    return {'prepared': True, 'read_only': parent['read_only'], 'scope_count':len(parent['allowed_addresses']), 'host_changed':False}
 
 
 
@@ -154,18 +160,19 @@ def register_participant(config, hub_path, check=False):
 
 
 def apply(host_path, root, check=False, hub_path=None):
-    parent = read(root/'parent.json'); expected = service(parent)
-    if parent.get('read_only') is not True:
-        raise EnrollmentError('P1 must remain read-only')
+    parent = read(root/'parent.json')
     manifest = read(root/'candidate.json')
     cfg = read(host_path)
     hub_path = hub_path or host_path.parent/'msg-hub.json'
     host_ready(cfg)
     current = cfg.get('services', {}).get('muse')
+    expected = service(parent, current)
+    if parent.get('read_only') is not True and not (current == expected and current.get('messaging_scope') == 'workspace'):
+        raise EnrollmentError('new enrollment must remain read-only')
     if current == expected:
         if not register_participant(cfg,hub_path,check=check):
             raise EnrollmentError('matching directory participant is missing')
-        return {'enrolled':True, 'changed':False, 'read_only':True}
+        return {'enrolled':True, 'changed':False, 'read_only':parent['read_only']}
     if current is not None:
         raise EnrollmentError('registered Muse differs; nothing changed')
     if check:
@@ -201,7 +208,7 @@ def key_enrollment(host_path, root, hub_path=None):
         raise EnrollmentError('tokenless client differs from parent')
     config = read(host_path)
     host_ready(config)
-    if config.get('services', {}).get('muse') != service(parent):
+    if config.get('services', {}).get('muse') != service(parent, config.get('services', {}).get('muse')):
         raise EnrollmentError('registered Muse differs; nothing changed')
     if not register_participant(config, hub_path or host_path.parent/'msg-hub.json', check=True):
         raise EnrollmentError('matching directory participant is missing')

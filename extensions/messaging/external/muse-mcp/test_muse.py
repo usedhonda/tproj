@@ -82,6 +82,24 @@ class MuseTests(unittest.TestCase):
 
 
 class EnrollmentTests(unittest.TestCase):
+    def test_existing_writable_workspace_recheck_preserves_policy_and_credentials(self):
+        spec=importlib.util.spec_from_file_location('workspace_enrollment',Path(__file__).with_name('enroll.py'))
+        enroll=importlib.util.module_from_spec(spec);spec.loader.exec_module(enroll)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(enroll,'host_ready'), patch.object(enroll,'register_participant',return_value=True):
+            home=Path(tmp);root=home/'state';host=home/'host.json'
+            host.write_text(json.dumps({'socket':str(home/'host.sock')}));host.chmod(0o600)
+            enroll.prepare(home,host,root,['project.cc']);enroll.apply(host,root)
+            parent=json.loads((root/'parent.json').read_text());parent['read_only']=False
+            enroll.atomic(root/'parent.json',enroll.encoded(parent))
+            cfg=json.loads(host.read_text());cfg['services']['muse'].update(read_only=False,messaging_scope='workspace')
+            enroll.atomic(host,enroll.encoded(cfg));before=host.read_bytes()
+            result=enroll.prepare(home,host,root,[])
+            self.assertFalse(result['read_only'])
+            self.assertFalse(enroll.apply(host,root,check=True)['changed'])
+            self.assertTrue(enroll.key_enrollment(host,root))
+            self.assertEqual(host.read_bytes(),before)
+            self.assertEqual(json.loads((root/'parent.json').read_text())['service_token'],parent['service_token'])
+
     def test_prepare_apply_check_and_key_preserve_other_services(self):
         import base64
         spec=importlib.util.spec_from_file_location('muse_enrollment',Path(__file__).with_name('enroll.py'))
