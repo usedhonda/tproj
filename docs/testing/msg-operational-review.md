@@ -11,7 +11,7 @@ alone is not complete messaging coverage.
 | --- | --- | --- | --- |
 | R01 | Same-project CC/Cdx conversation | [test-unified-integration.py](../../extensions/messaging/tests/test-unified-integration.py) | Established. Exact linked reply and recipient read/ACK; not just queued. |
 | R02 | Different project on same host | [test-unified-hub.py](../../extensions/messaging/tests/test-unified-hub.py) | Established. Original recipient and thread remain pinned. |
-| R03 | Native peer across physical owners | [test-unified-federation.py](../../extensions/messaging/tests/test-unified-federation.py) | Owner acceptance observed; presentation held by draft protection. Actual native reply remains unconfirmed; SQLite fixtures are not a physical SSH outage. |
+| R03 | Native peer across physical owners | [test-unified-federation.py](../../extensions/messaging/tests/test-unified-federation.py) | Established: correct linked reply read/ACK after earlier draft protection. A successful physical-owner roundtrip is not a forced SSH-outage test. |
 | R04 | External MCP and native peer, both directions | [test-unified-host-services.py](../../extensions/messaging/tests/test-unified-host-services.py) | Established. Read/ACK evidence and service-generation continuity are separate. |
 | R05 | External MCP peers talking to each other | [test_runtime.py](../../extensions/messaging/external/kai-mcp/test_runtime.py) | Established by both peer reports. Report identifies real conversation, not just transport acceptance. |
 | R06 | Side-chat initiates to newly listed project | [test-send-targets.py](../../extensions/messaging/tests/test-send-targets.py) | Current authenticated list confirmed by receiver; initiation outcome still unconfirmed. Recipient-side follow-up is busy; old address memory must not override live policy. |
@@ -92,7 +92,7 @@ both live databases exposed the reply index and used it in the query plan; the l
 directory returned 20 ready targets with complete coverage. Credentials, enrollment
 generations and native development sessions were not changed.
 
-Normal side-chat replies and external-peer conversations are confirmed. A separate
-new-initiation question and native cross-owner conversation remain distinct from
-those successes: model-turn silence, busy and draft protection are not fabricated
-transport failures or reasons to overwrite another session's input.
+Normal side-chat replies and external-peer conversations are confirmed. A native cross-owner roundtrip also completed after draft protection, with correct
+answer, original-thread linkage and recipient read/ACK. A separate side-chat
+new-initiation question remains unconfirmed: model-turn silence and busy are not
+fabricated transport failures or reasons to overwrite another session's input.
