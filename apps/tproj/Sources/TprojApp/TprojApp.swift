@@ -6144,14 +6144,15 @@ struct ContentView: View {
         width: CGFloat,
         running: Bool,
         tint: Color,
-        mainTint: Color?
+        isMain: Bool
     ) -> some View {
         let label = workspaceRowSlots.showDetail ? detail.map { "\(title) \($0)" } ?? title : title
+        let statusColor = running ? tint : GhosttyTheme.current.foreground.opacity(0.72)
         // The label carries status color; a separate dot wastes name space.
         return Text(label)
             .lineLimit(1)
         .font(GhosttyTheme.current.font(size: 10, weight: .semibold))
-        .foregroundStyle(running ? tint : GhosttyTheme.current.foreground.opacity(0.72))
+        .foregroundStyle(statusColor)
         .accessibilityLabel(title)
         .accessibilityValue(running ? (detail ?? "Running") : "Off")
         .frame(width: width, height: 18)
@@ -6161,7 +6162,7 @@ struct ContentView: View {
         )
         .overlay(
             Capsule(style: .continuous)
-                .strokeBorder(mainTint ?? .clear, lineWidth: 1)
+                .strokeBorder(isMain ? statusColor : .clear, lineWidth: 1)
         )
         .contentShape(Capsule(style: .continuous))
     }
@@ -6175,12 +6176,11 @@ struct ContentView: View {
     }
 
     private func liveColumnActions(_ column: LiveColumn) -> some View {
-        // Conversation-main side + mode tint. This is the pane the user chose to
+        // Conversation-main side. This is the pane the user chose to
         // talk to, not necessarily the higher-tier or orchestrating side.
         let host = column.hostLabel.hasPrefix("remote@")
             ? String(column.hostLabel.dropFirst("remote@".count)) : nil
         let main = vm.roleModeMain(forProjectPath: column.projectPath, host: host)
-        let mainTint = roleModeTint(vm.roleMode(forProjectPath: column.projectPath, host: host))
         let slots = workspaceRowSlots
         let cc = ccCacheSummary(column) ?? remoteProject(for: column).map(remoteCCCacheSummary)
         let cdx = cdxCacheSummary(column)
@@ -6197,7 +6197,7 @@ struct ContentView: View {
             } label: {
                 workspaceAgentBadge("CC", detail: ccRunning ? workspaceBadgeDetail(cc?.text) : nil, width: slots.cc,
                                     running: ccRunning, tint: cc?.tint == GhosttyTheme.current.textTertiary ? GhosttyTheme.current.accentCyan : (cc?.tint ?? GhosttyTheme.current.accentCyan),
-                                    mainTint: main == "cc" ? mainTint : nil)
+                                    isMain: main == "cc")
             }
             .buttonStyle(.plain)
             .disabled(vm.isBusy)
@@ -6207,7 +6207,7 @@ struct ContentView: View {
             } label: {
                 workspaceAgentBadge("Cdx", detail: cdxRunning ? workspaceBadgeDetail(cdx?.text) : nil, width: slots.cdx,
                                     running: cdxRunning, tint: cdx?.tint == GhosttyTheme.current.textTertiary ? GhosttyTheme.current.accentCyan : (cdx?.tint ?? GhosttyTheme.current.accentCyan),
-                                    mainTint: main == "cdx" ? mainTint : nil)
+                                    isMain: main == "cdx")
             }
             .buttonStyle(.plain)
             .disabled(vm.isBusy)
@@ -6303,10 +6303,10 @@ struct ContentView: View {
                 remoteCCCacheMenu(project)
             } else {
                 workspaceAgentBadge("CC", detail: nil, width: slots.cc, running: false,
-                                    tint: GhosttyTheme.current.accentCyan, mainTint: nil)
+                                    tint: GhosttyTheme.current.accentCyan, isMain: false)
             }
             workspaceAgentBadge("Cdx", detail: nil, width: slots.cdx, running: false,
-                                tint: GhosttyTheme.current.accentCyan, mainTint: nil)
+                                tint: GhosttyTheme.current.accentCyan, isMain: false)
             workspaceIconSlot("terminal", width: slots.term, color: GhosttyTheme.current.textSecondary)
             Button {
                 Task { await vm.addColumnByAlias(project.routingAlias) }
@@ -6843,7 +6843,7 @@ struct ContentView: View {
             .disabled(vm.remoteCCCacheHours["\(project.host)|\(project.path)"] == nil || vm.isBusy)
         } label: {
             workspaceAgentBadge("CC", detail: workspaceBadgeDetail(summary.text), width: workspaceRowSlots.cc,
-                                running: false, tint: summary.tint, mainTint: nil)
+                                running: false, tint: summary.tint, isMain: false)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
