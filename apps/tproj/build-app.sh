@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+REPO_ROOT="$(cd "$ROOT_DIR/../.." && pwd -P)"
 APP_NAME="tproj"
 BUNDLE_ID="${BUNDLE_ID:-com.tproj.desktop}"
 APP_VERSION="${APP_VERSION:-0.1.0}"
@@ -12,6 +12,8 @@ APP_DIR="$DIST_DIR/release-app/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RES_DIR="$CONTENTS_DIR/Resources"
+MODE="${1:---release}"
+[[ "$MODE" == "--release" || "$MODE" == "--debug" ]] || { echo "usage: build-app.sh [--debug|--release]" >&2; exit 2; }
 BIN_SRC=""
 BIN_DST="$MACOS_DIR/$APP_NAME"
 ICON_SRC="$ROOT_DIR/Resources/AppIcon.icns"
@@ -20,8 +22,13 @@ RUNTIME_SEED_NAME="tproj-runtime-seed.tar.gz"
 mkdir -p "$DIST_DIR"
 
 pushd "$ROOT_DIR" >/dev/null
-swift build -c release --arch arm64 --arch x86_64
-BIN_SRC="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/tproj"
+if [[ "$MODE" == "--debug" ]]; then
+  swift build
+  BIN_SRC="$(swift build --show-bin-path)/tproj"
+else
+  swift build -c release --arch arm64 --arch x86_64
+  BIN_SRC="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/tproj"
+fi
 popd >/dev/null
 
 rm -rf "$APP_DIR"

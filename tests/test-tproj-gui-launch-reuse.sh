@@ -55,4 +55,53 @@ _tproj_gui_command_matches "$space_expected" "$space_dir/tproj"
 _tproj_gui_command_matches "$space_expected" "$space_dir/alias/tproj"
 echo 'PASS executable paths containing spaces compare without argument splitting'
 
-echo 'PASS=3 FAIL=0'
+
+# Match bin/tproj's zero-based catalog arrays for the extracted resolver.
+setopt KSH_ARRAYS
+
+# Workspace startup and the developer wrapper must select the same bundle,
+# even when a stale raw debug executable is also present.
+sed -n '/^_find_gui_target() {/,/^}/p' "$REPO_ROOT/bin/tproj" > "$TMP/target.zsh"
+source "$TMP/target.zsh"
+CATALOG_ALIASES=(tproj)
+CATALOG_TYPES=(local)
+CATALOG_PATHS=("$TMP/project")
+bundle_bin="$TMP/project/apps/tproj/dist/release-app/tproj.app/Contents/MacOS/tproj"
+mkdir -p "${bundle_bin:h}"
+touch "$bundle_bin"; chmod +x "$bundle_bin"
+[[ "$(_find_gui_target)" == "${bundle_bin:A}" ]] || { echo 'FAIL workspace did not choose canonical bundle'; exit 1; }
+rm "$bundle_bin"
+if _find_gui_target >/dev/null 2>&1; then
+  echo 'FAIL missing bundle silently fell back to old raw debug GUI'; exit 1
+fi
+echo 'PASS workspace canonical bundle selection, no stale raw fallback'
+
+# Never launch an unchecked prebuilt executable just because it exists.
+if "$REPO_ROOT/apps/tproj/dev-app.sh" --prebuilt >"$TMP/prebuilt.log" 2>&1; then
+  echo 'FAIL stale prebuilt launch still accepted'; exit 1
+fi
+grep -q -- '--prebuilt is retired' "$TMP/prebuilt.log"
+echo 'PASS unchecked prebuilt launch rejected before packaging or launch'
+
+# Exercise production cleanup with only the process inventory/signals stubbed.
+# comm (not argv) lets --server variants match without touching unrelated apps.
+sed -n '/^retire_stale_gui_variants() {/,/^}/p' "$REPO_ROOT/apps/tproj/dev-app.sh" > "$TMP/retire.bash"
+cat > "$TMP/check-retire.bash" <<'BASH'
+set -euo pipefail
+source "$HELPER"
+SCRIPT_DIR=/fixture/apps/tproj
+APP_BUNDLE=$SCRIPT_DIR/dist/release-app/tproj.app
+ps() {
+  [[ "$*" == '-axo pid=,comm=' ]] || exit 5
+  printf '%s\n' '10 /fixture/apps/tproj/.build/out/Products/Debug/tproj' \
+    '11 /fixture/apps/tproj/dist/release-app/tproj.app/Contents/MacOS/tproj' \
+    '12 /fixture/apps/tproj/.build/debug/tproj' '13 /unrelated/tproj'
+}
+kill() { echo "$1" >> "$SIGNALS"; }
+retire_stale_gui_variants 11
+[[ "$(cat "$SIGNALS")" == $'10\n12' ]]
+BASH
+HELPER="$TMP/retire.bash" SIGNALS="$TMP/signals" bash "$TMP/check-retire.bash"
+echo 'PASS cleanup retires owned raw variants, preserves selected bundle and unrelated app'
+
+echo 'PASS=6 FAIL=0'

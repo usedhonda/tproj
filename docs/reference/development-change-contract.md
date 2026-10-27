@@ -134,3 +134,17 @@ an unsafe rollback. This procedure does not authorize additional service stops.
 | Directory registration diverged from a static service address list. | Declare the membership authority and derived consumers; keep discovery distinct from permission policy. |
 | Mailbox configuration changed/reloaded while MCP stdio retained an old snapshot. | Enumerate consumers and prove the actual long-lived process loaded the canonical generation. |
 | Bounded source tests passed without proving upgrade/restart behavior. | Keep source, installed, loaded, and actual-recipient evidence separate; add only the affected lifecycle acceptance row. |
+
+### One local GUI launch artifact
+
+`apps/tproj/dev-app.sh` packages the current source into
+`apps/tproj/dist/release-app/tproj.app` for both debug and release configurations,
+then launches that same bundle executable. The directory name is historical, not
+proof of the build configuration. Workspace startup resolves only this bundle;
+it never falls back to a raw `.build` executable or an unrelated registered app.
+`--prebuilt` is rejected: the wrapper must refresh the source build and embedded
+runtime seed before launch. After the replacement survives startup, the wrapper
+retires owned raw-build/bundle variants by executable path, including processes
+with arguments, and records the retained PID. Build intermediates are not alternate
+user launch targets. Do not open an old app by display name to verify a new build;
+select the canonical bundle explicitly. Preserve the tmux workspace and agent processes.

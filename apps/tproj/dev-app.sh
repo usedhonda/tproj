@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 APP_BUNDLE="$SCRIPT_DIR/dist/release-app/tproj.app"
 DEBUG_BIN=""
 MODE="debug"
@@ -18,20 +18,16 @@ for arg in "$@"; do
   if [[ "$arg" == "--prebuilt" ]]; then PREBUILT=true; fi
 done
 
-# --- Build ---
+# Both configurations publish the same app bundle. Never launch a second raw
+# debug executable beside the bundle registered with Launch Services.
 if [[ "$PREBUILT" == true ]]; then
-  [[ "$MODE" == "debug" ]] || { echo "--prebuilt cannot be combined with --release" >&2; exit 2; }
-  DEBUG_BIN="$SCRIPT_DIR/.build/debug/tproj"
-  [[ -x "$DEBUG_BIN" ]] || { echo "prebuilt app missing: $DEBUG_BIN" >&2; exit 1; }
-elif [[ "$MODE" == "debug" ]]; then
-  echo "==> Build app (debug)"
-  pushd "$SCRIPT_DIR" >/dev/null
-  swift build
-  DEBUG_BIN="$(swift build --show-bin-path)/tproj"
-  popd >/dev/null
+  echo "--prebuilt is retired: use dev-app.sh so the current source is packaged" >&2
+  exit 2
+fi
+if [[ "$MODE" == "debug" ]]; then
+  "$SCRIPT_DIR/build-app.sh" --debug
 else
-  echo "==> Build app (release)"
-  "$SCRIPT_DIR/build-app.sh"
+  "$SCRIPT_DIR/build-app.sh" --release
 fi
 
 previous_pid=""
@@ -58,7 +54,7 @@ retire_stale_gui_variants() {
       "$SCRIPT_DIR"/.build/*/tproj|"$APP_BUNDLE"/Contents/MacOS/tproj)
         kill "$pid" 2>/dev/null || true ;;
     esac
-  done < <(ps -axo pid=,command=)
+  done < <(ps -axo pid=,comm=)
 }
 
 launch_gui() {
@@ -76,27 +72,14 @@ launch_gui() {
   fi
 }
 
-# --- Launch ---
-if [[ "$MODE" == "debug" ]]; then
-  echo "==> Launch app (debug)"
-  local_pid="$(launch_gui "$DEBUG_BIN")"
-  sleep 1
-  if ! kill -0 "$local_pid" 2>/dev/null; then
-    echo "debug process (pid $local_pid) not detected; check $TPROJ_GUI_LOG" >&2
-    exit 1
-  fi
-  retire_previous_gui "$local_pid"
-  retire_stale_gui_variants "$local_pid"
-  echo "Done: $DEBUG_BIN (pid $local_pid)"
-else
-  echo "==> Launch app (release)"
-  local_pid="$(launch_gui "$APP_BUNDLE/Contents/MacOS/tproj")"
-  sleep 1
-  if ! kill -0 "$local_pid" 2>/dev/null; then
-    echo "app process (pid $local_pid) not detected; check $TPROJ_GUI_LOG" >&2
-    exit 1
-  fi
-  retire_previous_gui "$local_pid"
-  retire_stale_gui_variants "$local_pid"
-  echo "Done: $APP_BUNDLE (pid $local_pid)"
+# --- Launch the single canonical bundle in either configuration ---
+echo "==> Launch app ($MODE)"
+local_pid="$(launch_gui "$APP_BUNDLE/Contents/MacOS/tproj")"
+sleep 1
+if ! kill -0 "$local_pid" 2>/dev/null; then
+  echo "GUI process (pid $local_pid) not detected; check $TPROJ_GUI_LOG" >&2
+  exit 1
 fi
+retire_previous_gui "$local_pid"
+retire_stale_gui_variants "$local_pid"
+echo "Done: $APP_BUNDLE (pid $local_pid)"

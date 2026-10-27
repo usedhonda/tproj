@@ -664,7 +664,7 @@ _find_gui_target() {
     found="${CATALOG_PATHS[$i]}"
   done
   [[ -n "$found" ]] || { echo "tproj: GUI source project (local alias tproj) not configured" >&2; return 1; }
-  gui_bin="$found/apps/tproj/.build/debug/tproj"
+  gui_bin="$found/apps/tproj/dist/release-app/tproj.app/Contents/MacOS/tproj"
   [[ -x "$gui_bin" ]] && { realpath "$gui_bin"; return 0; }
   echo "tproj: warning: current GUI not built at $gui_bin (CLI workspace still runs)" >&2
   return 1
