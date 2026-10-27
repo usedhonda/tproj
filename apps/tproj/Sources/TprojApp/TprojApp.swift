@@ -6074,8 +6074,8 @@ struct ContentView: View {
         let last: CGFloat
         let showDetail: Bool
 
-        static let compact = WorkspaceRowSlots(mode: 22, cc: 40, cdx: 44, term: 18, last: 14, showDetail: false)
-        static let wide = WorkspaceRowSlots(mode: 50, cc: 62, cdx: 66, term: 20, last: 16, showDetail: true)
+        static let compact = WorkspaceRowSlots(mode: 18, cc: 24, cdx: 28, term: 16, last: 12, showDetail: false)
+        static let wide = WorkspaceRowSlots(mode: 40, cc: 46, cdx: 50, term: 16, last: 12, showDetail: true)
     }
 
     /// Faint highlight under the pointer, for live and waiting rows alike.
@@ -6102,7 +6102,7 @@ struct ContentView: View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             Text(name)
                 .font(GhosttyTheme.current.font(size: 13, weight: .semibold))
-                .foregroundStyle(dimmed ? GhosttyTheme.current.textTertiary : GhosttyTheme.current.textPrimary)
+                .foregroundStyle(dimmed ? GhosttyTheme.current.foreground.opacity(0.78) : GhosttyTheme.current.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.tail)
             if let host {
@@ -6124,7 +6124,7 @@ struct ContentView: View {
         return Text(slots.showDetail ? name : String(name.prefix(1)))
             .font(GhosttyTheme.current.font(size: 10, weight: .semibold))
             .lineLimit(1)
-            .foregroundStyle(tint.opacity(dimmed ? 0.6 : 0.95))
+            .foregroundStyle(tint.opacity(dimmed ? 0.85 : 0.95))
             .frame(width: slots.mode, height: 16)
             .background(Capsule(style: .continuous).fill(tint.opacity(dimmed ? 0.10 : 0.18)))
             .contentShape(Capsule(style: .continuous))
@@ -6147,15 +6147,13 @@ struct ContentView: View {
         mainTint: Color?
     ) -> some View {
         let label = workspaceRowSlots.showDetail ? detail.map { "\(title) \($0)" } ?? title : title
-        return HStack(spacing: 3) {
-            Circle()
-                .fill(running ? tint : GhosttyTheme.current.textTertiary.opacity(0.45))
-                .frame(width: 5, height: 5)
-            Text(label)
-                .lineLimit(1)
-        }
+        // The label carries status color; a separate dot wastes name space.
+        return Text(label)
+            .lineLimit(1)
         .font(GhosttyTheme.current.font(size: 10, weight: .semibold))
-        .foregroundStyle(running ? GhosttyTheme.current.textPrimary : GhosttyTheme.current.textTertiary)
+        .foregroundStyle(running ? tint : GhosttyTheme.current.foreground.opacity(0.72))
+        .accessibilityLabel(title)
+        .accessibilityValue(running ? (detail ?? "Running") : "Off")
         .frame(width: width, height: 18)
         .background(
             Capsule(style: .continuous)
@@ -6193,7 +6191,7 @@ struct ContentView: View {
         // Only while the whole dock is hidden: a background tab of an open dock is not hidden.
         let termHidden = dockTab && terminalDock.visibleProjectPath == nil
 
-        return HStack(spacing: 5) {
+        return HStack(spacing: 3) {
             Button {
                 Task { await vm.toggleAIPane(role: "claude", for: column) }
             } label: {
@@ -6242,7 +6240,7 @@ struct ContentView: View {
     private func liveColumnRow(_ column: LiveColumn) -> some View {
         let isDragging = draggingColumnID == column.column
         let name = columnPrimaryName(column)
-        return HStack(spacing: 5) {
+        return HStack(spacing: 3) {
             workspaceRowName(name, host: columnMeta(column), dimmed: false,
                              help: "#\(column.column) " + (columnAgentNamesText(column) ?? name))
             columnSettingsPill(column)
@@ -6299,7 +6297,7 @@ struct ContentView: View {
 
     private func inactiveProjectControls(_ project: WorkspaceProject) -> some View {
         let slots = workspaceRowSlots
-        return HStack(spacing: 5) {
+        return HStack(spacing: 3) {
             roleModeBadge(projectPath: project.path, host: project.type == "remote" ? project.host : nil)
             if project.type == "remote" {
                 remoteCCCacheMenu(project)
@@ -6309,7 +6307,7 @@ struct ContentView: View {
             }
             workspaceAgentBadge("Cdx", detail: nil, width: slots.cdx, running: false,
                                 tint: GhosttyTheme.current.accentCyan, mainTint: nil)
-            workspaceIconSlot("terminal", width: slots.term, color: GhosttyTheme.current.textTertiary.opacity(0.5))
+            workspaceIconSlot("terminal", width: slots.term, color: GhosttyTheme.current.textSecondary)
             Button {
                 Task { await vm.addColumnByAlias(project.routingAlias) }
             } label: {
@@ -6322,7 +6320,7 @@ struct ContentView: View {
     }
 
     private func inactiveProjectRow(_ project: WorkspaceProject) -> some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 3) {
             workspaceRowName(project.effectiveAlias,
                              host: project.type == "remote" ? "@\(project.host)" : nil,
                              dimmed: true, help: project.effectiveAlias)
