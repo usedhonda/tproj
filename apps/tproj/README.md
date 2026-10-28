@@ -98,7 +98,7 @@ Other CC/Codex panes can read this JSON to observe the same live monitor state.
 
 ## Layout Action Log
 
-Topology mutations (`Add` / `Drop` / reorder / terminal toggle) append action logs to:
+Topology mutations (`Add` / `Drop` / reorder) append action logs to:
 
 - `/tmp/tproj-layout-actions.log`
 
@@ -107,3 +107,16 @@ Quick check:
 ```bash
 tail -f /tmp/tproj-layout-actions.log
 ```
+
+
+## Project terminal dock
+
+The terminal button opens the same enlarged app terminal dock for local and
+remote projects. Remote tabs use the existing `tproj-remote-client shell`
+transport and display the host in the tab title. Tabs are identified by host
+and project path, so identical paths on different hosts remain separate.
+Terminal buttons do not add or remove tmux workspace panes.
+
+Hide keeps terminal tabs alive. Closing a tab ends that shell only, not the
+project AI sessions. A remote shell exit closes its tab instead of exposing a
+local prompt under a remote title. Finder is available only for local tabs.

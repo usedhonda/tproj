@@ -2968,123 +2968,6 @@ final class AppViewModel: ObservableObject {
         await loadLiveColumnsAsync()
     }
 
-    func toggleTerminal(for column: LiveColumn) async {
-        guard beginLayoutMutation(action: "toggle-terminal") else { return }
-        let startedMS = Int64(Date().timeIntervalSince1970 * 1000)
-        let beforeCount = await workspacePaneCountAsync()
-        var resultTag = "ok"
-        var note = "column=\(column.column)"
-        var lockHeld = false
-        defer {
-            if lockHeld { releaseLayoutLock() }
-            let afterCount = workspacePaneCountSync()
-            let elapsed = Int64(Date().timeIntervalSince1970 * 1000) - startedMS
-            logLayoutAction(
-                action: "toggle-terminal",
-                before: beforeCount,
-                after: afterCount,
-                elapsedMS: elapsed,
-                result: resultTag,
-                note: note
-            )
-            endLayoutMutation()
-        }
-
-        guard await acquireLayoutLockAsync() else {
-            resultTag = "lock-error"
-            note += " lock=acquire_failed"
-            statusText = "Term: failed to acquire layout lock"
-            await loadLiveColumnsAsync()
-            return
-        }
-        lockHeld = true
-
-        let sessionTarget = TmuxTargets.devWindow
-        let listResult = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-t", sessionTarget, "-F", "#{pane_id}:#{@role}"])
-        guard listResult.exitCode == 0 else {
-            resultTag = "error"
-            note += " error=\(trimmedError(listResult))"
-            statusText = "Term: \(trimmedError(listResult))"
-            await loadLiveColumnsAsync()
-            return
-        }
-
-        let roleName = "terminal-p\(column.column)"
-        let paneRoles: [(id: String, role: String)] = listResult.stdout
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map(String.init)
-            .compactMap { line in
-                let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-                guard parts.count == 2 else { return nil }
-                return (id: parts[0], role: parts[1])
-            }
-
-        // Toggle off: graceful exit + descendant cleanup via shared script
-        if let existing = paneRoles.first(where: { $0.role == roleName }) {
-            let killResult = await runCommandAsync("\(NSHomeDirectory())/bin/tproj-kill-pane",
-                [existing.id, roleName])
-            if killResult.exitCode != 0 {
-                resultTag = "error"
-                note += " off_error=\(trimmedError(killResult))"
-            } else {
-                note += " state=off"
-            }
-            statusText = killResult.exitCode == 0
-                ? "Terminal off for #\(column.column)"
-                : "Term off failed: \(trimmedError(killResult))"
-            await loadLiveColumnsAsync()
-            return
-        }
-
-        // Toggle on: find target pane from fresh list (codex preferred, claude fallback)
-        guard let targetPane = paneRoles.first(where: { $0.role == "codex-p\(column.column)" })?.id
-                ?? paneRoles.first(where: { $0.role == "claude-p\(column.column)" })?.id else {
-            resultTag = "error"
-            note += " error=no_target_pane"
-            statusText = "Term: no pane for #\(column.column)"
-            return
-        }
-
-        let createResult = await runCommandAsync("/usr/bin/env", [
-            "tmux", "split-window", "-v", "-b", "-t", targetPane,
-            "-c", "/tmp", "-l", "25%", "-P", "-F", "#{pane_id}"
-        ])
-        guard createResult.exitCode == 0 else {
-            resultTag = "error"
-            note += " create_error=\(trimmedError(createResult))"
-            statusText = "Term[\(createResult.exitCode)]: \(trimmedError(createResult))"
-            return
-        }
-
-        let newPane = createResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !newPane.isEmpty else {
-            resultTag = "error"
-            note += " error=empty_pane_id"
-            statusText = "Term: empty pane id"
-            return
-        }
-
-        // Set @role immediately to prevent reflow-crew-pane hook from misidentifying this pane
-        _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@role", roleName])
-        _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@column", "\(column.column)"])
-        _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@project", column.projectPath])
-
-        if let host = hostForColumn(column) {
-            _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_host", host])
-            _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_path", column.projectPath])
-            let remoteClient = shellSingleQuote(NSHomeDirectory() + "/bin/tproj-remote-client")
-            let remoteCmd = "\(remoteClient) shell \(shellSingleQuote(host)) \(shellSingleQuote(column.projectPath))"
-            _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, remoteCmd, "C-m"])
-        } else {
-            let localDir = column.projectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? NSHomeDirectory() : column.projectPath
-            _ = await runCommandAsync("/usr/bin/env", ["tmux", "send-keys", "-t", newPane, "cd \(shellSingleQuote(localDir)) && exec $SHELL -l", "C-m"])
-        }
-
-        note += " state=on"
-        statusText = "Terminal on for #\(column.column)"
-        await loadLiveColumnsAsync()
-    }
-
     func removeColumn(_ column: LiveColumn) async {
         guard column.hasCorePanes else {
             statusText = "Missing pane info for column \(column.column)"
@@ -6186,8 +6069,9 @@ struct ContentView: View {
         let cdx = cdxCacheSummary(column)
         let ccRunning = !column.claudePaneIDs.isEmpty
         let cdxRunning = !column.codexPaneIDs.isEmpty
-        let dockTab = column.hostLabel == "local" && terminalDock.tabPaths.contains(column.projectPath)
-        let termOpen = dockTab || (column.hostLabel != "local" && column.terminalPaneID != nil)
+        let dockKey = TerminalDockController.tabKey(projectPath: column.projectPath, remoteHost: host)
+        let dockTab = terminalDock.tabPaths.contains(dockKey)
+        let termOpen = dockTab
         // Only while the whole dock is hidden: a background tab of an open dock is not hidden.
         let termHidden = dockTab && terminalDock.visibleProjectPath == nil
 
@@ -6213,11 +6097,8 @@ struct ContentView: View {
             .disabled(vm.isBusy)
             .help(cdxRunning ? "Hide Cdx pane" + (cdx.map { "\nCache \($0.text)" } ?? "") : "Open Cdx pane")
             Button {
-                if column.hostLabel == "local" {
-                    terminalDock.toggle(projectPath: column.projectPath, title: columnPrimaryName(column), in: (NSApp.delegate as? AppDelegate)?.mainWindow)
-                } else {
-                    Task { await vm.toggleTerminal(for: column) }
-                }
+                terminalDock.toggle(projectPath: column.projectPath, title: columnPrimaryName(column),
+                                    remoteHost: host, in: (NSApp.delegate as? AppDelegate)?.mainWindow)
             } label: {
                 workspaceIconSlot("terminal", width: slots.term,
                                   color: termHidden ? GhosttyTheme.current.accentYellow

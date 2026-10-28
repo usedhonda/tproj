@@ -66,14 +66,18 @@ private final class TrackedTerminalView: LocalProcessTerminalView {
 
 private final class TerminalSession {
     let path: String
+    let projectPath: String
+    let remoteHost: String?
     let view: TrackedTerminalView
     let startupDirectory: URL
     let backgroundImage: NSImage?
     var shellPID: pid_t?
     var shellStartSeconds: UInt64?
 
-    init(path: String, view: TrackedTerminalView, startupDirectory: URL, backgroundImage: NSImage?) {
+    init(path: String, projectPath: String, remoteHost: String?, view: TrackedTerminalView, startupDirectory: URL, backgroundImage: NSImage?) {
         self.path = path
+        self.projectPath = projectPath
+        self.remoteHost = remoteHost
         self.view = view
         self.startupDirectory = startupDirectory
         self.backgroundImage = backgroundImage
@@ -114,34 +118,39 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
     private var originalOrigin: NSPoint?
     private let dockWidth: CGFloat = 620
 
-    func toggle(projectPath: String, title: String, in mainWindow: NSWindow?) {
-        guard FileManager.default.fileExists(atPath: projectPath) else { return }
-        if tabPaths.contains(projectPath) {
+    static func tabKey(projectPath: String, remoteHost: String?) -> String {
+        remoteHost.map { "\($0):\(projectPath)" } ?? projectPath
+    }
+
+    func toggle(projectPath: String, title: String, remoteHost: String? = nil, in mainWindow: NSWindow?) {
+        if remoteHost == nil && !FileManager.default.fileExists(atPath: projectPath) { return }
+        let key = Self.tabKey(projectPath: projectPath, remoteHost: remoteHost)
+        if tabPaths.contains(key) {
             // A hidden dock keeps its tabs alive; Term brings the tab back instead of
             // closing it (closing is End). Only a tab already on screen is closed.
-            if visibleProjectPath == projectPath { closeTab(path: projectPath); return }
+            if visibleProjectPath == key { closeTab(path: key); return }
             if visibleProjectPath == nil {
                 window = mainWindow ?? NSApp.windows.first(where: { $0.title == "tproj" })
                 sidebarWidth = window?.frame.width ?? sidebarWidth
                 originalOrigin = window?.frame.origin
                 resizeWindow(expanded: true)
             }
-            visibleProjectPath = projectPath
+            visibleProjectPath = key
             window?.makeKeyAndOrderFront(nil)
             return
         }
-        guard !closingPaths.contains(projectPath) else { return }
-        guard let session = sessions[projectPath] ?? createSession(path: projectPath) else { return }
-        sessions[projectPath] = session
-        titles[projectPath] = title
-        if !tabPaths.contains(projectPath) { tabPaths.append(projectPath) }
+        guard !closingPaths.contains(key) else { return }
+        guard let session = sessions[key] ?? createSession(key: key, projectPath: projectPath, remoteHost: remoteHost) else { return }
+        sessions[key] = session
+        titles[key] = remoteHost.map { "\(title) @\($0)" } ?? title
+        if !tabPaths.contains(key) { tabPaths.append(key) }
         if visibleProjectPath == nil {
             window = mainWindow ?? NSApp.windows.first(where: { $0.title == "tproj" })
             sidebarWidth = window?.frame.width ?? sidebarWidth
             originalOrigin = window?.frame.origin
             resizeWindow(expanded: true)
         }
-        visibleProjectPath = projectPath
+        visibleProjectPath = key
         window?.makeKeyAndOrderFront(nil)
     }
 
@@ -175,9 +184,14 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
 
     func title(for path: String) -> String { titles[path] ?? URL(fileURLWithPath: path).lastPathComponent }
 
+    var canOpenFinder: Bool {
+        guard let key = visibleProjectPath, let session = sessions[key] else { return false }
+        return session.remoteHost == nil
+    }
+
     func openFinder() {
-        guard let path = visibleProjectPath else { return }
-        NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+        guard canOpenFinder, let key = visibleProjectPath, let session = sessions[key] else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: session.projectPath, isDirectory: true))
     }
 
     func terminalView(for path: String) -> NSView? { sessions[path]?.view }
@@ -212,18 +226,18 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
         window.setFrame(frame, display: true, animate: false)
     }
 
-    private func createSession(path: String) -> TerminalSession? {
+    private func createSession(key: String, projectPath: String, remoteHost: String?) -> TerminalSession? {
         let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        guard let startup = makeZshStartup(nonce: nonce, projectPath: path) else { return nil }
-        let imagePath = URL(fileURLWithPath: path).appendingPathComponent(".local/tproj-pane-bg/cc.vertical.png").path
-        let backgroundImage = NSImage(contentsOfFile: imagePath)
+        guard let startup = makeZshStartup(nonce: nonce, projectPath: projectPath, remoteHost: remoteHost) else { return nil }
+        let imagePath = URL(fileURLWithPath: projectPath).appendingPathComponent(".local/tproj-pane-bg/cc.vertical.png").path
+        let backgroundImage = remoteHost == nil ? NSImage(contentsOfFile: imagePath) : nil
         let view = TrackedTerminalView(frame: NSRect(x: 0, y: 0, width: dockWidth, height: 520))
         view.nativeForegroundColor = .white
         view.nativeBackgroundColor = NSColor(GhosttyTheme.current.background)
             .withAlphaComponent(GhosttyTheme.current.appBackgroundOpacity)
         view.processDelegate = self
         view.marker = nonce
-        let session = TerminalSession(path: path, view: view, startupDirectory: startup, backgroundImage: backgroundImage)
+        let session = TerminalSession(path: key, projectPath: projectPath, remoteHost: remoteHost, view: view, startupDirectory: startup, backgroundImage: backgroundImage)
         view.onCommandState = { [weak session] _, pid in
             guard let session else { return }
             if session.shellPID == nil, let info = TerminalSession.processInfo(pid), info.pbi_ppid == getpid() {
@@ -243,7 +257,7 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
         return session
     }
 
-    private func makeZshStartup(nonce: String, projectPath: String) -> URL? {
+    private func makeZshStartup(nonce: String, projectPath: String, remoteHost: String?) -> URL? {
         let original = ProcessInfo.processInfo.environment["ZDOTDIR"] ?? NSHomeDirectory()
         let originalConfig = URL(fileURLWithPath: original).appendingPathComponent(".zshrc").path
         func quote(_ value: String) -> String {
@@ -252,15 +266,22 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tproj-term-\(nonce)")
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-            let script = """
+            var script = """
             if [[ -f \(quote(originalConfig)) ]]; then source \(quote(originalConfig)); fi
-            builtin cd -- \(quote(projectPath)) || return
+            builtin cd -- \(quote(remoteHost == nil ? projectPath : NSHomeDirectory())) || return
             autoload -Uz add-zsh-hook
             _tproj_preexec() { print -n -- $'\\e]777;tproj;\(nonce);running;'"$$"$'\\a' }
             _tproj_precmd() { if [[ -z "$(jobs -p)" ]]; then print -n -- $'\\e]777;tproj;\(nonce);idle;'"$$"$'\\a'; fi }
             add-zsh-hook preexec _tproj_preexec
             add-zsh-hook precmd _tproj_precmd
             """
+            if let remoteHost {
+                // Bind the owned local shell before entering the remote PTY.
+                // Do not expose a local prompt if the remote session exits.
+                let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+                script += "\nprint -n -- $'\\e]777;tproj;\(nonce);running;'\"$$\"$'\\a'\n"
+                script += "\(quote(client)) shell \(quote(remoteHost)) \(quote(projectPath))\nexit $?\n"
+            }
             try script.write(to: directory.appendingPathComponent(".zshrc"), atomically: true, encoding: .utf8)
             return directory
         } catch {
@@ -348,6 +369,7 @@ struct TerminalDockView: View {
                 }
                 Spacer(minLength: 0)
                 Button("Finder") { controller.openFinder() }
+                    .disabled(!controller.canOpenFinder)
                 Button("Hide") { controller.hide() }
             }
             .font(.system(size: 11, weight: .medium))
