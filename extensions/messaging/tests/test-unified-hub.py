@@ -6,6 +6,34 @@ from extensions.messaging.unified.native_notice import content_digest
 from extensions.messaging.unified.protocol import MAX_REQUEST, MAX_TTL, serve_socket, success, resource_error
 
 class ProtocolTest(unittest.TestCase):
+    def test_first_start_creates_socket_parent_before_lock(self):
+        import subprocess, time
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            sock_path = root / "new" / "hub.sock"
+            config = root / "hub.json"
+            config.write_text(json.dumps({"hosts": {"fixture-host": "fixture-token"}}))
+            # Provision the DB as runtime.setup does; socket parent remains absent.
+            Hub(root / "hub.db", {"hosts": {"fixture-host": "fixture-token"}}).close()
+            script = pathlib.Path(__file__).resolve().parents[1] / "unified/hub.py"
+            proc = subprocess.Popen([sys.executable, str(script), "--config", str(config),
+                                     "--socket", str(sock_path), "--db", str(root / "hub.db")],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 5
+                while not sock_path.exists() and proc.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertIsNone(proc.poll(), "hub exited before creating its listener")
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.settimeout(2); client.connect(str(sock_path))
+                    client.sendall(b'{"op":"messaging_capabilities","host_id":"fixture-host","host_token":"fixture-token"}\n')
+                    reply = json.loads(client.makefile("rb").readline())
+                    self.assertTrue(reply["ok"])
+                    self.assertIn("capabilities", reply["result"])
+            finally:
+                proc.terminate(); proc.wait(timeout=5)
+                proc.stderr.close()
+
     def test_resource_error_is_errno_classified_and_sanitized(self):
         err = resource_error(OSError(errno.ENOSPC, 'private path'), 'local_persistence')
         self.assertEqual(err.code, 'resource_exhausted')

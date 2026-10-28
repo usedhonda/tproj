@@ -16,8 +16,10 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 import plistlib
+import re
 from typing import Any
 
 
@@ -149,11 +151,11 @@ def _projects(home: Path, host_id: str, aliases: set[str] | None = None) -> list
     return result
 
 
-def _host_rpc(socket_path: str, request: dict[str, Any]) -> Any:
+def _host_rpc(socket_path: str, request: dict[str, Any], timeout: float = 15) -> Any:
     """Call the local host socket; directory mutation is canonicalized there."""
     import socket
     with socket.socket(socket.AF_UNIX) as sock:
-        sock.settimeout(15)
+        sock.settimeout(timeout)
         sock.connect(socket_path)
         sock.sendall((json.dumps(request, separators=(",", ":")) + "\n").encode())
         with sock.makefile("rb") as stream:
@@ -214,36 +216,113 @@ def _plist(label: str, script: Path, config: Path, extra: list[str] | None = Non
     args = [sys.executable, str(script), "--config", str(config)] + (extra or [])
     return plistlib.dumps({"Label": label, "ProgramArguments": args, "RunAtLoad": True, "KeepAlive": True,
                           "EnvironmentVariables": {"PATH": str(Path.home()/"bin")+":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
+                          "LimitLoadToSessionType": "Background",
                           "StandardErrorPath": str(config.parent/(label+".err"))}, fmt=plistlib.FMT_XML).decode()
 
 
-def _activate(home: Path, manifests: list[Path], changed: bool, no_start: bool, dry_run: bool) -> list[str]:
+CORE_LABELS = ("local.tproj.msg-unified-hub", "local.tproj.msg-unified-host")
+BRIDGE_LABELS = ("local.tproj.kai-probe-tunnel", "local.tproj.kai-mailbox", "local.tproj.muse-mailbox")
+
+
+def _activation_health(home: Path, label: str) -> bool:
+    """Require an authenticated read response, not a stale socket or job label."""
+    try:
+        if label in BRIDGE_LABELS:
+            # No common bridge RPC exists. Report process readiness only; do
+            # not imply mailbox transport health, delivery or peer consumption.
+            for domain in (f"user/{os.getuid()}", f"gui/{os.getuid()}"):
+                job = subprocess.run(["/bin/launchctl", "print", f"{domain}/{label}"],
+                                     capture_output=True, text=True)
+                if job.returncode == 0:
+                    return bool(re.search(r"^\s*state = running$", job.stdout, re.MULTILINE)
+                                and re.search(r"^\s*pid = [1-9][0-9]*$", job.stdout, re.MULTILINE))
+            return False
+        host = _read_json(home / ".config/tproj/msg-host.json")
+        hub = _read_json(home / ".config/tproj/msg-hub.json")
+        request = {"op": "messaging_capabilities"}
+        config = host if label.endswith("-host") else hub
+        if label.endswith("-hub"):
+            request.update(host_id=host.get("host_id"), host_token=host.get("host_token"))
+        result = _host_rpc(str(config["socket"]), request, timeout=1)
+        return isinstance(result, dict) and bool(result.get("host_capabilities") or result.get("capabilities"))
+    except (OSError, RuntimeError, ValueError, KeyError):
+        return False
+
+
+def _activate(home: Path, manifests: list[Path], changed: bool, no_start: bool, dry_run: bool,
+              labels: tuple[str, ...] = CORE_LABELS) -> list[str]:
     if no_start or dry_run:
         return ["skipped"]
     uid = str(os.getuid()); results = []
-    for manifest, label in zip(manifests, ("local.tproj.msg-unified-hub", "local.tproj.msg-unified-host")):
+    for manifest, label in zip(manifests, labels):
         try:
-            listed = subprocess.run(["/bin/launchctl", "print", f"gui/{uid}/{label}"], capture_output=True)
-        except OSError:
-            results.append(f"unavailable:{label}"); continue
-        if listed.returncode == 0:
-            if changed:
-                try:
-                    restarted = subprocess.run(["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{label}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    results.append(f"reloaded:{label}" if restarted.returncode == 0 else f"unavailable:{label}")
-                except OSError:
-                    results.append(f"unavailable:{label}")
+            # Keep an existing owner; never bootstrap a competing second domain.
+            loaded = [domain for domain in (f"user/{uid}", f"gui/{uid}")
+                      if subprocess.run(["/bin/launchctl", "print", f"{domain}/{label}"],
+                                        capture_output=True).returncode == 0]
+            if len(loaded) > 1:
+                results.append(f"unavailable:{label}:multiple_domains"); continue
+            domain = loaded[0] if loaded else f"user/{uid}"
+            state = "running"
+            if loaded and changed:
+                if domain.startswith("gui/"):
+                    # Migrate only during an already-required reload, never run
+                    # two owners or auto-load a new GUI job on the next login.
+                    action = subprocess.run(["/bin/launchctl", "bootout", f"{domain}/{label}"],
+                                            capture_output=True)
+                    if action.returncode:
+                        results.append(f"unavailable:{label}"); continue
+                    domain = f"user/{uid}"
+                    action = subprocess.run(["/bin/launchctl", "bootstrap", domain, str(manifest)],
+                                            capture_output=True)
+                else:
+                    action = subprocess.run(["/bin/launchctl", "kickstart", "-k", f"{domain}/{label}"],
+                                            capture_output=True)
+                state = "reloaded"
+            elif not loaded:
+                action = subprocess.run(["/bin/launchctl", "bootstrap", domain, str(manifest)],
+                                        capture_output=True)
+                state = "started"
             else:
-                results.append(f"running:{label}")
-            continue
-        try:
-            boot = subprocess.run(["/bin/launchctl", "bootstrap", f"gui/{uid}", str(manifest)], capture_output=True, text=True)
+                action = None
+            if action is not None and action.returncode:
+                results.append(f"unavailable:{label}"); continue
+            # Fresh processes need a bounded readiness window. Existing loaded
+            # but unhealthy jobs must not be reported as running.
+            deadline = time.monotonic() + (4 if state != "running" else 0)
+            while not _activation_health(home, label):
+                if time.monotonic() >= deadline:
+                    results.append(f"unavailable:{label}:listener_unavailable"); break
+                time.sleep(0.1)
+            else:
+                results.append(f"{state}:{label}")
         except OSError:
-            results.append(f"unavailable:{label}"); continue
-        if boot.returncode:
             results.append(f"unavailable:{label}")
-        else:
-            results.append(f"started:{label}")
+    return results
+
+
+def activate(home: Path | None = None) -> list[str]:
+    """Start only already-configured services; preserve configs, grants and code."""
+    home = home or Path.home()
+    manifests = [home / "Library/LaunchAgents" / (label + ".plist") for label in CORE_LABELS]
+    if not all(p.is_file() for p in manifests):
+        return ["skipped:not_configured"]
+    # Old Aqua-only manifests need the same compatibility field as new setup.
+    # No credentials or runtime source are changed by recovery activation.
+    bridges = [(home / "Library/LaunchAgents" / (label + ".plist"), label)
+               for label in BRIDGE_LABELS
+               if (home / "Library/LaunchAgents" / (label + ".plist")).is_file()]
+    for manifest in manifests + [p for p, _ in bridges]:
+        value = plistlib.loads(manifest.read_bytes())
+        if value.get("LimitLoadToSessionType") != "Background":
+            value["LimitLoadToSessionType"] = "Background"
+            _atomic_text(manifest, plistlib.dumps(value).decode(), 0o644, False)
+    results = _activate(home, manifests, False, False, False)
+    if not any(item.startswith("unavailable:") for item in results):
+        for manifest, label in bridges:
+            result = _activate(home, [manifest], False, False, False, labels=(label,))
+            # Separate process-only bridge evidence and failure from core health.
+            results.extend("bridge_process_" + item for item in result)
     return results
 
 
@@ -350,6 +429,7 @@ def status(home: Path | None = None) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(); sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("setup"); p.add_argument("--refresh", action="store_true"); p.add_argument("--migrate", action="store_true"); p.add_argument("--dry-run", action="store_true"); p.add_argument("--no-start", action="store_true")
+    sub.add_parser("activate")
     s = sub.add_parser("status"); s.add_argument("--json", action="store_true")
     d = sub.add_parser("dry-run"); d.add_argument("--refresh", action="store_true"); d.add_argument("--no-start", action="store_true")
     sub.add_parser("enroll").add_argument("alias")
@@ -357,6 +437,12 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("reconcile"); c.add_argument("--apply", action="store_true")
     r = sub.add_parser("register"); r.add_argument("--alias", action="append", default=[])
     args = parser.parse_args(argv)
+    if args.command == "activate":
+        try: result = activate()
+        except (OSError, ValueError) as exc:
+            print("messaging activation failed: " + type(exc).__name__, file=sys.stderr); return 2
+        print(json.dumps({"activation": result}, sort_keys=True))
+        return 2 if any(item.startswith("unavailable:") for item in result) else 0
     if args.command == "status": print(json.dumps(status(), sort_keys=True)); return 0
     if args.command == "register":
         try: result = register_projects(aliases=args.alias or None)

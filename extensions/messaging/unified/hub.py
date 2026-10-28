@@ -1221,9 +1221,9 @@ class Hub:
 def main(argv=None):
     ap=argparse.ArgumentParser(); ap.add_argument("--socket",required=True); ap.add_argument("--db",required=True); ap.add_argument("--config",required=True); args=ap.parse_args(argv)
     os.umask(0o077)
+    Path(args.socket).parent.mkdir(mode=0o700,parents=True,exist_ok=True)
     lock = open(args.socket+".lock", "a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    Path(args.socket).parent.mkdir(mode=0o700,parents=True,exist_ok=True)
     try: os.unlink(args.socket)
     except FileNotFoundError: pass
     config = Hub._load_config(args.config)

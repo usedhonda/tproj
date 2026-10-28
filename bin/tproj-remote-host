@@ -399,6 +399,16 @@ migrate_pair() {
   printf '%s\n' "$shared"
 }
 
+# Persistent remote panes outlive GUI logins. Restore only configured MSG
+# services when entering a remote workspace; optional messaging fails open.
+case "$action" in
+  ensure|ensure-all|attach|reattach)
+    if [[ -x "$HOME/bin/tproj-msg-runtime" ]]; then
+      "$HOME/bin/tproj-msg-runtime" activate >&2 || printf '%s\n' 'tproj: messaging activation needs attention; workspace continues.' >&2
+    fi
+    ;;
+esac
+
 case "$action" in
   list)
     [[ -z "$project_path$role$alias_name" ]] || usage

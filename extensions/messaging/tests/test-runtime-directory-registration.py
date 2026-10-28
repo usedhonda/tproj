@@ -36,10 +36,81 @@ class RuntimeDirectoryRegistrationTests(unittest.TestCase):
     def test_failed_existing_reload_is_not_reported_as_reloaded(self):
         import subprocess
         def run(args,**kwargs):
-            return subprocess.CompletedProcess(args, 1 if args[1]=='kickstart' else 0)
+            return subprocess.CompletedProcess(args, 1 if args[1]=='kickstart' or (args[1]=='print' and args[2].startswith('gui/')) else 0)
         with patch.object(runtime.subprocess,'run',side_effect=run):
             result = runtime._activate(Path('/fixture'),[Path('/fixture/hub'),Path('/fixture/host')],True,False,False)
         self.assertEqual(result,['unavailable:local.tproj.msg-unified-hub','unavailable:local.tproj.msg-unified-host'])
+
+    def test_headless_activation_uses_one_domain_and_requires_listener_response(self):
+        import subprocess
+        calls = []
+        labels = ["local.tproj.msg-unified-hub", "local.tproj.msg-unified-host"]
+        manifests = [Path("/fixture/hub"), Path("/fixture/host")]
+        loaded = set()
+        def run(args, **kwargs):
+            calls.append(args)
+            if args[1] == "print":
+                return subprocess.CompletedProcess(args, 0 if args[2] in loaded else 113)
+            if args[1] == "bootstrap":
+                # Fail like launchd when an Aqua-only manifest is used headless.
+                self.assertTrue(args[2].startswith("user/"))
+                label = labels[manifests.index(Path(args[3]))]
+                loaded.add(args[2] + "/" + label)
+            return subprocess.CompletedProcess(args, 0)
+        with patch.object(runtime.subprocess, "run", side_effect=run), \
+             patch.object(runtime, "_activation_health", return_value=True):
+            result = runtime._activate(Path("/fixture"), manifests, False, False, False)
+            self.assertEqual(result, ["started:" + label for label in labels])
+            calls.clear()
+            self.assertEqual(runtime._activate(Path("/fixture"), manifests, False, False, False),
+                             ["running:" + label for label in labels])
+            self.assertFalse(any(c[1] in ("bootstrap", "kickstart") for c in calls))
+        # A registered job and even a socket file do not prove a working listener.
+        with patch.object(runtime.subprocess, "run", side_effect=run), \
+             patch.object(runtime, "_activation_health", return_value=False):
+            result = runtime._activate(Path("/fixture"), manifests, False, False, False)
+        self.assertTrue(all("listener_unavailable" in item for item in result))
+        # Existing GUI owner is reused, not shadowed by another user-domain job.
+        loaded = {"gui/" + str(runtime.os.getuid()) + "/" + label for label in labels}
+        calls.clear()
+        with patch.object(runtime.subprocess, "run", side_effect=run), \
+             patch.object(runtime, "_activation_health", return_value=True):
+            runtime._activate(Path("/fixture"), manifests, False, False, False)
+        self.assertFalse(any(c[1] == "bootstrap" for c in calls))
+
+    def test_recovery_activation_preserves_config_and_supports_background(self):
+        import plistlib
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            runtime.setup(home, no_start=True)
+            config = home / ".config/tproj/msg-host.json"
+            before = config.read_bytes()
+            with patch.object(runtime, "_activate", return_value=["running"]) as activate:
+                runtime.activate(home)
+            self.assertEqual(config.read_bytes(), before)
+            self.assertFalse(activate.call_args.args[2])
+            for manifest in activate.call_args.args[1]:
+                self.assertEqual(plistlib.loads(manifest.read_bytes())["LimitLoadToSessionType"],
+                                 "Background")
+
+    def test_optional_bridge_recovery_is_separate_and_never_invented(self):
+        import plistlib
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            runtime.setup(home, no_start=True)
+            bridge = home / "Library/LaunchAgents/local.tproj.kai-mailbox.plist"
+            bridge.write_bytes(plistlib.dumps({"Label": "local.tproj.kai-mailbox",
+                                               "ProgramArguments": ["/fixture/mailbox"]}))
+            with patch.object(runtime, "_activate", side_effect=[
+                    ["running:" + label for label in runtime.CORE_LABELS],
+                    ["unavailable:local.tproj.kai-mailbox:listener_unavailable"]]) as activate:
+                results = runtime.activate(home)
+            self.assertEqual(activate.call_count, 2)
+            self.assertEqual(activate.call_args.kwargs["labels"], ("local.tproj.kai-mailbox",))
+            self.assertTrue(results[-1].startswith("bridge_process_unavailable:"))
+            self.assertFalse(any(item.startswith("unavailable:") for item in results))
+            self.assertEqual(plistlib.loads(bridge.read_bytes())["ProgramArguments"], ["/fixture/mailbox"])
+            self.assertFalse((bridge.parent / "local.tproj.muse-mailbox.plist").exists())
 
     def test_adds_only_missing_requested_projects_once(self):
         with tempfile.TemporaryDirectory() as raw:

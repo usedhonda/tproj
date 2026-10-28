@@ -1560,3 +1560,38 @@ recipient; a sender mirror is not a fresh owner receipt. Local-owner rows label
 recipient_owner. This display adds no remote calls. Session IDs and panes are
 descriptive identifiers, not credentials or identity/route overrides. They stay
 visible because the directory helps choose among registered sessions.
+
+
+### Headless owner-service lifecycle
+
+The owner Host and Hub are per-user services, not tied to an interactive GUI.
+New activation bootstraps the existing LaunchAgents into `user/<uid>`; manifests
+specify `Background`, so a later GUI login does not auto-load a competing job.
+An already-loaded GUI owner is reused until it disappears or a setup-required
+reload migrates it (bootout before bootstrap), rather than starting a second
+writer in another domain. If both
+domains already contain the same label, activation reports `multiple_domains`
+instead of creating or killing a service. Socket unlink remains protected by
+the exclusive owner lock; recovery never deletes a lock or a live socket.
+
+`tproj-msg-runtime activate` starts only already-configured services and repairs
+the session-type field of their existing manifests. It does not refresh runtime
+source, credentials, grants, directory rows, or conversation identities. Local
+workspace registration and remote ensure/attach entry points invoke it explicitly:
+SSH does not automatically load `~/Library/LaunchAgents` into the user domain.
+Missing optional messaging fails open for the core workspace. This is not a
+root LaunchDaemon and does not promise unattended service before the user's
+first post-reboot process or workspace activation.
+
+A successful `launchctl print` is not health. Activation reports running only
+after a bounded, authenticated `messaging_capabilities` response from the local
+listener (Host also checks its Hub). Loaded-but-unresponsive services report
+`listener_unavailable`; stale socket files are not success. Acceptance, actual
+presentation and substantive replies still require their own message evidence.
+
+After core readiness, activation also restores already-configured allowlisted
+KAI tunnel/mailbox and Muse mailbox LaunchAgents, using the same single-domain
+rule. Missing bridge manifests are skipped. `bridge_process_*` reports only
+launchd running-state/PID evidence, not a working remote transport or message
+consumption. Bridge failure is separate from the core activation exit status;
+actual mailbox availability and exact-ID message outcomes remain authoritative.

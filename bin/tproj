@@ -71,6 +71,7 @@ register_workspace_messaging_projects() {
     [[ "${PROJECT_TYPES[$i]}" == "local" ]] || continue
     [[ -n "${PROJECT_ALIASES[$i]}" ]] && args+=(--alias "${PROJECT_ALIASES[$i]}")
   done
+  "$runtime_setup" activate || echo "tproj: messaging activation needs attention; the core workspace remains available." >&2
   [[ ${#args[@]} -gt 0 ]] || return 0
   "$runtime_setup" register "${args[@]}" || echo "tproj: messaging directory sync needs attention; the core workspace remains available." >&2
 }
