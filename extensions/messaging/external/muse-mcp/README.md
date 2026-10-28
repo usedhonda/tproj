@@ -42,7 +42,7 @@ identity, credential, generation or policy is never overwritten.
 Output contains only booleans/counts, not credentials or generation.
 The helper prepares a new plist without starting services. After apply:
 
-    launchctl bootstrap "gui/$(id -u)" "$HOME/.local/share/tproj/muse-mailbox/muse-mailbox.plist"
+    tproj-msg-runtime activate
 
 The plist uses python3 -I and the private parent config/bridge.
 Test initialization/tools/list through the separate tokenless client config.

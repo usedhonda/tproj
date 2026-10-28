@@ -108,6 +108,7 @@ def prepare(home, host_path, root, scope):
         ProgramArguments=['/usr/bin/python3','-I',str(root/'lib/muse-mcp/muse.py'),
                           '--config',str(parent_path),'--bridge'],
         RunAtLoad=True, KeepAlive=True, ThrottleInterval=10,
+        LimitLoadToSessionType="Background",
         StandardErrorPath=str(root/'mailbox.err'))
     expected[root/'muse-mailbox.plist'] = plistlib.dumps(label)
     manifest_path = root/'candidate.json'

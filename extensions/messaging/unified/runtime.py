@@ -322,9 +322,15 @@ def activate(home: Path | None = None) -> list[str]:
         return ["skipped:not_configured"]
     # Old Aqua-only manifests need the same compatibility field as new setup.
     # No credentials or runtime source are changed by recovery activation.
-    bridges = [(home / "Library/LaunchAgents" / (label + ".plist"), label)
-               for label in BRIDGE_LABELS
-               if (home / "Library/LaunchAgents" / (label + ".plist")).is_file()]
+    # Muse enrollment stores its LaunchAgent with its isolated package, not
+    # in Library/LaunchAgents. Use each installer's canonical path.
+    bridges = []
+    for label in BRIDGE_LABELS:
+        manifest = (home / ".local/share/tproj/muse-mailbox/muse-mailbox.plist"
+                    if label == "local.tproj.muse-mailbox"
+                    else home / "Library/LaunchAgents" / (label + ".plist"))
+        if manifest.is_file():
+            bridges.append((manifest, label))
     for manifest in manifests + [p for p, _ in bridges]:
         value = plistlib.loads(manifest.read_bytes())
         if value.get("LimitLoadToSessionType") != "Background":

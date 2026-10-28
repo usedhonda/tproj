@@ -141,6 +141,17 @@ class RuntimeDirectoryRegistrationTests(unittest.TestCase):
             self.assertFalse(any(item.startswith("unavailable:") for item in results))
             self.assertEqual(plistlib.loads(bridge.read_bytes())["ProgramArguments"], ["/fixture/mailbox"])
             self.assertFalse((bridge.parent / "local.tproj.muse-mailbox.plist").exists())
+            # The actual Muse installer uses a private package path. It must
+            # recover too, without a Library/LaunchAgents copy or new grant.
+            muse = home / ".local/share/tproj/muse-mailbox/muse-mailbox.plist"
+            muse.parent.mkdir(parents=True)
+            muse.write_bytes(plistlib.dumps({"Label": "local.tproj.muse-mailbox",
+                                             "ProgramArguments": ["/fixture/muse", "--bridge"]}))
+            with patch.object(runtime, "_activate", side_effect=lambda *a, **kw: ["running"]) as activate:
+                runtime.activate(home)
+            self.assertEqual(activate.call_args.args[1], [muse])
+            self.assertEqual(activate.call_args.kwargs["labels"], ("local.tproj.muse-mailbox",))
+            self.assertEqual(plistlib.loads(muse.read_bytes())["LimitLoadToSessionType"], "Background")
 
     def test_adds_only_missing_requested_projects_once(self):
         with tempfile.TemporaryDirectory() as raw:

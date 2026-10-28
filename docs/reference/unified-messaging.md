@@ -1597,7 +1597,9 @@ presentation and substantive replies still require their own message evidence.
 
 After core readiness, activation also restores already-configured allowlisted
 KAI tunnel/mailbox and Muse mailbox LaunchAgents, using the same single-domain
-rule. Missing bridge manifests are skipped. `bridge_process_*` reports only
+rule. KAI manifests live in `~/Library/LaunchAgents`; the Muse enrollment
+manifest lives at `~/.local/share/tproj/muse-mailbox/muse-mailbox.plist` and must
+not be skipped merely because no Library copy exists. Missing bridge manifests are skipped. `bridge_process_*` reports only
 launchd running-state/PID evidence, not a working remote transport or message
 consumption. Bridge failure is separate from the core activation exit status;
 actual mailbox availability and exact-ID message outcomes remain authoritative.
