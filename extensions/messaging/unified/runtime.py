@@ -264,10 +264,11 @@ def _activate(home: Path, manifests: list[Path], changed: bool, no_start: bool, 
                 results.append(f"unavailable:{label}:multiple_domains"); continue
             domain = loaded[0] if loaded else f"user/{uid}"
             state = "running"
-            if loaded and changed:
+            migrating = bool(loaded and domain.startswith("gui/"))
+            if loaded and (changed or domain.startswith("gui/")):
                 if domain.startswith("gui/"):
-                    # Migrate only during an already-required reload, never run
-                    # two owners or auto-load a new GUI job on the next login.
+                    # Complete the headless migration even when code/config did
+                    # not change; GUI logout must not terminate messaging.
                     action = subprocess.run(["/bin/launchctl", "bootout", f"{domain}/{label}"],
                                             capture_output=True)
                     if action.returncode:
@@ -275,6 +276,18 @@ def _activate(home: Path, manifests: list[Path], changed: bool, no_start: bool, 
                     domain = f"user/{uid}"
                     action = subprocess.run(["/bin/launchctl", "bootstrap", domain, str(manifest)],
                                             capture_output=True)
+                    # bootout can return before launchd finishes unregistering
+                    # the old job. Retry only this known pre-request handover,
+                    # never a message or a different domain/identity.
+                    until = time.monotonic() + 3
+                    while action.returncode == 5 and time.monotonic() < until:
+                        time.sleep(0.1)
+                        observed = subprocess.run(["/bin/launchctl", "print", f"{domain}/{label}"],
+                                                  capture_output=True)
+                        if observed.returncode == 0:
+                            action = observed; break
+                        action = subprocess.run(["/bin/launchctl", "bootstrap", domain, str(manifest)],
+                                                capture_output=True)
                 else:
                     action = subprocess.run(["/bin/launchctl", "kickstart", "-k", f"{domain}/{label}"],
                                             capture_output=True)
@@ -289,7 +302,7 @@ def _activate(home: Path, manifests: list[Path], changed: bool, no_start: bool, 
                 results.append(f"unavailable:{label}"); continue
             # Fresh processes need a bounded readiness window. Existing loaded
             # but unhealthy jobs must not be reported as running.
-            deadline = time.monotonic() + (4 if state != "running" else 0)
+            deadline = time.monotonic() + (16 if migrating else 4 if state != "running" else 0)
             while not _activation_health(home, label):
                 if time.monotonic() >= deadline:
                     results.append(f"unavailable:{label}:listener_unavailable"); break

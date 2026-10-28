@@ -70,13 +70,43 @@ class RuntimeDirectoryRegistrationTests(unittest.TestCase):
              patch.object(runtime, "_activation_health", return_value=False):
             result = runtime._activate(Path("/fixture"), manifests, False, False, False)
         self.assertTrue(all("listener_unavailable" in item for item in result))
-        # Existing GUI owner is reused, not shadowed by another user-domain job.
+        # Existing GUI owner migrates even without config changes, never in parallel.
         loaded = {"gui/" + str(runtime.os.getuid()) + "/" + label for label in labels}
         calls.clear()
         with patch.object(runtime.subprocess, "run", side_effect=run), \
              patch.object(runtime, "_activation_health", return_value=True):
             runtime._activate(Path("/fixture"), manifests, False, False, False)
-        self.assertFalse(any(c[1] == "bootstrap" for c in calls))
+        for label in labels:
+            stopped = calls.index(["/bin/launchctl", "bootout", "gui/" + str(runtime.os.getuid()) + "/" + label])
+            started = next(i for i, c in enumerate(calls) if c[1] == "bootstrap" and c[3] == str(manifests[labels.index(label)]))
+            self.assertLess(stopped, started)
+
+    def test_gui_handover_waits_for_launchd_unregister_without_message_replay(self):
+        import subprocess
+        label = runtime.CORE_LABELS[0]
+        calls = []
+        gui_loaded = True
+        attempts = 0
+        def run(args, **kwargs):
+            nonlocal gui_loaded, attempts
+            calls.append(args)
+            if args[1] == "print":
+                rc = 0 if args[2].startswith("gui/") and gui_loaded else 113
+            elif args[1] == "bootout":
+                gui_loaded = False; rc = 0
+            else:
+                self.assertEqual(args[1], "bootstrap")
+                attempts += 1; rc = 5 if attempts == 1 else 0
+            return subprocess.CompletedProcess(args, rc)
+        with patch.object(runtime.subprocess, "run", side_effect=run), \
+             patch.object(runtime, "_activation_health", return_value=True), \
+             patch.object(runtime.time, "sleep"):
+            result = runtime._activate(Path("/fixture"), [Path("/fixture/hub")],
+                                       False, False, False, labels=(label,))
+        self.assertEqual(result, ["reloaded:" + label])
+        self.assertEqual(attempts, 2)
+        self.assertEqual(sum(c[1] == "bootout" for c in calls), 1)
+        self.assertTrue(all(c[2].startswith("user/") for c in calls if c[1] == "bootstrap"))
 
     def test_recovery_activation_preserves_config_and_supports_background(self):
         import plistlib

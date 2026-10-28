@@ -1567,9 +1567,15 @@ visible because the directory helps choose among registered sessions.
 The owner Host and Hub are per-user services, not tied to an interactive GUI.
 New activation bootstraps the existing LaunchAgents into `user/<uid>`; manifests
 specify `Background`, so a later GUI login does not auto-load a competing job.
-An already-loaded GUI owner is reused until it disappears or a setup-required
-reload migrates it (bootout before bootstrap), rather than starting a second
-writer in another domain. If both
+An already-loaded GUI owner migrates during activation (bootout before
+bootstrap), even when configuration is unchanged, so the next GUI logout
+cannot terminate messaging. A second writer is never started in parallel.
+After a successful GUI bootout, launchd may still be unregistering the job;
+only bootstrap exit 5 in that handover is retried for at most three seconds,
+checking whether the target user-domain job already exists before each retry.
+This is service registration, never replay of a message request. Migration
+readiness allows sixteen seconds for the old socket lock to release and a
+launchd KeepAlive throttle interval; normal fresh startup uses four seconds. If both
 domains already contain the same label, activation reports `multiple_domains`
 instead of creating or killing a service. Socket unlink remains protected by
 the exclusive owner lock; recovery never deletes a lock or a live socket.

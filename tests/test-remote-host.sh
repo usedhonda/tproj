@@ -5,7 +5,23 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/tproj-remote-host.XXXXXX")
 SOCKET="tproj-remote-host-$RANDOM-$$"
 cleanup() { tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true; rm -rf "$TMP"; }
 trap cleanup EXIT
-mkdir -p "$TMP/project" "$TMP/legacy" "$TMP/bin" "$TMP/home"
+mkdir -p "$TMP/project" "$TMP/legacy" "$TMP/bin" "$TMP/home/bin"
+# Exercise the actual host script with a companion fixture updater. Never use
+# the production per-user updater locks or inspect/mutate live agent packages.
+cp "$ROOT/bin/tproj-remote-host" "$TMP/bin/tproj-remote-host"
+cat > "$TMP/bin/tproj-cli-update" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == --launch ]]; then exec sh -c "$2"; fi
+npm update -g "$1"
+EOF
+chmod +x "$TMP/bin/tproj-remote-host" "$TMP/bin/tproj-cli-update"
+cat > "$TMP/home/bin/tproj-msg-runtime" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/activation"
+# Messaging activation failure must not prevent a remote workspace.
+exit 2
+EOF
+chmod +x "$TMP/home/bin/tproj-msg-runtime"
 cat > "$TMP/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 while :; do sleep 1; done
@@ -24,7 +40,7 @@ exit 0
 EOF
 chmod +x "$TMP/bin/npm" "$TMP/bin/sign-codex"
 export PATH="$TMP/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" TPROJ_TMUX_SOCKET="$SOCKET" HOME="$TMP/home"
-run() { "$ROOT/bin/tproj-remote-host" "$@"; }
+run() { "$TMP/bin/tproj-remote-host" "$@"; }
 tm() { tmux -L "$SOCKET" "$@"; }
 wait_panes() {
   local session=$1
@@ -38,6 +54,7 @@ run register --path "$TMP/project" --alias demo
 cc_session=$(run ensure --path "$TMP/project" --role cc)
 cdx_session=$(run ensure --path "$TMP/project" --role cdx)
 [[ "$cc_session" != "$cdx_session" ]]
+[[ $(grep -c '^activate$' "$TMP/activation") == 2 ]]
 [[ $(tm show-options -t "$cc_session" -v status) == off ]]
 [[ $(tm show-options -t "$cdx_session" -v status) == off ]]
 [[ $(tm show-options -t "$cc_session" -v mouse) == on ]]
