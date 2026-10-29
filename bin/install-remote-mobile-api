@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Hash-guarded, artifact-only update. No skills, launchd, GUI, or agent restart."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+
+parser=argparse.ArgumentParser()
+parser.add_argument('--host',required=True)
+parser.add_argument('--expected-sha',required=True)
+parser.add_argument('--apply',action='store_true')
+args=parser.parse_args()
+source=(Path(__file__).resolve().parent/'tproj-remote-host').read_text()
+payload=dict(source=source,sha256=hashlib.sha256(source.encode()).hexdigest(),expected=args.expected_sha,apply=args.apply)
+remote=r'''
+import hashlib,json,os,stat,subprocess,sys,tempfile
+from pathlib import Path
+x=json.load(sys.stdin)
+target=Path.home()/'bin/tproj-remote-host'
+if target.is_symlink() or not target.is_file():raise SystemExit('Existing helper must be a regular file')
+old=target.read_bytes();before=hashlib.sha256(old).hexdigest()
+if before!=x['expected']:raise SystemExit('Existing helper hash changed; no update performed')
+new=x['source'].encode()
+if hashlib.sha256(new).hexdigest()!=x['sha256']:raise SystemExit('Payload hash mismatch')
+mode=stat.S_IMODE(target.stat().st_mode)
+if mode & 2:raise SystemExit('Existing helper is world writable; refusing update')
+if not x['apply']:
+ print(json.dumps(dict(matches=True,before=before,candidate=x['sha256'],applied=False)));sys.exit(0)
+backup=Path.home()/'.local/share/tproj/mobile-api-backup';backup.mkdir(parents=True,exist_ok=True,mode=0o700)
+file=backup/(before+'.sh')
+if not file.exists():
+ with file.open('xb') as stream:stream.write(old);stream.flush();os.fsync(stream.fileno())
+elif file.read_bytes()!=old:raise SystemExit('Backup collision; refusing update')
+fd,name=tempfile.mkstemp(prefix='.tproj-mobile-',dir=target.parent)
+try:
+ with os.fdopen(fd,'wb') as stream:
+  stream.write(new);stream.flush();os.fchmod(stream.fileno(),mode);os.fsync(stream.fileno())
+ check=subprocess.run(['/bin/bash','-n',name],capture_output=True)
+ if check.returncode:raise SystemExit('Candidate shell syntax failed')
+ if hashlib.sha256(target.read_bytes()).hexdigest()!=before:raise SystemExit('Concurrent helper update; refusing replacement')
+ os.replace(name,target)
+ descriptor=os.open(target.parent,os.O_RDONLY)
+ try:os.fsync(descriptor)
+ finally:os.close(descriptor)
+ result=subprocess.run([str(target),'mobile-capabilities'],capture_output=True,text=True,timeout=10)
+ caps=json.loads(result.stdout) if result.returncode==0 else {}
+ if caps.get('apiVersion')!=1:raise SystemExit('Installed capability verification failed; backup retained')
+ print(json.dumps(dict(applied=True,before=before,after=hashlib.sha256(target.read_bytes()).hexdigest(),apiVersion=caps['apiVersion'])))
+finally:
+ if os.path.exists(name):os.unlink(name)
+'''
+result=subprocess.run(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=8',args.host,'python3 -c '+"'"+remote.replace("'","'\\''")+"'"],
+                      input=json.dumps(payload),capture_output=True,text=True,timeout=30)
+if result.returncode:
+ raise SystemExit('Artifact-only installation failed: '+result.stderr.strip())
+print(result.stdout.strip())
