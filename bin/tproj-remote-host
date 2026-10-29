@@ -430,7 +430,6 @@ case "$action" in
     if [[ "$action" == mobile-ensure ]]; then
       [[ -n "$project_path" && "$fresh" == true && "$no_update" == true ]] || usage
       validate_path "$project_path"; validate_field "$project_path"
-      project_path=$(cd "$project_path" && pwd -P)
     fi
     python3 - "${BASH_SOURCE[0]}" "$action" "$project_path" "$operation_id" "$state_dir" <<'MOBILE_PY'
 import fcntl
@@ -447,6 +446,46 @@ root = Path(state) / 'mobile'
 file = root / (operation + '.json')
 def call(*args):
     return subprocess.run([helper, *args], capture_output=True, text=True, timeout=30)
+def lock_path(project):
+    return root / ('path-' + hashlib.sha256(os.path.realpath(project).encode()).hexdigest() + '.lock')
+def mobile_path(project):
+    # Preserve ordinary command identity. Only mobile resolves physical aliases,
+    # preferring an already live namespace over a catalog spelling.
+    candidates = [project, os.path.realpath(project)]
+    catalog = Path(state) / 'catalog.yml'
+    stored = []
+    if catalog.is_file():
+        for line in catalog.read_text().splitlines():
+            if line.startswith('    path: '):
+                value = json.loads(line[len('    path: '):])
+                if os.path.realpath(value) == os.path.realpath(project): stored.append(value)
+    candidates = list(dict.fromkeys(candidates + stored))
+    live = []
+    tmux = ['tmux']
+    if os.environ.get('TPROJ_TMUX_SOCKET'): tmux += ['-L', os.environ['TPROJ_TMUX_SOCKET']]
+    for candidate in candidates:
+        names = call('mobile-session-names', '--path', candidate)
+        if names.returncode: raise RuntimeError('Cannot inspect path identity')
+        if any(subprocess.run(tmux + ['has-session', '-t', '=' + name],
+               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+               for name in names.stdout.splitlines()): live.append(candidate)
+    if len(live) > 1: raise RuntimeError('Multiple existing path identities; resolve explicitly in tproj')
+    if live: return live[0]
+    if len(stored) > 1: raise RuntimeError('Ambiguous catalog path identity')
+    return stored[0] if stored else project
+
+def interrupted(record):
+    value = dict(record)
+    value['state'] = 'interrupted'
+    value['roles'] = dict(record.get('roles', {}))
+    for role in ('cc', 'cdx'):
+        result = call('status', '--path', record['path'], '--role', role)
+        parts = result.stdout.strip().split('|')
+        if result.returncode == 0 and len(parts) == 3 and parts[0] == 'running':
+            value['roles'][role] = {'session': parts[1], 'state': 'existing'}
+    value['error'] = 'The start controller ended without a final result. Existing roles were observed, not restarted. Inspect before starting again.'
+    return value
+
 def observed(record):
     value = dict(record)
     value['roles'] = {key: dict(role) for key, role in record.get('roles', {}).items()}
@@ -462,19 +501,25 @@ def observed(record):
     value['messaging'] = 'bindings_verified' if len(ready) == 2 and all(ready) else 'bindings_pending'
     return value
 if action == 'mobile-operation':
-    result = observed(json.loads(file.read_text())) if file.is_file() else {'operation':operation, 'state':'not_found'}
+    record = json.loads(file.read_text()) if file.is_file() else {'operation':operation, 'state':'not_found'}
+    if record['state'] == 'creating':
+        existing_lock = lock_path(record['path'])
+        if existing_lock.is_file():
+            with existing_lock.open('r') as held:
+                try:
+                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError: pass
+                else: record = interrupted(record)
+        else: record = interrupted(record)
+    result = observed(record)
     print(json.dumps(result)); sys.exit(0)
+path = mobile_path(path)
 root.mkdir(parents=True, exist_ok=True, mode=0o700)
-lock = (root / ('path-' + hashlib.sha256(path.encode()).hexdigest() + '.lock')).open('a+')
+lock = lock_path(path).open('a+')
 try:
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
     print(json.dumps({'operation':operation,'path':path,'state':'busy','error':'Another start is already in progress for this directory.'}));sys.exit(0)
-if file.exists():
-    record = json.loads(file.read_text())
-    if record['path'] != path: raise SystemExit('Operation ID belongs to another path')
-    print(json.dumps(observed(record)));sys.exit(0)
-record = {'operation':operation,'path':path,'state':'creating','roles':{}}
 def save():
     temporary = file.with_suffix('.tmp')
     with temporary.open('w') as stream:
@@ -483,6 +528,14 @@ def save():
     descriptor=os.open(root,os.O_RDONLY)
     try:os.fsync(descriptor)
     finally:os.close(descriptor)
+if file.exists():
+    record = json.loads(file.read_text())
+    if os.path.realpath(record['path']) != os.path.realpath(path): raise SystemExit('Operation ID belongs to another path')
+    if record['state'] == 'creating':
+        record = interrupted(record)
+        save()
+    print(json.dumps(observed(record)));sys.exit(0)
+record = {'operation':operation,'path':path,'state':'creating','roles':{}}
 save()
 try:
     for role in ('cc','cdx'):
@@ -506,8 +559,9 @@ try:
         for session in names.stdout.splitlines():
             exists=subprocess.run(tmux+['has-session','-t','='+session],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             if exists.returncode==0:
-                dead=subprocess.check_output(tmux+['list-panes','-t','='+session+':dev','-F','#{pane_dead}'],text=True).splitlines()
-                found.append(all(flag=='1' for flag in dead))
+                result=subprocess.run(tmux+['list-panes','-t','='+session+':dev','-F','#{pane_dead}'],capture_output=True,text=True)
+                dead=result.stdout.splitlines()
+                found.append(result.returncode == 0 and bool(dead) and all(flag=='1' for flag in dead))
         if found:
             record['state']='dead' if all(found) else 'occupied'
             record['error']='The canonical workspace is ended or occupied. Recover it explicitly in tproj; mobile will not kill or respawn it.'

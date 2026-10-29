@@ -33,3 +33,15 @@ remote setup command remains unchanged.
 Focused evidence: existing `tests/test-remote-host.sh` and
 `tests/test-remote-reattach.sh`, plus isolated fake-agent
 `python3 tests/test-remote-mobile.py`. Never point that fixture at a live server.
+
+Path alias resolution is mobile-only. It checks the given path and physical/catalog
+spellings for existing canonical sessions before using a stored catalog path.
+Normal ensure/status/identity/reattach remain unchanged. Multiple live spellings
+fail explicitly. An abandoned creating record becomes interrupted after its
+controller lock is released; lookup observes roles without replaying startup.
+
+The artifact-only installer is transitional and is not in CORE_BINS. Until this
+API is landed in the canonical tproj distribution, a normal main install or
+remote setup can overwrite it. The app detects missing mobile capabilities and
+disables pair creation; existing terminal access remains available. A branch
+artifact installation is not proof of main integration.

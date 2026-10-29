@@ -50,6 +50,25 @@ with tempfile.TemporaryDirectory(prefix='tproj-mobile-') as temporary:
         for role in ['cc','cdx']:
             assert command('ensure','--path',str(path),'--role',role)==sessions[role]
             assert tmux('display-message','-p','-t','='+sessions[role]+':dev','#{pane_pid}')==pids[role]
+        # Mobile must find a live alias namespace even when the catalog stores
+        # the physical spelling. Ordinary status/ensure remain unchanged.
+        physical=root/'physical';physical.mkdir();alias=root/'alias';alias.symlink_to(physical)
+        command('register','--path',str(physical),'--alias','physical-project')
+        alias_session=command('ensure','--path',str(alias),'--role','cc','--fresh','--no-update')
+        alias_result=start(alias,str(uuid.uuid4()))
+        assert alias_result['state']=='existing' and alias_result['roles']['cc']['session']==alias_session,alias_result
+        assert command('status','--path',str(alias),'--role','cc').startswith('running|'+alias_session+'|')
+        # A catalog alias remains the identity when mobile uses its physical path.
+        canonical=root/'canonical';canonical.mkdir();link=root/'canonical-link';link.symlink_to(canonical)
+        command('register','--path',str(link),'--alias','linked-project')
+        linked=start(canonical,str(uuid.uuid4()))
+        assert linked['state']=='created' and linked['path']==str(link),linked
+        interrupted_id=str(uuid.uuid4());record=home/'.config/tproj-remote/mobile'/(interrupted_id+'.json')
+        record.write_text(json.dumps({'operation':interrupted_id,'path':str(canonical),'state':'creating','roles':{}}))
+        before=(root/'args').read_text()
+        assert json.loads(command('mobile-operation','--operation',interrupted_id))['state']=='interrupted'
+        assert start(canonical,interrupted_id)['state']=='interrupted'
+        assert (root/'args').read_text()==before,'interrupted operation replayed launch'
         race=root/'race';race.mkdir()
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             outcomes=list(pool.map(lambda _:start(race,str(uuid.uuid4())),range(2)))
