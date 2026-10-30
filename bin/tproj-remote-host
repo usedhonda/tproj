@@ -206,6 +206,9 @@ start_command() {
   local r=$1 c q npm_path sign_path update_path launch_cmd
   c=$(resolve_cli "$(cli_for_role "$r")")
   [[ -n "$c" ]] || die "required CLI not found on PATH: $(cli_for_role "$r")"
+  # The tmux pane shell may reset PATH after CLI resolution. Preserve the
+  # launcher environment for env-based Node/Python shebangs and child tools.
+  printf 'export PATH=%q; ' "$PATH"
   q=$(printf '%q' "$c")
   if [[ "$r" == cdx ]]; then
     # Match local startup: update before resume, never while attaching to an

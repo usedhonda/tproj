@@ -50,6 +50,16 @@ wait_panes() {
   done
   return 1
 }
+# A daemon-backed tmux pane may start with a different PATH than the caller.
+# CLI resolution alone is insufficient for env shebangs and child commands.
+cat > "$TMP/bin/pane-shell" <<'EOF'
+#!/bin/bash
+export PATH=/usr/bin:/bin
+exec /bin/bash "$@"
+EOF
+chmod +x "$TMP/bin/pane-shell"
+tm new-session -d -s path-fixture '/bin/sleep 120'
+tm set-option -g default-shell "$TMP/bin/pane-shell"
 run register --path "$TMP/project" --alias demo
 cc_session=$(run ensure --path "$TMP/project" --role cc)
 cdx_session=$(run ensure --path "$TMP/project" --role cdx)

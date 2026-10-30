@@ -129,3 +129,7 @@ neither interrupt keys nor exit commands are sent through them. Closing these
 attachments leaves the remote tmux sessions and agents running, so another
 client can reconnect. Stop remote sessions explicitly from tproj on their own
 host (the existing explicit remote-agent stop control remains available).
+
+Remote agent launch commands explicitly preserve the host helper's resolved
+`PATH` inside the tmux pane shell. Resolving the CLI executable alone does not
+ensure that its `env node` shebang or child tools can be found after shell startup.
