@@ -177,15 +177,21 @@ try:
     retrying = "tproj-remote-host reattach" in command
     announced = False
     signature = network_signature() if saved is not None else None
+    # Interactive recovery must not inherit a stale shared control connection
+    # or couple its lifecycle to unrelated management/tunnel sessions.
+    ssh_options = ["-o", "ControlMaster=no", "-o", "ControlPath=none",
+                   "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+                   "-o", "ConnectTimeout=10"]
     if sys.argv[3] == "mosh":
-        # mosh reconnects by itself, so no reap/retry loop. A quick failure
-        # (no mosh-server, UDP blocked) falls back to the ssh supervisor below.
+        # mosh handles roaming while alive. If it exits abnormally, use the
+        # SSH supervisor; late agent recovery must only reattach.
         env = dict(os.environ)
         if not any("UTF-8" in env.get(k, "").upper() for k in ("LC_ALL", "LC_CTYPE", "LANG")):
             env["LC_CTYPE"] = "en_US.UTF-8"
         server = "PATH=/opt/homebrew/bin:/usr/local/bin:$PATH LANG=en_US.UTF-8 mosh-server"
         started = time.monotonic()
-        child = subprocess.Popen(["mosh", "--server=" + server, sys.argv[1], "--",
+        child = subprocess.Popen(["mosh", "--ssh=ssh " + " ".join(ssh_options),
+                                  "--server=" + server, sys.argv[1], "--",
                                   "/bin/sh", "-c", command], env=env)
         while child.poll() is None and pending_signal is None:
             time.sleep(0.1)
@@ -196,14 +202,22 @@ try:
             status = status if status >= 0 else 128 - status
             if status != 0 and time.monotonic() - started < 30:
                 print("\r\ntproj: mosh failed (status " + str(status) + "); using ssh", file=sys.stderr)
+            elif status != 0 and "tproj-remote-host " in command:
+                # A previously working mosh process can die too. Recover only
+                # its existing agent session, never repeat startup/ensure.
+                print("\r\ntproj: mosh ended (status " + str(status) + "); reconnecting existing session via ssh", file=sys.stderr)
+                command = command.replace("tproj-remote-host attach", "tproj-remote-host reattach", 1)
+                retrying = True
+                if saved is not None:
+                    reset_terminal_modes()
+                    termios.tcflush(tty, termios.TCIFLUSH)
             else:
                 pending_signal = -1
         child = None
     while pending_signal is None:
         quiet = announced
         batch = ["-o", "BatchMode=yes"] if retrying else []
-        child = subprocess.Popen(["ssh", *batch, "-o", "ServerAliveInterval=15",
-                                  "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10",
+        child = subprocess.Popen(["ssh", *batch, *ssh_options,
                                   "-tt", "--", sys.argv[1], command],
                                  stderr=subprocess.DEVNULL if quiet else None)
         previous_wall = time.time()

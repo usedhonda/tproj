@@ -30,7 +30,7 @@ PTY, typed input, queued mouse reports, exit status, and signal forwarding.
 ## Shared recovery policy
 
 CC and Codex use the same transport policy. Interactive attachments request SSH
-server-alive probes every 2 seconds with 2 missed replies, a 3-second connect
+server-alive probes every 15 seconds with 3 missed replies, a 10-second connect
 timeout, and retry after approximately 1 second (no long backoff). An available
 macOS network signature is sampled about once per second with a bounded query;
 a changed signature refreshes only the locally owned SSH process. A wall-clock
@@ -64,7 +64,13 @@ changes and sleep, so the supervisor neither reaps nor retries it. The remote
 command runs as `/bin/sh -c` with `mosh-server` resolved from the Homebrew
 paths and a UTF-8 locale. A nonzero mosh exit within 30 seconds (for example a
 missing `mosh-server` or blocked UDP) falls back once to the SSH supervisor
-with the same command; a later exit or a forwarded signal is final. Terminal
+with the same command. A later nonzero exit of an agent attachment falls back
+once to SSH using `reattach` only; it cannot create a session or restart an agent.
+A successful exit (including explicit mosh detach) and a forwarded signal remain
+final. A later project-shell exit remains final rather than opening another shell.
+Interactive SSH and mosh SSH bootstrap disable control connection multiplexing
+(`ControlMaster=no`, `ControlPath=none`), leaving management/tunnel SSH config
+unchanged. Existing connected clients are not forcibly replaced. Terminal
 mode reset and termios restore on exit are the same as for SSH.
 
 Focused proof: `bash tests/test-remote-client-mosh.sh`.
