@@ -281,21 +281,29 @@ class Hub:
             self._rollback()
             raise
 
+    def _native_successor(self, old):
+        """Resolve a retired incarnation within its exact native and surface."""
+        marker = self._row("SELECT * FROM endpoint_native WHERE endpoint_id=?", (old['endpoint_id'],))
+        if not old['retired'] or not marker:
+            return None
+        rows = self.db.execute("SELECT e.* FROM endpoints e JOIN endpoint_native n ON n.endpoint_id=e.endpoint_id "
+            "WHERE e.retired=0 AND e.host_id=? AND e.participant_id=? AND e.platform=? "
+            "AND n.native_kind=? AND n.native_id=? AND (e.pane IS NOT NULL)=?",
+            (old['host_id'], old['participant_id'], old['platform'], marker['native_kind'], marker['native_id'],
+             int(old['pane'] is not None))).fetchall()
+        # Heartbeat loss never chooses between two surviving writers.
+        if len(rows) != 1 or self._now() - rows[0]['last_heartbeat'] > 30:
+            return None
+        return rows[0]
+
     def _same_native_party(self, current, historical_id):
         if current["endpoint_id"] == historical_id:
             return True
         old = self._row("SELECT * FROM endpoints WHERE endpoint_id=?", (historical_id,))
-        if not old or not old["retired"] or any(old[k] != current[k] for k in ("host_id", "participant_id", "platform")):
+        if not old:
             return False
-        native = self._row("SELECT * FROM endpoint_native WHERE endpoint_id=?", (historical_id,))
-        other = self._row("SELECT * FROM endpoint_native WHERE endpoint_id=?", (current["endpoint_id"],))
-        if not native or not other or any(native[k] != other[k] for k in ("native_kind", "native_id")):
-            return False
-        participant = self._row("SELECT * FROM participants WHERE participant_id=?", (current["participant_id"],))
-        try:
-            return self._endpoint_for_send(participant)["endpoint_id"] == current["endpoint_id"]
-        except HubError:
-            return False
+        successor = self._native_successor(old)
+        return bool(successor and successor['endpoint_id'] == current['endpoint_id'])
 
     def _reply_endpoint(self, historical_id):
         old = self._row("SELECT * FROM endpoints WHERE endpoint_id=?", (historical_id,))
@@ -306,8 +314,7 @@ class Hub:
             return None
         if participant["project_id"] is None and participant["kind"] == "openclaw":
             return self._endpoint_for_send(participant)
-        current = self._endpoint_for_send(participant)
-        return current if self._same_native_party(current, historical_id) else None
+        return self._native_successor(old)
 
     def _tx(self): self.db.execute("BEGIN IMMEDIATE")
     def _commit(self): self.db.execute("COMMIT")
@@ -566,7 +573,14 @@ class Hub:
         ep = self._host_endpoint(host, req.get("endpoint_id"))
         cursor = int(req.get("cursor") or 0)
         limit = min(max(int(req.get("limit", 100)), 1), 100)
-        rows = self.db.execute("SELECT rowid AS sequence,* FROM messages WHERE recipient_endpoint=? AND rowid>? ORDER BY rowid LIMIT ?", (ep["endpoint_id"], cursor, limit)).fetchall()
+        parties = [ep['endpoint_id']]
+        parties.extend(row['endpoint_id'] for row in self.db.execute(
+            'SELECT endpoint_id FROM endpoints WHERE retired=1 AND participant_id=? AND host_id=? AND platform=?',
+            (ep['participant_id'], ep['host_id'], ep['platform']))
+            if self._same_native_party(ep, row['endpoint_id']))
+        placeholders = ','.join('?' for _ in parties)
+        rows = self.db.execute("SELECT rowid AS sequence,* FROM messages WHERE recipient_endpoint IN (" + placeholders +
+            ") AND rowid>? ORDER BY rowid LIMIT ?", (*parties, cursor, limit)).fetchall()
         errors = []
         out = self.message_views(rows, response_kind="inbox", errors=errors)
         advanced = [m['sequence'] for m in out] + [e['sequence'] for e in errors]
@@ -1137,7 +1151,7 @@ class Hub:
         self._auth(req)
         return {'capabilities': ['native_attest', 'native_continuity',
                                 'read_only_diagnose', 'diagnostic_identity', 'resource_exhausted', 'send_targets_v1',
-                                'native_begin_present', 'native_pending', 'native_drain', 'native_handoff', recipient.CAPABILITY, 'native_cc_v1'],
+                                'native_begin_present', 'native_pending', 'native_drain', 'native_handoff', recipient.CAPABILITY, 'recipient_native_continuity_v1', 'native_cc_v1'],
                 'native_runtime': {'hub_version': HUB_NATIVE_VERSION}, 'peers': {}}
 
     def dispatch(self, req):

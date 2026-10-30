@@ -87,6 +87,51 @@ class RecipientRecoveryTest(unittest.TestCase):
         self.assertEqual([m['message_id'] for m in claimed['messages']], ['new'])
         self.assertEqual(self.h._row("SELECT retired FROM endpoints WHERE endpoint_id='app'")[0], 0)
 
+    def test_restart_continues_selected_native_and_historical_read_reply(self):
+        self.call('recipient_select', target='project.cdx', candidate=self.candidate, expected_revision=0)
+        self.send('before-restart')
+        original = dict(self.h._row("SELECT * FROM messages WHERE message_id='before-restart'"))
+        pref = dict(self.h._row("SELECT * FROM recipient_preferences WHERE participant_id='p:cdx'"))
+        self.h.dispatch(dict(op='endpoint_retire', host_id='b', host_token='b-token', endpoint_id='tui'))
+        self.register('resumed', 'b', 'p:cdx', '%3')
+        self.attest('resumed', OTHER)
+        # No recipient_observe/select and no grant after restart.
+        self.send('after-restart')
+        self.assertEqual(self.h._row("SELECT recipient_endpoint FROM messages WHERE message_id='after-restart'")[0], 'resumed')
+        self.assertEqual(dict(self.h._row("SELECT * FROM recipient_preferences WHERE participant_id='p:cdx'")), pref)
+        actor = dict(host_id='b', host_token='b-token', endpoint_id='resumed')
+        self.assertEqual(self.h.dispatch(dict(actor, op='query', message_id='before-restart'))['body'], original['body'])
+        inbox = self.h.dispatch(dict(actor, op='inbox'))['messages']
+        self.assertIn('before-restart', [row['message_id'] for row in inbox])
+        self.assertEqual(self.h._reply_endpoint('tui')['endpoint_id'], 'resumed')
+        self.h.dispatch(dict(op='submit', host_id='b', host_token='b-token', message=dict(
+            message_id='resumed-reply', sender_endpoint='resumed', in_reply_to='before-restart', body='read after restart')))
+        self.assertEqual(self.h._row("SELECT recipient_endpoint FROM messages WHERE message_id='before-restart'")[0], 'tui')
+        self.assertEqual(self.h._row("SELECT sender_endpoint FROM messages WHERE message_id='resumed-reply'")[0], 'resumed')
+        # A live app process of this same native is not a competing TUI writer.
+        self.h.db.execute("UPDATE endpoint_native SET native_id=? WHERE endpoint_id='app'", (OTHER,))
+        self.assertEqual(self.h._reply_endpoint('tui')['endpoint_id'], 'resumed')
+        with self.assertRaisesRegex(HubError, 'consumer fence'):
+            self.h.dispatch(dict(op='claim', host_id='b', host_token='b-token', endpoint_id='app'))
+        self.assertEqual([m['message_id'] for m in self.h.dispatch(dict(actor, op='claim'))['messages']], ['after-restart'])
+
+    def test_restart_never_follows_other_native_or_ambiguous_or_stale_writer(self):
+        self.call('recipient_select', target='project.cdx', candidate=self.candidate, expected_revision=0)
+        self.h.dispatch(dict(op='endpoint_retire', host_id='b', host_token='b-token', endpoint_id='tui'))
+        self.register('resumed', 'b', 'p:cdx', '%3')
+        self.attest('resumed', NATIVE)
+        with self.assertRaises(HubError): self.send('different-native')
+        self.assertFalse(self.h._same_native_party(self.h._host_endpoint('b','resumed'), 'tui'))
+        self.h.db.execute("UPDATE endpoint_native SET native_id=? WHERE endpoint_id='resumed'", (OTHER,))
+        self.h.db.execute("UPDATE endpoints SET last_heartbeat=0 WHERE endpoint_id='resumed'")
+        with self.assertRaises(HubError): self.send('stale-replacement')
+        self.h.db.execute("UPDATE endpoints SET last_heartbeat=? WHERE endpoint_id='resumed'", (self.clock,))
+        self.register('second-tui', 'b', 'p:cdx', '%4')
+        self.attest('second-tui', OTHER)
+        with self.assertRaises(HubError): self.send('two-writers')
+        self.assertIsNone(self.h._reply_endpoint('tui'))
+        self.assertFalse(self.h._same_native_party(self.h._host_endpoint('b','resumed'), 'tui'))
+
     def test_grant_read_is_exact_native_and_preserves_unknown_cancel_and_expiry(self):
         for state in ('uncertain', 'cancelled', 'expired'):
             with self.subTest(state=state):

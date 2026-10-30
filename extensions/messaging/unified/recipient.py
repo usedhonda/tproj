@@ -69,24 +69,43 @@ def _candidate(h, host, key, *, fresh=False):
     return c, ep
 
 
+def _selected_endpoint(h, host, key):
+    try:
+        return _candidate(h, host, key)[1]
+    except HubError as exc:
+        if exc.code != 'stale_session':
+            raise
+        c = h._row('SELECT * FROM recipient_candidates WHERE candidate=?', (key,))
+        old = h._row('SELECT * FROM endpoints WHERE endpoint_id=?', (c['endpoint_id'],)) if c else None
+        # The original choice names a native conversation, not a disposable PID.
+        # Only owner-attested, unique same-surface continuity may follow retirement.
+        successor = h._native_successor(old) if old and old['host_id'] == host else None
+        if successor is None:
+            raise
+        return successor
+
+
 def new_message_recipient(h, participant):
     pref = h._row('SELECT * FROM recipient_preferences WHERE participant_id=?', (participant['participant_id'],))
     if not pref or pref['candidate'] is None:
         return h._endpoint_for_send(participant)
-    _, ep = _candidate(h, participant['host_id'], pref['candidate'])
-    return ep
+    return _selected_endpoint(h, participant['host_id'], pref['candidate'])
 
 
 def presentation_allowed(h, ep):
-    """Fence only MSG writers for the selected native; never change its origin."""
+    """Fence MSG writers, following only an authenticated retired incarnation."""
     pref = h._row('SELECT * FROM recipient_preferences WHERE participant_id=?', (ep['participant_id'],))
     if not pref or pref['candidate'] is None:
         return True
     c = h._row('SELECT * FROM recipient_candidates WHERE candidate=?', (pref['candidate'],))
     marker = _marker(h, ep)
     if not c or not marker or any(marker[k] != c[k] for k in ('native_kind', 'native_id')):
-        return True  # A different native retains its own historical rights.
-    return ep['endpoint_id'] == c['endpoint_id'] and ep['incarnation'] == c['incarnation']
+        return True
+    try:
+        selected = _selected_endpoint(h, ep['host_id'], pref['candidate'])
+    except HubError:
+        return False
+    return ep['endpoint_id'] == selected['endpoint_id'] and ep['incarnation'] == selected['incarnation']
 
 
 def _actor(h, host, endpoint_id, operator=None):
@@ -178,11 +197,13 @@ def dispatch(h, req):
             candidates.append(dict(candidate=c['candidate'], native_kind=c['native_kind'], native_id=c['native_id'],
                                    endpoint_id=ep['endpoint_id'], incarnation=ep['incarnation'], surface='tui'))
         reason = None
+        resolved = None
         if pref and pref['candidate']:
-            try: _candidate(h, host, pref['candidate'])
+            try: resolved = _selected_endpoint(h, host, pref['candidate'])
             except HubError as exc: reason = exc.code
         return dict(target=p['address'], revision=pref['revision'] if pref else 0,
-                    selected=pref['candidate'] if pref else None, blocking_reason=reason, candidates=candidates)
+                    selected=pref['candidate'] if pref else None, blocking_reason=reason, candidates=candidates,
+                    resolved_endpoint=resolved['endpoint_id'] if resolved else None)
     prepared = None
     if op == 'recovery_reply' and hasattr(h, 'prepare_recovery_reply'):
         saved = h._row('SELECT * FROM recipient_operations WHERE operation_id=?', (req.get('operation_id'),))

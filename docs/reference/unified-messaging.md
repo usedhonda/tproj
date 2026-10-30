@@ -141,9 +141,18 @@ an endpoint incarnation and native kind/ID. Host management verifies the live
 UID/PID-start and either a unique open Codex TUI rollout header/project or an
 existing caller-attested immutable incarnation with its exact CLI header. A resume hint,
 pane tag, heartbeat or caller-chosen native ID is not that proof. Candidate
-observations expire after 120 seconds; selections persist until explicit
-select/clear. A missing, stale or retired selected surface fails closed without
-falling back to another process, including another surface of the same native.
+observations expire after 120 seconds; the selected native conversation persists
+until explicit select/clear. A retired selected incarnation automatically resolves
+to a unique, live, owner-attested successor of the exact same host, participant,
+platform, immutable native kind/ID and surface type (TUI versus app-server).
+Normal restart therefore needs no repeated select or historical-read grant.
+A live selected process with a stale heartbeat is not inferred dead. Different
+natives, missing native proof, and multiple unretired same-surface writers do not
+inherit the route. An app-server is not substituted for a selected TUI.
+The original choice/revision remains unchanged; owner acceptance still compares
+both its revision and the exact resolved endpoint. `recipient list` reports the
+resolved endpoint separately. `recipient_native_continuity_v1` advertises this
+backend behavior; an older backend still requires explicit selection.
 
 Use `tproj-msg recipient list TARGET`, then `recipient select TARGET
 --candidate KEY --expected-revision N`; `recipient clear TARGET
@@ -158,7 +167,12 @@ cannot use these controls. Historical read/reply always requires the authorized
 native caller; an operator can issue/revoke a grant but cannot consume its body.
 
 Preferences are read only by the new-message resolver. Historical party checks,
-reply routing, query/diagnose and receipts do not consult them. The owner checks
+reply routing, query/diagnose and receipts do not consult them. Same-native
+historical reads, inbox discovery and reply routing recognize the unique successor
+of a retired incarnation independently of preference; immutable original message
+endpoints and terminal/unknown states are never rewritten or replayed. Existing
+native delivery handoff remains responsible for unpresented queued-message ownership.
+The owner checks
 selection revision and exact endpoint inside acceptance; foreign senders cannot
 choose an endpoint or refresh the selection. Accepted originals remain immutable.
 For multiple surfaces of the selected native, claim and presentation reservation

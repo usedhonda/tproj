@@ -161,6 +161,9 @@ class Host:
                 or ep.get('platform') != 'cdx'):
             return
         ids = {ep[k] for k in ('thread_id', 'session_id') if ep.get(k)}
+        if not ids:
+            from identity import observe_tui_native
+            ids = {observe_tui_native(ep)['thread_id']}
         if len(ids) != 1:
             return
         nid = next(iter(ids))
@@ -206,6 +209,9 @@ class Host:
         new = candidates[0]
         ids = {str(new[k]) for k in ('thread_id', 'session_id') if new.get(k)
                and re.fullmatch(r'[0-9a-fA-F-]{36}', str(new[k]))}
+        if not ids:
+            from identity import observe_tui_native
+            ids = {observe_tui_native(new)['thread_id']}
         if len(ids) != 1:
             return True
         nid = next(iter(ids))
