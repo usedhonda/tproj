@@ -3746,7 +3746,7 @@ final class AppViewModel: ObservableObject {
         // Phase 1: Send graceful exit signals to each pane by role
         for session in sessions {
             let listResult = await runCommandAsync("/usr/bin/env", [
-                "tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_id}:#{@role}"
+                "tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_id}:#{@role}:#{@remote_host}"
             ])
             guard listResult.exitCode == 0 else { continue }
 
@@ -3754,8 +3754,10 @@ final class AppViewModel: ObservableObject {
                 .split(separator: "\n", omittingEmptySubsequences: true)
                 .map(String.init)
                 .compactMap { line in
-                    let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-                    guard parts.count == 2 else { return nil }
+                    let parts = line.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+                    // Remote panes are attachments, not agents owned by this workspace.
+                    // Never forward interrupt/exit keys to the remote agent.
+                    guard parts.count == 3, parts[2].isEmpty else { return nil }
                     return (id: parts[0], role: parts[1])
                 }
 
@@ -5840,7 +5842,7 @@ struct ContentView: View {
                 Task { await vm.stopSession() }
             }
         } message: {
-            Text("All panes will be stopped.")
+            Text("Local sessions will stop. Remote connections will close, but remote sessions will keep running. Stop them from tproj on their own host.")
         }
         .onReceive(NotificationCenter.default.publisher(for: .flipSnapSide)) { _ in
             ghosttyTracker.flipSide()

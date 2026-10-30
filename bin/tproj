@@ -979,7 +979,7 @@ kill_session() {
 
 # セッショングレースフル終了（CC/Codex に終了シグナル送信後 kill）
 stop_session() {
-  local sessions panes pane_info pane_id role waited
+  local sessions panes pane_info pane_id role remote_host waited
 
   sessions=$(find_tproj_sessions) || true
 
@@ -1003,13 +1003,17 @@ stop_session() {
     [[ -z "$session" ]] && continue
 
     # 全ウィンドウのペイン一覧（dev + git）
-    panes=$(tmux list-panes -s -t "$session" -F '#{pane_id}:#{@role}' 2>/dev/null) || continue
+    panes=$(tmux list-panes -s -t "$session" -F '#{pane_id}:#{@role}:#{@remote_host}' 2>/dev/null) || continue
 
     # Phase 1: グレースフル終了シグナル
     while IFS= read -r pane_info; do
       [[ -z "$pane_info" ]] && continue
       pane_id="${pane_info%%:*}"
       role="${pane_info#*:}"
+      remote_host="${role#*:}"
+      role="${role%%:*}"
+      # Close only the local attachment; never type into a remote agent.
+      [[ -n "$remote_host" ]] && continue
 
       case "$role" in
         claude|claude-p*)
@@ -1035,6 +1039,10 @@ stop_session() {
       [[ -z "$pane_info" ]] && continue
       pane_id="${pane_info%%:*}"
       role="${pane_info#*:}"
+      remote_host="${role#*:}"
+      role="${role%%:*}"
+      # Close only the local attachment; never type into a remote agent.
+      [[ -n "$remote_host" ]] && continue
 
       exit_cmd="$(exit_cmd_for_role "$role")"
       [[ -n "$exit_cmd" ]] && tmux send-keys -t "$pane_id" "$exit_cmd" C-m 2>/dev/null || true

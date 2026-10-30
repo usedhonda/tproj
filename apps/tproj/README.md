@@ -120,3 +120,12 @@ Terminal buttons do not add or remove tmux workspace panes.
 Hide keeps terminal tabs alive. Closing a tab ends that shell only, not the
 project AI sessions. A remote shell exit closes its tab instead of exposing a
 local prompt under a remote title. Finder is available only for local tabs.
+
+## Workspace Stop ownership
+
+The toolbar **Stop** action and `tproj stop` stop locally owned agents and
+close local workspace panes. Panes tagged with `@remote_host` are attachments:
+neither interrupt keys nor exit commands are sent through them. Closing these
+attachments leaves the remote tmux sessions and agents running, so another
+client can reconnect. Stop remote sessions explicitly from tproj on their own
+host (the existing explicit remote-agent stop control remains available).
