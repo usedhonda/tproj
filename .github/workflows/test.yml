@@ -95,3 +95,6 @@ jobs:
           python3 extensions/messaging/tests/test-unified-host-services.py
           python3 extensions/messaging/tests/test-unified-deferred-submissions.py
           python3 extensions/messaging/tests/test-unified-telegram-compatibility.py
+          python3 extensions/messaging/tests/test-telegram-ingress.py
+          python3 extensions/messaging/tests/test-telegram-route.py
+          python3 extensions/messaging/tests/test-telegram-runtime.py
