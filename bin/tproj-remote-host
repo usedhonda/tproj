@@ -15,20 +15,26 @@ for path_entry in "${path_prefix[@]}"; do
 done
 export PATH
 
-usage() { printf '%s\n' 'Usage: tproj-remote-host list|ensure-all|register|unregister|status|identity|ensure|attach|reattach|stop|migrate|separate [--path ABSOLUTE_PATH] [--role cc|cdx] [--alias NAME]' >&2; exit 2; }
+usage() { printf '%s\n' 'Usage: tproj-remote-host list|ensure-all|register|unregister|status|identity|ensure|attach|reattach|stop|migrate|separate|mobile-capabilities|mobile-ensure|mobile-operation [--fresh --no-update --operation UUID] [--path ABSOLUTE_PATH] [--role cc|cdx] [--alias NAME]' >&2; exit 2; }
 die() { printf 'tproj-remote-host: %s\n' "$*" >&2; exit 1; }
 
-action=${1:-}; case "$action" in list|status|identity|ensure|attach|reattach|stop|migrate|separate|register|unregister|ensure-all) shift ;; -h|--help) usage ;; *) usage ;; esac
-project_path=; role=; alias_name=
+action=${1:-}; case "$action" in list|status|identity|ensure|attach|reattach|stop|migrate|separate|register|unregister|ensure-all|mobile-capabilities|mobile-ensure|mobile-operation|mobile-session-names) shift ;; -h|--help) usage ;; *) usage ;; esac
+project_path=; role=; alias_name=; operation_id=; fresh=false; no_update=false
 while (($#)); do
   case "$1" in
     --path) (($# >= 2)) || usage; project_path=$2; shift 2 ;;
     --role) (($# >= 2)) || usage; role=$2; shift 2 ;;
     --alias) (($# >= 2)) || usage; alias_name=$2; shift 2 ;;
+    --operation) (($# >= 2)) || usage; operation_id=$2; shift 2 ;;
+    --fresh) fresh=true; shift ;;
+    --no-update) no_update=true; shift ;;
     *) usage ;;
   esac
 done
 
+if [[ "$fresh" == true || "$no_update" == true ]]; then
+  case "$action" in ensure|mobile-ensure) ;; *) usage ;; esac
+fi
 state_dir=${TPROJ_REMOTE_STATE_DIR:-${HOME:?}/.config/tproj-remote}
 projects_file=$state_dir/projects
 catalog_file=$state_dir/catalog.yml
@@ -210,7 +216,20 @@ start_command() {
   # launcher environment for env-based Node/Python shebangs and child tools.
   printf 'export PATH=%q; ' "$PATH"
   q=$(printf '%q' "$c")
-  if [[ "$r" == cdx ]]; then
+  if [[ "$fresh" == true ]]; then
+    launch_cmd="exec $q"
+    if [[ "$r" == cdx ]]; then
+      update_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tproj-cli-update"
+      [[ -x "$update_path" ]] || update_path=$(resolve_cli tproj-cli-update)
+      if [[ -n "$update_path" ]]; then
+        printf '%q --launch %q' "$update_path" "$launch_cmd"
+        return
+      fi
+    fi
+    printf '%s' "$launch_cmd"
+    return
+  fi
+  if [[ "$r" == cdx && "$no_update" != true ]]; then
     # Match local startup: update before resume, never while attaching to an
     # existing session. An unavailable registry must not prevent work.
     update_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tproj-cli-update"
@@ -401,6 +420,176 @@ migrate_pair() {
   [[ "$(tmux_run display-message -t "$cdx_pane" -p '#{pane_pid}')" == "$cdx_pid" ]] || die 'Cdx pane PID changed during migration'
   printf '%s\n' "$shared"
 }
+
+# The mobile transaction owns no pane-tag schema: child ensure reuses the
+# canonical session names, registration, role metadata and optional runtime.
+case "$action" in
+  mobile-capabilities)
+    [[ -z "$project_path$role$alias_name$operation_id" ]] || usage
+    printf '%s\n' '{"apiVersion":1,"fresh":true,"noUpdate":true,"operations":true}'
+    exit 0 ;;
+  mobile-ensure|mobile-operation)
+    [[ -n "$operation_id" && -z "$role$alias_name" ]] || usage
+    if [[ "$action" == mobile-ensure ]]; then
+      [[ -n "$project_path" && "$fresh" == true && "$no_update" == true ]] || usage
+      validate_path "$project_path"; validate_field "$project_path"
+    fi
+    python3 - "${BASH_SOURCE[0]}" "$action" "$project_path" "$operation_id" "$state_dir" <<'MOBILE_PY'
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import uuid
+helper, action, path, operation, state = sys.argv[1:]
+operation = str(uuid.UUID(operation))
+root = Path(state) / 'mobile'
+file = root / (operation + '.json')
+def call(*args):
+    return subprocess.run([helper, *args], capture_output=True, text=True, timeout=30)
+def lock_path(project):
+    return root / ('path-' + hashlib.sha256(os.path.realpath(project).encode()).hexdigest() + '.lock')
+def mobile_path(project):
+    # Preserve ordinary command identity. Only mobile resolves physical aliases,
+    # preferring an already live namespace over a catalog spelling.
+    candidates = [project, os.path.realpath(project)]
+    catalog = Path(state) / 'catalog.yml'
+    stored = []
+    if catalog.is_file():
+        for line in catalog.read_text().splitlines():
+            if line.startswith('    path: '):
+                value = json.loads(line[len('    path: '):])
+                if os.path.realpath(value) == os.path.realpath(project): stored.append(value)
+    candidates = list(dict.fromkeys(candidates + stored))
+    live = []
+    tmux = ['tmux']
+    if os.environ.get('TPROJ_TMUX_SOCKET'): tmux += ['-L', os.environ['TPROJ_TMUX_SOCKET']]
+    for candidate in candidates:
+        names = call('mobile-session-names', '--path', candidate)
+        if names.returncode: raise RuntimeError('Cannot inspect path identity')
+        if any(subprocess.run(tmux + ['has-session', '-t', '=' + name],
+               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+               for name in names.stdout.splitlines()): live.append(candidate)
+    if len(live) > 1: raise RuntimeError('Multiple existing path identities; resolve explicitly in tproj')
+    if live: return live[0]
+    if len(stored) > 1: raise RuntimeError('Ambiguous catalog path identity')
+    return stored[0] if stored else project
+
+def interrupted(record):
+    value = dict(record)
+    value['state'] = 'interrupted'
+    value['roles'] = dict(record.get('roles', {}))
+    for role in ('cc', 'cdx'):
+        result = call('status', '--path', record['path'], '--role', role)
+        parts = result.stdout.strip().split('|')
+        if result.returncode == 0 and len(parts) == 3 and parts[0] == 'running':
+            value['roles'][role] = {'session': parts[1], 'state': 'existing'}
+    value['error'] = 'The start controller ended without a final result. Existing roles were observed, not restarted. Inspect before starting again.'
+    return value
+
+def observed(record):
+    value = dict(record)
+    value['roles'] = {key: dict(role) for key, role in record.get('roles', {}).items()}
+    ready = []
+    for role, item in value['roles'].items():
+        try:
+            result = call('identity', '--path', record['path'], '--role', role)
+            identity = json.loads(result.stdout) if result.returncode == 0 else None
+            item['bindingReady'] = bool(identity and identity.get('pid') and identity.get('pid_start') and identity.get('pane'))
+        except (subprocess.TimeoutExpired, ValueError):
+            item['bindingReady'] = False
+        ready.append(item['bindingReady'])
+    value['messaging'] = 'bindings_verified' if len(ready) == 2 and all(ready) else 'bindings_pending'
+    return value
+if action == 'mobile-operation':
+    record = json.loads(file.read_text()) if file.is_file() else {'operation':operation, 'state':'not_found'}
+    if record['state'] == 'creating':
+        existing_lock = lock_path(record['path'])
+        if existing_lock.is_file():
+            with existing_lock.open('r') as held:
+                try:
+                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError: pass
+                else: record = interrupted(record)
+        else: record = interrupted(record)
+    result = observed(record)
+    print(json.dumps(result)); sys.exit(0)
+path = mobile_path(path)
+root.mkdir(parents=True, exist_ok=True, mode=0o700)
+lock = lock_path(path).open('a+')
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    print(json.dumps({'operation':operation,'path':path,'state':'busy','error':'Another start is already in progress for this directory.'}));sys.exit(0)
+def save():
+    temporary = file.with_suffix('.tmp')
+    with temporary.open('w') as stream:
+        json.dump(record,stream);stream.flush();os.fsync(stream.fileno())
+    os.replace(temporary,file)
+    descriptor=os.open(root,os.O_RDONLY)
+    try:os.fsync(descriptor)
+    finally:os.close(descriptor)
+if file.exists():
+    record = json.loads(file.read_text())
+    if os.path.realpath(record['path']) != os.path.realpath(path): raise SystemExit('Operation ID belongs to another path')
+    if record['state'] == 'creating':
+        record = interrupted(record)
+        save()
+    print(json.dumps(observed(record)));sys.exit(0)
+record = {'operation':operation,'path':path,'state':'creating','roles':{}}
+save()
+try:
+    for role in ('cc','cdx'):
+        result = call('status','--path',path,'--role',role)
+        if result.returncode: raise RuntimeError('Cannot inspect canonical '+role+' status; verify CLI availability')
+        parts=result.stdout.strip().split('|')
+        if len(parts)!=3: raise RuntimeError('Invalid canonical status response')
+        if parts[0]=='running':
+            record['roles'][role]={'session':parts[1],'state':'existing'}
+    if record['roles']:
+        record['state']='existing'
+        record['error']='Existing work is available; select its exact panes. No missing partner was created.'
+    else:
+        # Preflight ordinary and legacy shared names through the same bash naming
+        # functions, exposed by a read-only internal action below.
+        names=call('mobile-session-names','--path',path)
+        if names.returncode: raise RuntimeError('Cannot inspect canonical session names')
+        found=[]
+        tmux=['tmux']
+        if os.environ.get('TPROJ_TMUX_SOCKET'):tmux+=['-L',os.environ['TPROJ_TMUX_SOCKET']]
+        for session in names.stdout.splitlines():
+            exists=subprocess.run(tmux+['has-session','-t','='+session],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            if exists.returncode==0:
+                result=subprocess.run(tmux+['list-panes','-t','='+session+':dev','-F','#{pane_dead}'],capture_output=True,text=True)
+                dead=result.stdout.splitlines()
+                found.append(result.returncode == 0 and bool(dead) and all(flag=='1' for flag in dead))
+        if found:
+            record['state']='dead' if all(found) else 'occupied'
+            record['error']='The canonical workspace is ended or occupied. Recover it explicitly in tproj; mobile will not kill or respawn it.'
+        else:
+            for role in ('cc','cdx'):
+                result=call('ensure','--path',path,'--role',role,'--fresh','--no-update')
+                if result.returncode:raise RuntimeError('Canonical '+role+' startup failed; successful roles were retained')
+                record['roles'][role]={'session':result.stdout.strip(),'state':'created'}
+                save()
+            record['state']='created'
+except Exception as error:
+    record['state']='partial' if record['roles'] else 'failed'
+    record['error']=str(error)
+save()
+print(json.dumps(observed(record)))
+MOBILE_PY
+    exit $? ;;
+  mobile-session-names)
+    [[ -n "$project_path" && -z "$role$alias_name$operation_id" ]] || usage
+    validate_path "$project_path"
+    session_for cc "$project_path"; printf '\n'
+    session_for cdx "$project_path"; printf '\n'
+    shared_session_for "$project_path"; printf '\n'
+    exit 0 ;;
+esac
 
 # Persistent remote panes outlive GUI logins. Restore only configured MSG
 # services when entering a remote workspace; optional messaging fails open.
