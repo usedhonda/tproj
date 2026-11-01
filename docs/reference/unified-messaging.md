@@ -1405,7 +1405,11 @@ the running Host's catalog/session-root readability (`readable`, `missing`,
 native IDs. SSH readability is not evidence of launchd service readability.
 This diagnostic does not authorize a conversation or change OS permissions.
 The TUI open-record observer canonicalizes its configured session storage root
-to support a relocated home, while rejecting symlinks below that root. Shared
+to support a relocated home, while rejecting symlinks below that root. The
+native consumer uses the same trusted-root boundary and accepts hook transcript
+paths through either that configured root or its canonical location, only when
+they resolve to the exact pinned record. Child record/directory links remain
+rejected, and project/header/native-ID checks are unchanged. Shared
 app-server open files remain inadmissible as evidence for an individual TUI.
 
 With both existing native queue/consumer flags enabled, Host discovery observes

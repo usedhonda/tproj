@@ -58,6 +58,22 @@ class ConsumerTest(unittest.TestCase):
         self.patch_home.start()
         self.addCleanup(self.patch_home.stop)
 
+    def test_relocated_codex_home_keeps_exact_hook_binding_and_rejects_child_links(self):
+        original = self.home / '.codex'
+        moved = self.home / 'ssd-codex'
+        original.rename(moved)
+        original.symlink_to(moved, target_is_directory=True)
+        native = dict(endpoint_id='recipient', native_kind='thread_id', native_id=self.native)
+        expected = self.transcript.resolve()
+        self.assertEqual(consumer._native_path(self.ep, native, self.payload), expected)
+        physical_payload = dict(self.payload, transcript_path=str(expected))
+        self.assertEqual(consumer._native_path(self.ep, native, physical_payload), expected)
+        outside = self.home / 'outside.jsonl'
+        expected.rename(outside)
+        expected.symlink_to(outside)
+        with self.assertRaisesRegex(HubError, 'symlink rejected'):
+            consumer._native_path(self.ep, native, physical_payload)
+
     def transfer(self):
         old = dict(self.ep)
         self.hub.dispatch(dict(op='endpoint_register', host_id='host', host_token='token', endpoint_id='successor',
