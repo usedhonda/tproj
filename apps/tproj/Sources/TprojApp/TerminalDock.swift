@@ -122,7 +122,7 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
         remoteHost.map { "\($0):\(projectPath)" } ?? projectPath
     }
 
-    func toggle(projectPath: String, title: String, remoteHost: String? = nil, in mainWindow: NSWindow?) {
+    func toggle(projectPath: String, title: String, remoteHost: String? = nil, remoteClientPath: String? = nil, in mainWindow: NSWindow?) {
         if remoteHost == nil && !FileManager.default.fileExists(atPath: projectPath) { return }
         let key = Self.tabKey(projectPath: projectPath, remoteHost: remoteHost)
         if tabPaths.contains(key) {
@@ -140,7 +140,7 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
             return
         }
         guard !closingPaths.contains(key) else { return }
-        guard let session = sessions[key] ?? createSession(key: key, projectPath: projectPath, remoteHost: remoteHost) else { return }
+        guard let session = sessions[key] ?? createSession(key: key, projectPath: projectPath, remoteHost: remoteHost, remoteClientPath: remoteClientPath) else { return }
         sessions[key] = session
         titles[key] = remoteHost.map { "\(title) @\($0)" } ?? title
         if !tabPaths.contains(key) { tabPaths.append(key) }
@@ -226,9 +226,9 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
         window.setFrame(frame, display: true, animate: false)
     }
 
-    private func createSession(key: String, projectPath: String, remoteHost: String?) -> TerminalSession? {
+    private func createSession(key: String, projectPath: String, remoteHost: String?, remoteClientPath: String?) -> TerminalSession? {
         let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        guard let startup = makeZshStartup(nonce: nonce, projectPath: projectPath, remoteHost: remoteHost) else { return nil }
+        guard let startup = makeZshStartup(nonce: nonce, projectPath: projectPath, remoteHost: remoteHost, remoteClientPath: remoteClientPath) else { return nil }
         let imagePath = URL(fileURLWithPath: projectPath).appendingPathComponent(".local/tproj-pane-bg/cc.vertical.png").path
         let backgroundImage = remoteHost == nil ? NSImage(contentsOfFile: imagePath) : nil
         let view = TrackedTerminalView(frame: NSRect(x: 0, y: 0, width: dockWidth, height: 520))
@@ -257,7 +257,7 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
         return session
     }
 
-    private func makeZshStartup(nonce: String, projectPath: String, remoteHost: String?) -> URL? {
+    private func makeZshStartup(nonce: String, projectPath: String, remoteHost: String?, remoteClientPath: String?) -> URL? {
         let original = ProcessInfo.processInfo.environment["ZDOTDIR"] ?? NSHomeDirectory()
         let originalConfig = URL(fileURLWithPath: original).appendingPathComponent(".zshrc").path
         func quote(_ value: String) -> String {
@@ -278,7 +278,7 @@ final class TerminalDockController: NSObject, ObservableObject, LocalProcessTerm
             if let remoteHost {
                 // Bind the owned local shell before entering the remote PTY.
                 // Do not expose a local prompt if the remote session exits.
-                let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+                guard let client = remoteClientPath, FileManager.default.isExecutableFile(atPath: client) else { return nil }
                 script += "\nprint -n -- $'\\e]777;tproj;\(nonce);running;'\"$$\"$'\\a'\n"
                 script += "\(quote(client)) shell \(quote(remoteHost)) \(quote(projectPath))\nexit $?\n"
             }

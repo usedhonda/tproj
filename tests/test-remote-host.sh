@@ -96,18 +96,25 @@ tm set-option -pu -t "$cdx_pane" @role_epoch
 # A dead pane retained for diagnostics is not a running agent. Explicit ensure
 # restarts that pane using its saved command; recovery-only reattach never does.
 tm set-option -w -t "$cdx_session:dev" remain-on-exit on
-tm respawn-pane -k -t "$cdx_pane" "$TMP/bin/codex"
+cat > "$TMP/bin/codex" <<EOF
+#!/bin/bash
+while [[ ! -f "$TMP/end-codex" ]]; do sleep 0.1; done
+exit 0
+EOF
+tm respawn-pane -k -t "$cdx_pane" "$TMP/bin/codex" resume fixture-thread
 ended_pid=$(tm display-message -t "$cdx_pane" -p '#{pane_pid}')
 recorded_command=$(tm display-message -t "$cdx_pane" -p '#{pane_start_command}')
-kill -TERM "$ended_pid"
+touch "$TMP/end-codex"
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
   [[ $(tm display-message -t "$cdx_pane" -p '#{pane_dead}') == 1 ]] && break
   sleep 0.1
 done
 [[ $(tm display-message -t "$cdx_pane" -p '#{pane_dead}') == 1 ]]
+[[ $(tm display-message -t "$cdx_pane" -p '#{pane_dead_status}') == 0 ]]
 [[ $(run status --path "$TMP/project" --role cdx) == stopped\|"$cdx_session"\|- ]]
 if run reattach --path "$TMP/project" --role cdx >/dev/null 2>&1; then exit 1; fi
 [[ $(tm display-message -t "$cdx_pane" -p '#{pane_dead}') == 1 ]]
+rm "$TMP/end-codex"
 [[ $(run ensure --path "$TMP/project" --role cdx) == "$cdx_session" ]]
 [[ $(tm display-message -t "$cdx_pane" -p '#{pane_dead}') == 0 ]]
 [[ $(tm display-message -t "$cdx_pane" -p '#{pane_pid}') != "$ended_pid" ]]

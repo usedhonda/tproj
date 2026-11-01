@@ -28,6 +28,9 @@ with tempfile.TemporaryDirectory() as root:
     ssh.write_text('''#!/usr/bin/env python3
 import os, select, signal, sys, termios, time, tty
 from pathlib import Path
+if "-T" in sys.argv and "status --path" in " ".join(sys.argv) and Path(os.environ["SSH_STATE"]).name != "no-tty-state":
+    print(os.environ.get("SSH_REMOTE_STATE", "running") + "|fixture|-", flush=True)
+    sys.exit(0)
 state = Path(os.environ["SSH_STATE"])
 count = int(state.read_text()) if state.exists() else 0
 state.write_text(str(count + 1))
@@ -74,14 +77,14 @@ queued = bool(select.select([0], [], [], 0)[0])
 print("RESULT=" + json.dumps([status, before == after, queued]), flush=True)
 '''
 
-    def check_pty(exit_status, interrupt=None, role="cc", cancel_wait=False, refresh=None, second_outage=False, retry_status=0):
+    def check_pty(exit_status, interrupt=None, role="cc", cancel_wait=False, refresh=None, second_outage=False, retry_status=0, remote_state="running"):
         master, slave = pty.openpty()
         def setup():
             os.setsid()
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
         state = root / "ssh-state"
         state.unlink(missing_ok=True)
-        case_env = dict(env, SSH_STATUS=str(exit_status), SSH_STATE=str(state), RETRY_STATUS=str(retry_status))
+        case_env = dict(env, SSH_STATUS=str(exit_status), SSH_STATE=str(state), RETRY_STATUS=str(retry_status), SSH_REMOTE_STATE=remote_state)
         if second_outage:
             case_env["TWO_OUTAGES"] = "1"
         case_client = client
@@ -158,6 +161,9 @@ print("RESULT=" + json.dumps([status, before == after, queued]), flush=True)
                 assert output.count(b"reconnecting") == 1, output
                 assert b"REPEATED_DIAGNOSTIC" not in output, output
             assert match and json.loads(match[1]) == [expected, True, False], output
+            if not interrupt and not cancel_wait:
+                summary = b"ended; use Resume" if remote_state == "stopped" else b"agent is still running"
+                assert summary in output, output
             for mode in (1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016, 1004, 2004, 1):
                 assert f"\x1b[?{mode}l".encode() in output, (mode, output)
             for reset in (b"\x1b[<u", b"\x1b[>4;0m", b"\x1b>"):
@@ -185,6 +191,7 @@ print("RESULT=" + json.dumps([status, before == after, queued]), flush=True)
     check_pty(0, refresh="network")
     check_pty(0, refresh="wake")
     check_pty(0)
+    check_pty(0, role="cdx", remote_state="stopped")
     check_pty(0, signal.SIGTERM)
     check_pty(0, signal.SIGINT)
     check_pty(0, signal.SIGHUP)

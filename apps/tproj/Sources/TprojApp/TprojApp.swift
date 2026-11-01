@@ -1759,6 +1759,8 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var centralDirectoryAvailable = true
     private var centralDirectoryRevision: Int?
     @Published var remoteProjectStates: [String: String] = [:]
+    @Published var remoteAgentStates: [String: String] = [:]
+    @Published var closedRemoteViews: Set<String> = []
     @Published var remoteCacheStates: [String: String] = [:]
     @Published var remoteCCCacheHours: [String: Int] = [:]
     @Published var liveColumns: [LiveColumn] = []
@@ -1956,6 +1958,17 @@ final class AppViewModel: ObservableObject {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    private func stagedRuntimeScriptsMatch() -> Bool {
+        guard let manifest = Bundle.main.url(forResource: "tproj-runtime-critical", withExtension: "json"),
+              let data = try? Data(contentsOf: manifest),
+              let hashes = try? JSONDecoder().decode([String: String].self, from: data), hashes.count == 4 else { return false }
+        for (name, expected) in hashes {
+            guard let content = try? Data(contentsOf: stagedRuntimeRootURL.appendingPathComponent(name)),
+                  SHA256.hash(data: content).map({ String(format: "%02x", $0) }).joined() == expected else { return false }
+        }
+        return true
+    }
+
     private func ensureBundledRuntimeStaged(reportError: Bool) -> String? {
         guard let seedURL = bundledRuntimeSeedURL() else { return nil }
         guard let digest = runtimeSeedDigest(for: seedURL) else {
@@ -1969,7 +1982,7 @@ final class AppViewModel: ObservableObject {
         if fileManager.isExecutableFile(atPath: runtimeBin.path),
            let existingDigest = try? String(contentsOf: stagedRuntimeHashURL, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-           existingDigest == digest {
+           existingDigest == digest, stagedRuntimeScriptsMatch() {
             return stagedRuntimeRootURL.path
         }
 
@@ -2149,7 +2162,7 @@ final class AppViewModel: ObservableObject {
                 let hosts = Set(workspaceProjects.filter { $0.type == "remote" }.map(\.host))
                 await withTaskGroup(of: Void.self) { group in
                     for host in hosts {
-                        group.addTask {                             await self.syncRemoteCatalog(host: host)
+                        group.addTask {
                             await self.syncRemoteCatalog(host: host)
                             await self.refreshRemoteCache(host: host)
                         }
@@ -2931,7 +2944,8 @@ final class AppViewModel: ObservableObject {
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_host", host])
             _ = await runCommandAsync("/usr/bin/env", ["tmux", "set-option", "-pt", newPane, "@remote_path", column.projectPath])
 
-            let remoteClient = shellSingleQuote(NSHomeDirectory() + "/bin/tproj-remote-client")
+            guard let clientPath = remoteClientCommandPath else { statusText = "Remote runtime unavailable"; return }
+            let remoteClient = shellSingleQuote(clientPath)
             let remotePath = shellSingleQuote(column.projectPath)
             let remoteHost = shellSingleQuote(host)
             let remoteCmd: String
@@ -3315,7 +3329,7 @@ final class AppViewModel: ObservableObject {
             remoteCCCacheHours.removeValue(forKey: key)
             remoteCacheStates.removeValue(forKey: key)
         }
-        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        let client = remoteClientCommandPath ?? ""
         let result = await runCommandAsync(client, ["cache-status", host])
         guard remoteCacheRefreshTokens[host] == token, effectiveTopologyMode != "standalone" else { return }
         guard result.exitCode == 0,
@@ -3352,7 +3366,7 @@ final class AppViewModel: ObservableObject {
               [0, 1, 3, 6, 12].contains(hours), project.type == "remote", !isBusy else { return }
         isBusy = true
         defer { isBusy = false }
-        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        let client = remoteClientCommandPath ?? ""
         let result = await runCommandAsync(client, ["cache-set", project.host, project.path, "cc", String(hours)])
         guard result.exitCode == 0 else { statusText = trimmedError(result); return }
         await refreshRemoteCache(host: project.host, force: true)
@@ -3367,18 +3381,75 @@ final class AppViewModel: ObservableObject {
         guard effectiveTopologyMode != "standalone", !isBusy else { return }
         let hosts = Set(workspaceProjects.filter { $0.type == "remote" && !$0.host.isEmpty }.map(\.host))
         for host in hosts {
+            await syncRemoteCatalog(host: host)
             await refreshRemoteCache(host: host)
         }
+        await refreshRemoteViews()
+    }
+
+    var remoteClientCommandPath: String? { resolveCommandPath(commandName: "tproj-remote-client") }
+
+    func remoteResumeAction(_ project: WorkspaceProject, role: String) -> String? {
+        let key = remoteKey(project) + "|" + role
+        return RemoteAgentLifecycle.action(serverState: remoteAgentStates[key], viewClosed: closedRemoteViews.contains(key))
+    }
+
+    private func refreshRemoteViews() async {
+        let result = await runCommandAsync("/usr/bin/env", ["tmux", "list-panes", "-a", "-F",
+            "#{@remote_host}|#{@remote_path}|#{@role}|#{pane_current_command}|#{pane_dead}"])
+        guard result.exitCode == 0 else { return }
+        var closed = Set<String>()
+        for line in result.stdout.split(separator: "\n") {
+            let f = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard f.count == 5, !f[0].isEmpty else { continue }
+            let role = f[2].hasPrefix("codex") ? "cdx" : (f[2].hasPrefix("claude") ? "cc" : "")
+            if !role.isEmpty && (f[4] == "1" || ["sh", "bash", "zsh", "fish"].contains(f[3])) {
+                closed.insert(f[0] + "|" + f[1] + "|" + role)
+            }
+        }
+        closedRemoteViews = closed
+    }
+
+    func resumeRemotePane(_ column: LiveColumn, project: WorkspaceProject, role: String) async {
+        guard !isBusy, let client = remoteClientCommandPath else { return }
+        let panes = role == "cdx" ? column.codexPaneIDs : column.claudePaneIDs
+        guard let pane = panes.first else {
+            await toggleAIPane(role: role == "cdx" ? "codex" : "claude", for: column)
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        // Observe immediately before choosing startup versus reconnect. A failed
+        // observation is never permission to start a replacement conversation.
+        let status = await runCommandAsync(client, ["status", project.host, project.path, role])
+        guard status.exitCode == 0 else { statusText = "Remote status unavailable: " + trimmedError(status); return }
+        let state = String(status.stdout.split(separator: "|").first ?? "unavailable")
+        guard state == "running" || state == "stopped" else {
+            statusText = "Remote pane is occupied or unavailable; nothing restarted"
+            return
+        }
+        if state == "stopped" {
+            let start = await runCommandAsync(client, ["ensure", project.host, project.path, role])
+            guard start.exitCode == 0 else { statusText = "Remote start failed: " + trimmedError(start); return }
+        }
+        let command = [client, "reattach", project.host, project.path, role].map(shellSingleQuote).joined(separator: " ")
+        let attach = await runCommandAsync("/usr/bin/env", ["tmux", "respawn-pane", "-k", "-t", pane, command])
+        statusText = attach.exitCode == 0 ? "Reconnecting " + project.effectiveAlias + "." + role : trimmedError(attach)
+        await refreshRemoteState(project)
+        await refreshRemoteViews()
     }
 
     /// Observe host state; this Mac's workspace.yaml owns aliases and destinations.
     func syncRemoteCatalog(host: String) async {
         guard effectiveTopologyMode != "standalone" else { return }
-        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        let client = remoteClientCommandPath ?? ""
         guard fileManager.isExecutableFile(atPath: client), !host.isEmpty else { return }
         let result = await runCommandAsync(client, ["list", host])
         guard result.exitCode == 0 else {
             statusText = "Remote catalog unavailable: \(host)"
+            for project in workspaceProjects where project.type == "remote" && project.host == host {
+                for role in ["cc", "cdx"] { remoteAgentStates[remoteKey(project) + "|" + role] = "unavailable" }
+            }
             return
         }
         let lines = result.stdout.split(separator: "\n").map(String.init)
@@ -3392,6 +3463,8 @@ final class AppViewModel: ObservableObject {
             guard let project = workspaceProjects.first(where: {
                 $0.type == "remote" && $0.host == host && ($0.remotePath.isEmpty ? $0.path : $0.remotePath) == fields[2]
             }) else { continue }
+            remoteAgentStates[remoteKey(project) + "|cc"] = fields[3]
+            remoteAgentStates[remoteKey(project) + "|cdx"] = fields[4]
             let running = [fields[3], fields[4]].filter { $0 == "running" }.count
             remoteProjectStates[remoteKey(project)] = running == 2 ? "Running" :
                 (running == 1 ? "Partial" : (fields[3] == "occupied" || fields[4] == "occupied" ? "Occupied" : "Stopped"))
@@ -3400,7 +3473,7 @@ final class AppViewModel: ObservableObject {
 
     func stopRemoteProject(_ project: WorkspaceProject) async {
         guard effectiveTopologyMode != "standalone", project.type == "remote" else { return }
-        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        let client = remoteClientCommandPath ?? ""
         let cc = await runCommandAsync(client, ["stop", project.host, project.path, "cc"])
         let cdx = await runCommandAsync(client, ["stop", project.host, project.path, "cdx"])
         await refreshRemoteState(project)
@@ -3414,7 +3487,7 @@ final class AppViewModel: ObservableObject {
             statusText = "Close the remote display column first"
             return
         }
-        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        let client = remoteClientCommandPath ?? ""
         let result = await runCommandAsync(client, ["unregister", project.host, project.path])
         guard result.exitCode == 0 else { statusText = trimmedError(result); return }
         await syncRemoteCatalog(host: project.host)
@@ -3424,13 +3497,17 @@ final class AppViewModel: ObservableObject {
     func refreshRemoteState(_ project: WorkspaceProject) async {
         guard effectiveTopologyMode != "standalone" else { return }
         guard project.type == "remote" else { return }
-        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        let client = remoteClientCommandPath ?? ""
         guard fileManager.isExecutableFile(atPath: client) else {
             remoteProjectStates[remoteKey(project)] = "Setup needed"
             return
         }
         let cc = await runCommandAsync(client, ["status", project.host, project.path, "cc"])
         let cdx = await runCommandAsync(client, ["status", project.host, project.path, "cdx"])
+        for (role, result) in [("cc", cc), ("cdx", cdx)] {
+            remoteAgentStates[remoteKey(project) + "|" + role] = result.exitCode == 0
+                ? String(result.stdout.split(separator: "|").first ?? "unavailable") : "unavailable"
+        }
         if cc.exitCode != 0 || cdx.exitCode != 0 {
             remoteProjectStates[remoteKey(project)] = "Unavailable"
         } else {
@@ -3441,7 +3518,7 @@ final class AppViewModel: ObservableObject {
 
     func startRemoteProject(_ project: WorkspaceProject) async {
         guard effectiveTopologyMode != "standalone", project.type == "remote" else { return }
-        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        let client = remoteClientCommandPath ?? ""
         guard fileManager.isExecutableFile(atPath: client) else {
             statusText = "Remote client not installed"
             return
@@ -3578,7 +3655,7 @@ final class AppViewModel: ObservableObject {
             centralDirectoryRevision = revision + 1
         }
         let previousRemotes = workspaceProjects.filter { $0.type == "remote" }
-        let client = NSHomeDirectory() + "/bin/tproj-remote-client"
+        let client = remoteClientCommandPath ?? ""
         for project in projects where project.type == "remote" {
             let registration = await runCommandAsync(client, ["register", project.host, project.path,
                                                              "--alias", remoteBaseAlias(project)])
@@ -6069,8 +6146,11 @@ struct ContentView: View {
         let slots = workspaceRowSlots
         let cc = ccCacheSummary(column) ?? remoteProject(for: column).map(remoteCCCacheSummary)
         let cdx = cdxCacheSummary(column)
-        let ccRunning = !column.claudePaneIDs.isEmpty
-        let cdxRunning = !column.codexPaneIDs.isEmpty
+        let remoteWorkspace = remoteProject(for: column)
+        let ccAction = remoteWorkspace.flatMap { vm.remoteResumeAction($0, role: "cc") }
+        let cdxAction = remoteWorkspace.flatMap { vm.remoteResumeAction($0, role: "cdx") }
+        let ccRunning = !column.claudePaneIDs.isEmpty && ccAction == nil
+        let cdxRunning = !column.codexPaneIDs.isEmpty && cdxAction == nil
         let dockKey = TerminalDockController.tabKey(projectPath: column.projectPath, remoteHost: host)
         let dockTab = terminalDock.tabPaths.contains(dockKey)
         let termOpen = dockTab
@@ -6079,28 +6159,34 @@ struct ContentView: View {
 
         return HStack(spacing: 3) {
             Button {
-                Task { await vm.toggleAIPane(role: "claude", for: column) }
+                Task {
+                    if let remoteWorkspace, ccAction != nil { await vm.resumeRemotePane(column, project: remoteWorkspace, role: "cc") }
+                    else { await vm.toggleAIPane(role: "claude", for: column) }
+                }
             } label: {
-                workspaceAgentBadge("CC", detail: ccRunning ? workspaceBadgeDetail(cc?.text) : nil, width: slots.cc,
+                workspaceAgentBadge(ccAction == nil ? "CC" : "CC↻", detail: ccRunning ? workspaceBadgeDetail(cc?.text) : ccAction, width: slots.cc,
                                     running: ccRunning, tint: cc?.tint == GhosttyTheme.current.textTertiary ? GhosttyTheme.current.accentCyan : (cc?.tint ?? GhosttyTheme.current.accentCyan),
                                     isMain: main == "cc")
             }
             .buttonStyle(.plain)
             .disabled(vm.isBusy)
-            .help(ccRunning ? "Hide CC pane" + (cc.map { "\nCache \($0.text)" } ?? "") : "Open CC pane")
+            .help(ccAction.map { $0 + " CC on its existing remote session" } ?? (ccRunning ? "Hide CC pane" + (cc.map { "\nCache \($0.text)" } ?? "") : "Open CC pane"))
             Button {
-                Task { await vm.toggleAIPane(role: "codex", for: column) }
+                Task {
+                    if let remoteWorkspace, cdxAction != nil { await vm.resumeRemotePane(column, project: remoteWorkspace, role: "cdx") }
+                    else { await vm.toggleAIPane(role: "codex", for: column) }
+                }
             } label: {
-                workspaceAgentBadge("Cdx", detail: cdxRunning ? workspaceBadgeDetail(cdx?.text) : nil, width: slots.cdx,
+                workspaceAgentBadge(cdxAction == nil ? "Cdx" : "Cdx↻", detail: cdxRunning ? workspaceBadgeDetail(cdx?.text) : cdxAction, width: slots.cdx,
                                     running: cdxRunning, tint: cdx?.tint == GhosttyTheme.current.textTertiary ? GhosttyTheme.current.accentCyan : (cdx?.tint ?? GhosttyTheme.current.accentCyan),
                                     isMain: main == "cdx")
             }
             .buttonStyle(.plain)
             .disabled(vm.isBusy)
-            .help(cdxRunning ? "Hide Cdx pane" + (cdx.map { "\nCache \($0.text)" } ?? "") : "Open Cdx pane")
+            .help(cdxAction.map { $0 + " Cdx on its existing remote session" } ?? (cdxRunning ? "Hide Cdx pane" + (cdx.map { "\nCache \($0.text)" } ?? "") : "Open Cdx pane"))
             Button {
                 terminalDock.toggle(projectPath: column.projectPath, title: columnPrimaryName(column),
-                                    remoteHost: host, in: (NSApp.delegate as? AppDelegate)?.mainWindow)
+                                    remoteHost: host, remoteClientPath: vm.remoteClientCommandPath, in: (NSApp.delegate as? AppDelegate)?.mainWindow)
             } label: {
                 workspaceIconSlot("terminal", width: slots.term,
                                   color: termHidden ? GhosttyTheme.current.accentYellow

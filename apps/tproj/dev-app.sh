@@ -80,6 +80,23 @@ if ! kill -0 "$local_pid" 2>/dev/null; then
   echo "GUI process (pid $local_pid) not detected; check $TPROJ_GUI_LOG" >&2
   exit 1
 fi
+# Wait for this seed to be consumed by the GUI, then verify the actual scripts.
+# A saved marker alone does not prove the staged files still match the bundle.
+staged_runtime="$HOME/Library/Application Support/tproj/runtime/current"
+ready=false
+for attempt in {1..40}; do
+  if python3 "$SCRIPT_DIR/verify-runtime.py" "$APP_BUNDLE" "$staged_runtime" > /dev/null 2>&1; then
+    ready=true
+    break
+  fi
+  sleep 0.2
+done
+if [[ "$ready" != true ]]; then
+  kill "$local_pid" 2>/dev/null || true
+  echo "Runtime chain verification failed; previous GUI retained" >&2
+  exit 1
+fi
+python3 "$SCRIPT_DIR/verify-runtime.py" "$APP_BUNDLE" "$staged_runtime"
 retire_previous_gui "$local_pid"
 retire_stale_gui_variants "$local_pid"
 echo "Done: $APP_BUNDLE (pid $local_pid)"

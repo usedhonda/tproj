@@ -73,5 +73,17 @@ tmux() {
         self.assertNotIn('"tproj-remote-client"', stop)
 
 
+class RemoteRespawnTests(unittest.TestCase):
+    def test_remote_pane_death_does_not_reap_or_respawn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp); log = base/'calls'; stub = base/'tmux'
+            stub.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\ncase "$*" in *"@remote_host"*) echo fixture-host;; *) exit 77;; esac\n')
+            stub.chmod(0o755)
+            result = subprocess.run(['bash', str(ROOT/'bin/tproj-respawn-guard'), 'fixture', '%1', 'codex-p1'],
+                env=dict(os.environ, PATH=str(base)+':/usr/bin:/bin', CALLS=str(log)), capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(log.read_text().splitlines(), ["display-message -t %1 -p #{@remote_host}"])
+
+
 if __name__ == '__main__':
     unittest.main()

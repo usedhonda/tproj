@@ -83,3 +83,31 @@ stored launch argv (including an exact native resume ID). Explicit fresh or
 no-update startup uses the corresponding newly generated launch command instead.
 A live occupied pane is never replaced. Recovery-only `reattach` still rejects
 an ended pane: losing a network connection cannot start an agent.
+
+## Normal exit, reconnect and explicit resume
+
+The workspace observes server CC/Cdx state separately from the local attachment
+pane. A retained local pane is not proof the remote agent is running. A stopped
+agent exposes **Resume**; a closed local view exposes **Reconnect**. The row is
+retained rather than removed. Unavailable/unknown state exposes **Check**, not a
+false running indicator. The action reads server status immediately: stopped
+permits explicit `ensure` followed by `reattach`, while a running agent uses only
+`reattach`. Failed status reads do not authorize startup. Automatic network
+recovery never launches an agent. Goal pause/resume remains the agent's own UI.
+
+After an interactive transport ends, the client makes one bounded read-only
+status request (no terminal input) and reports ended / still running / unavailable.
+Normal exit is not silently presented as a network crash or successful execution.
+The GUI refreshes state through its existing periodic remote observation.
+
+All GUI remote controls and remote dock sessions resolve the bundled runtime
+client, not a stale independent home-bin copy. The build verifies four critical
+scripts (`tproj`, `tproj-remote-client`, `tproj-remote-host`, `tproj-respawn-guard`) against its seed and
+writes their digest manifest. The GUI checks actual staged bytes, not only its
+saved seed revision; mismatches trigger atomic re-extraction. The development
+launcher verifies source/bundle/staged equality before retiring the previous GUI.
+A failed verification rejects the replacement without stopping agent sessions.
+
+Remote attachment panes bypass the generic pane-died respawn/reaper. The remote
+client alone handles network recovery; normal exit stays stopped for explicit
+Resume instead of replaying the original startup through a second supervisor.

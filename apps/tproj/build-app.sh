@@ -47,6 +47,15 @@ cp -R "$REPO_ROOT/bin" "$RUNTIME_TMP/tproj-runtime/bin"
 cp -R "$REPO_ROOT/config" "$RUNTIME_TMP/tproj-runtime/config"
 find "$RUNTIME_TMP/tproj-runtime" -name '.DS_Store' -delete
 tar -C "$RUNTIME_TMP" -czf "$RES_DIR/$RUNTIME_SEED_NAME" "tproj-runtime"
+python3 - "$REPO_ROOT" "$RES_DIR/tproj-runtime-critical.json" <<'PYMANIFEST'
+import hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+Path(sys.argv[2]).write_text(json.dumps({"bin/"+name: hashlib.sha256((root/"bin"/name).read_bytes()).hexdigest()
+    for name in ["tproj", "tproj-remote-client", "tproj-remote-host", "tproj-respawn-guard"]}, sort_keys=True))
+PYMANIFEST
+
+python3 "$ROOT_DIR/verify-runtime.py" "$APP_DIR"
 
 if [[ -f "$ICON_SRC" ]]; then
   cp "$ICON_SRC" "$RES_DIR/AppIcon.icns"

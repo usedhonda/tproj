@@ -133,3 +133,10 @@ host (the existing explicit remote-agent stop control remains available).
 Remote agent launch commands explicitly preserve the host helper's resolved
 `PATH` inside the tmux pane shell. Resolving the CLI executable alone does not
 ensure that its `env node` shebang or child tools can be found after shell startup.
+
+Remote workspace badges distinguish a stopped agent (**Resume**) from a closed
+local view (**Reconnect**); neither removes the project row. Explicit resume
+retains the stored launch, while automatic network recovery never starts an agent.
+Remote controls and the terminal dock use the current bundled client. Build and
+launch validate source/bundle/staged critical scripts; stale staged scripts are
+re-extracted even if a saved seed marker incorrectly claims they are current.

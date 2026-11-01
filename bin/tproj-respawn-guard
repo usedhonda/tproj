@@ -20,6 +20,12 @@ ROLE="${3:-}"
 
 [[ -z "$SESSION" || -z "$PANE_ID" ]] && exit 1
 
+# The remote client owns transport recovery. Normal view/agent exit must remain
+# stopped for explicit Resume, never replay the original attach/start command.
+if [[ -n "$(tmux display-message -t "$PANE_ID" -p '#{@remote_host}' 2>/dev/null)" ]]; then
+  exit 0
+fi
+
 LOG="/tmp/tproj-respawn-guard.log"
 DEATH_DIR="/tmp/tproj-respawn-deaths"
 CIRCUIT_WINDOW=120    # seconds

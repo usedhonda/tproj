@@ -96,6 +96,7 @@ import signal
 import subprocess
 import sys
 import termios
+import shlex
 
 tty = None
 saved = None
@@ -282,8 +283,25 @@ finally:
         except (OSError, termios.error):
             pass
         os.close(tty)
+# A normal terminal-view exit is not evidence that its agent was destroyed.
+# Read state once for an actionable summary; never turn this into startup/replay.
+if saved is not None and (pending_signal is None or pending_signal == -1) and "tproj-remote-host " in sys.argv[2]:
+    remote_status = "$HOME/bin/tproj-remote-host status --path " + shlex.quote(sys.argv[4]) + " --role " + shlex.quote(sys.argv[5])
+    try:
+        observed = subprocess.run(["ssh", "-o", "BatchMode=yes", *ssh_options,
+                                   "-T", "--", sys.argv[1], remote_status],
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=4)
+        state = observed.stdout.split("|", 1)[0] if observed.returncode == 0 else "unknown"
+    except (OSError, subprocess.TimeoutExpired):
+        state = "unknown"
+    if state == "stopped":
+        print("tproj: remote " + sys.argv[5] + " ended; use Resume in the workspace to reopen its session.", file=sys.stderr)
+    elif state == "running":
+        print("tproj: remote view closed; the agent is still running. Use Reconnect in the workspace.", file=sys.stderr)
+    else:
+        print("tproj: remote view closed; server state unavailable. No agent was restarted.", file=sys.stderr)
 sys.exit(status)
-' "$host" "$remote_command" "$transport"
+' "$host" "$remote_command" "$transport" "$remote_path" "$role"
 else
   exec ssh -o BatchMode=yes -o ConnectTimeout=5 -T -- "$host" "$remote_command"
 fi
