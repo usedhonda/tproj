@@ -111,3 +111,13 @@ A failed verification rejects the replacement without stopping agent sessions.
 Remote attachment panes bypass the generic pane-died respawn/reaper. The remote
 client alone handles network recovery; normal exit stays stopped for explicit
 Resume instead of replaying the original startup through a second supervisor.
+# Remote pane artwork
+
+Remote pane backgrounds can use mirrored image assets without a local checkout.
+When the remote project path does not exist locally, the background resolver uses
+`${XDG_CACHE_HOME:-$HOME/.cache}/tproj-pane-bg/remote/<sha256(remote-project-uri)>`
+as its asset root, with the normal `.local/tproj-pane-bg/` image layout inside it.
+The URI is the full `@project` value, including host. Keep copy provenance in the
+image sidecars; copying existing artwork is not image generation. Removing a local
+workspace entry need not remove this display-only cache. A missing remote cache
+does not fall back to the local SSH client's unrelated working directory.
