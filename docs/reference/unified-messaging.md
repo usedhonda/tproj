@@ -1399,6 +1399,15 @@ Host backend is 9/consumer 3; deployment and real restart remain unproved.
 
 ### Trusted owner discovery handoff (not activated in production)
 
+The same-UID `diagnostic_identity` read accepts `native_storage: true` to report
+the running Host's catalog/session-root readability (`readable`, `missing`,
+`permission_denied`, or `unavailable`), without paths, transcript content, or
+native IDs. SSH readability is not evidence of launchd service readability.
+This diagnostic does not authorize a conversation or change OS permissions.
+The TUI open-record observer canonicalizes its configured session storage root
+to support a relocated home, while rejecting symlinks below that root. Shared
+app-server open files remain inadmissible as evidence for an individual TUI.
+
 With both existing native queue/consumer flags enabled, Host discovery observes
 the old PID incarnation independently. Absence requires process lookup failure
 plus kernel ESRCH; a replacement start requires a valid positive observed start.

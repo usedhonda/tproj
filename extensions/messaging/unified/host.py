@@ -823,7 +823,11 @@ class Host:
         if uid != os.getuid():
             raise HubError('identity_rejected', 'local UID mismatch')
         if op == 'diagnostic_identity':
-            return self.hub('diagnostic_identity', **{key: req[key] for key in ('active_only', 'endpoint_ids') if key in req})
+            result = self.hub('diagnostic_identity', **{key: req[key] for key in ('active_only', 'endpoint_ids') if key in req})
+            if req.get('native_storage') is True:
+                from identity import native_storage_status
+                result['native_storage'] = native_storage_status()
+            return result
         # Legacy service consumers must not take the public operator branch.
         if op in ('list', 'status', 'send_targets') and ('service_id' in req or 'service_token' in req):
             op = 'service_list' if op == 'send_targets' else 'service_' + op

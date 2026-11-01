@@ -14,6 +14,11 @@ spec.loader.exec_module(identity)
 
 
 class UnifiedIdentityTest(unittest.TestCase):
+    def test_native_storage_reports_service_permission_without_paths_or_identity(self):
+        with patch.object(identity.Path, 'stat', side_effect=PermissionError('private path')):
+            self.assertEqual(identity.native_storage_status(),
+                             {'catalog': 'permission_denied', 'sessions': 'permission_denied'})
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

@@ -225,6 +225,28 @@ class RecipientRecoveryTest(unittest.TestCase):
 
 
 class TuiObservationTest(unittest.TestCase):
+    def test_relocated_root_accepts_real_open_path_but_not_child_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            storage = base/'storage'
+            f = storage/'sessions/2026/01/01'/('rollout-test-'+NATIVE+'.jsonl')
+            f.parent.mkdir(parents=True)
+            f.write_text(json.dumps(dict(type='session_meta', payload=dict(id=NATIVE,
+                source='cli', originator='codex-tui', cwd=str(base))))+'\n')
+            alias = base/'home'
+            alias.symlink_to(storage, target_is_directory=True)
+            ep = dict(platform='cdx', pane='%1', pid=100, pid_start=1, project_path=str(base))
+            args = dict(sessions_root=alias/'sessions',
+                        inspect_process=lambda _: dict(uid=os.getuid(), pid_start=1, command='codex'),
+                        descendants=lambda _: [], open_files=lambda _: [str(f)])
+            self.assertEqual(observe_tui_native(ep, **args), {'thread_id': NATIVE})
+            outside = base/'outside'
+            outside.mkdir()
+            f.rename(outside/f.name)
+            f.symlink_to(outside/f.name)
+            with self.assertRaises(IdentityError):
+                observe_tui_native(ep, **args)
+
     def test_open_record_not_resume_hint_proves_native_and_rechecks_incarnation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()/'sessions'
