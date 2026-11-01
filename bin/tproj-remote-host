@@ -202,6 +202,7 @@ initialize_role_metadata() {
 }
 agent_status() {
   local s=$1 c=$2 pid cmd name
+  [[ $(tmux_run display-message -t "$s" -p '#{pane_dead}' 2>/dev/null) == 0 ]] || return 1
   pid=$(tmux_run display-message -t "$s" -p '#{pane_pid}' 2>/dev/null || true)
   cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
   name=${c##*/}
@@ -209,7 +210,7 @@ agent_status() {
   [[ -n "$pid" && ( "$cmd" == *"$c"* || "$cmd" == *"/$name "* || "$cmd" == *"/$name" ) ]] && printf '%s' "$pid"
 }
 start_command() {
-  local r=$1 c q npm_path sign_path update_path launch_cmd
+  local r=$1 c q npm_path sign_path update_path= launch_cmd
   c=$(resolve_cli "$(cli_for_role "$r")")
   [[ -n "$c" ]] || die "required CLI not found on PATH: $(cli_for_role "$r")"
   # The tmux pane shell may reset PATH after CLI resolution. Preserve the
@@ -331,14 +332,30 @@ print(json.dumps({'session': session, 'pane': pane, 'alias': registry_alias, 'pr
                   'role': record.get('role'), 'role_epoch': int(epoch)}, separators=(',', ':')))
 PY
 }
+restart_dead_pane() {
+  local pane=$1 r=$2 start
+  # No -k: a racing live process must never be terminated by startup recovery.
+  if [[ "$fresh" == true || "$no_update" == true ]]; then
+    start=$(start_command "$r")
+    tmux_run respawn-pane -t "$pane" "$start" || die "could not restart ended pane: $pane"
+  else
+    # tmux retains the actual argv, unlike its shell-quoted display format.
+    # Replay that launch, including an explicit native resume ID when present.
+    tmux_run respawn-pane -t "$pane" || die "could not restart ended pane: $pane"
+  fi
+}
 ensure_one() {
   local p=$1 r=$2 c_name c s pid start shared pane alias_name other legacy_other
   validate_path "$p"; validate_role "$r"; c_name=$(cli_for_role "$r"); c=$(resolve_cli "$c_name"); [[ -n "$c" ]] || die "required CLI not found on PATH: $c_name"
   shared=$(shared_session_for "$p")
   if tmux_run has-session -t "=$shared" 2>/dev/null; then
     if pane=$(pane_for "$shared" "$r" "$p"); then
-      pid=$(agent_status "$pane" "$c") || true
-      [[ -n "$pid" ]] || die "shared pane exists but is not running $c: $pane"
+      if [[ $(tmux_run display-message -t "$pane" -p '#{pane_dead}') == 1 ]]; then
+        restart_dead_pane "$pane" "$r"
+      else
+        pid=$(agent_status "$pane" "$c") || true
+        [[ -n "$pid" ]] || die "shared pane exists but is not running $c: $pane"
+      fi
       initialize_role_metadata "$pane"
     else
       alias_name=$(catalog alias "$p") || return 1
@@ -350,8 +367,13 @@ ensure_one() {
   fi
   s=$(session_for "$r" "$p")
   if tmux_run has-session -t "$s" 2>/dev/null; then
-    pid=$(agent_status "$s" "$c") || true
-    [[ -n "$pid" ]] || die "session exists but is not running $c: $s"
+    pane=$(pane_for "$s" "$r" "$p") || pane=
+    if [[ -n "$pane" && $(tmux_run display-message -t "$pane" -p '#{pane_dead}') == 1 ]]; then
+      restart_dead_pane "$pane" "$r"
+    else
+      pid=$(agent_status "$s" "$c") || true
+      [[ -n "$pid" ]] || die "session exists but is not running $c: $s"
+    fi
     if pane=$(pane_for "$s" "$r" "$p"); then
       initialize_role_metadata "$pane"
     fi

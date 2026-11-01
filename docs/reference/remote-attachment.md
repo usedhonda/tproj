@@ -74,3 +74,12 @@ unchanged. Existing connected clients are not forcibly replaced. Terminal
 mode reset and termios restore on exit are the same as for SSH.
 
 Focused proof: `bash tests/test-remote-client-mosh.sh`.
+
+## Explicit startup of an ended pane
+
+A retained tmux pane with `pane_dead=1` is stopped, regardless of its saved PID.
+Explicit `ensure`/`attach` restarts that dead pane without `-k`, preserving its
+stored launch argv (including an exact native resume ID). Explicit fresh or
+no-update startup uses the corresponding newly generated launch command instead.
+A live occupied pane is never replaced. Recovery-only `reattach` still rejects
+an ended pane: losing a network connection cannot start an agent.
