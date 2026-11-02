@@ -83,6 +83,9 @@ send_graceful_signal() {
   local pane_id="$1"
   local role="$2"
   local sig
+  local remote_host
+  remote_host=$(tmux display-message -p -t "$pane_id" '#{@remote_host}' 2>/dev/null) || return 0
+  [[ -z "$remote_host" ]] || return 0
   sig="$(graceful_signal_for_role "$role")"
   [[ -n "$sig" ]] && tmux send-keys -t "$pane_id" "$sig" >/dev/null 2>&1 || true
 }
@@ -91,6 +94,9 @@ send_exit_signal() {
   local pane_id="$1"
   local role="$2"
   local cmd
+  local remote_host
+  remote_host=$(tmux display-message -p -t "$pane_id" '#{@remote_host}' 2>/dev/null) || return 0
+  [[ -z "$remote_host" ]] || return 0
   cmd="$(exit_cmd_for_role "$role")"
   [[ -n "$cmd" ]] && tmux send-keys -t "$pane_id" "$cmd" C-m >/dev/null 2>&1 || true
 }

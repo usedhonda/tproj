@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import shlex
+import shutil
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +86,57 @@ class RemoteRespawnTests(unittest.TestCase):
                 env=dict(os.environ, PATH=str(base)+':/usr/bin:/bin', CALLS=str(log)), capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(log.read_text().splitlines(), ["display-message -t %1 -p #{@remote_host}"])
+
+
+@unittest.skipUnless(shutil.which('tmux'), 'tmux required')
+class RemoteCloseBoundaryTest(unittest.TestCase):
+    def test_real_attachment_close_preserves_remote_pid_and_allows_reattach(self):
+        for action in ('pane', 'column', 'server'):
+            with self.subTest(action=action), tempfile.TemporaryDirectory(prefix='tproj-close-') as tmp:
+                base = Path(tmp); local = str(base/'local'); remote = str(base/'remote')
+                binary = shutil.which('tmux')
+                env = dict(os.environ); env.pop('TMUX', None)
+                def tm(socket, *args, check=True):
+                    return subprocess.run([binary, '-S', socket, *args], env=env,
+                                          capture_output=True, text=True, check=check)
+                try:
+                    tm(remote, 'new-session', '-d', '-s', 'kept', 'sleep 120')
+                    before = tm(remote, 'display-message', '-p', '-t', 'kept', '#{pane_pid}').stdout.strip()
+                    tm(local, 'new-session', '-d', '-s', 'fixture', '-n', 'dev', 'sleep 120')
+                    command = shlex.join(['env', '-u', 'TMUX', binary, '-S', remote, 'attach-session', '-t', 'kept'])
+                    pane = tm(local, 'split-window', '-h', '-t', 'fixture:dev', '-P', '-F', '#{pane_id}', command).stdout.strip()
+                    tm(local, 'set-option', '-pt', pane, '@role', 'codex-p1')
+                    tm(local, 'set-option', '-pt', pane, '@remote_host', 'fixture-host')
+                    deadline = time.monotonic() + 5
+                    while tm(remote, 'display-message', '-p', '-t', 'kept', '#{session_attached}').stdout.strip() == '0':
+                        self.assertLess(time.monotonic(), deadline, 'attachment did not become ready')
+                        time.sleep(.05)
+                    shim = base/'tmux'
+                    shim.write_text('#!/bin/sh\nexec '+shlex.join([binary, '-S', local])+' "$@"\n')
+                    shim.chmod(0o755)
+                    if action == 'server':
+                        tm(local, 'kill-server')
+                    else:
+                        argv = ([str(ROOT/'bin/tproj-kill-pane'), pane, 'codex-p1'] if action == 'pane' else
+                                [str(ROOT/'bin/tproj-drop-column'), '--grace-ms', '1', '--max-ms', '1', 'fixture', '1'])
+                        result = subprocess.run(argv, env=dict(env, PATH=str(base)+':/usr/bin:/bin'),
+                                                capture_output=True, text=True, timeout=15)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    after = tm(remote, 'display-message', '-p', '-t', 'kept', '#{pane_pid}').stdout.strip()
+                    self.assertEqual(before, after)
+                    os.kill(int(after), 0)
+                    deadline = time.monotonic() + 5
+                    while tm(remote, 'display-message', '-p', '-t', 'kept', '#{session_attached}').stdout.strip() != '0':
+                        self.assertLess(time.monotonic(), deadline, 'old attachment did not detach')
+                        time.sleep(.05)
+                    tm(local, 'new-session', '-d', '-s', 'reconnected', command)
+                    while tm(remote, 'display-message', '-p', '-t', 'kept', '#{session_attached}').stdout.strip() == '0':
+                        self.assertLess(time.monotonic(), deadline, 'new client could not reattach')
+                        time.sleep(.05)
+                    self.assertEqual(before, tm(remote, 'display-message', '-p', '-t', 'kept', '#{pane_pid}').stdout.strip())
+                finally:
+                    tm(local, 'kill-server', check=False)
+                    tm(remote, 'kill-server', check=False)
 
 
 if __name__ == '__main__':

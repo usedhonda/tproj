@@ -33,6 +33,14 @@ fi
 # Check pane exists
 tmux display-message -t "$PANE_ID" -p '#{pane_id}' >/dev/null 2>&1 || exit 0
 
+# A remote pane is only a local attachment. Typing exit here would terminate
+# the agent on its owning host instead of just closing this view.
+remote_host=$(tmux display-message -t "$PANE_ID" -p '#{@remote_host}' 2>/dev/null) || exit 0
+if [[ -n "$remote_host" ]]; then
+  tmux kill-pane -t "$PANE_ID"
+  exit 0
+fi
+
 # Determine exit command by role (shared table). Unknown/yazi fall back to
 # "exit" to preserve tproj-kill-pane's historical catch-all.
 EXIT_CMD="$(exit_cmd_for_role "$ROLE")"

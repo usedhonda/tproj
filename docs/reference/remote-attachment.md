@@ -1,5 +1,14 @@
 # Remote attachment terminal lifecycle
 
+Local workspace Stop/kill, column removal, and individual pane closure own only
+the local remote attachments. They must not send interrupt or exit keystrokes
+into those attachments. The remote agents and their tmux sessions remain under
+the owning host's tproj controls and can be attached from another client.
+Remote-host-created sessions carry `@tproj=true` on their own tmux server so
+that the owning host's normal Stop/kill can discover and terminate them.
+The pane-close and column-close helpers are included in runtime hash validation,
+so a bundled stale helper cannot silently restore remote exit forwarding.
+
 `tproj-remote-client attach HOST ABS_PATH cc|cdx` attaches SSH to an existing
 persistent remote agent pane. The local client supervises SSH until it exits;
 it reconnects after transport loss, but never restarts the remote agent or

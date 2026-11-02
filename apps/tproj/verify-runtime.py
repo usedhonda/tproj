@@ -11,7 +11,7 @@ root = Path(__file__).resolve().parents[2]
 seed = app / 'Contents/Resources/tproj-runtime-seed.tar.gz'
 manifest = json.loads((app/'Contents/Resources/tproj-runtime-critical.json').read_text())
 with tarfile.open(seed, 'r:gz') as archive:
-    for name in ['tproj', 'tproj-remote-client', 'tproj-remote-host', 'tproj-respawn-guard']:
+    for name in ['tproj', 'tproj-remote-client', 'tproj-remote-host', 'tproj-respawn-guard', 'tproj-kill-pane', 'tproj-drop-column']:
         expected = (root/'bin'/name).read_bytes()
         if manifest.get('bin/'+name) != hashlib.sha256(expected).hexdigest():
             raise SystemExit('Runtime manifest mismatch: '+name)
