@@ -241,6 +241,8 @@ class RuntimeTest(unittest.TestCase):
         boundary = b"x" * module.BRIDGE_FRAME_LIMIT + b"\n"
         self.assertEqual(module._read_bridge_frame(Chunks(boundary)), boundary)
         self.assertEqual(module._read_bridge_frame(Chunks(b"{}\n")), b"{}\n")
+        self.assertEqual(module._read_bridge_frame(Chunks(b'{"op":"who', b'ami"}', b"\n")),
+                         b'{"op":"whoami"}\n')
 
     def test_bridge_frame_reader_uses_total_monotonic_deadline_for_trickle(self):
         class Trickle:
@@ -437,7 +439,6 @@ class RuntimeTest(unittest.TestCase):
             def dispatch(_runtime, _request):
                 dispatches.append(True)
                 return {"payload": "x" * (8 * 1024 * 1024)}
-
             def serve():
                 try:
                     module.bridge(config)
@@ -618,10 +619,10 @@ class RuntimeTest(unittest.TestCase):
                 client = real_socket(socket.AF_UNIX)
                 client.settimeout(3)
                 client.connect(str(path))
-                client.sendall(b'{"op":"who')
-                time.sleep(0.15)
-                client.sendall(b'ami"}\n')
-                time.sleep(0.1)
+                # The wrapper above supplies the near-deadline receive state.
+                # Sleeping against a real 0.2s deadline tests scheduler load,
+                # not whether both response encodes get a fresh send timeout.
+                client.sendall(b'{"op":"whoami"}\n')
                 response = bytearray()
                 while not response.endswith(b"\n"):
                     chunk = client.recv(65_536)
