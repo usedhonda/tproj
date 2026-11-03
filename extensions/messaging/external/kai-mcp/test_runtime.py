@@ -241,6 +241,8 @@ class RuntimeTest(unittest.TestCase):
         boundary = b"x" * module.BRIDGE_FRAME_LIMIT + b"\n"
         self.assertEqual(module._read_bridge_frame(Chunks(boundary)), boundary)
         self.assertEqual(module._read_bridge_frame(Chunks(b"{}\n")), b"{}\n")
+        self.assertEqual(module._read_bridge_frame(Chunks(b'{"op":"who', b'ami"}', b"\n")),
+                         b'{"op":"whoami"}\n')
 
     def test_bridge_frame_reader_uses_total_monotonic_deadline_for_trickle(self):
         class Trickle:
