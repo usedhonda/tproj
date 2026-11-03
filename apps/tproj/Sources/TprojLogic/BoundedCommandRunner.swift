@@ -40,6 +40,10 @@ public struct BoundedCommandRunner: Sendable {
             kill(p.processIdentifier, SIGKILL)
             p.waitUntilExit()
         }
-        return CommandResult(exitCode: p.terminationStatus, stdout: String(data: buffers[0], encoding: .utf8) ?? "", stderr: String(data: buffers[1], encoding: .utf8) ?? "")
+        // maxOutput bounds captured bytes, which may end inside a UTF-8 scalar.
+        // Repair only malformed sequences instead of discarding the entire stream.
+        return CommandResult(exitCode: p.terminationStatus,
+                             stdout: String(decoding: buffers[0], as: UTF8.self),
+                             stderr: String(decoding: buffers[1], as: UTF8.self))
     }
 }
