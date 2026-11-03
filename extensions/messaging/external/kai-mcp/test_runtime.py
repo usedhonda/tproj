@@ -437,7 +437,6 @@ class RuntimeTest(unittest.TestCase):
             def dispatch(_runtime, _request):
                 dispatches.append(True)
                 return {"payload": "x" * (8 * 1024 * 1024)}
-
             def serve():
                 try:
                     module.bridge(config)
@@ -618,10 +617,10 @@ class RuntimeTest(unittest.TestCase):
                 client = real_socket(socket.AF_UNIX)
                 client.settimeout(3)
                 client.connect(str(path))
-                client.sendall(b'{"op":"who')
-                time.sleep(0.15)
-                client.sendall(b'ami"}\n')
-                time.sleep(0.1)
+                # The wrapper above supplies the near-deadline receive state.
+                # Sleeping against a real 0.2s deadline tests scheduler load,
+                # not whether both response encodes get a fresh send timeout.
+                client.sendall(b'{"op":"whoami"}\n')
                 response = bytearray()
                 while not response.endswith(b"\n"):
                     chunk = client.recv(65_536)
