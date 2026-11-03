@@ -23,4 +23,23 @@ final class BoundedCommandRunnerTests: XCTestCase {
         let r = BoundedCommandRunner(timeout: 0.1, eofGrace: 0.1).run("/bin/sh", ["-c", "trap '' TERM; (sleep 5) & exit 0"])
         XCTAssertLessThan(Date().timeIntervalSince(start), 2); XCTAssertEqual(r.exitCode, 0)
     }
+
+    func testByteLimitInsideUTF8PreservesCapturedOutput() {
+        // 13 bytes keeps "prefix日本" and the first byte of "語". A byte cap
+        // must not turn the entire otherwise valid diagnostic into "".
+        let r = BoundedCommandRunner(timeout: 2, maxOutput: 13).run(
+            "/bin/sh", ["-c", "printf 'prefix日本語'; printf 'prefix日本語' >&2"])
+        XCTAssertEqual(r.exitCode, 0)
+        XCTAssertEqual(r.stdout, "prefix日本\u{FFFD}")
+        XCTAssertEqual(r.stderr, "prefix日本\u{FFFD}")
+    }
+
+    func testMalformedByteDoesNotEraseSurroundingDiagnostics() {
+        let r = BoundedCommandRunner(timeout: 2).run(
+            "/bin/sh", ["-c", "printf 'before\\377after'; printf 'before\\377after' >&2"])
+        XCTAssertEqual(r.exitCode, 0)
+        XCTAssertEqual(r.stdout, "before\u{FFFD}after")
+        XCTAssertEqual(r.stderr, "before\u{FFFD}after")
+    }
+
 }
