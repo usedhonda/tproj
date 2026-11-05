@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import errno
 import json
 import socket
@@ -284,6 +285,8 @@ class RuntimeTest(unittest.TestCase):
 
             def dispatch(_runtime, request):
                 dispatches.append(request)
+                if request.get('op') == 'call':
+                    raise module.MailboxToolError(request['fixture_code'], 'private-error-text')
                 return {"accepted": True}
 
             def serve():
@@ -347,6 +350,22 @@ class RuntimeTest(unittest.TestCase):
                 response = request(b'{"op":"whoami"}\n')
                 self.assertTrue(json.loads(response)["ok"])
                 self.assertEqual(len(dispatches), 1)
+                # Rejections are distinguishable from transport failure without
+                # recording request data or arbitrary remote error strings.
+                for operation, code, expected_op, expected_code in (
+                    ('service_message', 'not_found', 'service_message', 'not_found'),
+                    ('private-operation', 'private-code', 'unknown', 'other'),
+                ):
+                    frame = dict(op='call', fixture_code=code, request=dict(
+                        op=operation, body='private-body', service_token='private-token'))
+                    with mock.patch.object(module.sys, 'stderr', new_callable=io.StringIO) as log:
+                        reply = json.loads(request(json.dumps(frame).encode() + b'\n'))
+                    self.assertFalse(reply['ok'])
+                    row = json.loads(log.getvalue())
+                    self.assertEqual(row['event'], 'dispatch_failure')
+                    self.assertEqual(row['operation'], expected_op)
+                    self.assertEqual(row['error_code'], expected_code)
+                    self.assertNotIn('private-', log.getvalue())
                 trickle.close()
                 sender.join(timeout=1)
                 listeners[0].close()

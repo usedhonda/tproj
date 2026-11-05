@@ -202,10 +202,24 @@ def _bridge_rpc(path: Path, request: Mapping[str, Any]) -> Any:
     return response.get("result")
 
 
-def _bridge_audit(event, details=None, elapsed=None):
+def _bridge_audit(event, details=None, elapsed=None, *, request=None, error=None):
     # Fixed keys/enums only. No request bodies, credentials, paths or exception
     # strings. stderr is separate from the MCP protocol on stdout.
     row = dict(event=event, at_unix=round(time.time(), 3))
+    if isinstance(request, Mapping):
+        forwarded = request.get('request') if request.get('op') == 'call' else request
+        op = forwarded.get('op') if isinstance(forwarded, Mapping) else None
+        row['operation'] = op if isinstance(op, str) and op in BRIDGE_OPS | {'whoami', 'retry_event'} else 'unknown'
+    if error is not None:
+        # Never log arbitrary peer-supplied codes or exception strings.
+        code = getattr(error, 'code', None)
+        known = {'unavailable', 'host_unavailable', 'endpoint_unavailable',
+                 'identity_rejected', 'scope_denied', 'not_found', 'not_visible',
+                 'unknown_target', 'ambiguous_target', 'stale_session', 'id_conflict',
+                 'invalid_request', 'invalid_message', 'configuration_error',
+                 'maintenance', 'resource_exhausted', 'reconciliation_required',
+                 'ineligible', 'too_late', 'cancelled', 'expired'}
+        row['error_code'] = code if isinstance(code, str) and code in known else 'other'
     if details:
         row['details'] = MailboxToolError._safe_details(details)
     if elapsed is not None:
@@ -413,11 +427,12 @@ def bridge(config: Mapping[str, Any], *, runtime_factory=None) -> int:
                         try:
                             result = _bridge_request(runtime, request)
                         except Exception as exc:
-                            _bridge_audit('dispatch_failure', getattr(exc, 'details', None), time.monotonic() - dispatch_start)
+                            _bridge_audit('dispatch_failure', getattr(exc, 'details', None), time.monotonic() - dispatch_start,
+                                          request=request, error=exc)
                             raise
                         elapsed = time.monotonic() - dispatch_start
                         if elapsed >= BRIDGE_CONNECTION_TIMEOUT:
-                            _bridge_audit('slow_dispatch', elapsed=elapsed)
+                            _bridge_audit('slow_dispatch', elapsed=elapsed, request=request)
                         response = {"ok": True, "result": result}
                     except MailboxToolError as exc:
                         error = {"code": exc.code, "message": exc.message}
