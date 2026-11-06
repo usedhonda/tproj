@@ -29,9 +29,24 @@ Mac pane ◀──[from:bot01.cdx]── ClawGate ◀── POST {return_url}/v1
   run again.
 - Source IPs are limited to loopback and the Tailscale CGNAT range
   (`100.64.0.0/10`), the same rule ClawGate applies to the callback on the Mac.
+- The inbox is a CLI endpoint: any `Origin` header is refused (403), and it
+  requires `Content-Type: application/json`, a positive bounded Content-Length
+  and a JSON object. Unsupported media types return 415; invalid envelopes or
+  framing return 400, and oversized bodies return 413, before any job is queued.
+- `return_url` must be an HTTP(S) base URL, optionally ending in `/`, without
+  credentials, another path, query or fragment. Every DNS result must be
+  loopback or in `100.64.0.0/10`; invalid/unresolved callbacks return 400 before
+  a job is accepted. The job pins those addresses for its replies, retaining
+  HTTPS hostname verification and bypassing proxies and redirects. Tailscale
+  hostnames work when all their addresses are allowed.
 - The reply is Codex's last message (`codex exec -o`), truncated to
   `TPROJ_BRIDGE_MAX_REPLY_CHARS`. A failed run still replies, with a
   `[bridge:<id>]` prefix explaining why, so the asking pane is never left waiting.
+
+The authoritative boundary and acceptance semantics are in
+[`docs/reference/bridge-targets.md`](../../../docs/reference/bridge-targets.md#inbox-and-callback-boundary).
+HTTP 202 acknowledges the queue entry; it does not prove a completed Codex run
+or reply delivery.
 
 ## Setup on the box
 
@@ -76,6 +91,9 @@ Then install `tproj-bridge.service` (see that file) so it survives reboots.
 Both spellings are accepted unchanged, so no environment migration is needed on
 replacement; confirm with `/v1/health` (`add_dirs` lists every path,
 `network` is `true`) before trusting the new process.
+Health and the startup log expose `codex_config_count`, not the raw generic
+configuration values, which may contain credentials. Those values still reach
+Codex unchanged.
 
 **What the defaults refuse, by Codex design**: writes outside `TPROJ_BRIDGE_REPO`;
 any network (including `127.0.0.1`); and writes to `.git` / `.agents` / `.codex`

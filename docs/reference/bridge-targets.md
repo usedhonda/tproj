@@ -54,6 +54,34 @@ sender. Newlines survive (the ClawGate path collapses them). Timeouts match
 `messages.db` as `delivery=gate`, `bridge=bridge`, `to_alias=gate:<id>`,
 `external_id=<trace_id>`; failures as `delivery=error` with the reason.
 
+### Inbox and callback boundary
+
+The box accepts source addresses only from loopback (`127.0.0.0/8`, `::1`)
+and the Tailscale CGNAT range (`100.64.0.0/10`). This remains a network trust
+boundary; it does not authenticate a specific user or conversation.
+
+`POST /v1/inbox` requires one `Content-Type: application/json` header (optional
+parameters such as `charset=utf-8` are accepted), one positive bounded
+`Content-Length`, and a JSON object with the required envelope fields. Requests
+with any `Origin` header are rejected with 403 so a web page cannot use the
+local browser to submit jobs. Non-JSON media types return 415; invalid framing,
+JSON or envelope fields return 400 (oversized bodies return 413). Chunked bodies
+are not supported. These rejections happen before trace reservation or queuing.
+
+`return_url` must be an HTTP(S) base URL with an optional port and trailing
+slash, without credentials, another path, query or fragment. Every resolved
+address must be in the same loopback/Tailscale allowlist. Invalid or unresolved
+callbacks return 400 before a Codex job is accepted. Tailscale hostnames remain
+supported when their addresses satisfy that boundary.
+
+The accepted job retains its validated addresses for both reply attempts. The
+callback connects directly to one of those addresses, preserving the original
+hostname for the HTTP Host header and HTTPS SNI/certificate verification. It
+does not resolve the hostname again, use environment proxies, or follow HTTP
+redirects. DNS changes after acceptance therefore cannot redirect a pending
+reply; an unavailable pinned endpoint produces a delivery failure instead.
+HTTP 202 still means queue acceptance, not successful processing or delivery.
+
 ## Dedup
 
 The gate dedup store (`TPROJ_MSG_GATE_DEDUP_DIR`) now records `family:adapter`
@@ -72,6 +100,9 @@ split on its last colon because the label itself contains one.
   `network`, `add_dirs`), set on the box via `TPROJ_BRIDGE_SANDBOX` /
   `TPROJ_BRIDGE_NETWORK` / `TPROJ_BRIDGE_ADD_DIRS`. Defaults are Codex's own:
   writes only under the repo (`.git` read-only), no network. See the bridge README.
+- Health and startup logs report only `codex_config_count` for generic Codex
+  configuration overrides. Their raw values are not published in diagnostics;
+  the original overrides are still passed to Codex.
 
 ## Reply
 
@@ -100,4 +131,6 @@ so the asking pane is never left waiting.
    policies untouched; suites green.
 
 Tests: `test-sendability-gate.sh` (BR1-BR5), `test-role-handoff.sh`
-(`bridge_reply_*`), `test-bridge-server.sh` (box side, hermetic).
+(`bridge_reply_*`), `test-bridge-server.sh` (box side, hermetic roundtrip plus
+HTTP input rejection, callback address pinning, no redirect/proxy, TLS hostname
+verification and config-value redaction).

@@ -6,7 +6,7 @@
 # and a ClawGate-shaped receiver that records what lands on /v1/tproj-msg-deliver.
 # Then drives the real bridge over loopback and asserts the contract:
 #   health idle/busy, inbox -> codex -> deliver payload shape, id mismatch 409,
-#   duplicate trace_id not re-run, bad JSON 400.
+#   duplicate trace_id not re-run, rejected HTTP inputs and pinned callbacks.
 set -u
 
 REPO="$(cd "$(dirname "$0")/../../.." && pwd -P)"
@@ -68,7 +68,7 @@ export FAKE_CODEX_PROMPT_FILE="$WORK/prompt.txt"
 TPROJ_BRIDGE_ID=bot01 TPROJ_BRIDGE_PORT="$BPORT" TPROJ_BRIDGE_BIND=127.0.0.1 \
   TPROJ_BRIDGE_REPO="$WORK" TPROJ_BRIDGE_CODEX="$WORK/bin/codex" \
   TPROJ_BRIDGE_ADD_DIRS="$WORK/extra,$WORK/extra2" \
-  TPROJ_BRIDGE_CODEX_CONFIG="sandbox_workspace_write.network_access=true, model=\"o3\"" \
+  TPROJ_BRIDGE_CODEX_CONFIG="sandbox_workspace_write.network_access=true, model=\"o3\", model_providers.fixture.api_key=\"fixture-only-secret\"" \
   python3 "$BRIDGE" 2>"$WORK/bridge.log" &
 BRIDGE_PID=$!
 for _ in $(seq 1 50); do
@@ -141,7 +141,10 @@ argv=$(cat "$WORK/prompt.txt.argv" 2>/dev/null || true)
 net_count=$(printf '%s' "$argv" | grep -o 'sandbox_workspace_write.network_access=true' | wc -l | tr -d ' ')
 if [[ "$h" == *'"sandbox": "workspace-write"'* && "$h" == *'"network": true'* && "$h" == *"$WORK/extra2"* \
       && "$argv" == *"-s workspace-write"* && "$net_count" == "1" && "$argv" == *'-c model="o3"'* \
-      && "$argv" == *"--add-dir $WORK/extra "* && "$argv" == *"--add-dir $WORK/extra2"* ]]; then
+      && "$argv" == *"--add-dir $WORK/extra "* && "$argv" == *"--add-dir $WORK/extra2"* \
+      && "$h" == *'"codex_config_count": 3'* && "$h" != *'"codex_config":'* \
+      && "$h" != *fixture-only-secret* && "$argv" == *'api_key="fixture-only-secret"'* ]] \
+      && ! grep -q fixture-only-secret "$WORK/bridge.log"; then
   pass health_exposes_policy_and_codex_gets_it
 else
   fail health_exposes_policy_and_codex_gets_it "health=$h argv=$argv"
@@ -168,6 +171,136 @@ else
   fail failed_run_delivered_with_reason "$(cat "$WORK/delivered.log")"
 fi
 rm -f "$WORK/prompt.txt.exit"
+
+# 10. Rejected requests never queue/run work or contact a callback. These
+# fixtures exercise the actual handler and HTTP client without external I/O.
+if python3 -B - "$BRIDGE" <<'PY'
+import importlib.util
+import io
+import json
+import os
+import socket
+import ssl
+import sys
+from email.message import Message
+from unittest.mock import patch
+
+spec = importlib.util.spec_from_file_location('bridge_boundary', sys.argv[1])
+bridge = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge)
+job = {'from': 'fixture.cc', 'to': 'gate:' + bridge.BRIDGE_ID, 'session': 'fixture',
+       'text': 'fixture request', 'trace_id': 'boundary-fixture', 'reply_as': 'fixture.cdx',
+       'return_url': 'http://mac.example.test:8765'}
+
+def dispatch(payload, headers=None):
+    body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+    handler = object.__new__(bridge.Handler)
+    handler.client_address = ('127.0.0.1', 12345)
+    handler.path = '/v1/inbox'
+    handler.headers = Message()
+    handler.headers['Content-Type'] = 'application/json'
+    handler.headers['Content-Length'] = str(len(body))
+    for name, values in (headers or {}).items():
+        del handler.headers[name]
+        for value in values if isinstance(values, list) else [values]:
+            if value is not None:
+                handler.headers[name] = value
+    handler.rfile = io.BytesIO(body)
+    responses = []
+    handler._send = lambda code, value: responses.append((code, value))
+    handler.do_POST()
+    assert len(responses) == 1, responses
+    return responses[0]
+
+def refused(payload, status, headers=None):
+    response = dispatch(payload, headers)
+    assert response[0] == status, response
+    assert bridge._jobs.empty() and not bridge._seen_trace
+
+with patch.object(bridge.socket, 'socket', side_effect=AssertionError('unexpected connection')):
+    with patch.object(bridge.socket, 'getaddrinfo', side_effect=AssertionError('unexpected DNS')):
+        refused(job, 403, {'Origin': 'https://example.invalid', 'Content-Type': 'text/plain'})
+        refused(job, 403, {'Origin': 'null'})
+        refused(job, 415, {'Content-Type': 'text/plain'})
+        refused(job, 415, {'Content-Type': None})
+        for length in ('bad', '-1', '0', None, ['1', '2']):
+            refused(job, 400, {'Content-Length': length})
+        refused(job, 413, {'Content-Length': str(bridge.MAX_BODY_BYTES + 1)})
+        refused(job, 400, {'Transfer-Encoding': 'chunked'})
+        refused(b'{}', 400, {'Content-Length': '3'})
+        for payload in ([], None, 1, b'{not json'):
+            refused(payload, 400)
+        for url in ('file:///tmp/callback', 'http://user:fixture@127.0.0.1',
+                    'http://127.0.0.1/path', 'http://127.0.0.1?query=1',
+                    'http://127.0.0.1#fragment'):
+            refused(dict(job, return_url=url), 400)
+    allowed = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, '', ('100.64.0.10', 8765))
+    outside = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, '', ('198.51.100.7', 8765))
+    for addresses in ([outside], [allowed, outside], []):
+        with patch.object(bridge.socket, 'getaddrinfo', return_value=addresses):
+            refused(job, 400)
+    with patch.object(bridge.socket, 'getaddrinfo', side_effect=socket.gaierror('fixture DNS failure')):
+        refused(job, 400)
+    with patch.object(bridge.socket, 'getaddrinfo', return_value=[allowed]):
+        # A caller cannot supply the internally pinned destination.
+        accepted = dispatch(dict(job, _callback='untrusted'), {'Content-Type': 'application/json; charset=utf-8'})
+        assert accepted[0] == 202, accepted
+        target = bridge._jobs.get_nowait()['_callback']
+        assert target.host == 'mac.example.test' and target.addresses == (allowed,)
+
+class FakeSocket:
+    def __init__(self, status):
+        self.connected = []
+        self.sent = []
+        self.closed = False
+        self.response = ('HTTP/1.1 ' + status + '\r\nContent-Length: 0\r\n'
+                         'Location: https://198.51.100.7/redirected\r\n\r\n').encode()
+    def settimeout(self, timeout):
+        pass
+    def connect(self, address):
+        self.connected.append(address)
+    def sendall(self, data):
+        self.sent.append(data)
+    def makefile(self, mode):
+        return io.BytesIO(self.response)
+    def close(self):
+        self.closed = True
+
+proxies = {key: 'http://198.51.100.9:3128' for key in
+           ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy')}
+with patch.dict(os.environ, proxies), patch.object(bridge.socket, 'getaddrinfo',
+        side_effect=AssertionError('must not resolve again after acceptance')):
+    sock = FakeSocket('302 Found')
+    with patch.object(bridge.socket, 'socket', return_value=sock) as create_socket:
+        code, _ = bridge.post_json(target, {'text': 'fixture reply'})
+    assert code == 302 and create_socket.call_count == 1
+    assert sock.connected == [('100.64.0.10', 8765)] and sock.closed
+    assert b'Host: mac.example.test:8765\r\n' in b''.join(sock.sent)
+
+    # Pin the IP while retaining the original hostname for TLS verification.
+    context = ssl.create_default_context()
+    assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
+    sock = FakeSocket('200 OK')
+    with patch.object(bridge.socket, 'socket', return_value=sock), \
+            patch.object(bridge.ssl, 'create_default_context', return_value=context), \
+            patch.object(context, 'wrap_socket', return_value=sock) as wrap:
+        code, _ = bridge.post_json(target._replace(scheme='https'), {'text': 'fixture reply'})
+    assert code == 200 and sock.connected == [('100.64.0.10', 8765)]
+    wrap.assert_called_once_with(sock, server_hostname='mac.example.test')
+
+    sock = FakeSocket('200 OK')
+    with patch.object(bridge.socket, 'socket', return_value=sock), \
+            patch.object(bridge.ssl, 'create_default_context', return_value=context), \
+            patch.object(context, 'wrap_socket', side_effect=ssl.SSLCertVerificationError('fixture certificate rejected')):
+        code, _ = bridge.post_json(target._replace(scheme='https'), {'text': 'fixture reply'})
+    assert code == 0 and not sock.sent and sock.closed
+print('HTTP rejection, callback pinning, redirect/proxy isolation and TLS verification passed')
+PY
+then
+  pass inbox_and_callback_boundary
+else
+  fail inbox_and_callback_boundary 'isolated boundary regression failed'
+fi
 
 printf '%s\n' '----'
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
