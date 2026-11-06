@@ -1,6 +1,6 @@
 #!/bin/bash
 # tproj-msg-reload: deploy the messaging runtime from this checkout to this Mac and the
-# Mac mini, restart its services, refresh the Dots tool list, and show what is running.
+# Mac mini, restart its services, request a Dots tool refresh, and show what is running.
 # One command, no arguments. Safe to rerun. It never touches grants, keys or sessions.
 set -u
 # Parse read-only/help arguments before touching runtime, services, or the UI.
@@ -69,10 +69,10 @@ if [[ -n "$APP" ]] && osascript -e 'tell application "Google Chrome" to get URL 
   osascript -e "tell application \"Google Chrome\" to set URL of active tab of front window to \"https://chatgpt.com/settings/plugins-settings/$APP\"" >/dev/null
   for try in 1 2 3 4 5 6 7 8; do
     sleep 4
-    out=$(osascript -e 'tell application "Google Chrome" to execute active tab of front window javascript "(function(){var b=Array.from(document.querySelectorAll(\"button\")).find(function(x){return x.innerText.trim()==\"ツールを更新\"});if(!b)return \"no button\";b.click();return \"refreshed\"})()"' 2>/dev/null)
-    [ "$out" = "refreshed" ] && break
+    out=$(osascript -e 'tell application "Google Chrome" to execute active tab of front window javascript "(function(){var b=Array.from(document.querySelectorAll(\"button\")).find(function(x){return x.innerText.trim()==\"ツールを更新\"});if(!b)return \"no button\";b.click();return \"refresh_requested\"})()"' 2>/dev/null)
+    [ "$out" = "refresh_requested" ] && break
   done
-  say "dots: ${out:-no result}"
+  say "dots: ${out:-no result}; callable activation unverified"
 else
   say "plugin ID not configured or Chrome unavailable: skipped"
 fi

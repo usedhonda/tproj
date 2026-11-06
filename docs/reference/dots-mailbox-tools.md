@@ -165,6 +165,11 @@ callable catalog. Compare the two explicitly. For process-local discovery counts
 and the distinction between generated catalog responses and client application,
 see [catalog refresh observation](dots-mailbox-events.md#catalog-refresh-observation).
 
+The reload helper reports `refresh_requested`, not completed activation, when
+it clicks the connection Refresh button. Browser click success is not catalog
+import or conversation activation proof. Compare the existing server capability
+fingerprint, connection tool view and actual callable definitions separately.
+
 ### Recover an existing conversation after a catalog update
 
 Keep three observations separate:
