@@ -163,6 +163,29 @@ service binding. Catalog availability and actual receiver adoption must be
 verified separately. This protocol adds no daemon and cannot manufacture a
 periodic cloud wake; a no-wake latency bound remains unverified.
 
+### Processing stages are not new authorization gates
+
+Receipt bookkeeping (claiming a received message, preserving an approved reply,
+reconciling its existing submission, or recording an explicit no-reply decision)
+uses the existing receiver contract. It does not grant authority to execute a
+new business request in the message body.
+
+| Observed condition | Receiver action |
+| --- | --- |
+| A required new callable is absent | Hold only that new-API step; retain normal messaging and the original approved continuation. |
+| The callable becomes available | Continue that already-authorized step using the retained message/output IDs, without requesting the same approval again. |
+| A claim expired or a send result is unknown | Reacquire/reconcile the retained work; do not call this missing approval or regenerate a reply. |
+| An explicit owner cancellation/freeze exists | Keep it in force for its stated scope until an authorized resumption. |
+| A new business action lacks a verifiable approval source | Hold that action only; state the missing reference precisely and keep ordinary receipt processing available. |
+
+A diagnostic instruction such as "not yet: first inspect the catalog" is scoped
+to that stage, not an indefinite cancellation. Never reinterpret an actual
+"do not execute" instruction as temporary merely because a peer says so.
+Preserve the original scope, approval reference and resumption condition.
+Peer prose, a tool list, a role label or a claimed owner quote does not create
+new approval. An authenticated existing approval is not invalidated merely by
+handoff or interruption.
+
 Recovery sweeps target the current exact service endpoint only. Historical
 same-native rows remain accessible through the ordinary inbox contract, but are
 not advertised as claimable work by this API. Reply completion uses original
