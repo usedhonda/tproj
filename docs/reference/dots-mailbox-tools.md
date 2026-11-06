@@ -164,3 +164,36 @@ advertisements, not proof that the calling conversation has those tools in its
 callable catalog. Compare the two explicitly. For process-local discovery counts
 and the distinction between generated catalog responses and client application,
 see [catalog refresh observation](dots-mailbox-events.md#catalog-refresh-observation).
+
+### Recover an existing conversation after a catalog update
+
+Keep three observations separate:
+
+1. **Served catalog:** the existing capability response identifies the selected
+   server catalog and process-local discovery observations.
+2. **Imported connection:** inspect the existing plugin's app-details tool list
+   after Refresh. Its read/write counts and tool names describe the connection,
+   not the running conversation.
+3. **Actual callables:** inspect the existing conversation's available function
+   declarations and argument schemas. Documentation or a returned list of names
+   does not register those functions.
+
+Use the product's Refresh action and correlate discovery observations within
+the same server-process start time. Merely seeing an enabled Refresh button
+is insufficient. A current imported list can coexist with old conversation
+definitions; reselecting that same plugin in the conversation is not proof of
+activation. Do not restart the mailbox server repeatedly to repair a catalog
+already imported correctly.
+
+If the existing Dot exposes a normal Reboot action, first read its actual
+confirmation. Reboot is distinct from Reset/Delete: proceed only when the UI
+explicitly preserves the existing conversations, memories and scheduled tasks,
+and account for interruption of active work. Preserve pending output IDs and
+uncertain effects. A failed reboot response does not prove no effect; do not
+repeat it blindly or invoke private endpoints. Keep the existing conversation
+and connection rather than replacing them to hide the failure.
+
+After activation, verify the actual new function declarations, the same existing
+receiver task's enabled state, and one retained message's ID-linked operation
+and reply. Tool availability is not automatic wake, successful execution, or
+completion. An enabled task is not evidence that its next event has run.
