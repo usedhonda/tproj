@@ -31,7 +31,7 @@ jobs:
       - name: Lost-response transport contract with real SDK
         run: python extensions/messaging/external/muse-mcp/test_vm_stdio_faults.py -v
   shell-suites:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Install real tmux for remote-host lifecycle tests
@@ -106,7 +106,11 @@ jobs:
       - name: Inbox check
         run: bash extensions/hooks/tests/test-inbox-check.sh
       - name: Mutation guard
-        run: bash extensions/hooks/tests/test-mutation-guard.sh
+        run: |
+          python3 --version
+          bash extensions/hooks/tests/test-mutation-guard.sh
+          python3 extensions/hooks/tests/test-formal-task-guard.py
+          python3 extensions/messaging/tests/test-inbox-notice.py
       - name: Bridge server
         run: bash extensions/messaging/tests/test-bridge-server.sh
       - name: External mailbox service contracts

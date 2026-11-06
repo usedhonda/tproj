@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import io
 from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
 import json
 import os
 import re
@@ -499,7 +500,18 @@ def formal_task_decision(payload: dict, event: str) -> dict | None:
         # Older standalone distributions do not include formal tasks.
         return None
     try:
-        module = SourceFileLoader("tproj_formal_task_evaluator", str(path)).load_module()
+        name = "tproj_formal_task_evaluator"
+        loader = SourceFileLoader(name, str(path))
+        spec = spec_from_loader(name, loader)
+        cached = name in sys.modules
+        module = sys.modules[name] if cached else module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            loader.exec_module(module)
+        except BaseException:
+            if not cached:
+                sys.modules.pop(name, None)
+            raise
         return module.evaluate(payload, event)
     except Exception:
         return {"decision": "block", "reason": "formal task evaluator unavailable"}

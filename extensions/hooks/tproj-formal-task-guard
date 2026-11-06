@@ -4,6 +4,7 @@ from __future__ import annotations
 import json, os, sys, sqlite3, shlex, re
 from pathlib import Path
 from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
 
 ROOT = Path(__file__).resolve().parents[2]
 _unified = ROOT / "extensions/messaging/unified"
@@ -19,7 +20,18 @@ except ImportError:
 _guard_path = ROOT / "extensions/hooks/tproj-mutation-guard"
 if not _guard_path.is_file():
     _guard_path = Path(__file__).with_name("tproj-mutation-guard")
-guard = SourceFileLoader("tproj_mutation_guard", str(_guard_path)).load_module()
+_guard_name = "tproj_mutation_guard"
+_guard_loader = SourceFileLoader(_guard_name, str(_guard_path))
+_guard_spec = spec_from_loader(_guard_name, _guard_loader)
+_guard_cached = _guard_name in sys.modules
+guard = sys.modules[_guard_name] if _guard_cached else module_from_spec(_guard_spec)
+sys.modules[_guard_name] = guard
+try:
+    _guard_loader.exec_module(guard)
+except BaseException:
+    if not _guard_cached:
+        sys.modules.pop(_guard_name, None)
+    raise
 
 def payload() -> dict:
     try: value = json.load(sys.stdin)
