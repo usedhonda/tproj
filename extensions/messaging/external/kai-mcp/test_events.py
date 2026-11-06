@@ -90,6 +90,29 @@ class EventTests(unittest.TestCase):
         self.assertEqual(len(state['outbox']), 1)
         self.assertEqual(state['pump']['status'], 'discovery_blocked')
 
+    def test_blocked_subscription_does_not_starve_another_and_storage_failure_is_reported(self):
+        sid = self.subscribe()
+        state = self.delivery._load()
+        other = sid + '-second'
+        state['subscriptions'][other] = dict(state['subscriptions'][sid], id=other)
+        state['cursor'][other] = 100
+        self.delivery._save(state)
+        self.authorizer.reader = lambda cursor: (
+            {'messages': [{'message_id': 'healthy'}], 'next_cursor': 101}
+            if cursor == 100 else {'messages': [{'body': 'invalid'}], 'next_cursor': 1})
+        sent = []
+        self.delivery._post = lambda *args: (sent.append(args[3]['data']['messageId']) or (True, {}, 200, None))
+        self.assertEqual(self.delivery.pump_once(), 1)
+        state = self.delivery._load()
+        self.assertEqual(sent, ['healthy'])
+        self.assertNotIn(sid, state['cursor'])
+        self.assertEqual(state['cursor'][other], 101)
+        self.assertEqual(state['pump']['subscriptions'][sid]['status'], 'discovery_blocked')
+        with patch.object(self.delivery, '_save', side_effect=OSError('private-storage-path')):
+            self.assertFalse(self.delivery.record_pump_failure())
+        with patch.object(self.delivery, '_load', side_effect=ValueError('private-corruption')):
+            self.assertFalse(self.delivery.record_pump_failure())
+
     def test_post_crash_recovers_exact_persisted_id_and_payload(self):
         sid = self.subscribe()
         sent = []
