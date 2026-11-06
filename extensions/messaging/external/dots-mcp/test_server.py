@@ -31,6 +31,12 @@ class MCPServerTest(unittest.TestCase):
         self.assertEqual(bound["conversation_isolation"], "not_configured")
         self.assertEqual(bound["operation"], "not_attempted")
         self.assertEqual(calls, [])
+        self.assertEqual(bound['server_catalog']['version'], server.CATALOG_VERSION)
+        self.assertEqual(set(bound['server_catalog']['tools']), server.TOOL_NAMES)
+        subset = server.MCPServer(tools, tool_names={'tproj_capabilities'})
+        limited = subset.handle(request)['result']['structuredContent']['server_catalog']
+        self.assertEqual(limited['tools'], ['tproj_capabilities'])
+        self.assertEqual(limited['version'], subset.catalog_version)
         tools.authorizer = lambda *_: (_ for _ in ()).throw(RuntimeError("private detail"))
         failed = server.MCPServer(tools).handle(request)["result"]["structuredContent"]
         self.assertEqual(failed["binding"], "authorization_unavailable")

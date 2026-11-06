@@ -71,6 +71,12 @@ class MCPServer:
         self.events = events
         self.conversation_resolver = conversation_resolver
 
+    def _capability_catalog(self, name, result):
+        if name == "tproj_capabilities":
+            return dict(result, server_catalog={"version": self.catalog_version,
+                        "server_name": SERVER_INFO["name"], "tools": sorted(self.tool_names)})
+        return result
+
     def handle(self, request: Any) -> dict[str, Any] | None:
         if not isinstance(request, dict):
             return _error(None, -32600, "Invalid Request")
@@ -167,7 +173,7 @@ class MCPServer:
             return _error(req_id, -32601, "Tool not available on this service")
         if (name == "tproj_capabilities" and self.tools is None
                 and self.conversation_resolver is None and not arguments):
-            result = disconnected_capabilities()
+            result = self._capability_catalog(name, disconnected_capabilities())
             return {"jsonrpc": "2.0", "id": req_id, "result": {
                 "content": [{"type": "text", "text": json.dumps(result, sort_keys=True)}],
                 "structuredContent": result,
@@ -183,6 +189,7 @@ class MCPServer:
             except Exception:
                 exc = MailboxToolError("identity_rejected", "trusted conversation binding required")
             else:
+                result = self._capability_catalog(name, result)
                 summary = result.pop("_summary", None) if isinstance(result, dict) else None
                 text = summary if isinstance(summary, str) else json.dumps(result, ensure_ascii=False, sort_keys=True)
                 return {"jsonrpc": "2.0", "id": req_id, "result": {
@@ -199,6 +206,7 @@ class MCPServer:
                 except MailboxToolError as caught:
                     exc = caught
                 else:
+                    result = self._capability_catalog(name, result)
                     summary = result.pop("_summary", None) if isinstance(result, dict) else None
                     text = summary if isinstance(summary, str) else json.dumps(result, ensure_ascii=False, sort_keys=True)
                     return {"jsonrpc": "2.0", "id": req_id, "result": {

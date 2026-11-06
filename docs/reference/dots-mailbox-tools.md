@@ -151,3 +151,14 @@ python3 -m unittest extensions/messaging/external/dots-mcp/test_server.py
 Diagnosis bypasses mutating service_whoami preauthorization and authenticates on
 the host read-only service_diagnose path. It never changes the stable submission
 ID or retries delivery. Resource error metadata preserves acceptance=unknown.
+
+### Catalog activation diagnosis
+
+The existing no-argument `tproj_capabilities` response includes `server_catalog`
+with the actually served `version` fingerprint, `server_name` and advertised
+`tools`. This uses the same selected catalog as `tools/list`, including service
+subsets. It contains no messages, identity credentials or callback details and
+performs no mailbox read or send. It can diagnose a stale provider/client tool
+cache without first registering another diagnostic tool. These are server-side
+advertisements, not proof that the calling conversation has those tools in its
+callable catalog. Compare the two explicitly.
