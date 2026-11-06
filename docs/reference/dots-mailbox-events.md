@@ -206,3 +206,16 @@ The reload helper reads the private `~/.config/tproj/msg-reload.json` fields
 and `TPROJ_RELOAD_APP` from the operator's environment. With no remote or plugin
 configured it skips those optional steps; no account, host or plugin ID is
 embedded in the public script. Existing deployments must retain their own values.
+
+### Catalog refresh observation
+
+The existing capability response includes `server_catalog.discovery`: process-local
+start time and successful `initialize`, `server/discover`, and `tools/list` dispatch
+counts with last timestamps. It records discovery even without legacy initialization.
+It contains no request IDs, parameters, credentials, message bodies or connection IDs.
+Counts reset on process replacement; compare snapshots only within the same start time.
+A tools/list dispatch proves that this server generated its catalog response, not
+that the client received or applied it to an existing conversation. No dispatch
+observation proves a particular UI action without correlation. A tunnel health
+observer requiring initialize can report discovery as unobserved for self-contained
+protocol traffic; that is not proof of absent requests.

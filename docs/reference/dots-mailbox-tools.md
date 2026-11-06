@@ -161,4 +161,6 @@ subsets. It contains no messages, identity credentials or callback details and
 performs no mailbox read or send. It can diagnose a stale provider/client tool
 cache without first registering another diagnostic tool. These are server-side
 advertisements, not proof that the calling conversation has those tools in its
-callable catalog. Compare the two explicitly.
+callable catalog. Compare the two explicitly. For process-local discovery counts
+and the distinction between generated catalog responses and client application,
+see [catalog refresh observation](dots-mailbox-events.md#catalog-refresh-observation).

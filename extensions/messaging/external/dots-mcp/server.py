@@ -67,6 +67,8 @@ class MCPServer:
             raise ValueError("invalid tool subset")
         self.catalog = [tool for tool in TOOL_CATALOG if tool['name'] in self.tool_names]
         self.catalog_version = hashlib.sha256(json.dumps(self.catalog, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+        self.discovery_started_at = time.time()
+        self.discovery = {}
         self.tools = tools
         self.events = events
         self.conversation_resolver = conversation_resolver
@@ -74,8 +76,15 @@ class MCPServer:
     def _capability_catalog(self, name, result):
         if name == "tproj_capabilities":
             return dict(result, server_catalog={"version": self.catalog_version,
-                        "server_name": SERVER_INFO["name"], "tools": sorted(self.tool_names)})
+                        "server_name": SERVER_INFO["name"], "tools": sorted(self.tool_names),
+                        "discovery": {"started_at": self.discovery_started_at,
+                                      "methods": {k: dict(v) for k, v in self.discovery.items()}}})
         return result
+
+    def _observe_discovery(self, method):
+        previous = self.discovery.get(method, {})
+        self.discovery[method] = {"count": previous.get("count", 0) + 1,
+                                  "last_at": time.time()}
 
     def handle(self, request: Any) -> dict[str, Any] | None:
         if not isinstance(request, dict):
@@ -98,6 +107,7 @@ class MCPServer:
                 selected_version = EVENTS_PROTOCOL_VERSION
             else:
                 selected_version = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
+            self._observe_discovery(method)
             capabilities = {"tools": {"listChanged": False}}
             if events_enabled:
                 capabilities["events"] = {}
@@ -109,6 +119,7 @@ class MCPServer:
         if method == "ping":
             return {"jsonrpc": "2.0", "id": req_id, "result": {}}
         if method == "server/discover":
+            self._observe_discovery(method)
             capabilities = {"tools": {}}
             if events_enabled:
                 capabilities["events"] = {}
@@ -118,6 +129,7 @@ class MCPServer:
                 "capabilities": capabilities,
             }}
         if method == "tools/list":
+            self._observe_discovery(method)
             return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": self.catalog, "_meta": {"catalog_version": self.catalog_version}}}
         if method in ("events/list", "events/subscribe", "events/unsubscribe"):
             if self.conversation_resolver is not None:

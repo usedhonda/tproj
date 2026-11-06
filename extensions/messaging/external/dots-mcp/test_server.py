@@ -52,6 +52,25 @@ class MCPServerTest(unittest.TestCase):
         self.assertTrue(all("inputSchema" in tool and "annotations" in tool for tool in listed["result"]["tools"]))
         self.assertNotIn("events", initialized["result"]["capabilities"])
 
+    def test_catalog_discovery_is_observed_without_initialize(self):
+        instance = server.MCPServer()
+        request = {"jsonrpc": "2.0", "id": "private-id", "method": "tools/list",
+                   "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+                              "private": "must-not-retain"}}
+        listed = instance.handle(request)
+        self.assertEqual(len(listed["result"]["tools"]), len(instance.catalog))
+        capability = {"method": "tools/call", "id": 2,
+                      "params": {"name": "tproj_capabilities", "arguments": {}}}
+        observed = instance.handle(capability)["result"]["structuredContent"]["server_catalog"]["discovery"]
+        self.assertEqual(set(observed["methods"]), {"tools/list"})
+        self.assertEqual(observed["methods"]["tools/list"]["count"], 1)
+        self.assertGreaterEqual(observed["methods"]["tools/list"]["last_at"], observed["started_at"])
+        self.assertNotIn("private", json.dumps(observed))
+        observed["methods"]["tools/list"]["count"] = 100
+        instance.handle(request)
+        self.assertEqual(instance.discovery["tools/list"]["count"], 2)
+        self.assertEqual(server.MCPServer().discovery, {})
+
     def test_diagnose_preserves_sanitized_resource_details(self):
         def host(_request):
             raise server.MailboxToolError("resource_exhausted", "local messaging storage is exhausted",
