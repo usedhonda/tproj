@@ -407,13 +407,13 @@ class TelegramMailboxRelay:
     """
 
     def __init__(self, authority, journal, binding_provider, submit, send_text,
-                 *, kai_endpoint):
+                 *, assistant_endpoint):
         self.authority = authority
         self.journal = journal
         self.binding_provider = binding_provider
         self.submit = submit
         self.send_text = send_text
-        self.kai_endpoint = _text(kai_endpoint)
+        self.assistant_endpoint = _text(assistant_endpoint)
 
     def _active(self, now):
         current = self.binding_provider()
@@ -453,7 +453,7 @@ class TelegramMailboxRelay:
         if not isinstance(reply, Mapping):
             raise TelegramIngressError("invalid_reply")
         original = self.journal.intent(reply.get("in_reply_to"))
-        if (not original or reply.get("sender_endpoint") != self.kai_endpoint
+        if (not original or reply.get("sender_endpoint") != self.assistant_endpoint
                 or reply.get("thread_id") != original["message_id"]):
             raise TelegramIngressError("reply_not_authorized")
         mid = _text(reply.get("message_id"))

@@ -9,15 +9,15 @@ class DiagnosticsTest(unittest.TestCase):
   from unittest.mock import patch
   with tempfile.TemporaryDirectory() as raw:
    host=Host({'journal':str(Path(raw)/'host.db'), 'host_id':'owner',
-              'services':{'kai':{'participant_id':'kai-party','event_bridge_socket':'bridge','token':'private'}}})
+              'services':{'dots':{'participant_id':'dots-party','event_bridge_socket':'bridge','token':'private'}}})
    self.addCleanup(host.db.close)
    host.caller_read_only=lambda *args: {'endpoint_id':'sender','project_id':'project'}
-   message={'message_id':'m','sender_endpoint':'sender','recipient_endpoint':'kai-ep',
+   message={'message_id':'m','sender_endpoint':'sender','recipient_endpoint':'dots-ep',
             'recipient_host_id':'owner','created_at':time.time()-400,'state':'accepted',
             'presentation_confirmed':False}
    def hub(op,**fields):
     if op=='diagnose': return dict(message)
-    if op=='endpoints_list': return {'endpoints':[{'endpoint_id':'kai-ep','participant_id':'kai-party'}]}
+    if op=='endpoints_list': return {'endpoints':[{'endpoint_id':'dots-ep','participant_id':'dots-party','host_id':'owner'}]}
     raise AssertionError(op)
    host.hub=hub
    with patch('host.rpc',return_value={'pump':{'status':'ready'},'notifications':[]}) as bridge:

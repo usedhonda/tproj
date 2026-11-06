@@ -15,7 +15,7 @@ from telegram_ingress import (TelegramIngressAuthority, TelegramIngressError,
 class TelegramIngressTest(unittest.TestCase):
     def setUp(self):
         self.binding = TelegramOwnerBinding('fixture-binding', 'fixture-owner',
-                                           101, 202, 202, 'kai', 1, 2000)
+                                           101, 202, 202, 'dots', 1, 2000)
         self.secret = 'fixture_webhook_secret'
         self.authority = TelegramIngressAuthority(self.binding, self.secret)
         self.update = {'update_id': 12, 'message': {'message_id': 30,
@@ -56,7 +56,7 @@ class TelegramIngressTest(unittest.TestCase):
                 calls.append(envelope)
                 raise TimeoutError()
             relay = TelegramMailboxRelay(self.authority, journal, lambda: self.binding,
-                                         uncertain, None, kai_endpoint='kai-ep')
+                                         uncertain, None, assistant_endpoint='dots-ep')
             with self.assertRaisesRegex(TelegramIngressError, 'submission_unknown'):
                 relay.receive(self.raw(), self.secret, now=1000)
             journal.close()
@@ -84,12 +84,12 @@ class TelegramIngressTest(unittest.TestCase):
                 sent.append(payload)
                 return {'message_id': 90, 'chat_id': payload['chat_id']}
             relay = TelegramMailboxRelay(self.authority, journal, lambda: current[0],
-                                         submit, send, kai_endpoint='kai-ep')
+                                         submit, send, assistant_endpoint='dots-ep')
             result = relay.receive(self.raw(), self.secret, now=1000)
             self.assertEqual(submitted[0]['body'], self.update['message']['text'])
             mid = result['message_id']
-            reply = {'message_id': 'kai-output-1', 'in_reply_to': mid,
-                     'thread_id': mid, 'sender_endpoint': 'kai-ep', 'body': '返事をそのまま'}
+            reply = {'message_id': 'dots-output-1', 'in_reply_to': mid,
+                     'thread_id': mid, 'sender_endpoint': 'dots-ep', 'body': '返事をそのまま'}
             with self.assertRaisesRegex(TelegramIngressError, 'reply_not_authorized'):
                 relay.deliver_reply(dict(reply, sender_endpoint='other'), now=1000)
             self.assertEqual(sent, [])
@@ -97,11 +97,11 @@ class TelegramIngressTest(unittest.TestCase):
             relay.deliver_reply(reply, now=1000)
             self.assertEqual(sent, [{'chat_id': 202, 'text': '返事をそのまま',
                                      'reply_to_message_id': 30}])
-            relay.deliver_reply(dict(reply, message_id='kai-output-2', body='途中経過'), now=1000)
+            relay.deliver_reply(dict(reply, message_id='dots-output-2', body='途中経過'), now=1000)
             self.assertEqual(len(sent), 2)
             current[0] = replace(self.binding, revoked=True)
             with self.assertRaisesRegex(TelegramIngressError, 'binding_inactive'):
-                relay.deliver_reply(dict(reply, message_id='kai-output-3'), now=1000)
+                relay.deliver_reply(dict(reply, message_id='dots-output-3'), now=1000)
             self.assertEqual(len(sent), 2)
             journal.close()
 
@@ -115,9 +115,9 @@ class TelegramIngressTest(unittest.TestCase):
                 calls.append(payload)
                 raise TimeoutError()
             relay = TelegramMailboxRelay(self.authority, journal, lambda: self.binding,
-                                         None, send, kai_endpoint='kai-ep')
+                                         None, send, assistant_endpoint='dots-ep')
             reply = {'message_id': 'output-1', 'in_reply_to': intent.message_id,
-                     'thread_id': intent.message_id, 'sender_endpoint': 'kai-ep', 'body': 'hello'}
+                     'thread_id': intent.message_id, 'sender_endpoint': 'dots-ep', 'body': 'hello'}
             with self.assertRaisesRegex(TelegramIngressError, 'delivery_unknown'):
                 relay.deliver_reply(reply, now=1000)
             self.assertTrue(relay.deliver_reply(reply, now=1000)['duplicate'])
@@ -132,9 +132,9 @@ class TelegramIngressTest(unittest.TestCase):
             new_binding = replace(self.binding, user_id=303, chat_id=303, generation=2)
             sends = []
             relay = TelegramMailboxRelay(TelegramIngressAuthority(new_binding), journal,
-                        lambda: new_binding, None, sends.append, kai_endpoint='kai-ep')
+                        lambda: new_binding, None, sends.append, assistant_endpoint='dots-ep')
             reply = {'message_id': 'old-reply', 'in_reply_to': old.message_id,
-                     'thread_id': old.message_id, 'sender_endpoint': 'kai-ep', 'body': 'private reply'}
+                     'thread_id': old.message_id, 'sender_endpoint': 'dots-ep', 'body': 'private reply'}
             with self.assertRaisesRegex(TelegramIngressError, 'reply_binding_mismatch'):
                 relay.deliver_reply(reply, now=1000)
             self.assertEqual(sends, [])

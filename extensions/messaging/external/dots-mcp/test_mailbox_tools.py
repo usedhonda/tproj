@@ -6,11 +6,11 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("kai_mailbox_tools", ROOT / "mailbox_tools.py")
+spec = importlib.util.spec_from_file_location("dots_mailbox_tools", ROOT / "mailbox_tools.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
-connection_spec = importlib.util.spec_from_file_location("kai_connection", ROOT / "connection.py")
+connection_spec = importlib.util.spec_from_file_location("dots_connection", ROOT / "connection.py")
 connection = importlib.util.module_from_spec(connection_spec)
 connection_spec.loader.exec_module(connection)
 
@@ -27,7 +27,7 @@ class MailboxToolsTest(unittest.TestCase):
         def host(req):
             seen.append(req['op'])
             return {'messages': [{'message_id': 'fixture', 'thread_id': 'fixture',
-                'target_address': 'kai', 'body': 'never expose to detector',
+                'target_address': 'dots', 'body': 'never expose to detector',
                 'state': 'accepted', 'sequence': 8, 'expires_at': 9999,
                 'in_reply_to': None}], 'next_cursor': 8}
         self.tools.host_call = host
@@ -54,7 +54,7 @@ class MailboxToolsTest(unittest.TestCase):
             if op == "service_reply":
                 return {"message_id": req["submission_id"], "state": "queued"}
             if op == "service_message":
-                return {"message_id": req["message_id"], "thread_id": "thread-1", "target_address": "kai",
+                return {"message_id": req["message_id"], "thread_id": "thread-1", "target_address": "dots",
                         "sender_address": "voyager.cc", "body": "hello", "state": "queued"}
             if op == "service_inbox":
                 return {"messages": [], "next_cursor": req["cursor"]}
@@ -64,7 +64,7 @@ class MailboxToolsTest(unittest.TestCase):
 
         self.host = host
         self.authorizer = lambda _name, _args: {"allowed_addresses": ["voyager.cc"]}
-        self.tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+        self.tools = module.MailboxTools(service_id="dots", service_address="dots", service_token="private",
                                           authorizer=self.authorizer, host_call=self.host)
 
     def test_oversized_historical_metadata_error_is_visible_without_body_or_reservation(self):
@@ -102,7 +102,7 @@ class MailboxToolsTest(unittest.TestCase):
             if req["op"] == "service_repo_list":
                 return {"repos": [{"repo_id": "p1", "name": "proj"}]}
             return {"repo_id": "p1", "cite": "proj@abc:f.txt:L1-L2", "lines": [{"n": 1, "text": "SECRET-BODY-LINE"}], "truncated": False, "consistent": True}
-        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+        tools = module.MailboxTools(service_id="dots", service_address="dots", service_token="private",
                                     authorizer=self.authorizer, host_call=host)
         listing = tools.dispatch("tproj_repo_list", {})
         self.assertEqual(listing["repos"][0]["repo_id"], "p1"); self.assertIn("1 readable", listing["_summary"])
@@ -126,7 +126,7 @@ class MailboxToolsTest(unittest.TestCase):
         def host(req):
             seen.append(req)
             return {"patch_id": req["patch_id"], "applied": True, "files": [{"path": "a.md", "status": "ok"}]}
-        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+        tools = module.MailboxTools(service_id="dots", service_address="dots", service_token="private",
                                     authorizer=self.authorizer, host_call=host)
         change = {"repo_id": "p1", "patch_id": "44444444-4444-4444-8444-444444444444",
                   "changes": [{"path": "a.md", "action": "create", "content": "PRIVATE-CONTENT"}]}
@@ -156,7 +156,7 @@ class MailboxToolsTest(unittest.TestCase):
                     "failure_stage": "authority_rpc", "acceptance": "unknown"}
         def should_not_attest(_name, _args):
             raise AssertionError("diagnose must use authenticated service_diagnose directly")
-        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+        tools = module.MailboxTools(service_id="dots", service_address="dots", service_token="private",
                                     authorizer=should_not_attest, host_call=host)
         result = tools.dispatch("tproj_diagnose", {"submission_id": "diag-1"})
         self.assertEqual(result["failure_stage"], "authority_rpc")
@@ -164,10 +164,10 @@ class MailboxToolsTest(unittest.TestCase):
         self.assertNotIn("body", result)
 
     def test_nested_transport_unavailable_is_not_identity_rejection(self):
-        binding = connection.DotsServiceBinding("kai", "kai", "kai.service", "secret", ("voyager.cc",), "gen-1")
+        binding = connection.DotsServiceBinding("dots", "dots", "dots.service", "secret", ("voyager.cc",), "gen-1")
         authorizer = connection.FixedConnectionAuthorizer(
             binding, lambda: (_ for _ in ()).throw(OSError("credential=secret socket unavailable")))
-        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+        tools = module.MailboxTools(service_id="dots", service_address="dots", service_token="private",
                                      authorizer=authorizer.authorize, host_call=self.host)
         with self.assertRaises(module.MailboxToolError) as raised:
             tools.dispatch("tproj_send", {"target": "voyager.cc", "body": "x", "submission_id": "s1"})
@@ -177,8 +177,8 @@ class MailboxToolsTest(unittest.TestCase):
 
         rejecting = connection.FixedConnectionAuthorizer(
             binding, lambda: {"binding_id": "wrong", "incarnation": "inc-1",
-                              "service_id": "other", "address": "kai",
-                              "participant_id": "kai.service", "allowed_addresses": ["voyager.cc"]})
+                              "service_id": "other", "address": "dots",
+                              "participant_id": "dots.service", "allowed_addresses": ["voyager.cc"]})
         tools.authorizer = rejecting.authorize
         with self.assertRaises(module.MailboxToolError) as rejected:
             tools.dispatch("tproj_send", {"target": "voyager.cc", "body": "x", "submission_id": "s2"})
@@ -195,19 +195,19 @@ class MailboxToolsTest(unittest.TestCase):
         result = self.tools.dispatch("tproj_send", {"target": "voyager.cc", "body": "x", "submission_id": "stable-1"})
         self.assertEqual(result["message_id"], "stable-1")
         self.assertEqual(result["thread_id"], "stable-1")
-        self.assertEqual(self.calls[0]["service_id"], "kai")
-        self.assertEqual(self.calls[0]["address"], "kai")
+        self.assertEqual(self.calls[0]["service_id"], "dots")
+        self.assertEqual(self.calls[0]["address"], "dots")
         self.assertEqual(self.calls[0]["target"], "voyager.cc")
         self.assertEqual(self.calls[0]["submission_id"], "stable-1")
 
     def test_authorized_service_target_sends_once_and_rejects_out_of_scope_forms(self):
-        result = self.tools.dispatch("tproj_send", {"target": "kai", "body": "x", "submission_id": "kai-out"})
-        self.assertEqual(result["message_id"], "kai-out")
-        self.tools.authorizer = lambda _name, _args: {"allowed_addresses": ["kai", "voyager.cc"]}
-        result = self.tools.dispatch("tproj_send", {"target": "kai", "body": "x", "submission_id": "kai-1"})
-        self.assertEqual(result["message_id"], "kai-1")
+        result = self.tools.dispatch("tproj_send", {"target": "dots", "body": "x", "submission_id": "dots-out"})
+        self.assertEqual(result["message_id"], "dots-out")
+        self.tools.authorizer = lambda _name, _args: {"allowed_addresses": ["dots", "voyager.cc"]}
+        result = self.tools.dispatch("tproj_send", {"target": "dots", "body": "x", "submission_id": "dots-1"})
+        self.assertEqual(result["message_id"], "dots-1")
         self.assertEqual([call["op"] for call in self.calls], ["service_send", "service_send"])
-        for target in ("cc", "cdx", "../kai", "kai\n", "kai\x01", "kai..service"):
+        for target in ("cc", "cdx", "../dots", "dots\n", "dots\x01", "dots..service"):
             with self.assertRaises(module.MailboxToolError) as raised:
                 self.tools.dispatch("tproj_send", {"target": target, "body": "x", "submission_id": "bad-" + str(len(self.calls))})
             self.assertEqual(raised.exception.code, "unknown_target")
@@ -263,7 +263,7 @@ class MailboxToolsTest(unittest.TestCase):
                 return committed
             raise AssertionError(req["op"])
 
-        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+        tools = module.MailboxTools(service_id="dots", service_address="dots", service_token="private",
                                     authorizer=self.authorizer, host_call=host)
         result = tools.dispatch("tproj_reply", {"message_id": "original", "body": "back", "submission_id": "reply-2"})
         self.assertEqual(result["thread_id"], "thread-original")
@@ -278,7 +278,7 @@ class MailboxToolsTest(unittest.TestCase):
                 raise module.MailboxToolError("unavailable", "host offline")
             raise AssertionError(req["op"])
 
-        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+        tools = module.MailboxTools(service_id="dots", service_address="dots", service_token="private",
                                     authorizer=self.authorizer, host_call=host)
         with self.assertRaises(module.MailboxToolError) as raised:
             tools.dispatch("tproj_reply", {"message_id": "original", "body": "back", "submission_id": "reply-3"})
@@ -293,7 +293,7 @@ class MailboxToolsTest(unittest.TestCase):
             calls.append((name, list(state["scope"])))
             return {"allowed_addresses": list(state["scope"])}
 
-        tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+        tools = module.MailboxTools(service_id="dots", service_address="dots", service_token="private",
                                     authorizer=authorizer, host_call=self.host)
         first = tools.dispatch("tproj_send", {"target": "voyager.cc", "body": "one", "submission_id": "long-1"})
         self.assertEqual(first["message_id"], "long-1")
@@ -311,9 +311,9 @@ class MailboxToolsTest(unittest.TestCase):
     def test_inbox_hides_cancelled_envelopes(self):
         def cancelled_host(req):
             if req["op"] == "service_inbox":
-                return {"messages": [{"message_id": "gone", "thread_id": "t", "target_address": "kai",
+                return {"messages": [{"message_id": "gone", "thread_id": "t", "target_address": "dots",
                                        "body": "do not deliver", "state": "cancelled"},
-                                      {"message_id": "live", "thread_id": "t2", "target_address": "kai",
+                                      {"message_id": "live", "thread_id": "t2", "target_address": "dots",
                                        "body": "deliver", "state": "queued"}], "next_cursor": 2}
             return self.host(req)
         self.tools.host_call = cancelled_host
@@ -325,7 +325,7 @@ class MailboxToolsTest(unittest.TestCase):
         def race_host(req):
             seen.append(req["op"])
             if req["op"] == "service_inbox":
-                return {"messages": [{"message_id": "race", "thread_id": "t", "target_address": "kai",
+                return {"messages": [{"message_id": "race", "thread_id": "t", "target_address": "dots",
                                        "body": "must not surface", "state": "queued"}], "next_cursor": 1}
             if req["op"] == "service_begin_present":
                 raise module.MailboxToolError("cancelled", "cancelled before presentation")
@@ -355,18 +355,18 @@ class MailboxToolsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             hub = Hub(Path(tmp) / "hub.db", {"admin_token": "admin", "hosts": {"h": "token"}})
             host = Host({"journal": str(Path(tmp) / "journal.db"), "host_id": "h",
-                         "services": {"kai": {"read_only": False}}}, recover=False)
+                         "services": {"dots": {"read_only": False}}}, recover=False)
             self.addCleanup(hub.close); self.addCleanup(host.db.close)
             hub.dispatch(dict(op="directory_import", admin_token="admin",
                               projects=[dict(project_id="p", alias="voyager", host_id="h", path="/p")],
-                              services=[dict(participant_id="kai", address="kai", host_id="h", kind="kai")]))
-            for eid, participant in (("sender", "p:cc"), ("receiver", "kai")):
+                              services=[dict(participant_id="dots", address="dots", host_id="h", kind="dots")]))
+            for eid, participant in (("sender", "p:cc"), ("receiver", "dots")):
                 hub.dispatch(dict(op="endpoint_register", host_id="h", host_token="token", endpoint_id=eid,
                                   participant_id=participant, session=eid, pane="", pid=1, pid_start=1,
                                   runtime_id=eid, platform="test"))
             host.service = lambda *_: dict(endpoint_id="receiver", runtime_id="receiver")
             host.hub = lambda op, **kw: hub.dispatch(dict(op=op, host_id="h", host_token="token", **kw))
-            def send(mid, sender="sender", target="kai"):
+            def send(mid, sender="sender", target="dots"):
                 hub.dispatch(dict(op="submit", host_id="h", host_token="token",
                                   message=dict(message_id=mid, thread_id=mid, sender_endpoint=sender,
                                                target=target, body="payload")))

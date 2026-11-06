@@ -124,7 +124,8 @@ class ServiceRuntime:
                 authorizer = FixedConnectionAuthorizer(self.binding, self._attest)
             event_auth = authorizer.event_authorizer(
                 lambda cursor: self._request({"op": "service_inbox", "cursor": cursor, "limit": 100}))
-            self._events = DotsEventDelivery(event_auth, self.state_path)
+            self._events = DotsEventDelivery(event_auth, self.state_path,
+                                              **({"event_name": self.config["event_name"]} if "event_name" in self.config else {}))
         return self._events
 
     def retry_event(self, message_id: str, actor_endpoint: str) -> dict[str, Any]:

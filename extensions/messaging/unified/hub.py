@@ -135,7 +135,7 @@ class Hub:
         new = self._redirect_target(target) if isinstance(target, str) and target else None
         if not new: return self.submit(req)
         sender = self._row('SELECT platform FROM endpoints WHERE endpoint_id=?', (msg.get('sender_endpoint'),))
-        self._redirect_scope(req, new, scope_required=bool(sender and sender['platform'] == 'kai'))
+        self._redirect_scope(req, new, scope_required=bool(sender and sender['platform'] not in ('cc', 'cdx', 'openclaw')))
         # Rewrite before hashing so a retry of the same ID with the old name stays the same message.
         out = self.submit(dict(req, message=dict(msg, target=new)))
         return dict(out, renamed_from=target, renamed_to=new) if isinstance(out, dict) else out

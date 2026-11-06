@@ -1,6 +1,6 @@
 # Dots mailbox events
 
-`KAIEventDelivery` is an isolated, fail-closed mailbox event adapter. A trusted
+`DotsEventDelivery` is an isolated, fail-closed mailbox event adapter. A trusted
 authorizer must return a fixed enrollment binding/incarnation and a scoped reader; no
 metadata or request arguments are treated as identity. The production Dots
 route uses `FixedConnectionAuthorizer.event_authorizer()` so event delivery
@@ -170,3 +170,30 @@ proof that its checkpoint passed: use tproj_reconcile for the same submission ID
 until the Hub acceptance or fixed rejection is known. Checkpoint/no-reply
 conflicts retain `id_conflict` in deferred-work diagnostics. Do not change IDs
 after a held result. The Hub transaction remains the final authority.
+
+## Deployment naming
+
+Public examples use Dots, not a personal bot name. Service IDs, addresses,
+participant IDs and enrollment generations remain operator-owned configuration.
+`runtime.py` accepts `event_name` in its private configuration; when upgrading
+an existing enrollment, preserve its previous event name so subscription hashes,
+queued event payloads and receiver triggers do not change. New installations
+default to `dots.mailbox.message`. This does not rename an existing mailbox.
+
+Host event diagnostics and retries select the bridge by the original message's
+recipient endpoint and configured participant, not by a fixed service alias.
+`scope_required` is an explicit service policy flag; an event bridge implies it
+by default. Alias redirects require a current Host scope for external service
+platforms, independently of their configured name.
+
+Optional bridge activation reads `runtime_bridges` (`label`, `manifest`) from
+the private Host configuration, and also recognizes registered service labels.
+Existing launchd labels and paths can therefore remain unchanged.
+
+The reload helper reads the private `~/.config/tproj/msg-reload.json` fields
+`remote`, `remote_dots_dir`, `remote_labels`, and `app`. Environment overrides are
+`TPROJ_RELOAD_REMOTE`, `TPROJ_RELOAD_REMOTE_DOTS_DIR`
+(a path relative to the remote home), `TPROJ_RELOAD_REMOTE_LABELS` (label suffixes)
+and `TPROJ_RELOAD_APP` from the operator's environment. With no remote or plugin
+configured it skips those optional steps; no account, host or plugin ID is
+embedded in the public script. Existing deployments must retain their own values.

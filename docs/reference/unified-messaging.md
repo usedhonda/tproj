@@ -360,7 +360,7 @@ has no effect on ordinary project messaging.
 
 The host adapter may retain the legacy `service` object for the projectless
 OpenClaw main participant and may additionally configure a `services` mapping
-keyed by stable service identity (for example, `kai`). Each entry has its own
+keyed by stable service identity (for example, `dots`). Each entry has its own
 participant ID, address, token, launchd label, process incarnation, and
 `platform`. A non-OpenClaw identity cannot claim `platform: "openclaw"`.
 Service requests select the identity with `service_id`; an address or token

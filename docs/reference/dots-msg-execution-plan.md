@@ -144,7 +144,7 @@ affected Codex session. Public push remains a separate authorization.
 
 ## Continuity: do not stop at a status report
 
-- Persist progress in `.local/kai-msg-plan/tasks.json` after each logical step:
+- Persist progress in `.local/dots-msg-plan/tasks.json` after each logical step:
   implementation SHA, reflection state, acceptance evidence, blocker, next action.
 - Keep `.local/handoff/issue14-external-assistant.md` current so the next turn
   resumes the **first unfinished action**, not discovery or replanning.

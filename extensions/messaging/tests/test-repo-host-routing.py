@@ -44,7 +44,7 @@ class Stub:
         raise AssertionError(op)
 
 
-EP = {"participant_id": "kai-participant", "address": "kai", "endpoint_id": "e1"}
+EP = {"participant_id": "dots-participant", "address": "dots", "endpoint_id": "e1"}
 
 
 class RepoRoutingTest(unittest.TestCase):
@@ -55,7 +55,7 @@ class RepoRoutingTest(unittest.TestCase):
         stub = Stub()
         self.run_op(stub, "read", repo_id="pa", path="f", participant_id="someone-else", generation="forged", host="b")
         op, reader, req = stub.local.calls[0]
-        self.assertEqual(reader, {"participant_id": "kai-participant", "address": "kai", "generation": ""})
+        self.assertEqual(reader, {"participant_id": "dots-participant", "address": "dots", "generation": ""})
         self.assertEqual(req, {"repo_id": "pa", "path": "f"})      # unknown fields are dropped
 
     def test_local_project_is_read_here_and_remote_project_is_forwarded(self):

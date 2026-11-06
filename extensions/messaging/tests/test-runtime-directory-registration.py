@@ -128,15 +128,15 @@ class RuntimeDirectoryRegistrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             home = Path(raw)
             runtime.setup(home, no_start=True)
-            bridge = home / "Library/LaunchAgents/local.tproj.kai-mailbox.plist"
-            bridge.write_bytes(plistlib.dumps({"Label": "local.tproj.kai-mailbox",
+            bridge = home / "Library/LaunchAgents/local.tproj.dots-mailbox.plist"
+            bridge.write_bytes(plistlib.dumps({"Label": "local.tproj.dots-mailbox",
                                                "ProgramArguments": ["/fixture/mailbox"]}))
             with patch.object(runtime, "_activate", side_effect=[
                     ["running:" + label for label in runtime.CORE_LABELS],
-                    ["unavailable:local.tproj.kai-mailbox:listener_unavailable"]]) as activate:
+                    ["unavailable:local.tproj.dots-mailbox:listener_unavailable"]]) as activate:
                 results = runtime.activate(home)
             self.assertEqual(activate.call_count, 2)
-            self.assertEqual(activate.call_args.kwargs["labels"], ("local.tproj.kai-mailbox",))
+            self.assertEqual(activate.call_args.kwargs["labels"], ("local.tproj.dots-mailbox",))
             self.assertTrue(results[-1].startswith("bridge_process_unavailable:"))
             self.assertFalse(any(item.startswith("unavailable:") for item in results))
             self.assertEqual(plistlib.loads(bridge.read_bytes())["ProgramArguments"], ["/fixture/mailbox"])

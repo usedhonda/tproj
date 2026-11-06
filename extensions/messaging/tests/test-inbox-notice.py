@@ -34,7 +34,7 @@ class InboxNoticeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw) / "notice.json"
             payload = {"thread_id": "native-a"}
-            result = {"messages": [{"message_id": "m1", "sender_address": "kai.cdx", "body": "secret"}]}
+            result = {"messages": [{"message_id": "m1", "sender_address": "dots.cdx", "body": "secret"}]}
             with patch.object(notice, "_state_path", return_value=state), \
                  patch.object(notice, "_config", return_value={"socket": "/tmp/unused"}), \
                  patch.object(notice, "_rpc", return_value=result), \

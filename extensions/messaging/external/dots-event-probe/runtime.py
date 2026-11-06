@@ -23,7 +23,7 @@ import hashlib
 from pathlib import Path
 
 
-DEFAULT_LABEL = "local.tproj.kai-probe-tunnel"
+DEFAULT_LABEL = "local.tproj.dots-probe-tunnel"
 DEFAULT_PROFILE = "dots-event-probe"
 SERVER = Path(__file__).with_name("server.py").resolve()
 MANIFEST = "runtime.json"

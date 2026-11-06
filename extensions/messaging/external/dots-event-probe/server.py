@@ -30,7 +30,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 PROTOCOL_VERSION = "2026-07-28"
-EVENT_NAME = "kai.connection.probe"
+EVENT_NAME = "dots.connection.probe"
 DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
 MAX_BODY = 256 * 1024
 
@@ -40,7 +40,7 @@ class StateError(RuntimeError):
 
 
 def state_path() -> Path:
-    path = Path(os.environ.get("KAI_EVENT_PROBE_STATE", "~/.local/share/tproj/dots-event-probe/subscriptions.json")).expanduser()
+    path = Path(os.environ.get("DOTS_EVENT_PROBE_STATE", "~/.local/share/tproj/dots-event-probe/subscriptions.json")).expanduser()
     if path.parent.exists() and path.parent.is_symlink():
         raise StateError("unsafe state directory")
     path.parent.mkdir(parents=True, exist_ok=True)

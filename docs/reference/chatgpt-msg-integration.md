@@ -39,7 +39,7 @@ Use the existing messaging tool names:
 Target syntax preserves qualified project addresses such as `<project>.cc` and
 `<project>.cdx` (including registered Unicode aliases and internal dots in the
 project alias). An enrolled service may
-be addressed by its exact directory address, such as `kai`, only when that
+be addressed by its exact directory address, such as `dots`, only when that
 address is present in the authenticated `allowed_addresses` scope. Native
 shortcuts `cc` and `cdx` are not service addresses or grants and are rejected
 by the external adapter; this contract does not claim service ingress or live

@@ -20,7 +20,7 @@ registered launchd service. The file must be a current-UID regular file, mode
 0600, and its SQLite journal must be in a current-UID mode-0700 directory. The
 runtime config has:
 
-- `bot_token_keychain`: reference with `service: "openclaw.kai.telegram"` and
+- `bot_token_keychain`: reference with `service: "openclaw.dots.telegram"` and
   `account` equal to the decimal bot ID. Store the actual credential in macOS
   Keychain through a no-echo input flow; plaintext token config is not accepted.
 - `owner_binding`: approved object with `binding_id`, `owner_id`, `bot_id`,
@@ -28,7 +28,7 @@ runtime config has:
   epoch `expires_at`, and boolean `revoked`.
 - `host_socket`, `service_id` (`telegram`), `service_token`, `address`, and
   `binding_generation` matching the enrolled host service.
-- `journal`: private SQLite path; `kai_endpoint`: existing Dots service endpoint.
+- `journal`: private SQLite path; `assistant_endpoint`: existing Dots service endpoint.
 
 The host's `services.telegram` has the existing standard service fields:
 `participant_id`, `address`, private `token`, `launchd_label`, `platform`

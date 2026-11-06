@@ -24,7 +24,7 @@ except ImportError:  # direct ``python server.py`` invocation
 PROTOCOL_VERSION = "2024-11-05"
 EVENTS_PROTOCOL_VERSION = "2026-07-28"
 SUPPORTED_PROTOCOL_VERSIONS = (EVENTS_PROTOCOL_VERSION, PROTOCOL_VERSION)
-SERVER_INFO = {"name": "kai-mailbox", "version": "0.1.0"}
+SERVER_INFO = {"name": "dots-mailbox", "version": "0.1.0"}
 TOOL_NAMES = set(MailboxTools.TOOLS)
 
 

@@ -43,7 +43,7 @@ The private config contains `service_id`, `address`, `participant_id`,
 local-only and must be owner-readable. A launchd manifest should execute:
 
 ```text
-python3 /path/to/extensions/messaging/external/dots-mcp/runtime.py --config /private/kai.json --bridge
+python3 /path/to/extensions/messaging/external/dots-mcp/runtime.py --config /private/dots.json --bridge
 ```
 
 The tunnel child uses the same config with `bridge_socket` and omits
@@ -103,7 +103,7 @@ truthful presentation receipts.
 
 ## Connection-principal boundary
 
-`KaiServiceBinding` fixes the service ID, address, participant ID, credential,
+`DotsServiceBinding` fixes the service ID, address, participant ID, credential,
 and participant allowlist at enrollment. It also requires a persistent
 `binding_generation` random identifier. A verified service restart may change endpoint
 incarnation while retaining that generation and its one callback subscription;
@@ -128,11 +128,11 @@ An authenticated local mailbox party may run `tproj-msg retry-event MESSAGE_ID`.
 The ordinary wrapper routes this command to the unified host; it is not a legacy
 or cross-host operation. The host binds the caller with the normal native
 identity, queries the message as that party, and requires the current local
-`services.kai` endpoint to be the exact recipient. Canceled, expired, presented,
+`services.dots` endpoint to be the exact recipient. Canceled, expired, presented,
 retired, foreign, or otherwise ineligible messages fail closed.
 
 The host then calls the already configured Dots bridge through
-`services.kai.event_bridge_socket`, sending only the message ID, authenticated
+`services.dots.event_bridge_socket`, sending only the message ID, authenticated
 actor endpoint, and the existing Dots service token. The private bridge verifies
 that token in constant time, re-attests the launchd-owned service, rechecks the
 current recipient and original message parties, and invokes the durable

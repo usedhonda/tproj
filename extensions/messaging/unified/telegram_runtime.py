@@ -101,14 +101,14 @@ class TelegramRuntime:
         self.verified_bot_id = None
         self.relay = TelegramMailboxRelay(self.authority, self.journal,
                                          self.current_binding, self.submit, self.send,
-                                         kai_endpoint=self.config['kai_endpoint'])
+                                         assistant_endpoint=self.config['assistant_endpoint'])
         self.relays = {self.binding.binding_id: self.relay}
         for ident, binding in approved_bindings(self.config).items():
             if ident != self.binding.binding_id:
                 self.relays[ident] = TelegramMailboxRelay(
                     TelegramIngressAuthority(binding), self.journal,
                     lambda ident=ident: self.current_binding(ident), self.submit, self.send,
-                    kai_endpoint=self.config['kai_endpoint'])
+                    assistant_endpoint=self.config['assistant_endpoint'])
         self._raw_current = None
 
     def current_config(self):
@@ -116,7 +116,7 @@ class TelegramRuntime:
         latest = private_config(self.config_path)
         if any(latest.get(k) != self.config.get(k) for k in
                ('host_socket', 'service_id', 'service_token', 'address',
-                'binding_generation', 'bot_token_keychain', 'kai_endpoint')):
+                'binding_generation', 'bot_token_keychain', 'assistant_endpoint')):
             raise TelegramIngressError('runtime_configuration_changed')
         primary = TelegramOwnerBinding(**latest['owner_binding'])
         if any(getattr(primary, key) != getattr(self.binding, key) for key in

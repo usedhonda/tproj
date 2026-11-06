@@ -8,7 +8,7 @@ or imports mailbox data.
 
 - `server/discover` advertises MCP `2026-07-28` and `events` capability.
 - `tools/list` and `tools/call` expose only `connection_status`.
-- `events/list` exposes `kai.connection.probe` with no filter arguments.
+- `events/list` exposes `dots.connection.probe` with no filter arguments.
 - `events/subscribe` verifies a public HTTPS callback with a signed one-use
   challenge, then stores an idempotent subscription in local state.
 - `events/unsubscribe` is idempotent.
@@ -18,7 +18,7 @@ or imports mailbox data.
   explicit operator command; it is not wired to a mailbox or tproj runtime.
 
 Subscriptions are stored at `~/.local/share/tproj/dots-event-probe/` (or
-`$KAI_EVENT_PROBE_STATE`) with directory mode `0700` and file mode `0600`.
+`$DOTS_EVENT_PROBE_STATE`) with directory mode `0700` and file mode `0600`.
 Secrets are never printed. Callback validation requires HTTPS and rejects
 private, loopback, link-local, reserved, multicast, and unspecified addresses;
 redirects are not followed. Delivery uses Standard Webhooks HMAC headers and
@@ -53,7 +53,7 @@ or cloud resource and never reads the credential contents.
 python3 extensions/messaging/external/dots-event-probe/runtime.py \
   --binary /absolute/path/to/tunnel-client \
   --tunnel-id tnl_example \
-  --base-dir /absolute/path/to/private/kai-probe-runtime \
+  --base-dir /absolute/path/to/private/dots-probe-runtime \
   --credential-file /absolute/path/to/control-plane-key
 ```
 

@@ -71,10 +71,10 @@ class FederationTests(unittest.TestCase):
         # New Hub + old Host must not make a Dots redirect bypass canonical scope.
         owner = self.hubs['b']
         owner.directory_import(dict(admin_token='admin', services=[dict(participant_id='service',
-            address='service', host_id='b', kind='kai')]))
+            address='service', host_id='b', kind='dots')]))
         owner.register(dict(host_id='b', host_token='b-token', endpoint_id='service',
             participant_id='service', session='s', pane=None, pid=101, pid_start=10,
-            runtime_id='s', platform='kai'))
+            runtime_id='s', platform='dots'))
         req = dict(host_id='b', host_token='b-token', message=dict(message_id='old-host',
             sender_endpoint='service', target='retired.cdx', body='scoped', kind='chat'))
         with self.assertRaises(HubError) as raised: owner.submit(req)
@@ -245,7 +245,7 @@ class FederationTests(unittest.TestCase):
         sender.remote = remote
         self.send('a', 'lost-result', 'b.cdx')
         recipient.db.execute("UPDATE messages SET state='presented' WHERE message_id='lost-result'")
-        recipient.db.execute("UPDATE endpoints SET retired=1,platform='kai' WHERE endpoint_id='bcdx'")
+        recipient.db.execute("UPDATE endpoints SET retired=1,platform='dots' WHERE endpoint_id='bcdx'")
         row = sender._row("SELECT * FROM federated_outbox WHERE message_id='lost-result'")
         result = sender.flush_one(row)
         self.assertEqual(result['state'], 'presented')

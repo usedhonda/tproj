@@ -38,6 +38,26 @@ class EventTests(unittest.TestCase):
     def subscribe(self):
         return self.delivery.subscribe("https://callback.example/event?route=one", self.secret)["id"]
 
+    def test_configured_event_name_preserves_subscription_and_pending_payload(self):
+        name = "existing.mailbox.message"
+        self.delivery = events.DotsEventDelivery(self.authorizer, self.path, event_name=name)
+        self.delivery._post = lambda url, eid, secret, payload, *rest: (True, {"challenge": payload.get("challenge")})
+        sid = self.subscribe()
+        self.delivery._post = lambda *args: (False, {}, 503, 'http_error')
+        self.delivery.pump_once()
+        before = self.delivery._load()
+        restarted = events.DotsEventDelivery(self.authorizer, self.path, event_name=name)
+        self.assertEqual(restarted.definition()['name'], name)
+        self.assertEqual(restarted._sid("https://callback.example/event?route=one", restarted._binding()), sid)
+        self.assertEqual(next(iter(before['outbox'].values()))['payload']['name'], name)
+        sent = []
+        restarted._post = lambda url, eid, secret, payload, *rest: (sent.append(payload) or (True, {}, 200, None))
+        with patch.object(events.time, 'time', return_value=time.time() + 10):
+            restarted.pump_once()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]['name'], name)
+        self.assertEqual(sent[0]['eventId'], next(iter(before['outbox'])))
+
     def test_missing_auth_and_invalid_page_fail_before_send(self):
         denied = events.DotsEventDelivery(None, self.path)
         with self.assertRaises(RuntimeError):

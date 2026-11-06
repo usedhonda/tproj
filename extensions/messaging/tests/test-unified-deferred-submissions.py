@@ -13,10 +13,10 @@ class AsyncSubmission(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory(prefix='msg-async-');self.addCleanup(self.tmp.cleanup)
   self.hub=FederatedHub(Path(self.tmp.name)/'hub.db',{'host_id':'local','hosts':{'local':'FAKE'}});self.addCleanup(self.hub.close)
   self.hub.topology=lambda:{'mode':'multi','hosts':[{'id':'local'},{'id':'remote','ssh_alias':'fixture-peer'}]}
-  for ident,address,owner,kind in [('kai','kai','local','kai'),('peer','fixture.cdx','remote','cdx')]:
+  for ident,address,owner,kind in [('dots','dots','local','dots'),('peer','fixture.cdx','remote','cdx')]:
    self.hub.db.execute('INSERT INTO participants VALUES(?,?,?,?,?)',(ident,None,address,owner,kind))
    self.hub.db.execute('INSERT INTO endpoints VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(ident+'-ep',ident,owner,address,'',0,'0','fixture-'+ident,kind,'inc-'+ident,time.time(),0))
-  now=time.time();self.hub.db.execute('INSERT INTO messages(message_id,thread_id,sender_endpoint,target_address,recipient_endpoint,body,kind,created_at,expires_at,payload_hash) VALUES(?,?,?,?,?,?,?,?,?,?)',('original','original','peer-ep','kai','kai-ep','fixture','chat',now,now+3600,'fixture-original'))
+  now=time.time();self.hub.db.execute('INSERT INTO messages(message_id,thread_id,sender_endpoint,target_address,recipient_endpoint,body,kind,created_at,expires_at,payload_hash) VALUES(?,?,?,?,?,?,?,?,?,?)',('original','original','peer-ep','dots','dots-ep','fixture','chat',now,now+3600,'fixture-original'))
   self.host=self.make_host();self.addCleanup(self.host.db.close);self.remote_calls=[]
   def remote(owner,op,**kw):
    self.remote_calls.append(op)
@@ -25,14 +25,14 @@ class AsyncSubmission(unittest.TestCase):
    raise AssertionError('unexpected remote operation')
   self.hub.remote=remote
  def make_host(self):
-  h=Host.__new__(Host);h.config={'services':{'kai':{'address':'kai','participant_id':'kai','binding_generation':'GEN','token':'FAKE','allowed_addresses':['fixture.cdx']}}}
+  h=Host.__new__(Host);h.config={'services':{'dots':{'address':'dots','participant_id':'dots','binding_generation':'GEN','token':'FAKE','allowed_addresses':['fixture.cdx']}}}
   h.db=sqlite3.connect(Path(self.tmp.name)/'host.db',check_same_thread=False);h.db.row_factory=sqlite3.Row
   h.db.execute('CREATE TABLE IF NOT EXISTS submissions(message_id TEXT PRIMARY KEY,endpoint_id TEXT,envelope TEXT)');h.db.commit()
   h.hub=lambda op,**kw:self.hub.dispatch(dict(kw,op=op,host_id='local',host_token='FAKE'))
   return h
  def send(self,mid='new',body='fixture',reply=False,host=None):
-  h=host or self.host;ep={'endpoint_id':'kai-ep','service_id':'kai'}
-  req={'service_id':'kai','submission_id':mid,'body':body,'defer_remote':True}
+  h=host or self.host;ep={'endpoint_id':'dots-ep','service_id':'dots'}
+  req={'service_id':'dots','submission_id':mid,'body':body,'defer_remote':True}
   if reply:req['message_id']='original'
   else:req['target']='fixture.cdx'
   return h.submit(ep,req,reply=reply)
@@ -48,13 +48,13 @@ class AsyncSubmission(unittest.TestCase):
   self.assertIsNone(self.hub._row('SELECT 1 FROM messages WHERE message_id="new"'))
 
  def test_workspace_queue_needs_no_address_grant_and_old_scope_stays_bounded(self):
-  self.host.config['services']['kai'].update(messaging_scope='workspace',allowed_addresses=[])
+  self.host.config['services']['dots'].update(messaging_scope='workspace',allowed_addresses=[])
   self.send('mesh');self.assertEqual(json.loads(self.row('mesh')['scope']),None)
   self.work();self.assertEqual(self.row('mesh')['state'],'hub_committed')
-  self.host.config['services']['kai'].pop('messaging_scope')
-  self.host.config['services']['kai']['allowed_addresses']=['fixture.cdx']
+  self.host.config['services']['dots'].pop('messaging_scope')
+  self.host.config['services']['dots']['allowed_addresses']=['fixture.cdx']
   self.send('bounded')
-  self.host.config['services']['kai']['messaging_scope']='workspace'
+  self.host.config['services']['dots']['messaging_scope']='workspace'
   self.hub.resolve_destination=lambda target:dict(self.hub.evidence('peer-ep'),renamed_to='other.cdx')
   self.work();self.assertEqual(self.row('bounded')['reason'],'scope_denied')
 
@@ -66,7 +66,7 @@ class AsyncSubmission(unittest.TestCase):
   self.send();self.work();self.assertEqual(self.remote_calls,['resolve'])
   self.assertEqual(self.hub._row('SELECT state FROM federated_outbox WHERE message_id="new"')['state'],'pending')
   self.hub.tick();self.hub.tick();self.assertEqual(self.remote_calls,['resolve','accept'])
-  view=queue.local_view(self.host,{'endpoint_id':'kai-ep'},'new')
+  view=queue.local_view(self.host,{'endpoint_id':'dots-ep'},'new')
   self.assertEqual(view['hub_acceptance'],'committed');self.assertEqual(view['remote_state'],'not_checked');self.assertFalse(view['delivery_pending'])
 
  def test_worker_resolve_wait_does_not_hold_request_or_local_inbox(self):
@@ -78,7 +78,7 @@ class AsyncSubmission(unittest.TestCase):
   try:
    self.assertTrue(entered.wait(1))
    self.assertEqual(self.row()['state'],'dispatching')
-   inbox=self.hub.inbox({'host_id':'local','host_token':'FAKE','endpoint_id':'kai-ep'})
+   inbox=self.hub.inbox({'host_id':'local','host_token':'FAKE','endpoint_id':'dots-ep'})
    self.assertEqual(inbox['messages'][0]['message_id'],'original')
   finally:release.set();thread.join(3)
   self.assertFalse(thread.is_alive());self.assertEqual(self.row()['state'],'hub_committed')
@@ -91,23 +91,23 @@ class AsyncSubmission(unittest.TestCase):
 
  def test_legacy_unknown_ids_are_never_scheduled_or_retried(self):
   for mid in ['legacy-uncertain-a','legacy-uncertain-b']:
-   env={'message_id':mid,'sender_endpoint':'kai-ep','body':'fixture','kind':'chat','target':'fixture.cdx'}
-   self.host.db.execute('INSERT INTO submissions VALUES(?,?,?)',(mid,'kai-ep',json.dumps(env,sort_keys=True,ensure_ascii=False)));self.host.db.commit()
+   env={'message_id':mid,'sender_endpoint':'dots-ep','body':'fixture','kind':'chat','target':'fixture.cdx'}
+   self.host.db.execute('INSERT INTO submissions VALUES(?,?,?)',(mid,'dots-ep',json.dumps(env,sort_keys=True,ensure_ascii=False)));self.host.db.commit()
    with self.assertRaises(HubError) as e:self.send(mid)
    self.assertEqual(e.exception.code,'reconciliation_required')
-   diagnostic=queue.legacy_diagnostic(self.host,{'endpoint_id':'kai-ep'},mid)
+   diagnostic=queue.legacy_diagnostic(self.host,{'endpoint_id':'dots-ep'},mid)
    self.assertEqual(diagnostic['hub_acceptance'],'unconfirmed');self.assertFalse(diagnostic['scheduler_enabled'])
   self.work();self.assertEqual(self.remote_calls,[]);self.assertEqual(self.host.db.execute('SELECT count(*) FROM submission_work').fetchone()[0],0)
 
  def test_changed_scope_and_generation_block_before_remote(self):
-  self.send('scope');self.host.config['services']['kai']['allowed_addresses']=[];self.work()
+  self.send('scope');self.host.config['services']['dots']['allowed_addresses']=[];self.work()
   self.assertEqual(self.row('scope')['reason'],'scope_denied');self.assertEqual(self.remote_calls,[])
-  self.host.config['services']['kai']['allowed_addresses']=['fixture.cdx'];self.send('generation')
-  self.host.config['services']['kai']['binding_generation']='DIFFERENT';self.work()
+  self.host.config['services']['dots']['allowed_addresses']=['fixture.cdx'];self.send('generation')
+  self.host.config['services']['dots']['binding_generation']='DIFFERENT';self.work()
   self.assertEqual(self.row('generation')['reason'],'stale_session');self.assertEqual(self.remote_calls,[])
 
  def test_new_scope_does_not_expand_queued_alias_authorization(self):
-  self.send();self.host.config['services']['kai']['allowed_addresses'].append('other.cdx')
+  self.send();self.host.config['services']['dots']['allowed_addresses'].append('other.cdx')
   self.hub.resolve_destination=lambda target:dict(self.hub.evidence('peer-ep'),renamed_to='other.cdx')
   self.work();self.assertEqual(self.row()['reason'],'scope_denied')
   self.assertIsNone(self.hub._row('SELECT 1 FROM messages WHERE message_id="new"'))
@@ -120,7 +120,7 @@ class AsyncSubmission(unittest.TestCase):
    return result
   self.host.hub=hub;self.work();self.assertEqual(self.row()['state'],'held')
   self.work(now=time.time()+31);self.assertEqual(self.row()['state'],'held')
-  queue.reconcile_only(self.host,{'endpoint_id':'kai-ep'},'new')
+  queue.reconcile_only(self.host,{'endpoint_id':'dots-ep'},'new')
   self.assertEqual(self.row()['state'],'hub_committed');self.assertEqual(self.remote_calls,['resolve'])
 
  def test_transient_resolve_failure_does_not_create_hub_message(self):
@@ -129,13 +129,13 @@ class AsyncSubmission(unittest.TestCase):
   self.hub.remote=offline;self.work();self.assertEqual(self.row()['state'],'held')
   self.work(now=time.time()+1000);self.assertEqual(self.row()['attempts'],1)
   self.assertIsNone(self.hub._row('SELECT 1 FROM messages WHERE message_id="new"'))
-  diag=queue.local_view(self.host,{'endpoint_id':'kai-ep'},'new',diagnostic=True)
+  diag=queue.local_view(self.host,{'endpoint_id':'dots-ep'},'new',diagnostic=True)
   self.assertEqual(diag['hub_acceptance'],'unconfirmed');self.assertEqual(diag['receipt_stage'],'host_journaled')
 
  def test_pending_deadline_stops_new_dispatch_without_claiming_nonacceptance(self):
   self.send();self.host.db.execute('UPDATE submission_work SET expires_at=?',(time.time()-1,));self.host.db.commit();self.work()
   self.assertEqual(self.row()['state'],'blocked');self.assertEqual(self.row()['reason'],'pending_deadline_elapsed');self.assertEqual(self.remote_calls,[])
-  self.assertEqual(queue.local_view(self.host,{'endpoint_id':'kai-ep'},'new',diagnostic=True)['hub_acceptance'],'unconfirmed')
+  self.assertEqual(queue.local_view(self.host,{'endpoint_id':'dots-ep'},'new',diagnostic=True)['hub_acceptance'],'unconfirmed')
 
  def test_restart_retains_work_and_does_not_import_legacy_rows(self):
   self.send();second=self.make_host();self.addCleanup(second.db.close)
@@ -143,9 +143,9 @@ class AsyncSubmission(unittest.TestCase):
 
  def test_local_status_rejects_different_payload_or_actor(self):
   self.send();self.work();envelope=json.loads(self.host.db.execute('SELECT envelope FROM submissions WHERE message_id="new"').fetchone()[0])
-  with self.assertRaises(HubError) as e:self.host.hub('submission_status',endpoint_id='kai-ep',message=dict(envelope,body='different'))
+  with self.assertRaises(HubError) as e:self.host.hub('submission_status',endpoint_id='dots-ep',message=dict(envelope,body='different'))
   self.assertEqual(e.exception.code,'id_conflict')
-  with self.assertRaises(HubError):self.host.hub('submission_status',endpoint_id='kai-ep',message=dict(envelope,sender_endpoint='peer-ep'))
+  with self.assertRaises(HubError):self.host.hub('submission_status',endpoint_id='dots-ep',message=dict(envelope,sender_endpoint='peer-ep'))
 
  def test_journal_and_work_insert_are_atomic_on_storage_failure(self):
   queue.init_schema(self.host.db)
@@ -196,7 +196,7 @@ class AsyncSubmission(unittest.TestCase):
   self.assertEqual(self.row()['state'],'dispatching')
   self.host.hub=real;queue.hold_interrupted(self.host.db);self.work(now=time.time()+1000)
   self.assertEqual(self.row()['state'],'held');self.assertEqual(self.remote_calls,[])
-  view=queue.reconcile_only(self.host,{'endpoint_id':'kai-ep'},'new')
+  view=queue.reconcile_only(self.host,{'endpoint_id':'dots-ep'},'new')
   self.assertEqual(view['hub_acceptance'],'unconfirmed');self.assertEqual(self.row()['state'],'held')
 
  def test_delayed_rpc_absent_record_never_releases_hold(self):
@@ -219,22 +219,22 @@ class AsyncSubmission(unittest.TestCase):
    self.work();self.assertEqual(self.row()['state'],'held')
    self.assertIsNone(self.hub._row('SELECT 1 FROM messages WHERE message_id="new"'))
    self.work(now=time.time()+1000)
-   queue.reconcile_only(self.host,{'endpoint_id':'kai-ep'},'new')
+   queue.reconcile_only(self.host,{'endpoint_id':'dots-ep'},'new')
    self.assertEqual(self.row()['state'],'held');self.assertEqual(len(threads),1)
   finally:
    release.set()
    for t in threads:t.join(3)
   self.assertEqual(errors,[]);self.assertTrue(all(not t.is_alive() for t in threads))
-  queue.reconcile_only(self.host,{'endpoint_id':'kai-ep'},'new')
+  queue.reconcile_only(self.host,{'endpoint_id':'dots-ep'},'new')
   self.assertEqual(self.row()['state'],'hub_committed');self.assertEqual(self.remote_calls,['resolve'])
   self.hub.tick();self.hub.tick();self.assertEqual(self.remote_calls,['resolve','accept'])
 
  def test_old_request_shape_cannot_bypass_work_fence(self):
-  self.send();req={'service_id':'kai','submission_id':'new','body':'fixture','target':'fixture.cdx'}
-  result=self.host.submit({'endpoint_id':'kai-ep','service_id':'kai'},req)
+  self.send();req={'service_id':'dots','submission_id':'new','body':'fixture','target':'fixture.cdx'}
+  result=self.host.submit({'endpoint_id':'dots-ep','service_id':'dots'},req)
   self.assertTrue(result['duplicate']);self.assertEqual(result['hub_acceptance'],'unconfirmed');self.assertEqual(self.remote_calls,[])
   req['body']='changed'
-  with self.assertRaises(HubError) as exc:self.host.submit({'endpoint_id':'kai-ep','service_id':'kai'},req)
+  with self.assertRaises(HubError) as exc:self.host.submit({'endpoint_id':'dots-ep','service_id':'dots'},req)
   self.assertEqual(exc.exception.code,'id_conflict')
 
  def test_metadata_failure_before_submit_can_retry_without_ambiguous_effect(self):
@@ -260,16 +260,16 @@ class AsyncSubmission(unittest.TestCase):
     self.send()
     return None
    return real(host,ep,envelope)
-  req={'service_id':'kai','submission_id':'new','body':'fixture','target':'fixture.cdx'}
+  req={'service_id':'dots','submission_id':'new','body':'fixture','target':'fixture.cdx'}
   with patch.object(queue,'duplicate_work_receipt',interleave):
-   result=self.host.submit({'endpoint_id':'kai-ep','service_id':'kai'},req)
+   result=self.host.submit({'endpoint_id':'dots-ep','service_id':'dots'},req)
   self.assertTrue(result['duplicate']);self.assertEqual(self.remote_calls,[])
   self.work();self.assertEqual(self.remote_calls,['resolve'])
 
 
  def control(self,action='reconcile',mid='new',ep=None):
-  return queue.control(self.host,ep or {'endpoint_id':'kai-ep','service_id':'kai'},
-                       {'service_id':'kai','submission_id':mid},action)
+  return queue.control(self.host,ep or {'endpoint_id':'dots-ep','service_id':'dots'},
+                       {'service_id':'dots','submission_id':mid},action)
 
  def test_public_cancel_is_durable_idempotent_and_worker_never_sends(self):
   self.send();result=self.control('cancel');self.assertTrue(result['cancelled'])
@@ -294,14 +294,14 @@ class AsyncSubmission(unittest.TestCase):
  def test_public_controls_deny_other_endpoint_before_any_hub_query(self):
   self.send();real=self.host.hub;calls=[]
   self.host.hub=lambda *a,**kw:calls.append(a)
-  for mid,ep in [('new',{'endpoint_id':'peer-ep','service_id':'kai'}),('unknown',{'endpoint_id':'kai-ep','service_id':'kai'})]:
+  for mid,ep in [('new',{'endpoint_id':'peer-ep','service_id':'dots'}),('unknown',{'endpoint_id':'dots-ep','service_id':'dots'})]:
    for action in ('cancel','reconcile'):
     with self.assertRaises(HubError) as exc:self.control(action,mid,ep)
     self.assertEqual(exc.exception.code,'not_found')
   self.assertEqual(calls,[]);self.host.hub=real
 
  def test_public_controls_require_current_binding_and_original_scope(self):
-  self.send();cfg=self.host.config['services']['kai'];original=copy.deepcopy(cfg)
+  self.send();cfg=self.host.config['services']['dots'];original=copy.deepcopy(cfg)
   for field,value in [('binding_generation','OTHER'),('participant_id','OTHER'),('token','OTHER'),('address','OTHER'),('read_only',True)]:
    cfg.update(original);cfg[field]=value
    for action in ('cancel','reconcile'):

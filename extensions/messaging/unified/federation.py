@@ -487,7 +487,7 @@ class FederatedHub(Hub):
             evidence = self.resolve_destination(target)
             owner = evidence['endpoint']['host_id']
             if evidence.get('renamed_to'):
-                self._redirect_scope(req, evidence['renamed_to'], scope_required=sender['platform'] == 'kai')
+                self._redirect_scope(req, evidence['renamed_to'], scope_required=sender['platform'] not in ('cc', 'cdx', 'openclaw'))
             if owner == self.local_id:
                 if not evidence.get('renamed_to'):
                     return super().submit(req)

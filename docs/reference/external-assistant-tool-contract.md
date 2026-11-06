@@ -16,7 +16,7 @@ as caller text. In particular, callers cannot pass `role`, `as`, `session`, a
 conversation selector, endpoint/PID/host data, or a receiver override.
 
 Send/status inputs accept a qualified project address such as `alpha.cc` or
-`alpha.cdx`, or an exact registered service address such as `kai`, only when
+`alpha.cdx`, or an exact registered service address such as `dots`, only when
 that address is present in the authenticated context's `allowed_addresses`.
 Bare native aliases `cc` and `cdx` are rejected here: they are local sender
 shortcuts, not service addresses or allowlist grants. Message views may show a

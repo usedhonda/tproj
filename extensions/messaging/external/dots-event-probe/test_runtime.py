@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parent
-SPEC = importlib.util.spec_from_file_location("kai_runtime", ROOT / "runtime.py")
+SPEC = importlib.util.spec_from_file_location("dots_runtime", ROOT / "runtime.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 

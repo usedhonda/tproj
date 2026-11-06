@@ -38,7 +38,7 @@ class CliTest(unittest.TestCase):
         text = cli.format_pending({
             "total": 1,
             "groups": [{
-                "target": "kai",
+                "target": "dots",
                 "count": 1,
                 "oldest_age_s": 12,
                 "states": {"accepted": 1},

@@ -410,7 +410,7 @@ Shellの検査位置 47 件はcase台帳の `T020` を参照。fixture setup/補
 
 **本番接点:** [server.py](../../extensions/messaging/external/dots-event-probe/server.py)
 
-**証拠と限界:** 実状態保存、HTTP sender差替え。製品KAI eventsの合格に転用不可
+**証拠と限界:** 実状態保存、HTTP sender差替え。製品DOTS eventsの合格に転用不可
 
 **重なり:** `probe`.
 
@@ -432,7 +432,7 @@ Shellの検査位置 47 件はcase台帳の `T020` を参照。fixture setup/補
 
 **証拠と限界:** attestor差替え。runtime/serverから使われる純認証境界
 
-**重なり:** `kai`.
+**重なり:** `dots`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
@@ -452,7 +452,7 @@ Shellの検査位置 47 件はcase台帳の `T020` を参照。fixture setup/補
 
 **証拠と限界:** 実ファイル/lockとthread、attestor/factory差替え。provider native identity供給は未証明
 
-**重なり:** `kai`.
+**重なり:** `dots`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
@@ -488,7 +488,7 @@ Shellの検査位置 47 件はcase台帳の `T020` を参照。fixture setup/補
 
 **証拠と限界:** 実durable state、HTTP/DNS/timeを差替え。webhook到達/購読providerは未証明
 
-**重なり:** `kai`.
+**重なり:** `dots`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
@@ -519,7 +519,7 @@ Shellの検査位置 47 件はcase台帳の `T020` を参照。fixture setup/補
 
 **証拠と限界:** 主にhost stub、一件real Host/Hub。定数だけのassertあり。listはhost policyへ委譲
 
-**重なり:** `kai` · **指摘:** F02, F12.
+**重なり:** `dots` · **指摘:** F02, F12.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
@@ -556,11 +556,11 @@ Shellの検査位置 47 件はcase台帳の `T020` を参照。fixture setup/補
 
 **証拠と限界:** 実route関数、bridge/Host隣接境界stub。実再配送なし
 
-**重なり:** `kai`.
+**重なり:** `dots`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
-| [T027-C001](../../extensions/messaging/external/dots-mcp/test_retry_event_route.py#L27) | routes only current kai party without body |
+| [T027-C001](../../extensions/messaging/external/dots-mcp/test_retry_event_route.py#L27) | routes only current dots party without body |
 | [T027-C002](../../extensions/messaging/external/dots-mcp/test_retry_event_route.py#L52) | rejects foreign recipient before bridge |
 | [T027-C003](../../extensions/messaging/external/dots-mcp/test_retry_event_route.py#L63) | bridge rejects forged token and actor |
 
@@ -574,7 +574,7 @@ Shellの検査位置 47 件はcase台帳の `T020` を参照。fixture setup/補
 
 **証拠と限界:** 実Unix socket/threadとfake dispatch/時計。外部providerは使わない
 
-**重なり:** `kai`.
+**重なり:** `dots`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
@@ -604,7 +604,7 @@ Shellの検査位置 47 件はcase台帳の `T020` を参照。fixture setup/補
 
 **証拠と限界:** 実handler/stream。tools/resolver/dispatcherは注入。initialize成功と実channel到達は別
 
-**重なり:** `kai`.
+**重なり:** `dots`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
@@ -1512,8 +1512,8 @@ Shellの検査位置 9 件はcase台帳の `T068` を参照。fixture setup/補�
 | [T073-C012](../../extensions/messaging/tests/test-unified-host-services.py#L347) | equal native session thread preserves existing attestation |
 | [T073-C013](../../extensions/messaging/tests/test-unified-host-services.py#L380) | service registry binds identity platform and incarnation |
 | [T073-C014](../../extensions/messaging/tests/test-unified-host-services.py#L393) | service id prevents cross service token or address confusion |
-| [T073-C015](../../extensions/messaging/tests/test-unified-host-services.py#L405) | kai enrollment retains mailbox across verified process restart |
-| [T073-C016](../../extensions/messaging/tests/test-unified-host-services.py#L429) | kai cannot be declared as openclaw platform |
+| [T073-C015](../../extensions/messaging/tests/test-unified-host-services.py#L405) | dots enrollment retains mailbox across verified process restart |
+| [T073-C016](../../extensions/messaging/tests/test-unified-host-services.py#L429) | dots cannot be declared as openclaw platform |
 | [T073-C017](../../extensions/messaging/tests/test-unified-host-services.py#L438) | legacy service config remains openclaw |
 | [T073-C018](../../extensions/messaging/tests/test-unified-host-services.py#L455) | duplicate service participant or address rejected before retirement |
 | [T073-C019](../../extensions/messaging/tests/test-unified-host-services.py#L466) | scoped inbox message and ack use authenticated endpoint |

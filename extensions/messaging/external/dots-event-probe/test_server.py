@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).parent
-SPEC = importlib.util.spec_from_file_location("kai_event_probe", ROOT / "server.py")
+SPEC = importlib.util.spec_from_file_location("dots_event_probe", ROOT / "server.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
@@ -17,7 +17,7 @@ class ProbeRegressionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.state = Path(self.tmp.name) / "subscriptions.json"
-        self.env = patch.dict(os.environ, {"KAI_EVENT_PROBE_STATE": str(self.state)})
+        self.env = patch.dict(os.environ, {"DOTS_EVENT_PROBE_STATE": str(self.state)})
         self.env.start()
 
     def tearDown(self):

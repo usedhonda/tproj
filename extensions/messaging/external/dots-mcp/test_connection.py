@@ -5,7 +5,7 @@ import hashlib
 import json
 
 ROOT = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("kai_connection", ROOT / "connection.py")
+spec = importlib.util.spec_from_file_location("dots_connection", ROOT / "connection.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
@@ -14,12 +14,12 @@ class ConnectionAuthorizerTest(unittest.TestCase):
     def setUp(self):
         self.observed = {
             "binding_id": "endpoint-1", "incarnation": "inc-1",
-            "service_id": "kai", "address": "kai",
-            "participant_id": "kai.service", "allowed_addresses": ["voyager.cc"],
+            "service_id": "dots", "address": "dots",
+            "participant_id": "dots.service", "allowed_addresses": ["voyager.cc"],
             "binding_generation": "gen-1", "policy_state": "valid",
         }
         self.observed["policy_revision"] = hashlib.sha256(json.dumps(["voyager.cc"], separators=(",", ":")).encode()).hexdigest()
-        binding = module.DotsServiceBinding("kai", "kai", "kai.service", "secret", ("voyager.cc",), "gen-1")
+        binding = module.DotsServiceBinding("dots", "dots", "dots.service", "secret", ("voyager.cc",), "gen-1")
         self.authorizer = module.FixedConnectionAuthorizer(binding, lambda: dict(self.observed))
 
     def test_workspace_policy_is_not_exposed_as_an_empty_allowlist(self):
@@ -37,7 +37,7 @@ class ConnectionAuthorizerTest(unittest.TestCase):
 
     def test_fixed_scope_and_host_incarnation_are_returned(self):
         result = self.authorizer.authorize("tproj_send", {"target": "voyager.cc"})
-        self.assertEqual(result["principal"], "kai-service")
+        self.assertEqual(result["principal"], "dots-service")
         self.assertEqual(result["allowed_addresses"], ["voyager.cc"])
         self.assertEqual(result["incarnation"], "inc-1")
 
@@ -67,7 +67,7 @@ class ConnectionAuthorizerTest(unittest.TestCase):
     def test_event_view_uses_same_binding(self):
         event_auth = self.authorizer.event_authorizer(lambda cursor: {"messages": [], "next_cursor": cursor})
         value = event_auth.authorize()
-        self.assertEqual((value.binding_id, value.incarnation), ("kai.service:gen-1", "inc-1"))
+        self.assertEqual((value.binding_id, value.incarnation), ("dots.service:gen-1", "inc-1"))
         self.assertTrue(callable(value.reader))
 
     def test_restart_keeps_generation_but_rotation_changes_event_owner(self):

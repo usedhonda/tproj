@@ -23,7 +23,7 @@ PROBE = Path(__file__).parents[1] / "dots-event-probe" / "server.py"
 SPEC = importlib.util.spec_from_file_location("dots_probe_secure", PROBE)
 _secure = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(_secure)
-EVENT_NAME = "kai.mailbox.message"
+EVENT_NAME = "dots.mailbox.message"
 MAX_ATTEMPTS = 3
 MAX_BATCH = 100
 DEFAULT_TTL_MS = 86400000
@@ -54,7 +54,10 @@ def _iso(timestamp):
 
 
 class DotsEventDelivery:
-    def __init__(self, authorizer: Any, state_path: str | Path):
+    def __init__(self, authorizer: Any, state_path: str | Path, *, event_name: str = EVENT_NAME):
+        if not isinstance(event_name, str) or not event_name or len(event_name) > 128:
+            raise ValueError("invalid mailbox event name")
+        self.event_name = event_name
         self.authorizer = authorizer
         self.path = Path(state_path).expanduser()
         if self.path.is_symlink() or self.path.parent.is_symlink():
@@ -110,7 +113,7 @@ class DotsEventDelivery:
 
     def definition(self):
         return {
-            "name": EVENT_NAME,
+            "name": self.event_name,
             "description": "A durable mailbox message is available; fetch and acknowledge with the authorized MSG tools.",
             "delivery": ["webhook"],
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -122,9 +125,8 @@ class DotsEventDelivery:
             },
         }
 
-    @staticmethod
-    def _sid(url, binding):
-        material = json.dumps([EVENT_NAME, url, binding.binding_id], separators=(",", ":"))
+    def _sid(self, url, binding):
+        material = json.dumps([self.event_name, url, binding.binding_id], separators=(",", ":"))
         return "sub_" + hashlib.sha256(material.encode()).hexdigest()[:32]
 
     @staticmethod
@@ -257,7 +259,7 @@ class DotsEventDelivery:
                         continue
                     eid = "evt_" + hashlib.sha256((sid + "\0" + mid).encode()).hexdigest()[:32]
                     if eid not in state["outbox"]:
-                        payload = {"eventId": eid, "name": EVENT_NAME, "timestamp": _iso(now), "data": {"messageId": mid}, "cursor": None}
+                        payload = {"eventId": eid, "name": self.event_name, "timestamp": _iso(now), "data": {"messageId": mid}, "cursor": None}
                         state["outbox"][eid] = {
                             "subscription": sid,
                             "payload": payload,
@@ -356,7 +358,7 @@ class DotsEventDelivery:
             payload = item.get("payload")
             data = payload.get("data") if isinstance(payload, dict) else None
             if (not isinstance(payload, dict) or set(payload) != {"eventId", "name", "timestamp", "data", "cursor"}
-                    or payload.get("eventId") != eid or payload.get("name") != EVENT_NAME
+                    or payload.get("eventId") != eid or payload.get("name") != self.event_name
                     or not isinstance(payload.get("timestamp"), str) or not isinstance(data, dict)
                     or set(data) != {"messageId"} or data.get("messageId") != message_id
                     or payload.get("cursor") is not None):

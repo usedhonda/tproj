@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("kai_runtime", ROOT / "runtime.py")
+spec = importlib.util.spec_from_file_location("dots_runtime", ROOT / "runtime.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
@@ -93,7 +93,7 @@ class RuntimeTest(unittest.TestCase):
 
     def config(self, directory):
         return {
-            "service_id": "kai", "address": "kai", "participant_id": "kai.service",
+            "service_id": "dots", "address": "dots", "participant_id": "dots.service",
             "service_token": "secret", "allowed_addresses": ["voyager.cc"],
             "binding_generation": "gen-1",
             "host_socket": str(Path(directory) / "host.sock"),
@@ -104,24 +104,24 @@ class RuntimeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             runtime = module.ServiceRuntime(self.config(directory))
             runtime._request = lambda req: {
-                "endpoint_id": "ep-1", "participant_id": "kai.service",
-                "address": "kai", "incarnation": "inc-1", "service_id": "kai",
+                "endpoint_id": "ep-1", "participant_id": "dots.service",
+                "address": "dots", "incarnation": "inc-1", "service_id": "dots",
                 "binding_generation": "gen-1", "allowed_addresses": ["voyager.cc"],
                 "policy_state": "valid", "policy_revision": "bedae4adef88af75695c8b54b827ac939cdf0d321c13358e3681c2e2734d30b1",
             } if req["op"] == "service_whoami" else {"messages": [], "next_cursor": req.get("cursor", 0)}
             observed = runtime._attest()
-            self.assertEqual(observed["binding_id"], "kai.service")
+            self.assertEqual(observed["binding_id"], "dots.service")
             self.assertEqual(observed["allowed_addresses"], ["voyager.cc"])
             self.assertEqual(runtime.server().tools.authorizer("tproj_list", {})["incarnation"], "inc-1")
-            self.assertEqual(runtime.events()._binding().binding_id, "kai.service:gen-1")
+            self.assertEqual(runtime.events()._binding().binding_id, "dots.service:gen-1")
 
     def test_runtime_server_tool_call_uses_mocked_authenticated_host(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime = module.ServiceRuntime(self.config(directory))
             def host(req):
                 if req["op"] == "service_whoami":
-                    return {"endpoint_id": "ep-1", "participant_id": "kai.service",
-                            "address": "kai", "incarnation": "inc-1", "service_id": "kai",
+                    return {"endpoint_id": "ep-1", "participant_id": "dots.service",
+                            "address": "dots", "incarnation": "inc-1", "service_id": "dots",
                             "binding_generation": "gen-1", "allowed_addresses": ["voyager.cc"],
                             "policy_state": "valid", "policy_revision": "bedae4adef88af75695c8b54b827ac939cdf0d321c13358e3681c2e2734d30b1"}
                 if req["op"] == "service_list":
@@ -136,7 +136,7 @@ class RuntimeTest(unittest.TestCase):
     def test_mismatched_host_service_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime = module.ServiceRuntime(self.config(directory))
-            runtime._request = lambda req: {"participant_id": "other", "address": "kai", "incarnation": "inc"}
+            runtime._request = lambda req: {"participant_id": "other", "address": "dots", "incarnation": "inc"}
             with self.assertRaises(module.ConnectionBindingError):
                 runtime.server().tools.authorizer("tproj_list", {})
 
@@ -286,7 +286,7 @@ class RuntimeTest(unittest.TestCase):
                 def __init__(self, _config):
                     self.binding = mock.Mock(token="token")
                 def _attest(self):
-                    return {"service_id": "kai"}
+                    return {"service_id": "dots"}
                 def events(self):
                     return Events()
 
@@ -402,7 +402,7 @@ class RuntimeTest(unittest.TestCase):
                 def __init__(self, _config):
                     self.binding = mock.Mock(token="token")
                 def _attest(self):
-                    return {"service_id": "kai"}
+                    return {"service_id": "dots"}
                 def events(self):
                     return Events()
 
@@ -458,7 +458,7 @@ class RuntimeTest(unittest.TestCase):
                 def __init__(self, _config):
                     self.binding = mock.Mock(token="token")
                 def _attest(self):
-                    return {"service_id": "kai"}
+                    return {"service_id": "dots"}
                 def events(self):
                     return Events()
 
@@ -521,7 +521,7 @@ class RuntimeTest(unittest.TestCase):
                 def __init__(self, _config):
                     self.binding = mock.Mock(token="token")
                 def _attest(self):
-                    return {"service_id": "kai"}
+                    return {"service_id": "dots"}
                 def events(self):
                     return Events()
 
@@ -598,7 +598,7 @@ class RuntimeTest(unittest.TestCase):
                 def __init__(self, _config):
                     self.binding = mock.Mock(token="token")
                 def _attest(self):
-                    return {"service_id": "kai"}
+                    return {"service_id": "dots"}
                 def events(self):
                     return Events()
 

@@ -74,10 +74,10 @@ class MuseTests(unittest.TestCase):
                 for op in ('service_send', 'service_reply', 'service_ack', 'service_begin_present', 'service_repo_read'):
                     with self.assertRaises(muse.MailboxToolError): runtime._request({'op': op})
                 self.assertEqual(calls, [])
-                runtime._request(dict(op='service_list', service_id='kai', service_token='foreign'))
+                runtime._request(dict(op='service_list', service_id='dots', service_token='foreign'))
             self.assertEqual(calls[0]['service_id'], 'muse')
             self.assertEqual(calls[0]['service_token'], config['service_token'])
-            wrong = dict(config, service_id='kai')
+            wrong = dict(config, service_id='dots')
             with self.assertRaises(muse.common.RuntimeConfigError): muse.MuseRuntime(wrong)
 
 
@@ -109,7 +109,7 @@ class EnrollmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home=Path(tmp);root=home/'state';host=home/'host.json'
             original=dict(socket=str(home/'host.sock'),service={'unchanged':'legacy'},
-                          services={'kai':{'address':'kai','participant_id':'kai-service','token':'retain'}})
+                          services={'dots':{'address':'dots','participant_id':'dots-service','token':'retain'}})
             host.write_text(json.dumps(original));host.chmod(0o600)
             self.assertFalse(enroll.prepare(home,host,root,[])['host_changed'])
             before=host.read_bytes();parent=(root/'parent.json').read_bytes()
@@ -121,7 +121,7 @@ class EnrollmentTests(unittest.TestCase):
             after=host.read_bytes()
             self.assertFalse(enroll.apply(host,root)['changed'])
             self.assertEqual(host.read_bytes(),after)
-            self.assertEqual(json.loads(after)['services']['kai'],original['services']['kai'])
+            self.assertEqual(json.loads(after)['services']['dots'],original['services']['dots'])
             self.assertEqual(json.loads(after)['service'],original['service'])
             enroll.prepare(home,host,root,[])
             self.assertEqual((root/'parent.json').read_bytes(),parent)
@@ -152,8 +152,8 @@ class EnrollmentTests(unittest.TestCase):
             hp.write_text(json.dumps(dict(host_id='owner',socket='hub',admin_token='admin')));hp.chmod(0o600)
             hub=Hub(root/'hub.db',dict(host_id='owner',admin_token='admin',hosts={'owner':'host-token'}))
             self.addCleanup(hub.close)
-            hub.directory_import(dict(admin_token='admin',services=[dict(participant_id='kai',address='kai',host_id='owner',kind='kai')]))
-            before=dict(hub._row("SELECT * FROM participants WHERE participant_id='kai'"))
+            hub.directory_import(dict(admin_token='admin',services=[dict(participant_id='dots',address='dots',host_id='owner',kind='dots')]))
+            before=dict(hub._row("SELECT * FROM participants WHERE participant_id='dots'"))
             calls=[]
             def rpc(path,req):
                 calls.append((path,req['op']))
@@ -166,7 +166,7 @@ class EnrollmentTests(unittest.TestCase):
                 self.assertTrue(enroll.register_participant(config,hp))
                 self.assertEqual(len([x for x in calls if x[1]=='directory_import']),count)
                 with self.assertRaises(enroll.EnrollmentError):enroll.register_participant(dict(config,host_id='foreign'),hp)
-            self.assertEqual(dict(hub._row("SELECT * FROM participants WHERE participant_id='kai'")),before)
+            self.assertEqual(dict(hub._row("SELECT * FROM participants WHERE participant_id='dots'")),before)
             self.assertEqual(hub.db.execute('SELECT COUNT(*) FROM messages').fetchone()[0],0)
 
 

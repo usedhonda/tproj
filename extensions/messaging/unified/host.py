@@ -613,7 +613,7 @@ class Host:
 
     def service_policy(self, req, target=None):
         service_id, cfg = self._service_binding(req)
-        if service_id != 'kai' and 'allowed_addresses' not in cfg:
+        if not cfg.get('scope_required', bool(cfg.get('event_bridge_socket'))) and 'allowed_addresses' not in cfg:
             return None  # Preserve the independent legacy OpenClaw contract.
         if cfg.get('messaging_scope') == 'workspace':
             return None  # Enrolled development peers share ordinary MSG destinations.
@@ -686,11 +686,21 @@ class Host:
         except HubError:
             return None
 
+    def _event_service(self, recipient_endpoint):
+        endpoints = self.hub('endpoints_list', active_only=True)['endpoints']
+        recipient = next((ep for ep in endpoints if ep['endpoint_id'] == recipient_endpoint
+                          and not ep.get('retired') and ep.get('host_id') == self.config['host_id']), None)
+        services = self.config.get('services') or {}
+        matches = [cfg for cfg in services.values() if isinstance(cfg, dict)
+                   and recipient and cfg.get('participant_id') == recipient['participant_id']
+                   and cfg.get('event_bridge_socket')]
+        return matches[0] if len(matches) == 1 else {}
+
     def _retry_event(self, caller, message_id):
         """Retry one live Dots event through the enrolled local bridge only."""
-        services = self.config.get('services') or {}
-        cfg = services.get('kai') if isinstance(services, dict) else None
-        if not isinstance(cfg, dict) or not cfg.get('event_bridge_socket'):
+        message = self.hub('query', endpoint_id=caller['endpoint_id'], message_id=message_id)
+        cfg = self._event_service(message.get('recipient_endpoint'))
+        if not cfg:
             raise HubError('unavailable', 'Dots event bridge unavailable')
         endpoints = self.hub('endpoints_list', active_only=True)['endpoints']
         directory = self.hub('directory_list')['participants']
@@ -703,7 +713,6 @@ class Host:
                    and ep.get('participant_id') == cfg.get('participant_id')]
         if len(matches) != 1:
             raise HubError('identity_rejected', 'Dots endpoint is not uniquely enrolled')
-        message = self.hub('query', endpoint_id=caller['endpoint_id'], message_id=message_id)
         if message.get('recipient_endpoint') != matches[0].get('endpoint_id'):
             raise HubError('identity_rejected', 'message is not addressed to current Dots')
         if message.get('state') not in ('accepted', 'queued', 'adapter_received'):
@@ -994,7 +1003,9 @@ class Host:
             result = self.hub('diagnose', endpoint_id=ep['endpoint_id'],
                               message_id=req['message_id'], operator_diagnostic=operator)
             result['notification'] = {'status': 'unknown', 'reason': 'not_local_or_not_supported'}
-            cfg = (self.config.get('services') or {}).get('kai', {})
+            cfg = (self._event_service(result.get('recipient_endpoint'))
+                   if ep['endpoint_id'] in (result.get('sender_endpoint'), result.get('recipient_endpoint'))
+                   and result.get('recipient_host_id') == self.config['host_id'] else {})
             # Bridge state belongs to its owner Host. Operator diagnosis must
             # not expand access to service notification state beyond parties.
             if (cfg.get('event_bridge_socket')

@@ -221,13 +221,13 @@ def _plist(label: str, script: Path, config: Path, extra: list[str] | None = Non
 
 
 CORE_LABELS = ("local.tproj.msg-unified-hub", "local.tproj.msg-unified-host")
-BRIDGE_LABELS = ("local.tproj.kai-probe-tunnel", "local.tproj.kai-mailbox", "local.tproj.muse-mailbox")
+BRIDGE_LABELS = ("local.tproj.dots-probe-tunnel", "local.tproj.dots-mailbox", "local.tproj.muse-mailbox")
 
 
 def _activation_health(home: Path, label: str) -> bool:
     """Require an authenticated read response, not a stale socket or job label."""
     try:
-        if label in BRIDGE_LABELS:
+        if label not in CORE_LABELS:
             # No common bridge RPC exists. Report process readiness only; do
             # not imply mailbox transport health, delivery or peer consumption.
             for domain in (f"user/{os.getuid()}", f"gui/{os.getuid()}"):
@@ -325,11 +325,30 @@ def activate(home: Path | None = None) -> list[str]:
     # Muse enrollment stores its LaunchAgent with its isolated package, not
     # in Library/LaunchAgents. Use each installer's canonical path.
     bridges = []
+    config = _read_json(home / ".config/tproj/msg-host.json")
+    registered = []
+    bridge_errors = []
+    entries = config.get('runtime_bridges', [])
+    if not isinstance(entries, list):
+        entries = []
+        bridge_errors.append('bridge_process_unavailable:configuration_error')
+    for entry in entries:
+        if (not isinstance(entry, dict) or not isinstance(entry.get('label'), str)
+                or not isinstance(entry.get('manifest'), str)):
+            bridge_errors.append('bridge_process_unavailable:configuration_error')
+            continue
+        registered.append((entry['label'], Path(entry['manifest']).expanduser()))
+    for cfg in (config.get('services') or {}).values():
+        if isinstance(cfg, dict) and cfg.get('event_bridge_socket') and cfg.get('launchd_label'):
+            label = cfg['launchd_label']
+            registered.append((label, home / "Library/LaunchAgents" / (label + ".plist")))
     for label in BRIDGE_LABELS:
         manifest = (home / ".local/share/tproj/muse-mailbox/muse-mailbox.plist"
                     if label == "local.tproj.muse-mailbox"
                     else home / "Library/LaunchAgents" / (label + ".plist"))
-        if manifest.is_file():
+        registered.append((label, manifest))
+    for label, manifest in registered:
+        if manifest.is_file() and label not in {item[1] for item in bridges}:
             bridges.append((manifest, label))
     for manifest in manifests + [p for p, _ in bridges]:
         value = plistlib.loads(manifest.read_bytes())
@@ -337,6 +356,7 @@ def activate(home: Path | None = None) -> list[str]:
             value["LimitLoadToSessionType"] = "Background"
             _atomic_text(manifest, plistlib.dumps(value).decode(), 0o644, False)
     results = _activate(home, manifests, False, False, False)
+    results.extend(bridge_errors)
     if not any(item.startswith("unavailable:") for item in results):
         for manifest, label in bridges:
             result = _activate(home, [manifest], False, False, False, labels=(label,))
