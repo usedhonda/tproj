@@ -63,6 +63,8 @@ tm set-option -g default-shell "$TMP/bin/pane-shell"
 run register --path "$TMP/project" --alias demo
 cc_session=$(run ensure --path "$TMP/project" --role cc)
 cdx_session=$(run ensure --path "$TMP/project" --role cdx)
+[[ $(tm show-options -v -t "=$cc_session" @tproj) == true ]]
+[[ $(tm show-options -v -t "=$cdx_session" @tproj) == true ]]
 [[ "$cc_session" != "$cdx_session" ]]
 [[ $(grep -c '^activate$' "$TMP/activation") == 2 ]]
 [[ $(tm show-options -t "$cc_session" -v status) == off ]]

@@ -50,14 +50,18 @@ def _native_path(ep, native, payload=None):
             or (payload is not None and (payload.get('session_id') != nid
                 or not isinstance(payload.get('turn_id'), str) or not payload['turn_id']))):
         raise HubError('identity_rejected', 'hook native identity mismatch')
-    root = Path.home() / '.codex/sessions'
+    configured_root = Path.home() / '.codex/sessions'
+    root = configured_root.resolve()
     paths = list(root.glob('[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9]/rollout-*-' + nid + '.jsonl'))
     if len(paths) != 1:
         raise HubError('identity_rejected', 'unique pinned native transcript required')
     path = paths[0]
-    if any(p.is_symlink() for p in (path, *path.parents)):
+    relative = path.relative_to(root)
+    if any(root.joinpath(*relative.parts[:i]).is_symlink()
+           for i in range(1, len(relative.parts) + 1)):
         raise HubError('identity_rejected', 'native transcript symlink rejected')
-    if payload is not None and payload.get('transcript_path') != str(path):
+    if payload is not None and payload.get('transcript_path') not in (
+            str(path), str(configured_root / relative)):
         raise HubError('identity_rejected', 'hook transcript mismatch')
     try:
         with path.open('rb') as f:

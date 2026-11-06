@@ -1,6 +1,6 @@
 #!/bin/bash
 # tproj-msg-reload: deploy the messaging runtime from this checkout to this Mac and the
-# Mac mini, restart its services, refresh the Dots tool list, and show what is running.
+# Mac mini, restart its services, request a Dots tool refresh, and show what is running.
 # One command, no arguments. Safe to rerun. It never touches grants, keys or sessions.
 set -u
 # Parse read-only/help arguments before touching runtime, services, or the UI.
@@ -16,12 +16,26 @@ SELF="$0"; [ -L "$SELF" ] && SELF="$(readlink "$SELF")"
 REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
 MSG="$REPO/extensions/messaging"
 UNI="$MSG/unified"
-KAI="$MSG/external/kai-mcp"
+DOTS="$MSG/external/dots-mcp"
 UID_NUM="$(id -u)"
-REMOTE="${TPROJ_RELOAD_REMOTE:-macmini}"
+# Operator-specific host, package, labels and app IDs never live in this file.
+reload_setting() {
+  python3 - "$HOME/.config/tproj/msg-reload.json" "$1" "$2" <<'PYCFG'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+value = json.loads(path.read_text()).get(sys.argv[2], sys.argv[3]) if path.exists() else sys.argv[3]
+if not isinstance(value, str) or any(c in value for c in "\r\n"):
+    raise SystemExit("invalid reload setting")
+print(value)
+PYCFG
+}
+REMOTE="${TPROJ_RELOAD_REMOTE:-$(reload_setting remote '')}"
+REMOTE_DOTS_DIR="${TPROJ_RELOAD_REMOTE_DOTS_DIR:-$(reload_setting remote_dots_dir .local/share/tproj/dots-mailbox/dots-mcp)}"
+REMOTE_LABELS="${TPROJ_RELOAD_REMOTE_LABELS:-$(reload_setting remote_labels 'msg-unified-hub msg-unified-host dots-mailbox dots-probe-tunnel')}"
 # One reused SSH connection: a slow link costs one handshake, not one per file.
 SSHO=(-o BatchMode=yes -o ConnectTimeout=20 -o ControlMaster=auto -o "ControlPath=$HOME/.ssh/tproj-rl-%C" -o ControlPersist=3m)
-APP="plugin_asdk_app_6abe7ea4fa6c81919d9bf52ca9e6cf9a"
+APP="${TPROJ_RELOAD_APP:-$(reload_setting app '')}"
 UNI_FILES="cli.py recipient.py host.py hub.py identity.py protocol.py policy.py receipt.py federation.py directory.py enrollment.py repo_access.py repo_access_policy.py repo_write.py runtime.py"
 
 say() { echo "[reload] $*"; }
@@ -30,14 +44,18 @@ say "deploy this Mac"
 for f in $UNI_FILES; do cp "$UNI/$f" "$HOME/lib/tproj-msg-unified/$f" || say "copy failed: $f"; done
 cp "$MSG/repo-cli" "$HOME/bin/tproj-repo" && chmod +x "$HOME/bin/tproj-repo"
 
-if ssh "${SSHO[@]}" "$REMOTE" true 2>/dev/null; then
+if [[ -n "$REMOTE" ]] && ssh "${SSHO[@]}" "$REMOTE" true 2>/dev/null; then
   say "deploy $REMOTE"
   # One tar stream per directory over the shared connection (a slow link makes per-file copies take minutes).
   (cd "$UNI" && tar cf - $UNI_FILES) | ssh "${SSHO[@]}" "$REMOTE" 'tar xf - -C ~/lib/tproj-msg-unified' || say "copy failed: unified"
   (cd "$MSG" && tar cf - repo-cli) | ssh "${SSHO[@]}" "$REMOTE" 'tar xf - -C /tmp && mv /tmp/repo-cli ~/bin/tproj-repo && chmod +x ~/bin/tproj-repo' || say "copy failed: repo-cli"
-  (cd "$KAI" && tar cf - mailbox_tools.py connection.py conversation.py events.py runtime.py server.py external-assistant-tools.json) | ssh "${SSHO[@]}" "$REMOTE" 'tar xf - -C ~/.local/share/tproj/kai-msg-prepared/kai-mcp' || say "copy failed: kai-mcp"
+  printf -v remote_dir_q '%q' "$REMOTE_DOTS_DIR"
+  (cd "$DOTS" && tar cf - mailbox_tools.py connection.py conversation.py events.py runtime.py server.py external-assistant-tools.json) | ssh "${SSHO[@]}" "$REMOTE" "tar xf - -C \"\$HOME\"/$remote_dir_q" || say "copy failed: dots-mcp"
+  # The mailbox event adapter imports this sibling's authenticated webhook helper.
+  (cd "$MSG/external/dots-event-probe" && tar cf - server.py) | ssh "${SSHO[@]}" "$REMOTE" "mkdir -p \"\$HOME\"/$remote_dir_q/../dots-event-probe && tar xf - -C \"\$HOME\"/$remote_dir_q/../dots-event-probe" || say "copy failed: dots-event-probe"
   say "restart $REMOTE services"
-  ssh "${SSHO[@]}" "$REMOTE" 'uid=$(id -u); for l in msg-unified-hub msg-unified-host kai-mailbox kai-probe-tunnel; do launchctl kickstart -k gui/$uid/local.tproj.$l; sleep 2; done'
+  printf -v labels_q '%q' "$REMOTE_LABELS"
+  ssh "${SSHO[@]}" "$REMOTE" "labels=$labels_q; uid=\$(id -u); for l in \$labels; do launchctl kickstart -k user/\$uid/local.tproj.\$l; sleep 2; done"
 else
   say "$REMOTE unreachable: skipped"
 fi
@@ -47,18 +65,18 @@ launchctl kickstart -k "gui/$UID_NUM/local.tproj.msg-unified-hub"; sleep 2
 launchctl kickstart -k "gui/$UID_NUM/local.tproj.msg-unified-host"; sleep 5
 
 say "Dots tool refresh"
-if osascript -e 'tell application "Google Chrome" to get URL of active tab of front window' >/dev/null 2>&1; then
+if [[ -n "$APP" ]] && osascript -e 'tell application "Google Chrome" to get URL of active tab of front window' >/dev/null 2>&1; then
   osascript -e "tell application \"Google Chrome\" to set URL of active tab of front window to \"https://chatgpt.com/settings/plugins-settings/$APP\"" >/dev/null
   for try in 1 2 3 4 5 6 7 8; do
     sleep 4
-    out=$(osascript -e 'tell application "Google Chrome" to execute active tab of front window javascript "(function(){var b=Array.from(document.querySelectorAll(\"button\")).find(function(x){return x.innerText.trim()==\"ツールを更新\"});if(!b)return \"no button\";b.click();return \"refreshed\"})()"' 2>/dev/null)
-    [ "$out" = "refreshed" ] && break
+    out=$(osascript -e 'tell application "Google Chrome" to execute active tab of front window javascript "(function(){var b=Array.from(document.querySelectorAll(\"button\")).find(function(x){return x.innerText.trim()==\"ツールを更新\"});if(!b)return \"no button\";b.click();return \"refresh_requested\"})()"' 2>/dev/null)
+    [ "$out" = "refresh_requested" ] && break
   done
-  say "dots: ${out:-no result}"
+  say "dots: ${out:-no result}; callable activation unverified"
 else
-  say "Chrome not available: skipped"
+  say "plugin ID not configured or Chrome unavailable: skipped"
 fi
 
 say "check"
 tproj-repo list 2>&1 | head -5
-tproj-msg --list 2>&1 | grep -E "^(kai|chi\.cc) " | head -3
+tproj-msg --list 2>&1 | head -5

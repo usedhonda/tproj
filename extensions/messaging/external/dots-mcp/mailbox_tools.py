@@ -1,4 +1,4 @@
-"""Inert KAI MCP mailbox adapter.
+"""Inert Dots MCP mailbox adapter.
 
 The module is deliberately not an MCP server or a service launcher.  A caller
 must inject a trusted host-side authorizer and a host RPC function.  Until the
@@ -118,7 +118,7 @@ class MailboxTools:
     normally a ``socket_rpc`` partial; tests inject a recorder.
     """
 
-    TOOLS = ("tproj_reconcile", "tproj_cancel_submission", "tproj_capabilities", "tproj_list", "tproj_status", "tproj_send", "tproj_inbox", "tproj_message", "tproj_reply", "tproj_ack", "tproj_diagnose",
+    TOOLS = ("tproj_receive_work", "tproj_receive_finish", "tproj_reconcile", "tproj_cancel_submission", "tproj_capabilities", "tproj_list", "tproj_status", "tproj_send", "tproj_inbox", "tproj_message", "tproj_reply", "tproj_ack", "tproj_diagnose",
              "tproj_repo_list", "tproj_repo_tree", "tproj_repo_read", "tproj_repo_search",
              "tproj_repo_write", "tproj_repo_revert")
 
@@ -162,6 +162,18 @@ class MailboxTools:
             self._keys(args, {'submission_id'})
             sid=self._id(args['submission_id'], 'submission ID')
             return self._host('service_reconcile' if name=='tproj_reconcile' else 'service_cancel_submission', submission_id=sid)
+        if name == 'tproj_receive_work':
+            self._keys(args, {'message_id','action','claim_id'}, {'body'})
+            if args['action'] not in ('claim','prepare_reply'):
+                raise MailboxToolError('invalid_request', 'unsupported receive action')
+            fields = dict(message_id=self._id(args['message_id']),
+                          claim_id=self._id(args['claim_id']), action=args['action'])
+            if 'body' in args: fields['body'] = self._body(args['body'])
+            return self._host('service_receive_work', **fields)
+        if name == 'tproj_receive_finish':
+            self._keys(args, {'message_id'}, {'claim_id'})
+            return self._host('service_receive_finish', message_id=self._id(args['message_id']),
+                              **({'claim_id': self._id(args['claim_id'])} if 'claim_id' in args else {}))
         if name in self.REPO_TOOLS:
             return self._repo(name, args)
         if name == "tproj_list": return self._list(args, ctx)
@@ -322,14 +334,18 @@ class MailboxTools:
                 "state": result.get("state", "queued"), **self._submission_fields(result), **({"duplicate": bool(result["duplicate"])} if "duplicate" in result else {})}
 
     def _inbox(self, args: Mapping[str, Any], ctx: Mapping[str, Any]) -> dict[str, Any]:
-        self._keys(args, set(), {"cursor", "limit", "metadata_only"})
+        self._keys(args, set(), {"cursor", "limit", "metadata_only", "pending_only"})
         metadata_only = args.get('metadata_only', False)
         if type(metadata_only) is not bool:
             raise MailboxToolError('invalid_request', 'metadata_only must be boolean')
         cursor = args.get("cursor", 0); limit = args.get("limit", 100)
         if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0 or not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_LIMIT:
             raise MailboxToolError("invalid_request", "cursor and limit are out of bounds")
-        result = self._host("service_inbox", cursor=cursor, limit=limit) or {}
+        pending_only = args.get('pending_only', False)
+        if type(pending_only) is not bool:
+            raise MailboxToolError('invalid_request', 'pending_only must be boolean')
+        result = self._host("service_inbox", cursor=cursor, limit=limit,
+                            **({'pending_only': True} if pending_only else {})) or {}
         errors = {k: result[k] for k in ('message_errors', 'message_error_count') if k in result}
         if metadata_only:
             # Detection and hook dry-runs must not reserve presentation or copy bodies.

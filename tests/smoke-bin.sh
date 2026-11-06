@@ -121,10 +121,10 @@ if [[ -x "$ROLE" ]]; then
   else
     fail "exec:tproj-role --status-segment" "non-zero exit"
   fi
-  if run_bounded 6 "$ROLE" --help >/dev/null 2>&1; then
-    pass "exec:tproj-role --help"
+  if role_help=$(run_bounded 6 "$ROLE" --help 2>&1) && [[ "$role_help" == *"main <side>"* ]]; then
+    pass "exec:tproj-role --help documents the main side"
   else
-    fail "exec:tproj-role --help" "non-zero exit"
+    fail "exec:tproj-role --help" "non-zero exit or missing main usage"
   fi
   # An installation without model-role-router has no declared mode, and the read-only
   # entry points have to survive that: the status line calls the segment on every
@@ -155,11 +155,6 @@ if [[ -x "$ROLE" ]]; then
     else
       fail "exec:tproj-role rejects an unknown --main side" "rc=$rc output: $(printf '%s' "$out" | tr '\n' '|')"
     fi
-  fi
-  if printf '%s' "$($ROLE --help 2>&1)" | grep -q "main <side>"; then
-    pass "exec:tproj-role --help documents the main side"
-  else
-    fail "exec:tproj-role --help documents the main side" "not in usage"
   fi
 else
   fail "exec:tproj-role" "not executable"

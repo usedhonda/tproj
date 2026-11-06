@@ -1,8 +1,8 @@
 # Muse mailbox service — Issue #14 P1
 
-This adapter reuses the KAI mailbox implementation instead of forking it.
+This adapter reuses the Dots mailbox implementation instead of forking it.
 ServiceIdentity is credential-free; ServiceBinding adds the parent-only
-credential. KaiServiceBinding remains an API alias. Existing KAI event-enabled
+credential. DotsServiceBinding remains an API alias. Existing Dots event-enabled
 defaults and its full catalog are unchanged.
 
 ## P1 boundary
@@ -24,7 +24,7 @@ defaults and its full catalog are unchanged.
 
 First load a Host advertising service_generation_v1. The helper checks that
 capability before enrollment changes. Do not use the blanket installer or
-restart KAI, OpenClaw, tmux, native agents or the GUI.
+restart Dots, OpenClaw, tmux, native agents or the GUI.
 
 From source, on the intended owner, after the operator selects empty scope:
 
@@ -73,7 +73,7 @@ Missing dedicated public key or operator-selected scope leaves P1 incomplete.
 
 A Muse-only restart with the same generation must retain endpoint/incarnation
 and mailbox references. A private atomic Muse generation change or removal
-rejects old parent requests without changing KAI/OpenClaw. Never put generation
+rejects old parent requests without changing Dots/OpenClaw. Never put generation
 in argv/chat/issues. Verify rejection first; restoring/re-enrolling access is
 a separate explicit operator operation. Preserve historical unknown outcomes.
 

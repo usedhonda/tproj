@@ -99,7 +99,7 @@ class SendTargetsTest(unittest.TestCase):
         self.assertEqual([r['address'] for r in h.dispatch(req, 1, os.getuid())['participants']], ['a.cdx'])
         h.config['services']['muse']['allowed_addresses'] = ['b.cc']
         self.assertEqual([r['address'] for r in h.dispatch(req, 1, os.getuid())['participants']], ['b.cc'])
-        spec = importlib.util.spec_from_file_location('target_mailbox', ROOT / 'external/kai-mcp/mailbox_tools.py')
+        spec = importlib.util.spec_from_file_location('target_mailbox', ROOT / 'external/dots-mcp/mailbox_tools.py')
         mailbox = importlib.util.module_from_spec(spec); spec.loader.exec_module(mailbox)
         tools = mailbox.MailboxTools(service_id='muse', service_address='muse', service_token='fixture',
             authorizer=lambda *args: {'allowed_addresses': ['old-cache.cc']},
@@ -132,7 +132,7 @@ class SendTargetsTest(unittest.TestCase):
         self.assertTrue(row['sessions'][0]['selected'])
         self.assertNotIn('/fixture', json.dumps(rows))
         self.assertIsNone(h.service_policy(req, 'b.cc'))
-        spec = importlib.util.spec_from_file_location('mesh_mailbox', ROOT / 'external/kai-mcp/mailbox_tools.py')
+        spec = importlib.util.spec_from_file_location('mesh_mailbox', ROOT / 'external/dots-mcp/mailbox_tools.py')
         mailbox = importlib.util.module_from_spec(spec); spec.loader.exec_module(mailbox)
         tools = mailbox.MailboxTools(service_id='muse', service_address='muse', service_token='fixture',
             authorizer=lambda *args: {'messaging_scope':'workspace','allowed_addresses':[]},

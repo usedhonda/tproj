@@ -14,7 +14,7 @@ from telegram_credentials import bot_token, CredentialUnavailable
 
 class RuntimeTest(unittest.TestCase):
     def test_plaintext_key_rejected_even_with_valid_keychain_reference(self):
-        reference = {'service': 'openclaw.kai.telegram', 'account': '101'}
+        reference = {'service': 'openclaw.dots.telegram', 'account': '101'}
         for legacy in (None, '', 'fixture-not-a-real-credential'):
             with self.assertRaisesRegex(CredentialUnavailable, 'plaintext_bot_credential_not_allowed'):
                 bot_token({'bot_token_keychain': reference, 'bot_token': legacy}, 101)
@@ -23,11 +23,11 @@ class RuntimeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'config.json'
             binding = TelegramOwnerBinding('test-binding', 'test-owner', 101, 202,
-                                           202, 'kai', 1, 2000)
+                                           202, 'dots', 1, 2000)
             config = {'owner_binding': asdict(binding), 'ingress_secret': 'fixture_ingress_secret',
-                      'bot_token_keychain': {'service': 'openclaw.kai.telegram', 'account': '101'},
+                      'bot_token_keychain': {'service': 'openclaw.dots.telegram', 'account': '101'},
                       'journal': str(Path(tmp) / 'relay.db'),
-                      'kai_endpoint': 'kai-ep', 'host_socket': str(Path(tmp) / 'host.sock'),
+                      'assistant_endpoint': 'dots-ep', 'host_socket': str(Path(tmp) / 'host.sock'),
                       'service_id': 'telegram', 'service_token': 'fixture-service',
                       'address': 'telegram-owner', 'binding_generation': 'fixture-gen'}
             path.write_text(json.dumps(config)); path.chmod(0o600)
@@ -36,9 +36,9 @@ class RuntimeTest(unittest.TestCase):
                       'chat': {'id': 202, 'type': 'private'}, 'text': 'original text'}}
             authority = TelegramIngressAuthority(binding, config['ingress_secret'])
             intent = authority.admit(json.dumps(update).encode(), config['ingress_secret'], now=1000)
-            reply = {'message_id': 'kai-reply-1', 'thread_id': intent.message_id,
-                     'in_reply_to': intent.message_id, 'sender_endpoint': 'kai-ep',
-                     'body': 'KAI original answer'}
+            reply = {'message_id': 'dots-reply-1', 'thread_id': intent.message_id,
+                     'in_reply_to': intent.message_id, 'sender_endpoint': 'dots-ep',
+                     'body': 'Dots original answer'}
             host_calls, api_calls = [], []
             inbox = []
             def host(_socket, req):
@@ -74,7 +74,7 @@ class RuntimeTest(unittest.TestCase):
             runtime.receive_once()
             runtime.replies_once()
             sends = [payload for method, payload in api_calls if method == 'sendMessage']
-            self.assertEqual(sends, [{'chat_id': 202, 'text': 'KAI original answer',
+            self.assertEqual(sends, [{'chat_id': 202, 'text': 'Dots original answer',
                                       'reply_parameters': {'message_id': 30,
                                         'allow_sending_without_reply': False}}])
             self.assertEqual(len([r for r in host_calls if r['op'] == 'service_telegram_ingress']), 1)

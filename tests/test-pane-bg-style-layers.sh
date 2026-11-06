@@ -37,7 +37,9 @@ out=$(layers)
 
 # Provider-scoped: the gemini route was never broken and must not start carrying a
 # cel guard it did not ask for.
-out=$(layers --model gemini-3-pro-image-preview)
+gemini_model=$(HOME="$TMP/home" TPROJ_PANE_BG_SOURCE_ONLY=1 bash -c \
+  'source "$1"; printf "%s" "$PRO_MODEL_NAME"' _ "$BG")
+out=$(layers --model "$gemini_model")
 [[ "$(field "$out" .style_guard)" == "empty" && "$(field "$out" .style_baseline)" == "null" ]] \
   && pass "the baseline is scoped to its provider" \
   || fail "the baseline is scoped to its provider" "$out"

@@ -10,12 +10,12 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("kai_conversation", ROOT / "conversation.py")
+spec = importlib.util.spec_from_file_location("dots_conversation", ROOT / "conversation.py")
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
-mailbox_spec = importlib.util.spec_from_file_location("kai_mailbox_tools", ROOT / "mailbox_tools.py")
+mailbox_spec = importlib.util.spec_from_file_location("dots_mailbox_tools", ROOT / "mailbox_tools.py")
 mailbox = importlib.util.module_from_spec(mailbox_spec)
 sys.modules[mailbox_spec.name] = mailbox
 mailbox_spec.loader.exec_module(mailbox)

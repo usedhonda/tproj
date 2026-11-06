@@ -1,11 +1,11 @@
-# KAI mailbox tool adapter
+# Dots mailbox tool adapter
 
-`extensions/messaging/external/kai-mcp/mailbox_tools.py` contains the local
+`extensions/messaging/external/dots-mcp/mailbox_tools.py` contains the local
 adapter for the reviewed tool shapes: `tproj_list`,
 `tproj_status`, `tproj_send`, `tproj_inbox`, `tproj_message`, `tproj_reply`,
 `tproj_ack`, and metadata-only `tproj_diagnose(submission_id)`.
 
-`extensions/messaging/external/kai-mcp/server.py` adds standard MCP stdio
+`extensions/messaging/external/dots-mcp/server.py` adds standard MCP stdio
 plumbing (`initialize`, `tools/list`, `tools/call`, `ping`, and notification
 handling). It loads the reviewed machine-readable catalog for exact schemas
 and annotations. The command-line entrypoint deliberately constructs no
@@ -24,7 +24,7 @@ MCP event name, empty arguments, webhook mode, and delivery URL shape.
 
 ## Production runtime wiring
 
-`extensions/messaging/external/kai-mcp/runtime.py --config CONFIG` is the
+`extensions/messaging/external/dots-mcp/runtime.py --config CONFIG` is the
 service entrypoint. The launchd-owned process calls the unified host's
 `service_whoami` with the configured service ID, address, and credential, then
 constructs the tools and mailbox event dispatcher from that live endpoint
@@ -43,7 +43,7 @@ The private config contains `service_id`, `address`, `participant_id`,
 local-only and must be owner-readable. A launchd manifest should execute:
 
 ```text
-python3 /path/to/extensions/messaging/external/kai-mcp/runtime.py --config /private/kai.json --bridge
+python3 /path/to/extensions/messaging/external/dots-mcp/runtime.py --config /private/dots.json --bridge
 ```
 
 The tunnel child uses the same config with `bridge_socket` and omits
@@ -59,7 +59,7 @@ reviewed catalog, so a standalone deployment does not depend on the repository
 `docs/` tree. The server validates that all expected names are present;
 it never logs catalog contents, credentials, or callback secrets.
 
-The supported `bin/tproj-msg-reload` path distributes the complete KAI MCP
+The supported `bin/tproj-msg-reload` path distributes the complete Dots MCP
 module closure in one tar stream: `mailbox_tools.py`, `connection.py`,
 `conversation.py`, `events.py`, `runtime.py`, `server.py`, and the sibling
 `external-assistant-tools.json` catalog. Keeping these files together is
@@ -69,7 +69,7 @@ modules, while server dispatch also imports the conversation resolver.
 The adapter is not an MCP server, does not register cloud tools, and does not
 start a daemon. A host integration injects a host-socket call and a
 `FixedConnectionAuthorizer` from `connection.py`. That authorizer represents
-the enrolled KAI **service principal** (not a cryptographically asserted
+the enrolled Dots **service principal** (not a cryptographically asserted
 model persona): every call revalidates the host-derived service identity,
 endpoint incarnation, and current host-derived policy revision. Outbound scope
 is authoritative at the host service list/status/send operations. Missing,
@@ -95,7 +95,7 @@ of enrollment, cloud conversation identity, delivery, or presentation.
 Inbox projections and direct message views hide host envelopes whose durable
 state is `cancelled`, `canceled`, `expired`, `terminal`, `rejected`, or
 `stale_session`; those states are
-never offered to KAI as new work. Before returning any message body, the
+never offered to Dots as new work. Before returning any message body, the
 adapter calls the host's atomic `service_begin_present` gate; cancellation,
 expiry, rejection, stale-session, or unauthorized results suppress that item,
 while unrelated host failures remain errors. The host remains responsible for
@@ -103,22 +103,22 @@ truthful presentation receipts.
 
 ## Connection-principal boundary
 
-`KaiServiceBinding` fixes the service ID, address, participant ID, credential,
+`DotsServiceBinding` fixes the service ID, address, participant ID, credential,
 and participant allowlist at enrollment. It also requires a persistent
 `binding_generation` random identifier. A verified service restart may change endpoint
 incarnation while retaining that generation and its one callback subscription;
 explicit reenrollment or revocation must rotate the generation. The host
 attestor must return the matching binding and live incarnation; an address or
 token never selects a different service. The unified host remains responsible for the exact
-launchd PID and kernel process-start check. The adapter does not infer KAI
+launchd PID and kernel process-start check. The adapter does not infer Dots
 conversation identity from `_meta`, display names, or model-supplied values.
 
 ## Evidence boundary
 
 The implementation remains unexposed until trusted host-side service
-enrollment and the KAI route are enabled. The fixed connection principal does
+enrollment and the Dots route are enabled. The fixed connection principal does
 not prove original Dots conversation identity. Original Dots event delivery,
-shared app-server conversation authentication, cloud registration, live KAI
+shared app-server conversation authentication, cloud registration, live Dots
 enrollment, and end-to-end mailbox receipts remain unproven and are not
 claimed by this module.
 
@@ -128,12 +128,12 @@ An authenticated local mailbox party may run `tproj-msg retry-event MESSAGE_ID`.
 The ordinary wrapper routes this command to the unified host; it is not a legacy
 or cross-host operation. The host binds the caller with the normal native
 identity, queries the message as that party, and requires the current local
-`services.kai` endpoint to be the exact recipient. Canceled, expired, presented,
+`services.dots` endpoint to be the exact recipient. Canceled, expired, presented,
 retired, foreign, or otherwise ineligible messages fail closed.
 
-The host then calls the already configured KAI bridge through
-`services.kai.event_bridge_socket`, sending only the message ID, authenticated
-actor endpoint, and the existing KAI service token. The private bridge verifies
+The host then calls the already configured Dots bridge through
+`services.dots.event_bridge_socket`, sending only the message ID, authenticated
+actor endpoint, and the existing Dots service token. The private bridge verifies
 that token in constant time, re-attests the launchd-owned service, rechecks the
 current recipient and original message parties, and invokes the durable
 `retry_once` event operation. Retry responses contain only stable IDs, status,
@@ -144,10 +144,61 @@ is reported as unknown and is not automatically repeated.
 Focused verification:
 
 ```bash
-python3 -m unittest extensions/messaging/external/kai-mcp/test_mailbox_tools.py
-python3 -m unittest extensions/messaging/external/kai-mcp/test_server.py
+python3 -m unittest extensions/messaging/external/dots-mcp/test_mailbox_tools.py
+python3 -m unittest extensions/messaging/external/dots-mcp/test_server.py
 ```
 
 Diagnosis bypasses mutating service_whoami preauthorization and authenticates on
 the host read-only service_diagnose path. It never changes the stable submission
 ID or retries delivery. Resource error metadata preserves acceptance=unknown.
+
+### Catalog activation diagnosis
+
+The existing no-argument `tproj_capabilities` response includes `server_catalog`
+with the actually served `version` fingerprint, `server_name` and advertised
+`tools`. This uses the same selected catalog as `tools/list`, including service
+subsets. It contains no messages, identity credentials or callback details and
+performs no mailbox read or send. It can diagnose a stale provider/client tool
+cache without first registering another diagnostic tool. These are server-side
+advertisements, not proof that the calling conversation has those tools in its
+callable catalog. Compare the two explicitly. For process-local discovery counts
+and the distinction between generated catalog responses and client application,
+see [catalog refresh observation](dots-mailbox-events.md#catalog-refresh-observation).
+
+The reload helper reports `refresh_requested`, not completed activation, when
+it clicks the connection Refresh button. Browser click success is not catalog
+import or conversation activation proof. Compare the existing server capability
+fingerprint, connection tool view and actual callable definitions separately.
+
+### Recover an existing conversation after a catalog update
+
+Keep three observations separate:
+
+1. **Served catalog:** the existing capability response identifies the selected
+   server catalog and process-local discovery observations.
+2. **Imported connection:** inspect the existing plugin's app-details tool list
+   after Refresh. Its read/write counts and tool names describe the connection,
+   not the running conversation.
+3. **Actual callables:** inspect the existing conversation's available function
+   declarations and argument schemas. Documentation or a returned list of names
+   does not register those functions.
+
+Use the product's Refresh action and correlate discovery observations within
+the same server-process start time. Merely seeing an enabled Refresh button
+is insufficient. A current imported list can coexist with old conversation
+definitions; reselecting that same plugin in the conversation is not proof of
+activation. Do not restart the mailbox server repeatedly to repair a catalog
+already imported correctly.
+
+If the existing Dot exposes a normal Reboot action, first read its actual
+confirmation. Reboot is distinct from Reset/Delete: proceed only when the UI
+explicitly preserves the existing conversations, memories and scheduled tasks,
+and account for interruption of active work. Preserve pending output IDs and
+uncertain effects. A failed reboot response does not prove no effect; do not
+repeat it blindly or invoke private endpoints. Keep the existing conversation
+and connection rather than replacing them to hide the failure.
+
+After activation, verify the actual new function declarations, the same existing
+receiver task's enabled state, and one retained message's ID-linked operation
+and reply. Tool availability is not automatic wake, successful execution, or
+completion. An enabled task is not evidence that its next event has run.

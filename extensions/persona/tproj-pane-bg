@@ -7,8 +7,10 @@ set -euo pipefail
 PROGRAM_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
-FLASH_MODEL_NAME="gemini-2.5-flash-image"
-PRO_MODEL_NAME="gemini-3-pro-image-preview"
+FLASH_MODEL_NAME="gemini-3.1-flash-image"
+PRO_MODEL_NAME="gemini-3-pro-image"
+# Cache compatibility only: never select this retired model for a new request.
+LEGACY_PRO_MODEL_NAME="gemini-3-pro-image-preview"
 CC_PERSONA_BIN="$HOME/bin/project-bootstrap"
 [[ -x "$CC_PERSONA_BIN" ]] || CC_PERSONA_BIN="$HOME/bin/cc-persona"
 # Final fallback: resolve from PATH (covers non-standard install locations)
@@ -1256,21 +1258,21 @@ EOF
 
 prompt_version_for_model() {
   case "$1" in
-    "$PRO_MODEL_NAME") printf '%s' "$PRO_PROMPT_VERSION" ;;
+    "$PRO_MODEL_NAME"|"$LEGACY_PRO_MODEL_NAME") printf '%s' "$PRO_PROMPT_VERSION" ;;
     *) printf '%s' "$FLASH_PROMPT_VERSION" ;;
   esac
 }
 
 prompt_schema_for_model() {
   case "$1" in
-    "$PRO_MODEL_NAME") printf '%s' "$PRO_PROMPT_SCHEMA" ;;
+    "$PRO_MODEL_NAME"|"$LEGACY_PRO_MODEL_NAME") printf '%s' "$PRO_PROMPT_SCHEMA" ;;
     *) printf '%s' "$FLASH_PROMPT_SCHEMA" ;;
   esac
 }
 
 generation_tier_for_model() {
   case "$1" in
-    "$PRO_MODEL_NAME") printf 'pro' ;;
+    "$PRO_MODEL_NAME"|"$LEGACY_PRO_MODEL_NAME") printf 'pro' ;;
     "$GPT_IMAGE_MODEL_NAME") printf 'gpt-image' ;;
     *) printf 'flash' ;;
   esac
@@ -1578,16 +1580,18 @@ build_pro_prompt_json() {
 
 build_pro_named_prompt() {
   local role="$1"
+  local model_name="${2:-$PRO_MODEL_NAME}"
   cat <<EOF
-create an image of a vertical terminal wallpaper for gemini-3-pro-image-preview.
+create an image of a vertical terminal wallpaper for ${model_name}.
 $(build_pro_finished_prompt_body "$role" "$STYLE_MODE_NAMED")
 EOF
 }
 
 build_pro_fallback_prompt() {
   local role="$1"
+  local model_name="${2:-$PRO_MODEL_NAME}"
   cat <<EOF
-create an image of a vertical terminal wallpaper for gemini-3-pro-image-preview.
+create an image of a vertical terminal wallpaper for ${model_name}.
 $(build_pro_finished_prompt_body "$role" "$STYLE_MODE_FALLBACK")
 EOF
 }
@@ -1597,11 +1601,13 @@ build_prompt_for_model() {
   local role="$2"
   local style_mode="$3"
 
-  if [[ "$model_name" == "$PRO_MODEL_NAME" ]]; then
+  # Retain the model-specific header when validating a preview-era sidecar, so
+  # switching the generation endpoint does not invalidate an existing wallpaper.
+  if [[ "$model_name" == "$PRO_MODEL_NAME" || "$model_name" == "$LEGACY_PRO_MODEL_NAME" ]]; then
     if [[ "$style_mode" == "$STYLE_MODE_NAMED" ]]; then
-      build_pro_named_prompt "$role"
+      build_pro_named_prompt "$role" "$model_name"
     else
-      build_pro_fallback_prompt "$role"
+      build_pro_fallback_prompt "$role" "$model_name"
     fi
     return 0
   fi
@@ -3296,6 +3302,7 @@ resolve_pane_project() {
   local pane_cwd="$2"
   local resolved=""
   local remote_path=""
+  local cached_project=""
 
   # Remote SSH panes run a local ssh client whose cwd is often /private/tmp.
   # Their @project tag is the remote identity, and the local checkout at the
@@ -3308,6 +3315,14 @@ resolve_pane_project() {
         return 0
       fi
     fi
+    # Remote-only projects need artwork, not a local checkout. Keep mirrored
+    # assets keyed by the full remote identity so equal paths on hosts cannot mix.
+    cached_project="${XDG_CACHE_HOME:-$HOME/.cache}/tproj-pane-bg/remote/$(hash_string "$project_hint")"
+    if [[ -d "$cached_project/.local/tproj-pane-bg" ]]; then
+      printf '%s' "$cached_project"
+      return 0
+    fi
+    return 1
   fi
 
   if [[ -n "$project_hint" ]]; then

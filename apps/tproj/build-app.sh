@@ -52,7 +52,7 @@ import hashlib, json, sys
 from pathlib import Path
 root = Path(sys.argv[1])
 Path(sys.argv[2]).write_text(json.dumps({"bin/"+name: hashlib.sha256((root/"bin"/name).read_bytes()).hexdigest()
-    for name in ["tproj", "tproj-remote-client", "tproj-remote-host", "tproj-respawn-guard"]}, sort_keys=True))
+    for name in ["tproj", "tproj-remote-client", "tproj-remote-host", "tproj-respawn-guard", "tproj-kill-pane", "tproj-drop-column"]}, sort_keys=True))
 PYMANIFEST
 
 python3 "$ROOT_DIR/verify-runtime.py" "$APP_DIR"

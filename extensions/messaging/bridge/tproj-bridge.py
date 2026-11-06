@@ -18,19 +18,22 @@ Standard library only, so the box needs nothing but python3 and the codex CLI.
 """
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import json
 import os
 import queue
 import re
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import NamedTuple
+from urllib.parse import urlsplit
 
 BRIDGE_ID = os.environ.get("TPROJ_BRIDGE_ID", "bot01")
 PORT = int(os.environ.get("TPROJ_BRIDGE_PORT", "8765"))
@@ -81,6 +84,69 @@ def ip_allowed(addr: str) -> bool:
     except ValueError:
         return False
     return any(ip in net for net in ALLOW_NETS)
+
+
+class CallbackTarget(NamedTuple):
+    scheme: str
+    host: str
+    port: int
+    authority: str
+    addresses: tuple
+
+
+def resolve_callback(url: str) -> CallbackTarget:
+    """Validate a callback base and pin all resolved addresses before queuing."""
+    if any(ord(c) <= 32 or ord(c) == 127 for c in url) or "\\" in url:
+        raise ValueError("return_url must be an HTTP(S) base URL")
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        port = parts.port
+        if (parts.scheme not in ("http", "https") or not host
+                or parts.username is not None or parts.password is not None
+                or parts.path not in ("", "/") or "?" in url or "#" in url
+                or "%" in host or parts.netloc.endswith(":")):
+            raise ValueError
+        host = host.encode("idna").decode("ascii")
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError
+    except (ValueError, UnicodeError):
+        raise ValueError("return_url must be an HTTP(S) base URL without credentials, path, query or fragment") from None
+    authority = f"[{host}]" if ":" in host else host
+    if port is not None:
+        authority += f":{port}"
+    port = port if port is not None else (443 if parts.scheme == "https" else 80)
+    try:
+        addresses = tuple(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
+    except OSError:
+        raise ValueError("return_url host could not be resolved") from None
+    if not addresses or any(family not in (socket.AF_INET, socket.AF_INET6) or not ip_allowed(address[0])
+                            for family, _, _, _, address in addresses):
+        raise ValueError("return_url must resolve only to loopback or Tailscale addresses")
+    return CallbackTarget(parts.scheme, host, port, authority, addresses)
+
+
+class CallbackConnection(http.client.HTTPConnection):
+    """Direct HTTP(S) connection to an accepted address, with no proxy or redirect."""
+    def __init__(self, target: CallbackTarget, timeout: int):
+        super().__init__(target.host, target.port, timeout=timeout)
+        self.target = target
+
+    def connect(self) -> None:
+        last_error = OSError("no callback address available")
+        for family, socktype, proto, _, address in self.target.addresses:
+            sock = socket.socket(family, socktype, proto)
+            try:
+                sock.settimeout(self.timeout)
+                sock.connect(address)
+                if self.target.scheme == "https":
+                    sock = ssl.create_default_context().wrap_socket(sock, server_hostname=self.target.host)
+                self.sock = sock
+                return
+            except OSError as exc:
+                sock.close()
+                last_error = exc
+        raise last_error
 
 
 def seen_before(trace_id: str) -> bool:
@@ -137,17 +203,18 @@ def run_codex(prompt: str) -> tuple[bool, str]:
     return True, last
 
 
-def post_json(url: str, payload: dict, timeout: int = 20) -> tuple[int, str]:
+def post_json(target: CallbackTarget, payload: dict, timeout: int = 20) -> tuple[int, str]:
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST",
-                                 headers={"Content-Type": "application/json"})
+    conn = CallbackConnection(target, timeout)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode("utf-8", "replace")[:500]
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode("utf-8", "replace")[:500]
-    except (urllib.error.URLError, OSError) as exc:
+        conn.request("POST", "/v1/tproj-msg-deliver", body=data,
+                     headers={"Content-Type": "application/json", "Host": target.authority})
+        with conn.getresponse() as resp:
+            return resp.status, resp.read(500).decode("utf-8", "replace")
+    except (http.client.HTTPException, OSError) as exc:
         return 0, str(exc)
+    finally:
+        conn.close()
 
 
 def deliver_reply(job: dict, text: str) -> None:
@@ -155,7 +222,7 @@ def deliver_reply(job: dict, text: str) -> None:
     payload = {"session": job["session"], "target": job["from"],
                "text": text[:MAX_REPLY_CHARS], "senderAs": job["reply_as"]}
     for attempt in (1, 2):
-        code, body = post_json(url, payload)
+        code, body = post_json(job["_callback"], payload)
         if 200 <= code < 300:
             log(f"reply delivered trace={job['trace_id']} -> {job['from']} via {url}")
             return
@@ -214,7 +281,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/health":
             self._send(200, {"ok": True, "id": BRIDGE_ID, "busy": _busy.is_set(), "queued": _jobs.qsize(),
                              "repo": REPO, "sandbox": SANDBOX, "network": NETWORK, "add_dirs": ADD_DIRS,
-                             "codex_config": CODEX_CONFIG})
+                             "codex_config_count": len(CODEX_CONFIG)})
             return
         self._send(404, {"ok": False, "error": "not found"})
 
@@ -224,14 +291,38 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/v1/inbox":
             self._send(404, {"ok": False, "error": "not found"})
             return
-        length = int(self.headers.get("Content-Length") or 0)
+        # IP trust must not let a web page turn the user's browser into a CLI.
+        if self.headers.get("Origin") is not None:
+            self._send(403, {"ok": False, "error": "browser-origin requests are not allowed"})
+            return
+        if (len(self.headers.get_all("Content-Type", [])) != 1
+                or self.headers.get_content_type() != "application/json"):
+            self._send(415, {"ok": False, "error": "Content-Type must be application/json"})
+            return
+        lengths = self.headers.get_all("Content-Length", [])
+        if (self.headers.get("Transfer-Encoding") is not None or len(lengths) != 1
+                or not re.fullmatch(r"[0-9]+", lengths[0].strip())):
+            self._send(400, {"ok": False, "error": "bad body length"})
+            return
+        try:
+            length = int(lengths[0])
+        except ValueError:
+            self._send(400, {"ok": False, "error": "bad body length"})
+            return
         if length <= 0 or length > MAX_BODY_BYTES:
             self._send(413 if length > MAX_BODY_BYTES else 400, {"ok": False, "error": "bad body length"})
             return
+        body = self.rfile.read(length)
+        if len(body) != length:
+            self._send(400, {"ok": False, "error": "incomplete body"})
+            return
         try:
-            job = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
+            job = json.loads(body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, RecursionError):
             self._send(400, {"ok": False, "error": "invalid JSON"})
+            return
+        if not isinstance(job, dict):
+            self._send(400, {"ok": False, "error": "JSON object required"})
             return
         required = ("from", "session", "text", "trace_id", "return_url", "reply_as")
         missing = [k for k in required if not isinstance(job.get(k), str) or not job[k].strip()]
@@ -242,6 +333,11 @@ class Handler(BaseHTTPRequestHandler):
             # Two boxes must never be confused: a message addressed to another
             # id is refused here even if it reached this host.
             self._send(409, {"ok": False, "error": f"addressed to {job.get('to')!r}, this bridge is gate:{BRIDGE_ID}"})
+            return
+        try:
+            job["_callback"] = resolve_callback(job["return_url"])
+        except ValueError as exc:
+            self._send(400, {"ok": False, "error": str(exc)})
             return
         if seen_before(job["trace_id"]):
             self._send(202, {"ok": True, "queued": _jobs.qsize(), "duplicate": True})
@@ -254,7 +350,7 @@ def main() -> int:
     threading.Thread(target=worker, name="codex-worker", daemon=True).start()
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
     log(f"tproj-bridge id={BRIDGE_ID} listening on {BIND}:{PORT} repo={REPO} codex={CODEX} "
-        f"sandbox={SANDBOX} network={NETWORK} add_dirs={ADD_DIRS} codex_config={CODEX_CONFIG}")
+        f"sandbox={SANDBOX} network={NETWORK} add_dirs={ADD_DIRS} codex_config_count={len(CODEX_CONFIG)}")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

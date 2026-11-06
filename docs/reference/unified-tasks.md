@@ -60,6 +60,10 @@ or trusting configuration on disk is not evidence of that live reload.
 The evaluator keeps its allow/block result internal: an allowed native hook emits
 no decision, preserving platform permission checks. Only a block is serialized;
 `decision: "allow"` is not a valid native pre/post hook wire response.
+Extensionless sibling hook modules use the spec/module/`exec_module` loader
+protocol, with registration in `sys.modules` before execution, so the evaluator
+also loads on Python 3.15. A real evaluator-load failure still returns a block;
+successful native allows remain silent.
 
 For a live Codex client that exposes `/hooks`, a genuinely changed hook can be
 reviewed and trusted from that client's hook details without restarting its

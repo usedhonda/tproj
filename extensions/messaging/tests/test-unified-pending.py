@@ -37,8 +37,8 @@ class PendingTest(unittest.TestCase):
     def test_owning_side_state_replaces_the_handoff_copy(self):
         stub = Stub(
             [row("m-local", "tproj.cdx", "cdx", "dev", 600),
-             row("m-acked", "kai", "kai", "mini", 500),
-             row("m-stuck", "kai", "kai", "mini", 400),
+             row("m-acked", "dots", "dots", "mini", 500),
+             row("m-stuck", "dots", "dots", "mini", 400),
              row("m-away", "chi.cc", "cc", "mini", 300)],
             {"m-acked": {"state": "presented"},
              "m-stuck": {"state": "dispatching"},
@@ -46,9 +46,9 @@ class PendingTest(unittest.TestCase):
         out = host_mod.Host._pending(stub, {"endpoint_id": "e"})
         by_target = {g["target"]: g for g in out["groups"]}
         self.assertEqual(out["total"], 3)
-        self.assertEqual(by_target["kai"]["count"], 1)            # the acked one is gone
-        self.assertEqual(by_target["kai"]["states"], {"dispatching": 1})
-        self.assertEqual(by_target["kai"]["where"], "service")
+        self.assertEqual(by_target["dots"]["count"], 1)            # the acked one is gone
+        self.assertEqual(by_target["dots"]["states"], {"dispatching": 1})
+        self.assertEqual(by_target["dots"]["where"], "service")
         self.assertNotIn("m-local", stub.queried)                  # this Mac's own state is authoritative
         self.assertEqual(by_target["tproj.cdx"]["where"], "this_mac")
         self.assertEqual(by_target["chi.cc"]["where"], "other_mac")
@@ -56,7 +56,7 @@ class PendingTest(unittest.TestCase):
         self.assertNotIn("unchecked", by_target["tproj.cdx"])
 
     def test_a_cap_bounds_how_many_remote_checks_one_call_makes(self):
-        rows = [row(f"m{i}", "kai", "kai", "mini", 1000 - i) for i in range(40)]
+        rows = [row(f"m{i}", "dots", "dots", "mini", 1000 - i) for i in range(40)]
         stub = Stub(rows, {r["message_id"]: {"state": "accepted"} for r in rows})
         out = host_mod.Host._pending(stub, {"endpoint_id": "e"})
         self.assertEqual(len(stub.queried), 25)

@@ -17,7 +17,7 @@ class RuntimeChainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp); app = base/'app'; resources = app/'Contents/Resources'
             resources.mkdir(parents=True); staged = base/'staged'; (staged/'bin').mkdir(parents=True)
-            names = ['tproj', 'tproj-remote-client', 'tproj-remote-host', 'tproj-respawn-guard']
+            names = ['tproj', 'tproj-remote-client', 'tproj-remote-host', 'tproj-respawn-guard', 'tproj-kill-pane', 'tproj-drop-column']
             seed = resources/'tproj-runtime-seed.tar.gz'
             with tarfile.open(seed, 'w:gz') as archive:
                 for name in names:
@@ -28,7 +28,7 @@ class RuntimeChainTests(unittest.TestCase):
             (staged/'.seed-sha256').write_text(hashlib.sha256(seed.read_bytes()).hexdigest())
             command = [sys.executable, str(ROOT/'apps/tproj/verify-runtime.py'), str(app), str(staged)]
             self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
-            (staged/'bin/tproj-remote-host').write_text('stale helper')
+            (staged/'bin/tproj-drop-column').write_text('stale helper')
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('Staged runtime mismatch', result.stderr)

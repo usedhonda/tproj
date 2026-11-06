@@ -1,5 +1,14 @@
 # Remote attachment terminal lifecycle
 
+Local workspace Stop/kill, column removal, and individual pane closure own only
+the local remote attachments. They must not send interrupt or exit keystrokes
+into those attachments. The remote agents and their tmux sessions remain under
+the owning host's tproj controls and can be attached from another client.
+Remote-host-created sessions carry `@tproj=true` on their own tmux server so
+that the owning host's normal Stop/kill can discover and terminate them.
+The pane-close and column-close helpers are included in runtime hash validation,
+so a bundled stale helper cannot silently restore remote exit forwarding.
+
 `tproj-remote-client attach HOST ABS_PATH cc|cdx` attaches SSH to an existing
 persistent remote agent pane. The local client supervises SSH until it exits;
 it reconnects after transport loss, but never restarts the remote agent or
@@ -111,3 +120,13 @@ A failed verification rejects the replacement without stopping agent sessions.
 Remote attachment panes bypass the generic pane-died respawn/reaper. The remote
 client alone handles network recovery; normal exit stays stopped for explicit
 Resume instead of replaying the original startup through a second supervisor.
+# Remote pane artwork
+
+Remote pane backgrounds can use mirrored image assets without a local checkout.
+When the remote project path does not exist locally, the background resolver uses
+`${XDG_CACHE_HOME:-$HOME/.cache}/tproj-pane-bg/remote/<sha256(remote-project-uri)>`
+as its asset root, with the normal `.local/tproj-pane-bg/` image layout inside it.
+The URI is the full `@project` value, including host. Keep copy provenance in the
+image sidecars; copying existing artwork is not image generation. Removing a local
+workspace entry need not remove this display-only cache. A missing remote cache
+does not fall back to the local SSH client's unrelated working directory.

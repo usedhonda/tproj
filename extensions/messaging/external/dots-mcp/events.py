@@ -19,11 +19,11 @@ import tempfile
 import time
 from typing import Any
 
-PROBE = Path(__file__).parents[1] / "kai-event-probe" / "server.py"
-SPEC = importlib.util.spec_from_file_location("kai_probe_secure", PROBE)
+PROBE = Path(__file__).parents[1] / "dots-event-probe" / "server.py"
+SPEC = importlib.util.spec_from_file_location("dots_probe_secure", PROBE)
 _secure = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(_secure)
-EVENT_NAME = "kai.mailbox.message"
+EVENT_NAME = "dots.mailbox.message"
 MAX_ATTEMPTS = 3
 MAX_BATCH = 100
 DEFAULT_TTL_MS = 86400000
@@ -53,8 +53,11 @@ def _iso(timestamp):
     return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-class KAIEventDelivery:
-    def __init__(self, authorizer: Any, state_path: str | Path):
+class DotsEventDelivery:
+    def __init__(self, authorizer: Any, state_path: str | Path, *, event_name: str = EVENT_NAME):
+        if not isinstance(event_name, str) or not event_name or len(event_name) > 128:
+            raise ValueError("invalid mailbox event name")
+        self.event_name = event_name
         self.authorizer = authorizer
         self.path = Path(state_path).expanduser()
         if self.path.is_symlink() or self.path.parent.is_symlink():
@@ -110,7 +113,7 @@ class KAIEventDelivery:
 
     def definition(self):
         return {
-            "name": EVENT_NAME,
+            "name": self.event_name,
             "description": "A durable mailbox message is available; fetch and acknowledge with the authorized MSG tools.",
             "delivery": ["webhook"],
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -122,9 +125,8 @@ class KAIEventDelivery:
             },
         }
 
-    @staticmethod
-    def _sid(url, binding):
-        material = json.dumps([EVENT_NAME, url, binding.binding_id], separators=(",", ":"))
+    def _sid(self, url, binding):
+        material = json.dumps([self.event_name, url, binding.binding_id], separators=(",", ":"))
         return "sub_" + hashlib.sha256(material.encode()).hexdigest()[:32]
 
     @staticmethod
@@ -188,6 +190,28 @@ class KAIEventDelivery:
                     item["status"] = "revoked"
             self._save(state)
 
+    def diagnostic(self, message_id):
+        with self._lock():
+            state = self._load()
+            notifications = []
+            for item in state['outbox'].values():
+                if item.get('payload', {}).get('data', {}).get('messageId') == message_id:
+                    notifications.append({key: item[key] for key in
+                        ('status', 'attempts', 'last_http_status', 'last_error_class') if key in item})
+            return {'pump': state.get('pump', {}), 'notifications': notifications}
+
+    def record_pump_failure(self):
+        """Best-effort durable classification; never expose exception contents."""
+        try:
+            with self._lock():
+                state = self._load()
+                state.setdefault("pump", {}).update(status="blocked",
+                    error_class="pump_failure", error_at=time.time())
+                self._save(state)
+            return True
+        except Exception:
+            return False
+
     def pump_once(self, limit=MAX_BATCH):
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_BATCH:
             raise RuntimeError("invalid batch limit")
@@ -206,13 +230,27 @@ class KAIEventDelivery:
                             item["status"] = "revoked"
                     self._save(state)
                 cursor = state["cursor"].get(sid, 0)
-                page = binding.reader(cursor)
-                if not isinstance(page, dict) or not isinstance(page.get("messages"), list):
-                    raise RuntimeError("invalid mailbox page")
-                next_cursor = page.get("next_cursor")
-                messages = page["messages"]
-                if isinstance(next_cursor, bool) or not isinstance(next_cursor, int) or next_cursor < cursor or len(messages) > limit - queued:
-                    raise RuntimeError("invalid mailbox cursor or batch")
+                try:
+                    page = binding.reader(cursor)
+                    if not isinstance(page, dict) or not isinstance(page.get("messages"), list):
+                        raise ValueError("invalid page")
+                    next_cursor = page.get("next_cursor")
+                    messages = page["messages"]
+                    if (isinstance(next_cursor, bool) or not isinstance(next_cursor, int)
+                            or next_cursor < cursor or len(messages) > limit - queued):
+                        raise ValueError("invalid cursor")
+                    if any(not isinstance(m, dict) or not isinstance(m.get("message_id"), str)
+                           or not m["message_id"] for m in messages):
+                        raise ValueError("invalid message")
+                except Exception:
+                    state.setdefault("pump", {}).setdefault("subscriptions", {})[sid] = {
+                        "status": "discovery_blocked", "error_class": "discovery_failure",
+                        "error_at": time.time(),
+                    }
+                    continue
+                state.setdefault("pump", {}).setdefault("subscriptions", {})[sid] = {
+                    "status": "ready", "last_discovery_success_at": time.time(),
+                }
                 for message in messages:
                     mid = message.get("message_id") if isinstance(message, dict) else None
                     if not isinstance(mid, str) or not mid:
@@ -221,7 +259,7 @@ class KAIEventDelivery:
                         continue
                     eid = "evt_" + hashlib.sha256((sid + "\0" + mid).encode()).hexdigest()[:32]
                     if eid not in state["outbox"]:
-                        payload = {"eventId": eid, "name": EVENT_NAME, "timestamp": _iso(now), "data": {"messageId": mid}, "cursor": None}
+                        payload = {"eventId": eid, "name": self.event_name, "timestamp": _iso(now), "data": {"messageId": mid}, "cursor": None}
                         state["outbox"][eid] = {
                             "subscription": sid,
                             "payload": payload,
@@ -266,13 +304,19 @@ class KAIEventDelivery:
                 posts += 1
                 item["status"] = "sent" if ok else ("terminal" if status in (410, 413) or item["attempts"] >= MAX_ATTEMPTS else "unknown")
                 self._save(state)
+            state.setdefault("pump", {}).update(
+                status="discovery_blocked" if any(
+                    v.get("status") == "discovery_blocked"
+                    for v in state.get("pump", {}).get("subscriptions", {}).values()) else "ready",
+                last_cycle_success_at=time.time())
+            self._save(state)
         return queued
 
     def retry_once(self, message_id, *, actor_endpoint):
         """Manually retry one stored terminal event exactly once.
 
         The caller must have already authenticated the original message and
-        current KAI recipient.  This method only enforces the enrolled event
+        current Dots recipient.  This method only enforces the enrolled event
         binding, callback subscription, and durable event record invariants.
         """
         if not isinstance(message_id, str) or not message_id:
@@ -314,7 +358,7 @@ class KAIEventDelivery:
             payload = item.get("payload")
             data = payload.get("data") if isinstance(payload, dict) else None
             if (not isinstance(payload, dict) or set(payload) != {"eventId", "name", "timestamp", "data", "cursor"}
-                    or payload.get("eventId") != eid or payload.get("name") != EVENT_NAME
+                    or payload.get("eventId") != eid or payload.get("name") != self.event_name
                     or not isinstance(payload.get("timestamp"), str) or not isinstance(data, dict)
                     or set(data) != {"messageId"} or data.get("messageId") != message_id
                     or payload.get("cursor") is not None):

@@ -1,4 +1,4 @@
-"""Trusted connection-principal binding for the enrolled KAI service.
+"""Trusted connection-principal binding for the enrolled Dots service.
 
 The cloud client is a service principal, not a cryptographically asserted
 model persona.  A host-side attestor supplies the already verified service
@@ -13,7 +13,7 @@ from typing import Any, Callable, Mapping
 
 
 class ConnectionBindingError(RuntimeError):
-    """Raised when the host cannot prove the configured KAI binding."""
+    """Raised when the host cannot prove the configured Dots binding."""
 
     def __init__(self, message: str, code: str | None = None):
         super().__init__(message)
@@ -70,11 +70,11 @@ class ServiceBinding(ServiceIdentity):
 
 
 # Existing integrations keep their source/API binding without a duplicate class.
-KaiServiceBinding = ServiceBinding
+DotsServiceBinding = ServiceBinding
 
 
 class FixedConnectionAuthorizer:
-    """Revalidate one host-enrolled KAI service on every operation.
+    """Revalidate one host-enrolled Dots service on every operation.
 
     ``attestor`` is trusted host code.  It must return the endpoint evidence
     for this process, including ``binding_id`` and ``incarnation``.  The

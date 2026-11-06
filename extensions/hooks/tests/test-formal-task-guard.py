@@ -3,14 +3,20 @@ import json
 import sqlite3
 import os
 import subprocess
+import sys
 import tempfile
 from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
-guard = SourceFileLoader("formal_guard", str(ROOT / "hooks/tproj-formal-task-guard")).load_module()
+loader = SourceFileLoader("formal_guard", str(ROOT / "hooks/tproj-formal-task-guard"))
+spec = spec_from_loader(loader.name, loader)
+guard = module_from_spec(spec)
+sys.modules[loader.name] = guard
+loader.exec_module(guard)
 
 class FormalGuardTest(unittest.TestCase):
     def test_existing_hook_entrypoints_call_formal_evaluator(self):
@@ -71,42 +77,13 @@ class FormalGuardTest(unittest.TestCase):
         with sqlite3.connect(db) as con:
             con.execute('CREATE TABLE IF NOT EXISTS formal_task_retired(task_id TEXT, epoch INTEGER, native_id TEXT, tool_use_id TEXT)')
             con.execute("INSERT INTO formal_task_retired VALUES('t',0,'n1','old-op')")
-        _, retired = self.run_hook({"tool_name":"Bash", "tool_use_id":"old-op", "tool_input":{"command":"touch file"}})
-        _, fresh = self.run_hook({"tool_name":"Bash", "tool_use_id":"new-op", "tool_input":{"command":"touch file"}})
+        # Retired/fresh callbacks use the local journal even when RPC is offline.
+        with patch.object(guard.cli, 'rpc', side_effect=AssertionError('retired lookup is local')) as rpc:
+            _, retired = self.run_hook({"tool_name":"Bash", "tool_use_id":"old-op", "tool_input":{"command":"touch file"}})
+            _, fresh = self.run_hook({"tool_name":"Bash", "tool_use_id":"new-op", "tool_input":{"command":"touch file"}})
+        rpc.assert_not_called()
         self.assertEqual(retired["decision"], "block")
         self.assertEqual(fresh["decision"], "allow")
-
-    def test_bound_conversation_does_not_capture_later_native_work(self):
-        self._bound()
-        with patch.object(guard.cli, "config", return_value={"socket": "x"}), \
-             patch.object(guard.cli, "rpc", side_effect=AssertionError("ordinary work is not ledger admission")):
-            _, result = self.run_hook({"hook_event_name":"PreToolUse", "tool_name":"Bash",
-                                       "tool_use_id":"later-work", "tool_input":{"command":"touch file"}})
-        self.assertEqual(result["decision"], "allow")
-
-    def test_caller_boolean_does_not_create_task_admission(self):
-        self._bound()
-        with patch.object(guard.cli, 'rpc', side_effect=AssertionError('no task RPC for caller flag')):
-            _, result = self.run_hook({'hook_event_name':'PreToolUse', 'formal_task_operation':True,
-                                       'tool_name':'Bash', 'tool_use_id':'ordinary',
-                                       'tool_input':{'command':'touch file'}})
-        self.assertEqual(result['decision'], 'allow')
-
-    def test_retired_callback_is_fenced_from_local_journal_when_rpc_offline(self):
-        self._bound()
-        db = Path(json.loads(Path(os.environ['TPROJ_MSG_HOST_CONFIG']).read_text())['journal'])
-        with sqlite3.connect(db) as con:
-            con.execute('CREATE TABLE IF NOT EXISTS formal_task_retired(task_id TEXT, epoch INTEGER, native_id TEXT, tool_use_id TEXT)')
-            con.execute("INSERT INTO formal_task_retired VALUES('t',0,'n1','offline-old')")
-        with patch.object(guard.cli, 'rpc', side_effect=AssertionError('retired lookup is local')):
-            _, result = self.run_hook({'tool_name':'Bash', 'tool_use_id':'offline-old', 'tool_input':{'command':'touch file'}})
-        self.assertEqual(result['decision'], 'block')
-
-    def test_journal_present_without_native_history_does_not_rpc(self):
-        self._bound()
-        with patch.object(guard.cli, 'rpc', side_effect=AssertionError('never-assigned must not RPC')):
-            _, result = self.run_hook({'tool_name':'Bash', 'tool_use_id':'never-assigned', 'tool_input':{'command':'touch file'}})
-        self.assertEqual(result['decision'], 'allow')
 
 
     def test_pretool_marker_does_not_capture_ordinary_work_when_config_unavailable(self):

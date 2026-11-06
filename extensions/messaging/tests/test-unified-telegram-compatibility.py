@@ -3,7 +3,7 @@ import sys
 sys.dont_write_bytecode = True
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'unified'))
-sys.path.append(str(Path(__file__).resolve().parents[1]/'external/kai-mcp'))
+sys.path.append(str(Path(__file__).resolve().parents[1]/'external/dots-mcp'))
 import unittest, tempfile, json, socket, subprocess, importlib.util, copy, os, sqlite3, time
 from dataclasses import replace, asdict
 import telegram_ingress as ingress
@@ -18,7 +18,7 @@ socket.socket=forbidden;subprocess.run=forbidden;runtime.urllib.request.urlopen=
 class AgentsTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(prefix='telegram-agents-');self.addCleanup(self.tmp.cleanup)
-        self.private=ingress.TelegramOwnerBinding('private-fixture','owner-fixture',101,202,202,'kai',1,2000000000)
+        self.private=ingress.TelegramOwnerBinding('private-fixture','owner-fixture',101,202,202,'dots',1,2000000000)
         self.group=replace(self.private,binding_id='group-fixture',chat_id=-100123,chat_type='supergroup')
         self.settings={'owner_binding':asdict(self.private),'group_binding':asdict(self.group)}
         self.now=1000
@@ -53,7 +53,7 @@ class AgentsTests(unittest.TestCase):
         relay,journal,submits,sends=self.relay(binding)
         relay.receive(raw,now=self.now,authenticated_poll_bot_id=101)
         relay.deliver_reply({'message_id':'regular-group-reply','in_reply_to':intent.message_id,
-            'thread_id':intent.message_id,'sender_endpoint':'kai-fixture','body':'fixture response'},now=self.now)
+            'thread_id':intent.message_id,'sender_endpoint':'dots-fixture','body':'fixture response'},now=self.now)
         self.assertEqual(sends[0]['chat_id'],binding.chat_id)
 
     def test_spoofed_or_peer_sender_and_forwarded_message_denied(self):
@@ -80,7 +80,7 @@ class AgentsTests(unittest.TestCase):
         submits=[];sends=[]
         def submit(envelope):submits.append(envelope);return {'message_id':envelope['message_id'],'state':'accepted'}
         def send(payload):sends.append(payload);return {'chat_id':payload['chat_id'],'message_id':50}
-        relay=ingress.TelegramMailboxRelay(ingress.TelegramIngressAuthority(binding),journal,lambda:binding,submit,send,kai_endpoint='kai-fixture')
+        relay=ingress.TelegramMailboxRelay(ingress.TelegramIngressAuthority(binding),journal,lambda:binding,submit,send,assistant_endpoint='dots-fixture')
         return relay,journal,submits,sends
 
     def test_group_and_private_replies_exact_chat_message_and_dedupe(self):
@@ -89,7 +89,7 @@ class AgentsTests(unittest.TestCase):
             first=relay.receive(self.raw(is_group),now=self.now,authenticated_poll_bot_id=101)
             second=relay.receive(self.raw(is_group),now=self.now,authenticated_poll_bot_id=101)
             self.assertTrue(second['duplicate']);self.assertEqual(len(submits),1)
-            reply={'message_id':'reply-fixture','in_reply_to':first['message_id'],'thread_id':first['message_id'],'sender_endpoint':'kai-fixture','body':'fixture response'}
+            reply={'message_id':'reply-fixture','in_reply_to':first['message_id'],'thread_id':first['message_id'],'sender_endpoint':'dots-fixture','body':'fixture response'}
             relay.deliver_reply(reply,now=self.now);result=relay.deliver_reply(reply,now=self.now)
             self.assertTrue(result['duplicate']);self.assertEqual(sends,[{'chat_id':binding.chat_id,'text':'fixture response','reply_to_message_id':7}])
             forged=dict(reply,message_id='spoof-reply',sender_endpoint='peer-agent')
@@ -108,7 +108,7 @@ class AgentsTests(unittest.TestCase):
 
     def test_host_revalidates_group_and_hub_pins_attester(self):
         host=Host.__new__(Host);captured=[]
-        host.config={'services':{'telegram':{'telegram_ingress':dict(self.settings,mode='long_poll'),'binding_generation':'FAKE','allowed_addresses':['kai']}}}
+        host.config={'services':{'telegram':{'telegram_ingress':dict(self.settings,mode='long_poll'),'binding_generation':'FAKE','allowed_addresses':['dots']}}}
         host.service=lambda *a,**kw:{'endpoint_id':'telegram-fixture'}
         host.submit=lambda ep,request,**kw:captured.append(kw['trusted_origin']) or {'message_id':request['submission_id'],'state':'accepted'}
         request={'op':'service_telegram_ingress','service_id':'telegram','raw_update':self.raw().decode(),'verified_bot_id':101}
@@ -125,14 +125,14 @@ class AgentsTests(unittest.TestCase):
         hub=Hub(Path(self.tmp.name)/'real-hub.db',{'host_id':'local','hosts':{'local':'FAKE'},
             'telegram_ingress_bindings':{b.binding_id:{'host_id':'local','participant_id':'telegram-principal','owner_binding':asdict(b)} for b in [self.private,self.group]}})
         self.addCleanup(hub.close)
-        for ident,address,platform in [('telegram-principal','telegram','telegram'),('kai-principal','kai','kai')]:
+        for ident,address,platform in [('telegram-principal','telegram','telegram'),('dots-principal','dots','dots')]:
             hub.db.execute('INSERT INTO participants VALUES(?,?,?,?,?)',(ident,None,address,'local',platform))
             hub.db.execute('INSERT INTO endpoints VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(ident+'-ep',ident,'local',address,'',0,'0','fixture-'+address,platform,'fixture-'+address,time.time(),0))
         host=Host.__new__(Host)
         host.db=sqlite3.connect(Path(self.tmp.name)/'real-host.db');host.db.row_factory=sqlite3.Row;self.addCleanup(host.db.close)
         host.db.execute('CREATE TABLE submissions(message_id TEXT PRIMARY KEY,endpoint_id TEXT NOT NULL,envelope TEXT NOT NULL)')
         host.config={'services':{'telegram':{'telegram_ingress':dict(self.settings,mode='long_poll'),
-            'binding_generation':'FAKE','allowed_addresses':['kai']}}}
+            'binding_generation':'FAKE','allowed_addresses':['dots']}}}
         if legacy:host.config['service']={'allowed_addresses':['wrong-legacy-target']}
         host.service=lambda *a,**kw:{'endpoint_id':'telegram-principal-ep','service_id':'telegram'}
         calls=[]
@@ -149,9 +149,9 @@ class AgentsTests(unittest.TestCase):
             result=host.dispatch({'op':'service_telegram_ingress','service_id':'telegram',
                 'raw_update':raw.decode(),'verified_bot_id':101},1,os.getuid())
             row=hub.db.execute('SELECT target_address,external_origin_json FROM messages WHERE message_id=?',(result['message_id'],)).fetchone()
-            self.assertEqual(row['target_address'],'kai')
+            self.assertEqual(row['target_address'],'dots')
             self.assertEqual(json.loads(row['external_origin_json'])['chat_id'],self.group.chat_id if is_group else self.private.chat_id)
-            self.assertEqual(calls[-1][1]['authorized_targets'],['kai'])
+            self.assertEqual(calls[-1][1]['authorized_targets'],['dots'])
         self.assertEqual(host.db.execute('SELECT count(*) FROM submissions').fetchone()[0],2)
         self.assertEqual(hub.db.execute('SELECT count(*) FROM messages').fetchone()[0],2)
 
@@ -160,12 +160,12 @@ class AgentsTests(unittest.TestCase):
         raw=self.raw(service_id='openclaw',address='forged',service_token='forged')
         result=host.dispatch({'op':'service_telegram_ingress','service_id':'telegram',
             'raw_update':raw.decode(),'verified_bot_id':101},1,os.getuid())
-        self.assertEqual(calls[-1][1]['authorized_targets'],['kai'])
+        self.assertEqual(calls[-1][1]['authorized_targets'],['dots'])
         self.assertEqual(hub.db.execute('SELECT sender_endpoint FROM messages WHERE message_id=?',(result['message_id'],)).fetchone()[0],'telegram-principal-ep')
         self.assertNotIn('service_id',calls[-1][1]['message'])
 
-    def make_runtime(self,settings,updates,*,kai_endpoint='kai-fixture'):
-        config=dict(settings,journal=str(Path(self.tmp.name)/'runtime.db'),host_socket=str(Path(self.tmp.name)/'never.sock'),kai_endpoint=kai_endpoint,service_id='telegram',service_token='FAKE',address='telegram',binding_generation='FAKE')
+    def make_runtime(self,settings,updates,*,assistant_endpoint='dots-fixture'):
+        config=dict(settings,journal=str(Path(self.tmp.name)/'runtime.db'),host_socket=str(Path(self.tmp.name)/'never.sock'),assistant_endpoint=assistant_endpoint,service_id='telegram',service_token='FAKE',address='telegram',binding_generation='FAKE')
         p=Path(self.tmp.name)/'config.json';p.write_text(json.dumps(config));p.chmod(0o600)
         api_calls=[];host_calls=[];payloads=[]
         class API:
@@ -207,7 +207,7 @@ class AgentsTests(unittest.TestCase):
     def test_runtime_reply_uses_original_group_not_private_chat(self):
         rt,api,host=self.make_runtime(self.settings,[json.loads(self.raw())]);rt.receive_once()
         original=self.admit(self.raw()).message_id
-        reply={'message_id':'runtime-reply','in_reply_to':original,'thread_id':original,'sender_endpoint':'kai-fixture','body':'fixture reply'}
+        reply={'message_id':'runtime-reply','in_reply_to':original,'thread_id':original,'sender_endpoint':'dots-fixture','body':'fixture reply'}
         def response(op,**kw):
             if op=='service_inbox':return {'messages':[{'message_id':'runtime-reply','sequence':1}]}
             if op=='service_message':return reply
@@ -222,8 +222,8 @@ class AgentsTests(unittest.TestCase):
         group=json.loads(self.raw());private=json.loads(self.raw(False));private['update_id']=10
         rt,api,host=self.make_runtime(self.settings,[group,private]);rt.receive_once()
         mids=[self.admit(json.dumps(x).encode()).message_id for x in [group,private]]
-        replies=[{'message_id':'group-pending','in_reply_to':mids[0],'thread_id':mids[0],'sender_endpoint':'kai-fixture','body':'durable group reply'},
-                 {'message_id':'private-pending','in_reply_to':mids[1],'thread_id':mids[1],'sender_endpoint':'kai-fixture','body':'private reply'}]
+        replies=[{'message_id':'group-pending','in_reply_to':mids[0],'thread_id':mids[0],'sender_endpoint':'dots-fixture','body':'durable group reply'},
+                 {'message_id':'private-pending','in_reply_to':mids[1],'thread_id':mids[1],'sender_endpoint':'dots-fixture','body':'private reply'}]
         acknowledgements=[];previous=rt.host
         def mailbox(op,**kw):
             if op=='service_inbox':return {'messages':[{'message_id':r['message_id'],'sequence':i+1} for i,r in enumerate(replies)]}
@@ -320,9 +320,9 @@ class AgentsTests(unittest.TestCase):
 
 # Exercise the existing adapter/bridge/Host/Hub path with fixture transports.
 fixture_module = sys.modules[__name__]
-_kai_spec = importlib.util.spec_from_file_location('integrated_kai_runtime',
-    Path(__file__).resolve().parents[1]/'external/kai-mcp/runtime.py')
-kai_runtime = importlib.util.module_from_spec(_kai_spec); _kai_spec.loader.exec_module(kai_runtime)
+_dots_spec = importlib.util.spec_from_file_location('integrated_dots_runtime',
+    Path(__file__).resolve().parents[1]/'external/dots-mcp/runtime.py')
+dots_runtime = importlib.util.module_from_spec(_dots_spec); _dots_spec.loader.exec_module(dots_runtime)
 from connection import FixedConnectionAuthorizer
 from mailbox_tools import MailboxTools, MailboxToolError
 from server import MCPServer
@@ -335,8 +335,8 @@ class IntegratedFlow(unittest.TestCase):
         self.host,self.hub,self.hub_calls=f.real_submit_fixture(legacy=True)
         telegram=self.host.config['services']['telegram']
         telegram.update(token='FAKE',address='telegram',participant_id='telegram-principal')
-        self.host.config['services']['kai']={'token':'FAKE-KAI','address':'kai',
-            'participant_id':'kai-principal','binding_generation':'KAI-GENERATION','allowed_addresses':['telegram']}
+        self.host.config['services']['dots']={'token':'FAKE-Dots','address':'dots',
+            'participant_id':'dots-principal','binding_generation':'Dots-GENERATION','allowed_addresses':['telegram']}
         def authenticated_fixture_service(pid,uid,req,**kw):
             ident,cfg=self.host._service_binding(req)
             if (req.get('service_token')!=cfg['token'] or req.get('address')!=cfg['address']
@@ -348,30 +348,30 @@ class IntegratedFlow(unittest.TestCase):
         self.host.service=authenticated_fixture_service
         private=json.loads(f.raw(False));group=json.loads(f.raw());group['update_id']=10
         self.updates=[private,group]
-        self.telegram,self.api_calls,self.initial_host_calls=f.make_runtime(f.settings,self.updates,kai_endpoint='kai-principal-ep')
+        self.telegram,self.api_calls,self.initial_host_calls=f.make_runtime(f.settings,self.updates,assistant_endpoint='dots-principal-ep')
         def transport(path,request):return self.host.dispatch(request,123,__import__('os').getuid())
         self.telegram.host_call=transport
         original_api=self.telegram.api.call
         self.telegram.api.call=lambda method,payload:({'id':101,'is_bot':True,'username':'fixture_bot'}
             if method=='getMe' else original_api(method,payload))
-        self.patch=patch.object(kai_runtime,'socket_rpc',side_effect=transport);self.patch.start();self.addCleanup(self.patch.stop)
-        kai_config={'service_id':'kai','address':'kai',
-            'participant_id':'kai-principal','service_token':'FAKE-KAI',
-            'binding_generation':'KAI-GENERATION','allowed_addresses':['telegram'],
+        self.patch=patch.object(dots_runtime,'socket_rpc',side_effect=transport);self.patch.start();self.addCleanup(self.patch.stop)
+        dots_config={'service_id':'dots','address':'dots',
+            'participant_id':'dots-principal','service_token':'FAKE-Dots',
+            'binding_generation':'Dots-GENERATION','allowed_addresses':['telegram'],
             'host_socket':str(Path(f.tmp.name)/'never-host.sock'),
             'event_state':str(Path(f.tmp.name)/'unused-events.json')}
-        self.parent=kai_runtime.ServiceRuntime(kai_config)
+        self.parent=dots_runtime.ServiceRuntime(dots_config)
         self.bridge_calls=[]
         def bridge_transport(path,request):
             self.bridge_calls.append(request['op'])
             self.bridge_calls.append(request.get('request',{}).get('op'))
-            return kai_runtime._bridge_request(self.parent,request)
-        self.bridge_patch=patch.object(kai_runtime,'_bridge_rpc',side_effect=bridge_transport)
+            return dots_runtime._bridge_request(self.parent,request)
+        self.bridge_patch=patch.object(dots_runtime,'_bridge_rpc',side_effect=bridge_transport)
         self.bridge_patch.start();self.addCleanup(self.bridge_patch.stop)
-        self.kai=kai_runtime.ServiceRuntime(dict(kai_config,bridge_socket=str(Path(f.tmp.name)/'never-bridge.sock')))
-        auth=FixedConnectionAuthorizer(self.kai.binding,self.kai._attest)
-        self.tools=MailboxTools(service_id='kai',service_address='kai',service_token='FAKE-KAI',
-            authorizer=auth.authorize,host_call=self.kai._request)
+        self.dots=dots_runtime.ServiceRuntime(dict(dots_config,bridge_socket=str(Path(f.tmp.name)/'never-bridge.sock')))
+        auth=FixedConnectionAuthorizer(self.dots.binding,self.dots._attest)
+        self.tools=MailboxTools(service_id='dots',service_address='dots',service_token='FAKE-Dots',
+            authorizer=auth.authorize,host_call=self.dots._request)
         self.server=MCPServer(tools=self.tools)
         self.host.db.execute('CREATE TABLE deliveries(message_id TEXT PRIMARY KEY,endpoint_id TEXT,envelope TEXT,state TEXT,prompt_hash TEXT,updated REAL)')
         self.telegram.verify();self.telegram.receive_once()
@@ -382,7 +382,7 @@ class IntegratedFlow(unittest.TestCase):
             'params':{'name':name,'arguments':args}})
         return response['result']
 
-    def test_private_and_group_runtime_host_hub_kai_view_reply(self):
+    def test_private_and_group_runtime_host_hub_dots_view_reply(self):
         for index,mid in enumerate(self.ids):
             response=self.call('tproj_message',{'message_id':mid})
             self.assertFalse(response.get('isError',False),response)
@@ -391,7 +391,7 @@ class IntegratedFlow(unittest.TestCase):
             self.assertIs(view['origin_binding_active'],True)
             self.assertEqual(view['external_origin']['version'],1 if index==0 else 2)
             self.assertFalse(self.call('tproj_ack',{'message_id':mid}).get('isError',False))
-            reply=self.call('tproj_reply',{'message_id':mid,'body':'fixture KAI response',
+            reply=self.call('tproj_reply',{'message_id':mid,'body':'fixture Dots response',
                 'submission_id':'fixture-response-'+str(index)})
             self.assertFalse(reply.get('isError',False),reply)
         __import__('submission_queue').work_once(self.host)
@@ -411,12 +411,12 @@ class IntegratedFlow(unittest.TestCase):
 
     def test_hub_rejects_origin_reused_by_wrong_authenticated_principal(self):
         envelope=self.fixture.admit(json.dumps(self.updates[1]).encode()).envelope()
-        envelope['sender_endpoint']='kai-principal-ep'
+        envelope['sender_endpoint']='dots-principal-ep'
         with self.assertRaises(HubError) as e:self.hub.dispatch(dict(op='submit',host_id='local',host_token='FAKE',message=envelope))
         self.assertEqual(e.exception.code,'identity_rejected')
         self.assertEqual(self.hub.db.execute('SELECT count(*) FROM messages').fetchone()[0],2)
 
-    def test_invalid_origin_fails_at_kai_view_and_private_still_works(self):
+    def test_invalid_origin_fails_at_dots_view_and_private_still_works(self):
         mid=self.ids[1];row=self.hub.db.execute('SELECT external_origin_json FROM messages WHERE message_id=?',(mid,)).fetchone()
         origin=json.loads(row[0]);origin['body_sha256']='f'*64
         self.hub.db.execute('UPDATE messages SET external_origin_json=? WHERE message_id=?',(json.dumps(origin),mid))
@@ -435,7 +435,7 @@ class IntegratedFlow(unittest.TestCase):
 
     def test_malformed_origin_types_and_marker_rejected(self):
         mid=self.ids[1]
-        row=self.host.hub('query',endpoint_id='kai-principal-ep',message_id=mid)
+        row=self.host.hub('query',endpoint_id='dots-principal-ep',message_id=mid)
         for change in [('origin_binding_active',1),('origin_binding_active',None)]:
             altered=copy.deepcopy(row);altered[change[0]]=change[1]
             with self.subTest(change=change),self.assertRaises(MailboxToolError):MailboxTools._view(altered)
@@ -492,14 +492,14 @@ class IntegratedFlow(unittest.TestCase):
 
     def test_public_submission_controls_require_existing_authenticated_principal(self):
         for name in ('tproj_reconcile','tproj_cancel_submission'):
-            bad=self.call(name,{'submission_id':'unknown','endpoint_id':'kai-principal-ep'})
+            bad=self.call(name,{'submission_id':'unknown','endpoint_id':'dots-principal-ep'})
             self.assertTrue(bad.get('isError',False))
-        real=self.kai._attest;self.kai._attest=lambda:dict(real(),participant_id='OTHER')
-        auth=FixedConnectionAuthorizer(self.kai.binding,self.kai._attest)
-        denied=MailboxTools(service_id='kai',service_address='kai',service_token='FAKE-KAI',authorizer=auth.authorize,host_call=self.kai._request)
+        real=self.dots._attest;self.dots._attest=lambda:dict(real(),participant_id='OTHER')
+        auth=FixedConnectionAuthorizer(self.dots.binding,self.dots._attest)
+        denied=MailboxTools(service_id='dots',service_address='dots',service_token='FAKE-Dots',authorizer=auth.authorize,host_call=self.dots._request)
         for name in ('tproj_reconcile','tproj_cancel_submission'):
             with self.assertRaises(MailboxToolError):denied.dispatch(name,{'submission_id':'unknown'})
-        req={'op':'service_reconcile','service_id':'kai','service_token':'WRONG','address':'kai','binding_generation':'KAI-GENERATION','submission_id':'unknown'}
+        req={'op':'service_reconcile','service_id':'dots','service_token':'WRONG','address':'dots','binding_generation':'Dots-GENERATION','submission_id':'unknown'}
         with self.assertRaises(HubError):self.host.dispatch(req,123,__import__('os').getuid())
 
 

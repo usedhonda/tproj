@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="786" viewBox="0 0 820 786">
+<rect x="0" y="0" width="820" height="786" rx="0" fill="#11111b" stroke="none"/>
+<text x="30" y="25" font-family="Hiragino Sans, sans-serif" font-size="12" font-weight="500" fill="#cdd6f4">サーバー管理 / デザイン案</text>
+<text x="563" y="25" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#bac2de">サンプル表示・実機への接続なし</text>
+<rect x="30" y="42" width="760" height="689" rx="11" fill="#1e1e2e" stroke="#53556d"/>
+<rect x="31" y="43" width="758" height="33" rx="10" fill="#252535" stroke="none"/>
+<circle cx="49" cy="59" r="5" fill="#f38ba8"/>
+<circle cx="67" cy="59" r="5" fill="#f9e2af"/>
+<circle cx="85" cy="59" r="5" fill="#a6e3a1"/>
+<text x="362" y="63" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#cdd6f4">tproj — このMac</text>
+<text x="50" y="111" font-family="Hiragino Sans, sans-serif" font-size="24" font-weight="650" fill="#ffffff">tproj</text>
+<rect x="121" y="91" width="63" height="23" rx="4" fill="#242434" stroke="#89b4fa88"/>
+<text x="131" y="107" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#89b4fa">このMac</text>
+<rect x="583" y="91" width="71" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="593" y="108" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">↻ 更新</text>
+<rect x="662" y="91" width="72" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="672" y="108" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">＋ 追加</text>
+<rect x="742" y="91" width="27" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="752" y="108" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">⋯</text>
+<text x="50" y="137" font-family="Hiragino Sans, sans-serif" font-size="12" font-weight="400" fill="#cdd6f4">このMacのセッションを管理</text>
+<rect x="50" y="153" width="720" height="36" rx="3" fill="#89b4fa0a" stroke="none"/>
+<rect x="50" y="153" width="2" height="36" rx="0" fill="#89b4fa80" stroke="none"/>
+<text x="63" y="175" font-family="Hiragino Sans, sans-serif" font-size="10.5" font-weight="400" fill="#cdd6f4">このウィンドウを閉じてもセッションは継続します。終了する場合は、各行の「停止」を使います。</text>
+<rect x="50" y="204" width="568" height="32" rx="5" fill="#181825" stroke="#45475a"/>
+<text x="63" y="224" font-family="Hiragino Sans, sans-serif" font-size="12" font-weight="400" fill="#bac2de">プロジェクト名・フォルダで検索</text>
+<text x="687" y="225" font-family="Hiragino Sans, sans-serif" font-size="13" font-weight="600" fill="#a6e3a1">6</text>
+<text x="702" y="225" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#cdd6f4">/ 6 稼働</text>
+<rect x="50" y="246" width="81" height="27" rx="5" fill="#313244" stroke="none"/>
+<text x="63" y="264" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">すべて 6</text>
+<text x="148" y="264" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#bac2de">稼働中 6</text>
+<text x="244" y="264" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#bac2de">停止 0</text>
+<text x="323" y="264" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#bac2de">要確認 0</text>
+<rect x="50" y="287" width="720" height="111" rx="6" fill="#242434" stroke="#45475a9c"/>
+<text x="63" y="311" font-family="Hiragino Sans, sans-serif" font-size="14" font-weight="600" fill="#ffffff">Project Alpha</text>
+<text x="205" y="311" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#bac2de">/work/project-alpha</text>
+<text x="700" y="311" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#cdd6f4">2 / 2 稼働</text>
+<path d="M63 321h694" stroke="#45475a" stroke-opacity=".65"/>
+<text x="63" y="344" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="650" fill="#fab387">CC</text>
+<text x="115" y="344" font-family="Hiragino Sans, sans-serif" font-size="12" font-weight="400" fill="#a6e3a1">稼働中</text>
+<text x="402" y="344" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#bac2de">接続なし・継続中</text>
+<rect x="626" y="327" width="66" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="636" y="344" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">開く ↗</text>
+<rect x="701" y="327" width="55" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="711" y="344" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">停止</text>
+<path d="M63 357h694" stroke="#45475a" stroke-opacity=".65"/>
+<text x="63" y="380" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="650" fill="#a6e3a1">Cdx</text>
+<text x="115" y="380" font-family="Hiragino Sans, sans-serif" font-size="12" font-weight="400" fill="#a6e3a1">稼働中</text>
+<text x="402" y="380" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#bac2de">接続なし・継続中</text>
+<rect x="626" y="363" width="66" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="636" y="380" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">開く ↗</text>
+<rect x="701" y="363" width="55" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="711" y="380" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">停止</text>
+<rect x="50" y="408" width="720" height="111" rx="6" fill="#242434" stroke="#45475a9c"/>
+<text x="63" y="432" font-family="Hiragino Sans, sans-serif" font-size="14" font-weight="600" fill="#ffffff">Project Beta</text>
+<text x="205" y="432" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#bac2de">/work/project-beta</text>
+<text x="700" y="432" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#cdd6f4">2 / 2 稼働</text>
+<path d="M63 442h694" stroke="#45475a" stroke-opacity=".65"/>
+<text x="63" y="465" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="650" fill="#fab387">CC</text>
+<text x="115" y="465" font-family="Hiragino Sans, sans-serif" font-size="12" font-weight="400" fill="#a6e3a1">稼働中</text>
+<text x="402" y="465" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#bac2de">接続なし・継続中</text>
+<rect x="626" y="448" width="66" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="636" y="465" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">開く ↗</text>
+<rect x="701" y="448" width="55" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="711" y="465" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">停止</text>
+<path d="M63 478h694" stroke="#45475a" stroke-opacity=".65"/>
+<text x="63" y="501" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="650" fill="#a6e3a1">Cdx</text>
+<text x="115" y="501" font-family="Hiragino Sans, sans-serif" font-size="12" font-weight="400" fill="#a6e3a1">稼働中</text>
+<text x="402" y="501" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#bac2de">接続なし・継続中</text>
+<rect x="626" y="484" width="66" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="636" y="501" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">開く ↗</text>
+<rect x="701" y="484" width="55" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="711" y="501" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">停止</text>
+<rect x="50" y="529" width="720" height="111" rx="6" fill="#242434" stroke="#45475a9c"/>
+<text x="63" y="553" font-family="Hiragino Sans, sans-serif" font-size="14" font-weight="600" fill="#ffffff">Project Gamma</text>
+<text x="205" y="553" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#bac2de">/work/project-gamma</text>
+<text x="700" y="553" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#cdd6f4">2 / 2 稼働</text>
+<path d="M63 563h694" stroke="#45475a" stroke-opacity=".65"/>
+<text x="63" y="586" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="650" fill="#fab387">CC</text>
+<text x="115" y="586" font-family="Hiragino Sans, sans-serif" font-size="12" font-weight="400" fill="#a6e3a1">稼働中</text>
+<text x="402" y="586" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#bac2de">接続なし・継続中</text>
+<rect x="626" y="569" width="66" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="636" y="586" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">開く ↗</text>
+<rect x="701" y="569" width="55" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="711" y="586" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">停止</text>
+<path d="M63 599h694" stroke="#45475a" stroke-opacity=".65"/>
+<text x="63" y="622" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="650" fill="#a6e3a1">Cdx</text>
+<text x="115" y="622" font-family="Hiragino Sans, sans-serif" font-size="12" font-weight="400" fill="#a6e3a1">稼働中</text>
+<text x="402" y="622" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#bac2de">接続なし・継続中</text>
+<rect x="626" y="605" width="66" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="636" y="622" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">開く ↗</text>
+<rect x="701" y="605" width="55" height="26" rx="5" fill="#313244" stroke="#45475a"/>
+<text x="711" y="622" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#ffffff">停止</text>
+<path d="M50 664h720" stroke="#45475a" stroke-opacity=".65"/>
+<text x="53" y="688" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#cdd6f4">▸ このMacの状態・運用設定</text>
+<text x="50" y="714" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#bac2de">3 プロジェクト / 6 セッション</text>
+<text x="593" y="714" font-family="Hiragino Sans, sans-serif" font-size="10" font-weight="400" fill="#bac2de">最終取得：たった今（表示例）</text>
+<text x="31" y="759" font-family="Hiragino Sans, sans-serif" font-size="11" font-weight="400" fill="#bac2de">各行の起動・停止、外部接続ありの確認、状態取得エラーを操作プレビューで確認できます。</text>
+</svg>

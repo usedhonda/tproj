@@ -8,7 +8,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
-spec = importlib.util.spec_from_file_location("kai_mcp_server", ROOT / "server.py")
+spec = importlib.util.spec_from_file_location("dots_mcp_server", ROOT / "server.py")
 server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
 from conversation import ConversationBindingRegistry, ConversationToolResolver, provider_digest
@@ -24,13 +24,19 @@ class MCPServerTest(unittest.TestCase):
         calls = []
         tools = server.MailboxTools(service_id="external", service_address="external",
             service_token="private", authorizer=lambda name, args: {"allowed_addresses": ["peer.cc"],
-                "principal": "kai-service", "conversation_id": "self-reported"},
+                "principal": "dots-service", "conversation_id": "self-reported"},
             host_call=lambda request: calls.append(request))
         bound = server.MCPServer(tools).handle(request)["result"]["structuredContent"]
         self.assertEqual(bound["binding"], "service_principal_valid")
         self.assertEqual(bound["conversation_isolation"], "not_configured")
         self.assertEqual(bound["operation"], "not_attempted")
         self.assertEqual(calls, [])
+        self.assertEqual(bound['server_catalog']['version'], server.CATALOG_VERSION)
+        self.assertEqual(set(bound['server_catalog']['tools']), server.TOOL_NAMES)
+        subset = server.MCPServer(tools, tool_names={'tproj_capabilities'})
+        limited = subset.handle(request)['result']['structuredContent']['server_catalog']
+        self.assertEqual(limited['tools'], ['tproj_capabilities'])
+        self.assertEqual(limited['version'], subset.catalog_version)
         tools.authorizer = lambda *_: (_ for _ in ()).throw(RuntimeError("private detail"))
         failed = server.MCPServer(tools).handle(request)["result"]["structuredContent"]
         self.assertEqual(failed["binding"], "authorization_unavailable")
@@ -46,11 +52,30 @@ class MCPServerTest(unittest.TestCase):
         self.assertTrue(all("inputSchema" in tool and "annotations" in tool for tool in listed["result"]["tools"]))
         self.assertNotIn("events", initialized["result"]["capabilities"])
 
+    def test_catalog_discovery_is_observed_without_initialize(self):
+        instance = server.MCPServer()
+        request = {"jsonrpc": "2.0", "id": "private-id", "method": "tools/list",
+                   "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+                              "private": "must-not-retain"}}
+        listed = instance.handle(request)
+        self.assertEqual(len(listed["result"]["tools"]), len(instance.catalog))
+        capability = {"method": "tools/call", "id": 2,
+                      "params": {"name": "tproj_capabilities", "arguments": {}}}
+        observed = instance.handle(capability)["result"]["structuredContent"]["server_catalog"]["discovery"]
+        self.assertEqual(set(observed["methods"]), {"tools/list"})
+        self.assertEqual(observed["methods"]["tools/list"]["count"], 1)
+        self.assertGreaterEqual(observed["methods"]["tools/list"]["last_at"], observed["started_at"])
+        self.assertNotIn("private", json.dumps(observed))
+        observed["methods"]["tools/list"]["count"] = 100
+        instance.handle(request)
+        self.assertEqual(instance.discovery["tools/list"]["count"], 2)
+        self.assertEqual(server.MCPServer().discovery, {})
+
     def test_diagnose_preserves_sanitized_resource_details(self):
         def host(_request):
             raise server.MailboxToolError("resource_exhausted", "local messaging storage is exhausted",
                                            {"failure_stage": "authority_rpc", "acceptance": "unknown"})
-        tools = server.MailboxTools(service_id="kai", service_address="kai", service_token="private",
+        tools = server.MailboxTools(service_id="dots", service_address="dots", service_token="private",
                                     authorizer=lambda *_: (_ for _ in ()).throw(AssertionError("no whoami")),
                                     host_call=host)
         response = server.MCPServer(tools).handle({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
@@ -66,8 +91,8 @@ class MCPServerTest(unittest.TestCase):
             json.loads((ROOT.parents[3] / "docs" / "reference" / "external-assistant-tools.json").read_text())["tools"],
             json.loads((ROOT / "external-assistant-tools.json").read_text())["tools"],
         ]
-        accepted = ("kai", "kai.worker", "航海.v2.cc")
-        rejected = ("cc", "cdx", "kai/worker", "kai worker")
+        accepted = ("dots", "dots.worker", "航海.v2.cc")
+        rejected = ("cc", "cdx", "dots/worker", "dots worker")
         for catalog in catalogs:
             tools = {tool["name"]: tool for tool in catalog}
             patterns = [tools[name]["inputSchema"]["properties"]["target"]["pattern"]
@@ -82,7 +107,7 @@ class MCPServerTest(unittest.TestCase):
     def test_optional_event_dispatcher_adds_capability_only_when_injected(self):
         class Events:
             def definition(self):
-                return {"name": "kai.mailbox.message"}
+                return {"name": "dots.mailbox.message"}
 
             def subscribe(self, url, secret, ttl_ms=None):
                 return {"id": "sub-1"}
@@ -91,12 +116,12 @@ class MCPServerTest(unittest.TestCase):
         initialized = instance.handle({"jsonrpc": "2.0", "id": 5, "method": "initialize", "params": {}})
         self.assertIn("events", initialized["result"]["capabilities"])
         response = instance.handle({"jsonrpc": "2.0", "id": 6, "method": "events/subscribe", "params": {
-            "name": "kai.mailbox.message", "arguments": {},
+            "name": "dots.mailbox.message", "arguments": {},
             "delivery": {"mode": "webhook", "url": "https://example.test/hook", "secret": "hidden"},
         }})
         self.assertEqual(response["result"], {"id": "sub-1"})
         listed = instance.handle({"jsonrpc": "2.0", "id": 7, "method": "events/list", "params": {}})
-        self.assertEqual(listed["result"]["events"][0]["name"], "kai.mailbox.message")
+        self.assertEqual(listed["result"]["events"][0]["name"], "dots.mailbox.message")
 
     def test_conversation_resolver_cannot_reach_fixed_event_state(self):
         class Events:
@@ -104,7 +129,7 @@ class MCPServerTest(unittest.TestCase):
                 self.calls = 0
 
             def definition(self):
-                return {"name": "kai.mailbox.message"}
+                return {"name": "dots.mailbox.message"}
 
             def subscribe(self, *args):
                 self.calls += 1
@@ -118,7 +143,7 @@ class MCPServerTest(unittest.TestCase):
                                   "params": {"protocolVersion": server.PROTOCOL_VERSION}})
         self.assertEqual(legacy["result"]["protocolVersion"], server.PROTOCOL_VERSION)
         response = instance.handle({"jsonrpc": "2.0", "id": 52, "method": "events/subscribe", "params": {
-            "name": "kai.mailbox.message", "arguments": {},
+            "name": "dots.mailbox.message", "arguments": {},
             "delivery": {"mode": "webhook", "url": "https://example.test/hook", "secret": "hidden"},
         }})
         self.assertEqual(response["error"]["data"]["code"], "identity_rejected")
@@ -130,7 +155,7 @@ class MCPServerTest(unittest.TestCase):
                 self.calls = 0
 
             def definition(self):
-                return {"name": "kai.mailbox.message"}
+                return {"name": "dots.mailbox.message"}
 
             def subscribe(self, url, secret, ttl_ms=None):
                 self.calls += 1
@@ -141,7 +166,7 @@ class MCPServerTest(unittest.TestCase):
         base = {
             "jsonrpc": "2.0", "method": "events/subscribe",
             "params": {
-                "name": "kai.mailbox.message", "arguments": {},
+                "name": "dots.mailbox.message", "arguments": {},
                 "delivery": {"mode": "webhook", "url": "https://example.test/hook", "secret": "hidden"},
             },
         }

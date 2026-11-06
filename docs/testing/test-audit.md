@@ -74,7 +74,7 @@ trackedのtest/spec/fixture/smoke/acceptance名を持つ実行ソースの追加
 
 ### F02 — 製品結果を参照しない恒真assert
 
-[T026の161行](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L155)の`assertNotIn("target", {"service_id", "service_token", "address"})`は定数集合への判定。実際の送信requestを検査していない。
+[T026の161行](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L155)の`assertNotIn("target", {"service_id", "service_token", "address"})`は定数集合への判定。実際の送信requestを検査していない。
 
 **反例:** requestのfieldを誤って追加・欠落させてもこのassertは常に通る。**対応:** この1assertが最も明確な削除候補。ただしmethod全体にはsubmission ID、thread、service bindingの有用な検査があり、残す。必要な禁止fieldは仕様を確認して実requestへassertする。`target`自体は送信に必要なfieldなので、機械的に実requestへの`assertNotIn("target", ...)`へ置換してはならない。
 
@@ -98,7 +98,7 @@ trackedのtest/spec/fixture/smoke/acceptance名を持つ実行ソースの追加
 
 ### F06 — reload manifestは固定順序のsource grep
 
-[T089](../../tests/test-kai-msg-reload-manifest.sh#L6)はsyntax、固定順序のtar文字列、sourceの存在を検査する。[reload製品](../../bin/tproj-msg-reload)のarchiveやremote配置を実行していない。
+[T089](../../tests/test-dots-msg-reload-manifest.sh#L6)はsyntax、固定順序のtar文字列、sourceの存在を検査する。[reload製品](../../bin/tproj-msg-reload)のarchiveやremote配置を実行していない。
 
 **反例:** 文字列が未使用経路に残り、実archiveが別集合を使っても通り得る。一方、同じ集合の順序変更だけで落ちる。**対応:** 隔離先に出すarchiveのentry集合を検査する候補。loaded反映はさらに別の証拠。helpの依存なし動作を検査するT091とは重複しない。
 
@@ -134,7 +134,7 @@ trackedのtest/spec/fixture/smoke/acceptance名を持つ実行ソースの追加
 
 ### F12 — scope filteringではなくHost結果のprojection
 
-[T026の`test_list_filters_to_authorized_scope`](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L265)はstubが返す両addressを期待する。[adapter](../../extensions/messaging/external/kai-mcp/mailbox_tools.py#L251)は表示fieldの投影を行い、実scope filteringは[Host](../../extensions/messaging/unified/host.py#L765)が担う。
+[T026の`test_list_filters_to_authorized_scope`](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L265)はstubが返す両addressを期待する。[adapter](../../extensions/messaging/external/dots-mcp/mailbox_tools.py#L251)は表示fieldの投影を行い、実scope filteringは[Host](../../extensions/messaging/unified/host.py#L765)が担う。
 
 **反例:** Host側filterがなくなっても、このstub主体のケースは変化しない。**対応:** adapterのprojection検査として改名し、Hostのpolicy検査と責務を分ける。adapterに重複filterを足す提案ではなく、現sourceから認可漏れを断定するものでもない。
 
@@ -191,7 +191,7 @@ trackedのtest/spec/fixture/smoke/acceptance名を持つ実行ソースの追加
 | 領域 | 台帳で確認できるもの | そこから言えないこと |
 | --- | --- | --- |
 | native MSG | 実Hub/Host/SQLite、one-shot予約、取消、世代、人工native記録との結合 | 実provider/SDK更新後の通知到達、下書き維持、CC adapter本番統合、実Goal carry、両host全matrix |
-| KAI / federation | 認証・scope・durable queue・HTTP/SSH代替の契約 | 実接続、購読、外部recipientの消費、運用時の反映 |
+| Dots / federation | 認証・scope・durable queue・HTTP/SSH代替の契約 | 実接続、購読、外部recipientの消費、運用時の反映 |
 | legacy MSG | 実CLI + fake tmux/bridge/SSH、draft guardとsender認証 | enrolled native経路の合格。入口が違うため代替証拠にしない |
 | GUI / process | Swift純関数、実shell子timeout、argv、隔離tmux/PTY | live GUIのリサイズ、drag/drop、画像品質、実ネットワーク切替、全zombie不在 |
 | installer | 隔離HOME、byte/config/hash、mock trust response | 実承認、loaded process世代、実remote配布後の機能 |
@@ -201,7 +201,7 @@ trackedのtest/spec/fixture/smoke/acceptance名を持つ実行ソースの追加
 
 ## CIの到達と欠落
 
-正本は[test workflow](../../.github/workflows/test.yml)。16ファイルを直接実行し、KAI MCPの7ファイルをdiscovery、runtime installerからcompatibilityの1ファイルを間接実行する。各ファイルの正確な区分は台帳の`ci`列を参照。
+正本は[test workflow](../../.github/workflows/test.yml)。16ファイルを直接実行し、Dots MCPの7ファイルをdiscovery、runtime installerからcompatibilityの1ファイルを間接実行する。各ファイルの正確な区分は台帳の`ci`列を参照。
 
 **85 / 109ファイルはこのworkflowの実行対象ではない。** その中にはSwift全8ファイル、Hub/Host/identityの独立suite、repo-access、formal-task、remote lifecycle等がある。native consumer等から製品の一部が実行されることと、これらのtest methodが走ることは別である。CI外でも手動実行され得るため、「誰も実行していない」とは言わない。
 

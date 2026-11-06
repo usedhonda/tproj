@@ -1,0 +1,125 @@
+path	since_20261022_audit	disposition	finding	retained_boundary	reviewed_sha256
+apps/tproj/Tests/TprojLogicTests/BoundedCommandRunnerTests.swift	changed	retain		子processの出力上限・timeout・TERM無視・継承pipeでUIを塞がない	224d9055a7624b8c4d47bebad1aefad1a79849f07b743ee773deb8d90af94e4c
+apps/tproj/Tests/TprojLogicTests/GhosttyConfigParserTests.swift	unchanged	retain		背景色hexの妥当性とRGB変換	6ff6ddaf5f70d9c4c0f86d5a83736e42874afbce009dd72714616ca897933819
+apps/tproj/Tests/TprojLogicTests/JogCycleTests.swift	unchanged	retain		roleを除外したpane順序・wrap・空集合	f95c3d81491e986842c3f5db357733638ffecbb201a7cd6426ead61695f86a3b
+apps/tproj/Tests/TprojLogicTests/JogQuantizerTests.swift	unchanged	retain		MIDI相対値decode・蓄積・反転・rate limit	9ef460049593382c7ee98f8cdf452e994d4f6f867c0fa99ef00df30a89eb7deb
+apps/tproj/Tests/TprojLogicTests/KeepWarmTests.swift	unchanged	retain		fresh/boundなsessionだけpoke候補とする	7f33c5a609e43bc74f2bdc6c60cf0e77dd2f3845c2ed1556ce1c3caf775e769f
+apps/tproj/Tests/TprojLogicTests/RemoteAgentLifecycleTests.swift	new	retain		stopped / running / unavailable and closed-view actions; UI state differs from process lifecycle	06db9a50e3038327a2f2010511e3e25bb33890c98d35f4eb02954a299810e79f
+apps/tproj/Tests/TprojLogicTests/RoleModeTests.swift	unchanged	retain		mode parse/roundtripとusageの選択・期限・通知情報最小化	e7dd67306ae787bad98e90c722727c865efc869e3a3e49eb578a6e9f76a25026
+apps/tproj/Tests/TprojLogicTests/TmuxServiceTests.swift	unchanged	retain		argv組立・pane解析・非zero結果の扱い	051312e61df7cedfd2d00970b4c045291f4d764b95c3b418176e8e1a5e04ea18
+apps/tproj/Tests/TprojLogicTests/WorkspaceLocationGuardTests.swift	unchanged	retain		project IDのhost/path拘束・並び順非依存	32cbadf4fa4a2515d84670f98ef458eb9c2d5b5000fbb805e9a438ccddd9f6f8
+extensions/hooks/tests/test-cc-cache-observer.py	unchanged	retain		statusline出力保持・binding/epoch・秘密非保存・権限	db386c20823585f6ca2d911a9a0e827625cda822a3378acbb1754a028c5f6cf2
+extensions/hooks/tests/test-cc-poke.py	unchanged	retain		期限claimで送信重複防止・draft/古いPID拒否	d38b6339a2d3c5f9b1317978545d7ff8c1b2dd43d0df070246b9332f10243a56
+extensions/hooks/tests/test-claude-cache-observer-installer.sh	unchanged	retain		既存hook/statusline保全・再install不変	eb911ccdf15f5f14b15623becf4276b5ae4b9e48e525f8a702e449fdbd312f0c
+extensions/hooks/tests/test-codex-cache-observer-installer.sh	unchanged	retain		既存設定保持・dry-run・不正trust応答で不変	d20c730760f504b04b4aa269708f5c7e97056ccbb4fe40ac9b15b3847858b3af
+extensions/hooks/tests/test-codex-cache-observer.py	unchanged	retain		exact transcriptの数値だけ保存・曖昧/remote binding拒否	216f07bcb1f968a79a4f206c9f544d80da8fde19f9ef3f6e908973f641277c0e
+extensions/hooks/tests/test-completion-guard-consult.sh	changed	retain		consult/reflectionを実行/Stopの許可gateにしない	6dd5a5286d05c3db9477a15cd93d581dcbecfdfbf02e0cf30eb2f7025b1bdea3
+extensions/hooks/tests/test-formal-task-guard.py	changed	prune checks; retain suite	P02	通常作業非占有・exact retired callbackのfence・native hook wire	9020b0ada3e3c022835977d7c31e6f3b639c698eecdbff6b4ca72a79bae4e588
+extensions/hooks/tests/test-inbox-check.sh	changed	retain		owner別notice・DB移行・一度きりの通知・usage通知	c4322a622213a35ba081b5ca123b001fe6b7e113216d49326eb11c8799eccbba
+extensions/hooks/tests/test-inbox-record-peer-outbox.sh	unchanged	retain		記録hookからprepared outboxをexact条件でcommit	09ff264fe935f959263dc8912ae2e14c490c400353b49b50490c476c396adfe6
+extensions/hooks/tests/test-install-tproj-hooks-metadata.py	unchanged	retain		hook matcher移行・custom保持・platform別failure・metadata検証	46ee98e1c205faa681d3b6fbd3277e02fc076406c24f226b712020469e240314
+extensions/hooks/tests/test-mutation-guard.sh	unchanged	retain		frozen legacy taskの書込抑止・read-only/報告/解除の範囲	9ee5d20519eb32b42ce1f40777af480ac68a2d60dcd05ed2299ebf670bf0de40
+extensions/hooks/tests/test-task-lifecycle.sh	unchanged	retain		ACK/DONE/verify/report/cancel/freezeのlegacy履歴保全	38399e014b96c9b6f45ade305e835355e984297e61a2634e668d678930e79459
+extensions/messaging/external/dots-event-probe/test_runtime.py	unchanged	retain		probeのoffline準備・秘密ファイル権限・設定衝突・冪等	2fb3fd0b7516ffb60584ec02c9afcc635f81069180cc1f5a7ae42254590ca89d
+extensions/messaging/external/dots-event-probe/test_server.py	unchanged	retain		probe subscription/expiry/id衝突・digestのみ返却	26e3ffd585b7cbd03081821943a9c32ed3af4297dc983fb9c3d8ff0ff550cfca
+extensions/messaging/external/dots-mcp/test_connection.py	changed	retain		principal/scope/incarnationの結合とエラー秘匿	aa671a17a65060e0736d328f2929d018a3f0aef1375356ed5fbc1bdeca978ce4
+extensions/messaging/external/dots-mcp/test_conversation.py	unchanged	retain		conversation分離・revocation/expiry・永続reload・同時enroll・ID namespace	ef76adee2d50a4c3bc3905e3b414716e3c69d7b75f35c6a1506ba3304af79651
+extensions/messaging/external/dots-mcp/test_events.py	unchanged	retain		event outbox crash回復・同ID再試行・期限/取消・body非送出	a5e7ba79af201c3a8b1c2d9f8e0f10167d8bcf6834c5d829a58f7da6c4d89431
+extensions/messaging/external/dots-mcp/test_mailbox_tools.py	changed	retain		tool引数/認証・exact reply・query投影・cancel後本文非返却	9b67742ecb60e5880272048ca573f171d313d349f386c114badc4ab74c14ec49
+extensions/messaging/external/dots-mcp/test_retry_event_route.py	unchanged	retain		既存event再試行のactor/token/party境界	328657c6e9b292b781547af4b57e36958f945bac39da0ba6258aba91f921f54e
+extensions/messaging/external/dots-mcp/test_runtime.py	changed	retain		bridge frame/byte/deadline/slot・失敗後socket保全・private binding	76e340fa1e259dfd6d932392cdb6390db8ab83cb6d1db4d9732b5d86f7607ac0
+extensions/messaging/external/dots-mcp/test_server.py	unchanged	retain		MCP catalog/schema/stdio・identity選択・event capability非偽装	8407874a96854c0024c05b74d1a0a6c2237aeb05a685bf8ed63bf2ead4aa7e3b
+extensions/messaging/external/muse-mcp/test_muse.py	new	retain		parent-only credentials, tool catalog and service installation policy	0b7fff429927f081ce19e4d1b85ef41b1a0d31f39739a5c38a839a1aefc37e4c
+extensions/messaging/external/muse-mcp/test_vm.py	new	retain		VM poll cursor, unknown-send retention, outage and secret-minimal subprocess environment	dde65ef60c18f62970ecd444ea5952fada70a7eaaab1a8ace180559c18f8105c
+extensions/messaging/external/muse-mcp/test_vm_stdio_faults.py	new	retain		real pinned SDK subprocess schema and lost response; not replaced by mock client tests	20b7bfc42554ac7f19694cdf5d02ce1da1e58710b083b1e58bf46b821174de02
+extensions/messaging/tests/test-alias-retire.py	unchanged	retain		alias改名redirect・同ID保持・retire名再利用拒否	ea83a9867fe3205a322f24d1e9952909bbf65881ca120dee8891965e3f9cf9c0
+extensions/messaging/tests/test-approval-evidence.py	unchanged	retain		native approvalのscope/順序・peer混入・Goal証拠失効	8c7e37e199f9cc9bdd4f4c413099d587033225fa465227596d549885c6e57ede
+extensions/messaging/tests/test-bare-remote-role-route.sh	unchanged	retain		bare remote roleのproject/session一致とtask route	9babee3b50b4604e55158fa4fbb5dd94f191f288607e45112823dffea0ee47ab
+extensions/messaging/tests/test-binding-status.py	unchanged	retain		binding-statusの本人選択禁止・旧bindingと現binding区別・read-only	8f348144367d5ecea396758c8ba9bda5bfe8e64618d0a55542076873ed48bd3c
+extensions/messaging/tests/test-bridge-server.sh	unchanged	retain		HTTP bridgeのbusy/dedupe/戻りpayload/失敗通知	c927abfbdf0e711b286b7048a37208bdde5816d38dfcb864cf16d572c40879b0
+extensions/messaging/tests/test-caller-verify-hardening.sh	unchanged	retain		legacy送信者ancestry/PID-start/時刻境界・audit body非保存	c11dd12d8640ef166d7af8da254b1f04d55920c3ac2a025003b2f8623148da31
+extensions/messaging/tests/test-chatgpt-msg-skill-contract.sh	changed	prune checks; retain suite	P04	skillに操作名・境界説明が含まれること	d48e31eb35f77180a44301fe0a2a0cdb7fe6451cb5b72a9fa2cbe5cbe4f1ebc3
+extensions/messaging/tests/test-cross-mac-host-chat.sh	changed	retain		remote selector・stdin継続・reverse socketと送信者認証	444ae7ce540b308ffd30634aaadb7a7aed8a40d76033c71248046faac00a6ebc
+extensions/messaging/tests/test-delivery-diagnostics.py	unchanged	retain		exact native receipt復旧・理由の後付け防止・自己申告operator無効	1c3b422d6dfdcc9465b85de1549c92732f68b74012d98f793d956e7215699ff6
+extensions/messaging/tests/test-desktop-mailbox.sh	unchanged	retain		desktop mailboxのidentity・権限・no paste・容量/同時書込・drain	756501c9a72657edf638df991e9cd6bded8be0c57bf27a63f5f862099d54294c
+extensions/messaging/tests/test-directory-transaction.py	unchanged	retain		directory prepare/commit冪等とhost/path所有不変	242f8d405b9dd138fba50e594affbb3a371433b27984958f64391ec194471f7e
+extensions/messaging/tests/test-help-read-unified.sh	changed	retain		enrolled/未登録help差・remote read拒否説明	f695df96eacf8f4b10c103dd5c255591996bc938c454fab93442715ed6c1b20d
+extensions/messaging/tests/test-inbox-notice.py	unchanged	retain		native別exact-ID dedupe/cursor移行・metadata-only hook output	b246926b45a6861acbf658769c01ec7a198ee3c9daa6d279ad67034a49f924c8
+extensions/messaging/tests/test-native-cc.py	new	retain		authenticated CC opt-in, subscriber freshness, exact parent receipt and nested repo rejection	dcf0c50375dd6b68acb652bb114bcbad63ffa0e8a1167e75898295105372b8ed
+extensions/messaging/tests/test-native-consumer.py	changed	retain		one-shot本文予約・same-turn receipt・handoff・取消・RPC応答不明回復	d8506f350a3a4694bbdc4906441050f21ce705bb19c56012a6192e93d2a26507
+extensions/messaging/tests/test-native-notice.py	unchanged	retain		immutable origin/token/digest・actor世代・peerを承認へ昇格しない	3bed8aee0d8fa70f5fc2fb3fe45e24484aab3d79a7c3c7ab88707078f0aadd65
+extensions/messaging/tests/test-native-publication.py	unchanged	retain		publish前commit・未知結果照合・世代/CAS・取消/expiry再確認	87b108bc415d607e4979e78252d79dfd32578cfdbb2f3cdc5ae32a6255626fe1
+extensions/messaging/tests/test-native-queue.py	unchanged	retain		queue wire検証・固定deadline・add一回・dependency digest	040e8691e9f51d9e416f70190b28873dca098af05edbc630d6a03ec46643d2e3
+extensions/messaging/tests/test-peer-authority.py	unchanged	retain		legacy peer nonce/receiver/ancestry・commit proof	c5408cc322a0e8701e83c9aef1de5382485aa69ad0cbbed3eb08d9177212e931
+extensions/messaging/tests/test-peer-forward.py	unchanged	retain		SSH argv固定・forward PID-start一致	241ba86c9e6dd5f7db98c59dbb5ea90c7f773361c8bf2643c895b75e754db2dc
+extensions/messaging/tests/test-peer-outbox.py	unchanged	retain		prepare/commit/tombstone/claimのdurabilityと再claim禁止	a2f87377d5d2f23d2a3cad51995e60753583616f204b62cdea7f8b7dd05c3272
+extensions/messaging/tests/test-peer-receiver.py	unchanged	retain		quarantine→release→claim/finish・expiry・epoch拒否	4669f98bbf61cb99d8d0b049471674fe7478e23e9356d8723973689c3a73c7a9
+extensions/messaging/tests/test-protocol-slot-release.py	unchanged	retain		切断clientでもconcurrency slotを返す	53edc36246e0c8817ae88be9d689e89b56883ee865912f4bb1116979dedd8640
+extensions/messaging/tests/test-recipient-recovery.py	new	retain		selection versus historical reply authority, same-native restart and grant fences	8f41161023eedcf119c4e37e7e6fa7086ddeb82efda5a725d4fafc19bb2aa696
+extensions/messaging/tests/test-registry-contract.sh	changed	prune checks; retain suite	P03	router産出pid_startとcaller検証の接続	102557715620b2461a4855efc4207def60d0c66324d17dd32eeba07b4d544891
+extensions/messaging/tests/test-repo-access-federation.py	unchanged	retain		owner側repo grant・remote read/write・frame上限	e362525739f3b126d2d9123fe070c45b52d5c248c390566ddb9831d6a6262a51
+extensions/messaging/tests/test-repo-access-policy.py	unchanged	retain		grant scope/期限/世代/監査秘匿・移行・operator CLI	84c7de388351757aab4e0c08968d0ad8c823248d282cd14aa9e764a358408946
+extensions/messaging/tests/test-repo-access.py	changed	retain		tracked text限定・path/symlink/秘密・cursor/revoke・audit	30a16ab83b2923f030dd793d55e0055e455af062870022f3fe4654a305fd7c29
+extensions/messaging/tests/test-repo-host-routing.py	unchanged	retain		repo callerをendpoint由来に固定・local/remote判定・曖昧拒否	edfbd00ce04c3205a3a3bb811b843e8e721c8a03d3a311d3e1172d0615c45398
+extensions/messaging/tests/test-repo-write.py	unchanged	retain		write/revertのhash・scope・owner dirty保護・同ID・原git不変	841b85a3648d593aa4a1faeb3252a8305bf888deb0445c5ce56afc5d3ea22d71
+extensions/messaging/tests/test-role-handoff.sh	unchanged	retain		legacy task/handoff・承認carry・exact sender/targetとaudit	1e96836a94d2dd8435427b7eadee918ee63482c0b2d94d77c0fabc0672632f3c
+extensions/messaging/tests/test-runtime-compatibility.py	unchanged	retain		mixed-version時の既存installed bytes保全・capability認証	c150a80cd0aeff5d0dd3b1f08472d4970aea9efd7cde015dc731ed0320dcb447
+extensions/messaging/tests/test-runtime-directory-registration.py	changed	retain		既存runtime setup/reload判断・directory差分とrevision	dd38ba18bf7d3818dd871d6c817df4a4b0719cad4dbc28b3679609663a729014
+extensions/messaging/tests/test-runtime-installer.sh	changed	prune checks; retain suite	P01	配布byte一致・hook/config保持・dry-run・冪等	4afc00b077f15ba1e4b1498d9ee1ea5bf10ad3df49e7480dfd4abe9cbc2bca1c
+extensions/messaging/tests/test-send-targets.py	new	retain		caller-scoped fresh directory, owner resolution, unavailable peer and CLI filtering	68171af5298d6627e100743052248ff23b9a2f1e3c33609e4376d1e73fc306a7
+extensions/messaging/tests/test-sendability-gate.sh	unchanged	retain		legacy sendability/selection/draft/relay/fanout/queue/bridge	fdcafacdf1b2ac6dbd37a903eb194a1f0c87ad7f34298e65a3858cf3cad52428
+extensions/messaging/tests/test-target-resolution-hardening.sh	unchanged	retain		exact target/session・stale liveness・曖昧拒否	df5e1267f5529d96f08d32301edafdcf00f40165a34c7802329eb2e4186b542c
+extensions/messaging/tests/test-task-binding-release.py	unchanged	retain		binding解除の旧epoch/native・tombstone・marker cleanup回復	8a398bb370f118b3c2254865619e8dd4345e68b67e66d782bd3dbbb81d1d424a
+extensions/messaging/tests/test-task-project-path-db.sh	unchanged	retain		v10→11で旧taskのproject scopeを発明しない	0f509c1b7114b2c09b90bcc43382f790aea296638f5681ea1edc98bd25eeb6de
+extensions/messaging/tests/test-task-reconcile.py	unchanged	retain		exact tool/native/timeの完了witness・error/unknown分離	a88a38e0ecbb265e1aa5797322517c99e4cd476fd8ce4361d22fc1a5e2b0d347
+extensions/messaging/tests/test-task-resume.py	new	retain		authority epoch continuity, owner proof, quiescence and CLI routing	2f6b0bdc965a83721dbfc03fb90943cd80d7b3d4ad32930e167d734dec5a9df6
+extensions/messaging/tests/test-task-role.py	unchanged	retain		native context矛盾拒否・markerとauthority error分類	8c557447f4c40fff2c14a316c820f98f046f5e468433c0a1b27716de20b71631
+extensions/messaging/tests/test-telegram-ingress.py	new	retain		persistent origin binding, exact text and unknown delivery suppression	b7be70fa45d982818bb51576e111bb29b92b1d32d67863375771808521c0580a
+extensions/messaging/tests/test-telegram-route.py	new	retain		Host/Hub/Mailbox origin projection and revocation integration	71614925855ad406a3baa432a9a4584dc8a8e9a4e2babbb3a71d845d10f021ba
+extensions/messaging/tests/test-telegram-runtime.py	new	retain		poller credential source, raw updates and durable cursor integration	4643e1947a15906251d1de1c5859f6fbfde810bce9f9012fd038596c641ad0a9
+extensions/messaging/tests/test-unified-cli-routing.sh	unchanged	retain		enrolled wrapperがlegacy mutationへfallbackしない	d37cfbc0c8bdb87e1d44b9243e31a1a9bc07537770f6eddf2f6f8ec91ef052f0
+extensions/messaging/tests/test-unified-cli.py	changed	retain		送信前spool保存・同IDretry・selector/ページング	53f4b7b5d5dd5848011350249329bd09cc7ffc3ad9f9cd103e7768a6ac436313
+extensions/messaging/tests/test-unified-deferred-submissions.py	new	retain		durable claim, unknown/held states, cancellation races and public reconciliation	348d6c05161de3a039e82f58e69cd3cddb2aca3bd23de94ee66ab2d076d577f7
+extensions/messaging/tests/test-unified-enrollment.py	unchanged	retain		directory admission・prepare/commit・host別有向route	b0bd97e66f02ccec3db0321cd0d7aef7dd93b111e633cc45ea6cf2634a023bd8
+extensions/messaging/tests/test-unified-federation.py	changed	retain		owner受入結果・offline/unknown・取消/返信・byte上限	71e557c18d8b2ff4eb45cbefdaa84fc7d9dcc61c97f43107ccf8e0d63eaca463
+extensions/messaging/tests/test-unified-host-identity.py	unchanged	retain		旧owner保持・pane欠落でも他endpoint継続・heartbeat	6841ae93df3c718efb791ec6b8c28753757c0f9a3a0fa813f2671fe3e1806623
+extensions/messaging/tests/test-unified-host-services.py	changed	retain		endpoint故障分離・journal reopen・runtime pin・service scope	46af76240ab3ce292f490e74a3da825498e5994ea57d947449d5a7ca7a408200
+extensions/messaging/tests/test-unified-hub.py	changed	retain		MSG状態/receipt/取消/TTL/identity/handoff・公平claim・read-only投影	052181aa2551723df94b9f353af36a999930f5a77a3532c9f265bdcd51839470
+extensions/messaging/tests/test-unified-identity.py	changed	retain		PID/ancestry/native catalog/rolloutの所有binding	1b5209e36ab5a27bd51cd5c5d482de1335720bf55f81afe471578c7f6ca1cd2f
+extensions/messaging/tests/test-unified-integration.py	unchanged	retain		旧terminal receiptとHub replyの接続・draft/menu parser	7b46e16c9a8c8c12db43c8158278fbb169564f385e6622b599364bec8a64c3e6
+extensions/messaging/tests/test-unified-pending.py	unchanged	retain		pending表示をowner側状態で再照合・remote上限	9a767770dcde328369e67de514103de92111824e8764536bc88ae664c2a212a6
+extensions/messaging/tests/test-unified-policy.py	unchanged	retain		relay/broadcast/重複の受付policy	e76b617729f8ce3e885e694eb8f816cf53ba51cf93b9a863bd27dbd51d1546e3
+extensions/messaging/tests/test-unified-task-cli.py	unchanged	retain		formal task CLIのscope/approval/idempotencyと旧入口遮断	d64f3d731d15fd59d5b282dfcec4bd7050bcc3ee253db785c1a86d2316537fa7
+extensions/messaging/tests/test-unified-telegram-compatibility.py	new	retain		group/private separation and real runtime/bridge/Host/Hub interaction	ba2f16495262c76bfa6d20f9762932000cb0586286cb80ebccb8d2dda8f1cacd
+extensions/messaging/tests/test-unified-terminal-freshness.py	unchanged	retain		古いtyping hint無効化と実draft/approval保護	5030ef87085aae083629e5a902cfb5220b3f32f834c9aa345dcdb982f1cc8df7
+extensions/model-role-router/test-model-role-router-contract.sh	unchanged	retain		canonical symlinkと既存pane metadata非上書き	a456e6812738b03b469e17248727d1d2170420608e9175bff44d28c111eeb77d
+extensions/persona/test-project-bootstrap-contract.sh	unchanged	retain		runtime起動でshared files不変・canonical/installed drift検出	e85dddf849503646f927a653a2de761ad5264f0f838ce19f5e93aaf7a61fb7a1
+extensions/persona/test-tproj-pane-bg-face-stock.sh	unchanged	retain		face stockのpin維持・override・選択	c84f56f4f938a22e697ae7bf5bf6b5f894e449b99d378ac2f3a6ce27d670b8e2
+extensions/persona/test-tproj-pane-bg-provider-contract.sh	unchanged	retain		provider error分類/秘匿・bounded retry・fallback停止	22da50a343295f88ab7fb06e74be65aa8963303463e4790e356340a3a0ade269
+extensions/persona/test-tproj-pane-bg-sync-coalescing.sh	changed	retain		full requestをfastで上書きしない・promotion準備	63a4515acf8158e63113c0751551972def7d16c1a0b70cee3aecb9317cab639e
+tests/smoke-bin.sh	changed	prune checks; retain suite	P05	bin構文・代表help/status・column上限拒否	c0b32acd8317bf64813a451ecfe615674b15a99b4327fd6a37b8ed5ac0c587bc
+tests/test-install-check-persona.sh	unchanged	retain		installerが配布personaの欠落/差分を報告する	d56a4d83783a4f538cffc57c8aa5f1aa2481c45f9738d33c9ea6d917382b42e5
+tests/test-install-standalone.sh	unchanged	retain		sibling無しpublic checkoutのdry-run fail-open	38c8de1c575e4fa32eaec0b78b969c2a7893684debf2e0ac74543216414c829f
+tests/test-dots-msg-reload-manifest.sh	changed	retain		配布manifestに必要moduleが列挙される	02ed0f7b9088fabc09d5221222b50ee9ec5189ba4b7ea893595e2e681d4226b4
+tests/test-local-codex-update.py	unchanged	retain		agent updateとlaunchの排他・failure fail-open	2652f732329a4356da1eb9e47fbbf1e7292e7d9bb2f93d87f1e2968bc028e5dc
+tests/test-msg-reload-help.sh	unchanged	retain		helpはdeploy依存無しで動作・unknown option拒否	9ddfa28617dd52810aeb01222d4966cc97b13fec3c9c26a2a1db045e78e198d8
+tests/test-msg-runtime.py	unchanged	retain		setupのlocal性・dry-run・冪等・旧enrollment移行拒否	deea91911cea3392995b4ea45b0bebeeeb7ad2b498a68768915857a87842549f
+tests/test-pane-autozoom.sh	unchanged	retain		window高に比例したpane resizeと最小floor	6121f67e0e61944d840ab15bee0680b70863cf21c3f83abc225c645eea1071eb
+tests/test-pane-bg-remote-main.sh	changed	retain		remote/local同pathのmain roleを混同しない	e9aa02915301a1e7760a91dae27daad3acc65eaa3b624ba64f0befead42c4e4c
+tests/test-pane-bg-style-layers.sh	changed	retain		baseline/house/project/provider優先順	8363d69116d8a5203ba8d3cf3fea1e54638b7c8c42c61e4933f36f865990befe
+tests/test-peer-ledger-remote-sync.sh	unchanged	retain		remote操作別ledger refreshの有無/順序	06d364e76a330485a15e8217e37ddff86acc8e8010f63b901ef6023f8f175e84
+tests/test-peer-ledger.sh	unchanged	retain		project projection/ID・revision・duplicate拒否・import/export	3783dd87e6d76e1f0231a2a7cec4b8df6a72764cadaa4bdb5d926320a7889bab
+tests/test-remote-cache.sh	unchanged	retain		bounded keep-warm tick・CCのみpoke・無効化	7b86097ab36641733a30b6a153d36d3c54922dcc8e19ccbd0d77a4fa2e1060c8
+tests/test-remote-client-mosh.sh	changed	retain		SSH既定/mosh opt-inとfailure fallback	d9cd3e0064c6d327d9bdfd086a91b29e2dc21f8485e05a7c9b0bc849ca8627fa
+tests/test-remote-client-tty.sh	changed	retain		TTY復元・offline入力非replay・再接続・signal cleanup	2348d88e08b40a33892bf94dc2baf1484a36aff48f24fa37e32e9da869372d5c
+tests/test-remote-host.sh	changed	retain		runtime register/ensure/identity/rename/stop/migrate	6917c594a5a96c2439428fe3eb9d3113fe7d9638c271abca5f9a0fb35d3c708e
+tests/test-remote-mobile.py	new	retain		mobile operation identity, concurrent start, dead sessions and normal ensure-all	739dc77eb80a3056cc1560c22f4b785cd84408481d7368cc46c2315527a5c022
+tests/test-remote-reattach.sh	unchanged	retain		既存role sessionだけreattach・起動/config生成なし	514b2ad132e4b1ac66a6ee4e9b3e325b1ddb69156cc3657ef1d73e7220d43efb
+tests/test-remote-setup-topology.sh	changed	retain		remote配布集合とdrift分類	93c4ceed377cfc9a66568adaf8ff632228dfb6c17c59757146b7b2e143518fc5
+tests/test-runtime-chain.py	new	retain		source/bundle/staged helper bytes and deliberate stale runtime rejection	39a673d1d8580eb2017ef09535e826afa30fe15bb11112e5deb8754e342327a2
+tests/test-stop-dispatch.py	changed	retain		stop/killが共有shutdown dispatchへ進む	a366294de1b8cfd945779f2e78a8d8b227845d62a8f8dd4c09f6e11455f2bb83
+tests/test-topology-cli.sh	unchanged	retain		host ID永続・topology modeとhost登録	1edca14cae992546eda19e7ed6dea608408e2a37a89abe5d6ed04036b6cf8b0d
+tests/test-tproj-gui-launch-reuse.sh	changed	retain		GUI binary path/symlink/--serverの判定	07fd7cdbaca5cec3b533200a5a74108d4970fb6bd9e16de93284b281459c5486
+tests/test-unified-task-integration.py	unchanged	retain		approval→master route→formal lifecycleの接続・通常tool非占有	09e4f0c17cc0ab62276c19948b3b8f08a3de5e77d2bf24006ee6bfbc31df4fc1
+tests/test-unified-tasks.py	unchanged	retain		authorityのepoch/handoff/cancel/freeze/quiescence/visibility	17985686f13600fde73cbeaf7a38bca0de451dd9b0f2bca756c26b94cf6e6ee9
+tests/test-workspace-writer-lock.sh	changed	retain		workspace writer排他・stale回復・手動/volatile field保持	bb8c9fd705c8a96d98bd3976f5d8e783860002ed4af3413c7ce5d01106fe0383

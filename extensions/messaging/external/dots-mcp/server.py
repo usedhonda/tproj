@@ -1,4 +1,4 @@
-"""Standard MCP stdio dispatcher for the inert KAI mailbox adapter.
+"""Standard MCP stdio dispatcher for the inert Dots mailbox adapter.
 
 This file only supplies protocol plumbing.  A trusted runtime must inject a
 ``MailboxTools`` instance; the command-line entrypoint intentionally has no
@@ -24,7 +24,7 @@ except ImportError:  # direct ``python server.py`` invocation
 PROTOCOL_VERSION = "2024-11-05"
 EVENTS_PROTOCOL_VERSION = "2026-07-28"
 SUPPORTED_PROTOCOL_VERSIONS = (EVENTS_PROTOCOL_VERSION, PROTOCOL_VERSION)
-SERVER_INFO = {"name": "kai-mailbox", "version": "0.1.0"}
+SERVER_INFO = {"name": "dots-mailbox", "version": "0.1.0"}
 TOOL_NAMES = set(MailboxTools.TOOLS)
 
 
@@ -67,9 +67,24 @@ class MCPServer:
             raise ValueError("invalid tool subset")
         self.catalog = [tool for tool in TOOL_CATALOG if tool['name'] in self.tool_names]
         self.catalog_version = hashlib.sha256(json.dumps(self.catalog, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+        self.discovery_started_at = time.time()
+        self.discovery = {}
         self.tools = tools
         self.events = events
         self.conversation_resolver = conversation_resolver
+
+    def _capability_catalog(self, name, result):
+        if name == "tproj_capabilities":
+            return dict(result, server_catalog={"version": self.catalog_version,
+                        "server_name": SERVER_INFO["name"], "tools": sorted(self.tool_names),
+                        "discovery": {"started_at": self.discovery_started_at,
+                                      "methods": {k: dict(v) for k, v in self.discovery.items()}}})
+        return result
+
+    def _observe_discovery(self, method):
+        previous = self.discovery.get(method, {})
+        self.discovery[method] = {"count": previous.get("count", 0) + 1,
+                                  "last_at": time.time()}
 
     def handle(self, request: Any) -> dict[str, Any] | None:
         if not isinstance(request, dict):
@@ -92,6 +107,7 @@ class MCPServer:
                 selected_version = EVENTS_PROTOCOL_VERSION
             else:
                 selected_version = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
+            self._observe_discovery(method)
             capabilities = {"tools": {"listChanged": False}}
             if events_enabled:
                 capabilities["events"] = {}
@@ -103,6 +119,7 @@ class MCPServer:
         if method == "ping":
             return {"jsonrpc": "2.0", "id": req_id, "result": {}}
         if method == "server/discover":
+            self._observe_discovery(method)
             capabilities = {"tools": {}}
             if events_enabled:
                 capabilities["events"] = {}
@@ -112,6 +129,7 @@ class MCPServer:
                 "capabilities": capabilities,
             }}
         if method == "tools/list":
+            self._observe_discovery(method)
             return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": self.catalog, "_meta": {"catalog_version": self.catalog_version}}}
         if method in ("events/list", "events/subscribe", "events/unsubscribe"):
             if self.conversation_resolver is not None:
@@ -167,7 +185,7 @@ class MCPServer:
             return _error(req_id, -32601, "Tool not available on this service")
         if (name == "tproj_capabilities" and self.tools is None
                 and self.conversation_resolver is None and not arguments):
-            result = disconnected_capabilities()
+            result = self._capability_catalog(name, disconnected_capabilities())
             return {"jsonrpc": "2.0", "id": req_id, "result": {
                 "content": [{"type": "text", "text": json.dumps(result, sort_keys=True)}],
                 "structuredContent": result,
@@ -183,6 +201,7 @@ class MCPServer:
             except Exception:
                 exc = MailboxToolError("identity_rejected", "trusted conversation binding required")
             else:
+                result = self._capability_catalog(name, result)
                 summary = result.pop("_summary", None) if isinstance(result, dict) else None
                 text = summary if isinstance(summary, str) else json.dumps(result, ensure_ascii=False, sort_keys=True)
                 return {"jsonrpc": "2.0", "id": req_id, "result": {
@@ -199,6 +218,7 @@ class MCPServer:
                 except MailboxToolError as caught:
                     exc = caught
                 else:
+                    result = self._capability_catalog(name, result)
                     summary = result.pop("_summary", None) if isinstance(result, dict) else None
                     text = summary if isinstance(summary, str) else json.dumps(result, ensure_ascii=False, sort_keys=True)
                     return {"jsonrpc": "2.0", "id": req_id, "result": {
@@ -233,7 +253,7 @@ def run_stdio(server: MCPServer, stdin: TextIO = sys.stdin, stdout: TextIO = sys
                 # binding; MCP request handling must remain available.
                 continue
 
-    worker = threading.Thread(target=deliver, name="kai-event-pump", daemon=True)
+    worker = threading.Thread(target=deliver, name="dots-event-pump", daemon=True)
     if callable(pump) and getattr(server, "event_pump_enabled", True):
         worker.start()
     try:

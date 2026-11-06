@@ -17,7 +17,8 @@ def bot_token(config, bot_id):
         raise CredentialUnavailable('plaintext_bot_credential_not_allowed')
     reference = config.get('bot_token_keychain')
     if (not isinstance(reference, dict) or set(reference) != {'service', 'account'}
-            or reference['service'] != 'openclaw.kai.telegram'
+            or not isinstance(reference['service'], str)
+            or not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', reference['service'])
             or reference['account'] != str(bot_id)):
         raise CredentialUnavailable('invalid_bot_credential_reference')
     if sys.platform != 'darwin':

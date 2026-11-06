@@ -3,14 +3,12 @@
 # test-registry-contract.sh — model-role-router <-> tproj-msg registry contract.
 #
 # Local producer/consumer contract; requires the sibling model-role-router.
-# P1 and P2 are fatal assertions. P3 is a non-gating observation only and
-# does not establish deterministic multi-candidate selection.
+# P1 and P2 are fatal assertions.
 #   P1  router accepts only registered, live PID-start-bound peers
 #   P2a recorded pid_start absent -> REJECT pid_start_unrecorded
 # Fail-closed consumer guards:
 #   P2b recorded pid_start present and matching        -> VERIFIED
 #   P2c recorded pid_start present but mismatching      -> REJECT
-# Observation only (Task 4, non-fatal): find_registry_state_file candidate pick.
 #
 # Uses MODEL_ROLE_CACHE / TPROJ_MSG_DB_PATH overrides exclusively; never touches
 # the real ~/.cache/tproj-model-role or the production messages.db.
@@ -192,12 +190,6 @@ case "\${REG_MODE:-}" in
     printf '{"alias":"tproj.cc","pid":%s,"pid_start":%s,"role_epoch":1,"role":"worker","orchestrator_alias":"tproj.cdx","observed_at":%s}\n' "\$mypid" "\$mystart" "\$obs" > "\$regf" ;;
   mismatch)
     printf '{"alias":"tproj.cc","pid":%s,"pid_start":%s,"role_epoch":1,"role":"worker","orchestrator_alias":"tproj.cdx","observed_at":%s}\n' "\$mypid" "\$((mystart+9999))" "\$obs" > "\$regf" ;;
-  multi_live_plus_dead)
-    # Live ancestor entry in window 1 + a dead-pid entry (same alias) in another
-    # window. find_registry_state_file must resolve to the LIVE entry (B3).
-    printf '{"alias":"tproj.cc","pid":%s,"pid_start":%s,"role_epoch":1,"role":"worker","orchestrator_alias":"tproj.cdx","observed_at":%s}\n' "\$mypid" "\$mystart" "\$obs" > "\$regf"
-    mkdir -p "$REGISTRY_ROOT/tproj-workspace/9"
-    printf '{"alias":"tproj.cc","pid":999999,"pid_start":111111,"role_epoch":1,"role":"worker","orchestrator_alias":"tproj.cdx","observed_at":%s}\n' "\$obs" > "$REGISTRY_ROOT/tproj-workspace/9/tproj.cc.json" ;;
 esac
 "$REAL_TPROJ_MSG" "\$@"
 WRAPPER
@@ -245,16 +237,6 @@ else
   printf 'FAIL  P2c_mismatched_pidstart_rejects (fail-open regression: got %s)\n' "$res"
   FAIL=$((FAIL+1))
 fi
-
-# P3 — OBSERVATION ONLY (Task 4, non-fatal). Multiple same-alias registry files
-# across windows: find_registry_state_file takes the first find(1) match with no
-# liveness/mtime tiebreak, so the chosen entry is filesystem-traversal dependent.
-# With a live-ancestor entry AND a dead-pid entry present, the current resolver
-# may bind the dead one (-> no_agent_ancestor/pid_start_mismatch). B3 makes this
-# deterministically prefer the live entry. Recorded, not asserted, to avoid a
-# flaky committed gate.
-res=$(run_verify multi_live_plus_dead)
-printf 'OBSERVE P3_find_multi_candidate: verdict=%s (non-gating observation; not a determinism assertion)\n' "$res"
 
 echo "----"
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"

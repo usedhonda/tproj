@@ -4,6 +4,21 @@ on:
     branches: [main]
   pull_request:
 jobs:
+  native-swift:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record native toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Run native logic tests
+        working-directory: apps/tproj
+        run: swift test
+      - name: Build release app
+        working-directory: apps/tproj
+        run: swift build -c release --product tproj
   muse-transport-faults:
     runs-on: ubuntu-latest
     steps:
@@ -16,9 +31,13 @@ jobs:
       - name: Lost-response transport contract with real SDK
         run: python extensions/messaging/external/muse-mcp/test_vm_stdio_faults.py -v
   shell-suites:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Install real tmux for remote-host lifecycle tests
+        run: |
+          command -v tmux >/dev/null || brew install tmux
+          tmux -V
       - name: Guard iteration efficiency contract
         run: |
           if grep -n -F 'full suite set defined in `.github/workflows/test.yml` for any' AGENTS.md; then
@@ -87,12 +106,16 @@ jobs:
       - name: Inbox check
         run: bash extensions/hooks/tests/test-inbox-check.sh
       - name: Mutation guard
-        run: bash extensions/hooks/tests/test-mutation-guard.sh
+        run: |
+          python3 --version
+          bash extensions/hooks/tests/test-mutation-guard.sh
+          python3 extensions/hooks/tests/test-formal-task-guard.py
+          python3 extensions/messaging/tests/test-inbox-notice.py
       - name: Bridge server
         run: bash extensions/messaging/tests/test-bridge-server.sh
       - name: External mailbox service contracts
         run: |
-          python3 -m unittest discover -s extensions/messaging/external/kai-mcp -p 'test_*.py'
+          python3 -m unittest discover -s extensions/messaging/external/dots-mcp -p 'test_*.py'
           python3 -m unittest discover -s extensions/messaging/external/muse-mcp -p 'test_*.py'
           python3 extensions/messaging/tests/test-unified-host-services.py
           python3 extensions/messaging/tests/test-unified-deferred-submissions.py

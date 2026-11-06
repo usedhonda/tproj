@@ -76,7 +76,7 @@ Sources consulted:
   `cdx` resolves inside the authenticated sender's project only. Cross-project
   addressing requires the full address; there is no focused-pane fallback.
 - Registered external services use their exact directory address (for example
-  `kai`) and are accepted only when the authenticated adapter's allowlist
+  `dots`) and are accepted only when the authenticated adapter's allowlist
   contains that address. `cc` and `cdx` remain shortcuts only in the local
   sender context; they are never service addresses or allowlist grants.
 - `gate` denotes the configured OpenClaw main participant. A project with a

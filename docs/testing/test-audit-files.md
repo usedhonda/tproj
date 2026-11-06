@@ -383,11 +383,11 @@ Shellの検査位置 47 件はcase台帳の `T020` を参照。fixture setup/補
 
 ## T021 — test_runtime.py
 
-[Test source](../../extensions/messaging/external/kai-event-probe/test_runtime.py) · 91 lines · CI: `not-in-test-workflow` · `keep`
+[Test source](../../extensions/messaging/external/dots-event-probe/test_runtime.py) · 91 lines · CI: `not-in-test-workflow` · `keep`
 
 **守るもの:** probeのoffline準備・秘密ファイル権限・設定衝突・冪等
 
-**本番接点:** [runtime.py](../../extensions/messaging/external/kai-event-probe/runtime.py)
+**本番接点:** [runtime.py](../../extensions/messaging/external/dots-event-probe/runtime.py)
 
 **証拠と限界:** fake executableと一時ファイル。外部event配送/本番launchdではない
 
@@ -395,233 +395,233 @@ Shellの検査位置 47 件はcase台帳の `T020` を参照。fixture setup/補
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
-| [T021-C001](../../extensions/messaging/external/kai-event-probe/test_runtime.py#L32) | offline prepare is inert and isolated |
-| [T021-C002](../../extensions/messaging/external/kai-event-probe/test_runtime.py#L41) | conflicting manifest refuses overwrite |
-| [T021-C003](../../extensions/messaging/external/kai-event-probe/test_runtime.py#L50) | offline then unexpected profile is rejected |
-| [T021-C004](../../extensions/messaging/external/kai-event-probe/test_runtime.py#L59) | runner rejects missing or insecure key |
-| [T021-C005](../../extensions/messaging/external/kai-event-probe/test_runtime.py#L69) | safe key allows local init only |
-| [T021-C006](../../extensions/messaging/external/kai-event-probe/test_runtime.py#L78) | offline then key init keeps runner idempotent |
+| [T021-C001](../../extensions/messaging/external/dots-event-probe/test_runtime.py#L32) | offline prepare is inert and isolated |
+| [T021-C002](../../extensions/messaging/external/dots-event-probe/test_runtime.py#L41) | conflicting manifest refuses overwrite |
+| [T021-C003](../../extensions/messaging/external/dots-event-probe/test_runtime.py#L50) | offline then unexpected profile is rejected |
+| [T021-C004](../../extensions/messaging/external/dots-event-probe/test_runtime.py#L59) | runner rejects missing or insecure key |
+| [T021-C005](../../extensions/messaging/external/dots-event-probe/test_runtime.py#L69) | safe key allows local init only |
+| [T021-C006](../../extensions/messaging/external/dots-event-probe/test_runtime.py#L78) | offline then key init keeps runner idempotent |
 
 ## T022 — test_server.py
 
-[Test source](../../extensions/messaging/external/kai-event-probe/test_server.py) · 72 lines · CI: `not-in-test-workflow` · `keep`
+[Test source](../../extensions/messaging/external/dots-event-probe/test_server.py) · 72 lines · CI: `not-in-test-workflow` · `keep`
 
 **守るもの:** probe subscription/expiry/id衝突・digestのみ返却
 
-**本番接点:** [server.py](../../extensions/messaging/external/kai-event-probe/server.py)
+**本番接点:** [server.py](../../extensions/messaging/external/dots-event-probe/server.py)
 
-**証拠と限界:** 実状態保存、HTTP sender差替え。製品KAI eventsの合格に転用不可
+**証拠と限界:** 実状態保存、HTTP sender差替え。製品DOTS eventsの合格に転用不可
 
 **重なり:** `probe`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
-| [T022-C001](../../extensions/messaging/external/kai-event-probe/test_server.py#L27) | corrupt state fails closed |
-| [T022-C002](../../extensions/messaging/external/kai-event-probe/test_server.py#L33) | malformed unsubscribe is json rpc error |
-| [T022-C003](../../extensions/messaging/external/kai-event-probe/test_server.py#L38) | stable event id reuses payload and rejects conflict |
-| [T022-C004](../../extensions/messaging/external/kai-event-probe/test_server.py#L54) | expired subscription is not delivered |
-| [T022-C005](../../extensions/messaging/external/kai-event-probe/test_server.py#L63) | context is digest only |
+| [T022-C001](../../extensions/messaging/external/dots-event-probe/test_server.py#L27) | corrupt state fails closed |
+| [T022-C002](../../extensions/messaging/external/dots-event-probe/test_server.py#L33) | malformed unsubscribe is json rpc error |
+| [T022-C003](../../extensions/messaging/external/dots-event-probe/test_server.py#L38) | stable event id reuses payload and rejects conflict |
+| [T022-C004](../../extensions/messaging/external/dots-event-probe/test_server.py#L54) | expired subscription is not delivered |
+| [T022-C005](../../extensions/messaging/external/dots-event-probe/test_server.py#L63) | context is digest only |
 
 ## T023 — test_connection.py
 
-[Test source](../../extensions/messaging/external/kai-mcp/test_connection.py) · 73 lines · CI: `discovery` · `keep`
+[Test source](../../extensions/messaging/external/dots-mcp/test_connection.py) · 73 lines · CI: `discovery` · `keep`
 
 **守るもの:** principal/scope/incarnationの結合とエラー秘匿
 
-**本番接点:** [connection.py](../../extensions/messaging/external/kai-mcp/connection.py)
+**本番接点:** [connection.py](../../extensions/messaging/external/dots-mcp/connection.py)
 
 **証拠と限界:** attestor差替え。runtime/serverから使われる純認証境界
 
-**重なり:** `kai`.
+**重なり:** `dots`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
-| [T023-C001](../../extensions/messaging/external/kai-mcp/test_connection.py#L25) | fixed scope and host incarnation are returned |
-| [T023-C002](../../extensions/messaging/external/kai-mcp/test_connection.py#L31) | scope or enrollment mismatch fails closed |
-| [T023-C003](../../extensions/messaging/external/kai-mcp/test_connection.py#L36) | attestation rejection is sanitized |
-| [T023-C004](../../extensions/messaging/external/kai-mcp/test_connection.py#L54) | event view uses same binding |
-| [T023-C005](../../extensions/messaging/external/kai-mcp/test_connection.py#L60) | restart keeps generation but rotation changes event owner |
+| [T023-C001](../../extensions/messaging/external/dots-mcp/test_connection.py#L25) | fixed scope and host incarnation are returned |
+| [T023-C002](../../extensions/messaging/external/dots-mcp/test_connection.py#L31) | scope or enrollment mismatch fails closed |
+| [T023-C003](../../extensions/messaging/external/dots-mcp/test_connection.py#L36) | attestation rejection is sanitized |
+| [T023-C004](../../extensions/messaging/external/dots-mcp/test_connection.py#L54) | event view uses same binding |
+| [T023-C005](../../extensions/messaging/external/dots-mcp/test_connection.py#L60) | restart keeps generation but rotation changes event owner |
 
 ## T024 — test_conversation.py
 
-[Test source](../../extensions/messaging/external/kai-mcp/test_conversation.py) · 458 lines · CI: `discovery` · `keep`
+[Test source](../../extensions/messaging/external/dots-mcp/test_conversation.py) · 458 lines · CI: `discovery` · `keep`
 
 **守るもの:** conversation分離・revocation/expiry・永続reload・同時enroll・ID namespace
 
-**本番接点:** [conversation.py](../../extensions/messaging/external/kai-mcp/conversation.py)
+**本番接点:** [conversation.py](../../extensions/messaging/external/dots-mcp/conversation.py)
 
 **証拠と限界:** 実ファイル/lockとthread、attestor/factory差替え。provider native identity供給は未証明
 
-**重なり:** `kai`.
+**重なり:** `dots`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
-| [T024-C001](../../extensions/messaging/external/kai-mcp/test_conversation.py#L40) | two independent contexts resolve distinct entries |
-| [T024-C002](../../extensions/messaging/external/kai-mcp/test_conversation.py#L48) | wrong absent and expired contexts are denied |
-| [T024-C003](../../extensions/messaging/external/kai-mcp/test_conversation.py#L60) | duplicate mapping and aliases are rejected |
-| [T024-C004](../../extensions/messaging/external/kai-mcp/test_conversation.py#L70) | raw request metadata alone cannot authorize |
-| [T024-C005](../../extensions/messaging/external/kai-mcp/test_conversation.py#L80) | load from json config |
-| [T024-C006](../../extensions/messaging/external/kai-mcp/test_conversation.py#L89) | owner policy aliases and order roundtrip as same policy |
-| [T024-C007](../../extensions/messaging/external/kai-mcp/test_conversation.py#L123) | malformed reload does not publish policy or provenance |
-| [T024-C008](../../extensions/messaging/external/kai-mcp/test_conversation.py#L156) | explicit enroll reconnects distinct identity and fences revoke |
-| [T024-C009](../../extensions/messaging/external/kai-mcp/test_conversation.py#L179) | cross instance resolve reloads revocation and expired enroll is unchanged |
-| [T024-C010](../../extensions/messaging/external/kai-mcp/test_conversation.py#L200) | removed persisted owner policy fails closed without resurrection |
-| [T024-C011](../../extensions/messaging/external/kai-mcp/test_conversation.py#L218) | expiry rechecked after reload when clock advances while waiting |
-| [T024-C012](../../extensions/messaging/external/kai-mcp/test_conversation.py#L245) | load rejects group readable or symlinked registry |
-| [T024-C013](../../extensions/messaging/external/kai-mcp/test_conversation.py#L259) | malformed owner private registry returns fixed error |
-| [T024-C014](../../extensions/messaging/external/kai-mcp/test_conversation.py#L268) | policy denial and nonfinite expiry do not mutate config |
-| [T024-C015](../../extensions/messaging/external/kai-mcp/test_conversation.py#L289) | concurrent enrollment creates one binding |
-| [T024-C016](../../extensions/messaging/external/kai-mcp/test_conversation.py#L314) | resolver revalidates persisted revoke after factory |
-| [T024-C017](../../extensions/messaging/external/kai-mcp/test_conversation.py#L337) | resolver revalidates expiry after factory without reattesting |
-| [T024-C018](../../extensions/messaging/external/kai-mcp/test_conversation.py#L364) | send and reply submission ids are binding and operation scoped |
-| [T024-C019](../../extensions/messaging/external/kai-mcp/test_conversation.py#L393) | submission namespace encoding separates delimiter like values |
-| [T024-C020](../../extensions/messaging/external/kai-mcp/test_conversation.py#L404) | invalid submission ids use existing validator without host call |
-| [T024-C021](../../extensions/messaging/external/kai-mcp/test_conversation.py#L427) | changed payload keeps namespaced id for host conflict |
+| [T024-C001](../../extensions/messaging/external/dots-mcp/test_conversation.py#L40) | two independent contexts resolve distinct entries |
+| [T024-C002](../../extensions/messaging/external/dots-mcp/test_conversation.py#L48) | wrong absent and expired contexts are denied |
+| [T024-C003](../../extensions/messaging/external/dots-mcp/test_conversation.py#L60) | duplicate mapping and aliases are rejected |
+| [T024-C004](../../extensions/messaging/external/dots-mcp/test_conversation.py#L70) | raw request metadata alone cannot authorize |
+| [T024-C005](../../extensions/messaging/external/dots-mcp/test_conversation.py#L80) | load from json config |
+| [T024-C006](../../extensions/messaging/external/dots-mcp/test_conversation.py#L89) | owner policy aliases and order roundtrip as same policy |
+| [T024-C007](../../extensions/messaging/external/dots-mcp/test_conversation.py#L123) | malformed reload does not publish policy or provenance |
+| [T024-C008](../../extensions/messaging/external/dots-mcp/test_conversation.py#L156) | explicit enroll reconnects distinct identity and fences revoke |
+| [T024-C009](../../extensions/messaging/external/dots-mcp/test_conversation.py#L179) | cross instance resolve reloads revocation and expired enroll is unchanged |
+| [T024-C010](../../extensions/messaging/external/dots-mcp/test_conversation.py#L200) | removed persisted owner policy fails closed without resurrection |
+| [T024-C011](../../extensions/messaging/external/dots-mcp/test_conversation.py#L218) | expiry rechecked after reload when clock advances while waiting |
+| [T024-C012](../../extensions/messaging/external/dots-mcp/test_conversation.py#L245) | load rejects group readable or symlinked registry |
+| [T024-C013](../../extensions/messaging/external/dots-mcp/test_conversation.py#L259) | malformed owner private registry returns fixed error |
+| [T024-C014](../../extensions/messaging/external/dots-mcp/test_conversation.py#L268) | policy denial and nonfinite expiry do not mutate config |
+| [T024-C015](../../extensions/messaging/external/dots-mcp/test_conversation.py#L289) | concurrent enrollment creates one binding |
+| [T024-C016](../../extensions/messaging/external/dots-mcp/test_conversation.py#L314) | resolver revalidates persisted revoke after factory |
+| [T024-C017](../../extensions/messaging/external/dots-mcp/test_conversation.py#L337) | resolver revalidates expiry after factory without reattesting |
+| [T024-C018](../../extensions/messaging/external/dots-mcp/test_conversation.py#L364) | send and reply submission ids are binding and operation scoped |
+| [T024-C019](../../extensions/messaging/external/dots-mcp/test_conversation.py#L393) | submission namespace encoding separates delimiter like values |
+| [T024-C020](../../extensions/messaging/external/dots-mcp/test_conversation.py#L404) | invalid submission ids use existing validator without host call |
+| [T024-C021](../../extensions/messaging/external/dots-mcp/test_conversation.py#L427) | changed payload keeps namespaced id for host conflict |
 
 ## T025 — test_events.py
 
-[Test source](../../extensions/messaging/external/kai-mcp/test_events.py) · 337 lines · CI: `discovery` · `keep`
+[Test source](../../extensions/messaging/external/dots-mcp/test_events.py) · 337 lines · CI: `discovery` · `keep`
 
 **守るもの:** event outbox crash回復・同ID再試行・期限/取消・body非送出
 
-**本番接点:** [events.py](../../extensions/messaging/external/kai-mcp/events.py)
+**本番接点:** [events.py](../../extensions/messaging/external/dots-mcp/events.py)
 
 **証拠と限界:** 実durable state、HTTP/DNS/timeを差替え。webhook到達/購読providerは未証明
 
-**重なり:** `kai`.
+**重なり:** `dots`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
-| [T025-C001](../../extensions/messaging/external/kai-mcp/test_events.py#L41) | missing auth and invalid page fail before send |
-| [T025-C002](../../extensions/messaging/external/kai-mcp/test_events.py#L54) | post crash recovers exact persisted id and payload |
-| [T025-C003](../../extensions/messaging/external/kai-mcp/test_events.py#L83) | expiry incarnation and unsubscribe fence pending delivery |
-| [T025-C004](../../extensions/messaging/external/kai-mcp/test_events.py#L110) | failed delivery has bounded attempts |
-| [T025-C005](../../extensions/messaging/external/kai-mcp/test_events.py#L122) | one active callback per binding |
-| [T025-C006](../../extensions/messaging/external/kai-mcp/test_events.py#L127) | cancelled mailbox entry never becomes event |
-| [T025-C007](../../extensions/messaging/external/kai-mcp/test_events.py#L135) | http error status is persisted without response secrets |
-| [T025-C008](../../extensions/messaging/external/kai-mcp/test_events.py#L168) | post exception is classified without exception text |
-| [T025-C009](../../extensions/messaging/external/kai-mcp/test_events.py#L187) | successful http response keeps legacy body tolerance |
-| [T025-C010](../../extensions/messaging/external/kai-mcp/test_events.py#L217) | historical terminal record is not annotated |
-| [T025-C011](../../extensions/messaging/external/kai-mcp/test_events.py#L237) | wire cursor is null and internal cursor remains durable |
-| [T025-C012](../../extensions/messaging/external/kai-mcp/test_events.py#L249) | permanent status is terminal without automatic retry |
-| [T025-C013](../../extensions/messaging/external/kai-mcp/test_events.py#L272) | legacy integer cursor rejected without mutating history |
-| [T025-C014](../../extensions/messaging/external/kai-mcp/test_events.py#L286) | retry once claims one terminal event and never requeues |
-| [T025-C015](../../extensions/messaging/external/kai-mcp/test_events.py#L301) | retry once rejects binding expiry and hash without post |
-| [T025-C016](../../extensions/messaging/external/kai-mcp/test_events.py#L320) | retry once crash after claim is unknown and not posted again |
+| [T025-C001](../../extensions/messaging/external/dots-mcp/test_events.py#L41) | missing auth and invalid page fail before send |
+| [T025-C002](../../extensions/messaging/external/dots-mcp/test_events.py#L54) | post crash recovers exact persisted id and payload |
+| [T025-C003](../../extensions/messaging/external/dots-mcp/test_events.py#L83) | expiry incarnation and unsubscribe fence pending delivery |
+| [T025-C004](../../extensions/messaging/external/dots-mcp/test_events.py#L110) | failed delivery has bounded attempts |
+| [T025-C005](../../extensions/messaging/external/dots-mcp/test_events.py#L122) | one active callback per binding |
+| [T025-C006](../../extensions/messaging/external/dots-mcp/test_events.py#L127) | cancelled mailbox entry never becomes event |
+| [T025-C007](../../extensions/messaging/external/dots-mcp/test_events.py#L135) | http error status is persisted without response secrets |
+| [T025-C008](../../extensions/messaging/external/dots-mcp/test_events.py#L168) | post exception is classified without exception text |
+| [T025-C009](../../extensions/messaging/external/dots-mcp/test_events.py#L187) | successful http response keeps legacy body tolerance |
+| [T025-C010](../../extensions/messaging/external/dots-mcp/test_events.py#L217) | historical terminal record is not annotated |
+| [T025-C011](../../extensions/messaging/external/dots-mcp/test_events.py#L237) | wire cursor is null and internal cursor remains durable |
+| [T025-C012](../../extensions/messaging/external/dots-mcp/test_events.py#L249) | permanent status is terminal without automatic retry |
+| [T025-C013](../../extensions/messaging/external/dots-mcp/test_events.py#L272) | legacy integer cursor rejected without mutating history |
+| [T025-C014](../../extensions/messaging/external/dots-mcp/test_events.py#L286) | retry once claims one terminal event and never requeues |
+| [T025-C015](../../extensions/messaging/external/dots-mcp/test_events.py#L301) | retry once rejects binding expiry and hash without post |
+| [T025-C016](../../extensions/messaging/external/dots-mcp/test_events.py#L320) | retry once crash after claim is unknown and not posted again |
 
 ## T026 — test_mailbox_tools.py
 
-[Test source](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py) · 348 lines · CI: `discovery` · `strengthen`
+[Test source](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py) · 348 lines · CI: `discovery` · `strengthen`
 
 **守るもの:** tool引数/認証・exact reply・query投影・cancel後本文非返却
 
-**本番接点:** [mailbox_tools.py](../../extensions/messaging/external/kai-mcp/mailbox_tools.py)
+**本番接点:** [mailbox_tools.py](../../extensions/messaging/external/dots-mcp/mailbox_tools.py)
 
 **証拠と限界:** 主にhost stub、一件real Host/Hub。定数だけのassertあり。listはhost policyへ委譲
 
-**重なり:** `kai` · **指摘:** F02, F12.
+**重なり:** `dots` · **指摘:** F02, F12.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
-| [T026-C001](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L46) | message preserves response evidence without synthesizing ack |
-| [T026-C002](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L59) | repo tools send only declared fields to the service ops |
-| [T026-C003](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L85) | write tools send only declared fields and never a content copy in the text |
-| [T026-C004](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L105) | rejected authorizer makes zero host calls |
-| [T026-C005](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L112) | diagnose is metadata only and bypasses adapter whoami |
-| [T026-C006](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L127) | nested transport unavailable is not identity rejection |
-| [T026-C007](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L149) | invalid identity selector is rejected before host |
-| [T026-C008](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L155) | send uses stable submission id and fixed service binding |
-| [T026-C009](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L163) | authorized service target sends once and rejects out of scope forms |
-| [T026-C010](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L176) | unicode project target remains compatible |
-| [T026-C011](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L182) | internal dot unicode project target status and send are authorized |
-| [T026-C012](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L193) | internal dot unicode project target is delegated to host scope policy |
-| [T026-C013](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L200) | project address regex rejects long dotted nonmatching target |
-| [T026-C014](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L203) | reply is pinned and ack is scoped |
-| [T026-C015](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L214) | reply preloads thread and never reads after commit |
-| [T026-C016](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L232) | reply thread lookup failure prevents mutation |
-| [T026-C017](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L248) | long lived adapter uses fresh host scope and reply survives empty scope |
-| [T026-C018](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L265) | Host service_list projection is returned; adapter does not independently filter authorizer addresses. See F12. |
-| [T026-C019](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L270) | inbox hides cancelled envelopes |
-| [T026-C020](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L282) | begin present race suppresses cancelled before body |
-| [T026-C021](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L297) | begin present unrelated error is not hidden |
-| [T026-C022](../../extensions/messaging/external/kai-mcp/test_mailbox_tools.py#L309) | real host cancellation race reread and sent query |
+| [T026-C001](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L46) | message preserves response evidence without synthesizing ack |
+| [T026-C002](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L59) | repo tools send only declared fields to the service ops |
+| [T026-C003](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L85) | write tools send only declared fields and never a content copy in the text |
+| [T026-C004](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L105) | rejected authorizer makes zero host calls |
+| [T026-C005](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L112) | diagnose is metadata only and bypasses adapter whoami |
+| [T026-C006](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L127) | nested transport unavailable is not identity rejection |
+| [T026-C007](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L149) | invalid identity selector is rejected before host |
+| [T026-C008](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L155) | send uses stable submission id and fixed service binding |
+| [T026-C009](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L163) | authorized service target sends once and rejects out of scope forms |
+| [T026-C010](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L176) | unicode project target remains compatible |
+| [T026-C011](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L182) | internal dot unicode project target status and send are authorized |
+| [T026-C012](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L193) | internal dot unicode project target is delegated to host scope policy |
+| [T026-C013](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L200) | project address regex rejects long dotted nonmatching target |
+| [T026-C014](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L203) | reply is pinned and ack is scoped |
+| [T026-C015](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L214) | reply preloads thread and never reads after commit |
+| [T026-C016](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L232) | reply thread lookup failure prevents mutation |
+| [T026-C017](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L248) | long lived adapter uses fresh host scope and reply survives empty scope |
+| [T026-C018](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L265) | Host service_list projection is returned; adapter does not independently filter authorizer addresses. See F12. |
+| [T026-C019](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L270) | inbox hides cancelled envelopes |
+| [T026-C020](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L282) | begin present race suppresses cancelled before body |
+| [T026-C021](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L297) | begin present unrelated error is not hidden |
+| [T026-C022](../../extensions/messaging/external/dots-mcp/test_mailbox_tools.py#L309) | real host cancellation race reread and sent query |
 
 ## T027 — test_retry_event_route.py
 
-[Test source](../../extensions/messaging/external/kai-mcp/test_retry_event_route.py) · 81 lines · CI: `discovery` · `keep`
+[Test source](../../extensions/messaging/external/dots-mcp/test_retry_event_route.py) · 81 lines · CI: `discovery` · `keep`
 
 **守るもの:** 既存event再試行のactor/token/party境界
 
-**本番接点:** [runtime.py](../../extensions/messaging/external/kai-mcp/runtime.py) / [host.py](../../extensions/messaging/unified/host.py)
+**本番接点:** [runtime.py](../../extensions/messaging/external/dots-mcp/runtime.py) / [host.py](../../extensions/messaging/unified/host.py)
 
 **証拠と限界:** 実route関数、bridge/Host隣接境界stub。実再配送なし
 
-**重なり:** `kai`.
+**重なり:** `dots`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
-| [T027-C001](../../extensions/messaging/external/kai-mcp/test_retry_event_route.py#L27) | routes only current kai party without body |
-| [T027-C002](../../extensions/messaging/external/kai-mcp/test_retry_event_route.py#L52) | rejects foreign recipient before bridge |
-| [T027-C003](../../extensions/messaging/external/kai-mcp/test_retry_event_route.py#L63) | bridge rejects forged token and actor |
+| [T027-C001](../../extensions/messaging/external/dots-mcp/test_retry_event_route.py#L27) | routes only current dots party without body |
+| [T027-C002](../../extensions/messaging/external/dots-mcp/test_retry_event_route.py#L52) | rejects foreign recipient before bridge |
+| [T027-C003](../../extensions/messaging/external/dots-mcp/test_retry_event_route.py#L63) | bridge rejects forged token and actor |
 
 ## T028 — test_runtime.py
 
-[Test source](../../extensions/messaging/external/kai-mcp/test_runtime.py) · 584 lines · CI: `discovery` · `keep`
+[Test source](../../extensions/messaging/external/dots-mcp/test_runtime.py) · 584 lines · CI: `discovery` · `keep`
 
 **守るもの:** bridge frame/byte/deadline/slot・失敗後socket保全・private binding
 
-**本番接点:** [runtime.py](../../extensions/messaging/external/kai-mcp/runtime.py)
+**本番接点:** [runtime.py](../../extensions/messaging/external/dots-mcp/runtime.py)
 
 **証拠と限界:** 実Unix socket/threadとfake dispatch/時計。外部providerは使わない
 
-**重なり:** `kai`.
+**重なり:** `dots`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
-| [T028-C001](../../extensions/messaging/external/kai-mcp/test_runtime.py#L30) | whoami binds principal and incarnation |
-| [T028-C002](../../extensions/messaging/external/kai-mcp/test_runtime.py#L45) | runtime server tool call uses mocked authenticated host |
-| [T028-C003](../../extensions/messaging/external/kai-mcp/test_runtime.py#L63) | mismatched host service is rejected |
-| [T028-C004](../../extensions/messaging/external/kai-mcp/test_runtime.py#L70) | bridge allowlist excludes admin operations |
-| [T028-C005](../../extensions/messaging/external/kai-mcp/test_runtime.py#L76) | invalid config does not remove live bridge socket |
-| [T028-C006](../../extensions/messaging/external/kai-mcp/test_runtime.py#L97) | idle client does not stop bridge |
-| [T028-C007](../../extensions/messaging/external/kai-mcp/test_runtime.py#L136) | connection reset probe does not remove socket |
-| [T028-C008](../../extensions/messaging/external/kai-mcp/test_runtime.py#L159) | bridge lock rejects symlink |
-| [T028-C009](../../extensions/messaging/external/kai-mcp/test_runtime.py#L169) | bridge frame reader rejects incomplete and oversized frames |
-| [T028-C010](../../extensions/messaging/external/kai-mcp/test_runtime.py#L186) | bridge frame reader uses total monotonic deadline for trickle |
-| [T028-C011](../../extensions/messaging/external/kai-mcp/test_runtime.py#L196) | bridge real connections bound frames before dispatch |
-| [T028-C012](../../extensions/messaging/external/kai-mcp/test_runtime.py#L295) | bridge unicode response roundtrips with utf8 frame limit |
-| [T028-C013](../../extensions/messaging/external/kai-mcp/test_runtime.py#L350) | bridge response timeout does not redispatch |
-| [T028-C014](../../extensions/messaging/external/kai-mcp/test_runtime.py#L413) | slow dispatch does not block next authorized request |
-| [T028-C015](../../extensions/messaging/external/kai-mcp/test_runtime.py#L491) | bridge response uses fresh timeout after near deadline receive |
+| [T028-C001](../../extensions/messaging/external/dots-mcp/test_runtime.py#L30) | whoami binds principal and incarnation |
+| [T028-C002](../../extensions/messaging/external/dots-mcp/test_runtime.py#L45) | runtime server tool call uses mocked authenticated host |
+| [T028-C003](../../extensions/messaging/external/dots-mcp/test_runtime.py#L63) | mismatched host service is rejected |
+| [T028-C004](../../extensions/messaging/external/dots-mcp/test_runtime.py#L70) | bridge allowlist excludes admin operations |
+| [T028-C005](../../extensions/messaging/external/dots-mcp/test_runtime.py#L76) | invalid config does not remove live bridge socket |
+| [T028-C006](../../extensions/messaging/external/dots-mcp/test_runtime.py#L97) | idle client does not stop bridge |
+| [T028-C007](../../extensions/messaging/external/dots-mcp/test_runtime.py#L136) | connection reset probe does not remove socket |
+| [T028-C008](../../extensions/messaging/external/dots-mcp/test_runtime.py#L159) | bridge lock rejects symlink |
+| [T028-C009](../../extensions/messaging/external/dots-mcp/test_runtime.py#L169) | bridge frame reader rejects incomplete and oversized frames |
+| [T028-C010](../../extensions/messaging/external/dots-mcp/test_runtime.py#L186) | bridge frame reader uses total monotonic deadline for trickle |
+| [T028-C011](../../extensions/messaging/external/dots-mcp/test_runtime.py#L196) | bridge real connections bound frames before dispatch |
+| [T028-C012](../../extensions/messaging/external/dots-mcp/test_runtime.py#L295) | bridge unicode response roundtrips with utf8 frame limit |
+| [T028-C013](../../extensions/messaging/external/dots-mcp/test_runtime.py#L350) | bridge response timeout does not redispatch |
+| [T028-C014](../../extensions/messaging/external/dots-mcp/test_runtime.py#L413) | slow dispatch does not block next authorized request |
+| [T028-C015](../../extensions/messaging/external/dots-mcp/test_runtime.py#L491) | bridge response uses fresh timeout after near deadline receive |
 
 ## T029 — test_server.py
 
-[Test source](../../extensions/messaging/external/kai-mcp/test_server.py) · 287 lines · CI: `discovery` · `keep`
+[Test source](../../extensions/messaging/external/dots-mcp/test_server.py) · 287 lines · CI: `discovery` · `keep`
 
 **守るもの:** MCP catalog/schema/stdio・identity選択・event capability非偽装
 
-**本番接点:** [server.py](../../extensions/messaging/external/kai-mcp/server.py)
+**本番接点:** [server.py](../../extensions/messaging/external/dots-mcp/server.py)
 
 **証拠と限界:** 実handler/stream。tools/resolver/dispatcherは注入。initialize成功と実channel到達は別
 
-**重なり:** `kai`.
+**重なり:** `dots`.
 
 | Case | 守る振舞い / 実際の検査 |
 | --- | --- |
-| [T029-C001](../../extensions/messaging/external/kai-mcp/test_server.py#L18) | capability diagnosis never claims cloud isolation or reads mailbox |
-| [T029-C002](../../extensions/messaging/external/kai-mcp/test_server.py#L40) | initialize and tools list expose contract catalog |
-| [T029-C003](../../extensions/messaging/external/kai-mcp/test_server.py#L49) | diagnose preserves sanitized resource details |
-| [T029-C004](../../extensions/messaging/external/kai-mcp/test_server.py#L62) | catalog target patterns match runtime for status and send |
-| [T029-C005](../../extensions/messaging/external/kai-mcp/test_server.py#L82) | optional event dispatcher adds capability only when injected |
-| [T029-C006](../../extensions/messaging/external/kai-mcp/test_server.py#L101) | conversation resolver cannot reach fixed event state |
-| [T029-C007](../../extensions/messaging/external/kai-mcp/test_server.py#L127) | event subscribe rejects resume cursor without adapter side effect |
-| [T029-C008](../../extensions/messaging/external/kai-mcp/test_server.py#L163) | event protocol negotiates 2026 and rejects old clients |
-| [T029-C009](../../extensions/messaging/external/kai-mcp/test_server.py#L172) | default call fails closed without host access |
-| [T029-C010](../../extensions/messaging/external/kai-mcp/test_server.py#L178) | injected tools are called and structured result returned |
-| [T029-C011](../../extensions/messaging/external/kai-mcp/test_server.py#L190) | request resolver selects enrolled tools and denial never falls back |
-| [T029-C012](../../extensions/messaging/external/kai-mcp/test_server.py#L249) | malformed tool names preserve stdio and skip identity |
-| [T029-C013](../../extensions/messaging/external/kai-mcp/test_server.py#L266) | stdio pump obeys same resolver boundary as events |
-| [T029-C014](../../extensions/messaging/external/kai-mcp/test_server.py#L278) | stdio reports parse error and suppresses notifications |
+| [T029-C001](../../extensions/messaging/external/dots-mcp/test_server.py#L18) | capability diagnosis never claims cloud isolation or reads mailbox |
+| [T029-C002](../../extensions/messaging/external/dots-mcp/test_server.py#L40) | initialize and tools list expose contract catalog |
+| [T029-C003](../../extensions/messaging/external/dots-mcp/test_server.py#L49) | diagnose preserves sanitized resource details |
+| [T029-C004](../../extensions/messaging/external/dots-mcp/test_server.py#L62) | catalog target patterns match runtime for status and send |
+| [T029-C005](../../extensions/messaging/external/dots-mcp/test_server.py#L82) | optional event dispatcher adds capability only when injected |
+| [T029-C006](../../extensions/messaging/external/dots-mcp/test_server.py#L101) | conversation resolver cannot reach fixed event state |
+| [T029-C007](../../extensions/messaging/external/dots-mcp/test_server.py#L127) | event subscribe rejects resume cursor without adapter side effect |
+| [T029-C008](../../extensions/messaging/external/dots-mcp/test_server.py#L163) | event protocol negotiates 2026 and rejects old clients |
+| [T029-C009](../../extensions/messaging/external/dots-mcp/test_server.py#L172) | default call fails closed without host access |
+| [T029-C010](../../extensions/messaging/external/dots-mcp/test_server.py#L178) | injected tools are called and structured result returned |
+| [T029-C011](../../extensions/messaging/external/dots-mcp/test_server.py#L190) | request resolver selects enrolled tools and denial never falls back |
+| [T029-C012](../../extensions/messaging/external/dots-mcp/test_server.py#L249) | malformed tool names preserve stdio and skip identity |
+| [T029-C013](../../extensions/messaging/external/dots-mcp/test_server.py#L266) | stdio pump obeys same resolver boundary as events |
+| [T029-C014](../../extensions/messaging/external/dots-mcp/test_server.py#L278) | stdio reports parse error and suppresses notifications |
 
 ## T030 — test-alias-retire.py
 
@@ -1512,8 +1512,8 @@ Shellの検査位置 9 件はcase台帳の `T068` を参照。fixture setup/補�
 | [T073-C012](../../extensions/messaging/tests/test-unified-host-services.py#L347) | equal native session thread preserves existing attestation |
 | [T073-C013](../../extensions/messaging/tests/test-unified-host-services.py#L380) | service registry binds identity platform and incarnation |
 | [T073-C014](../../extensions/messaging/tests/test-unified-host-services.py#L393) | service id prevents cross service token or address confusion |
-| [T073-C015](../../extensions/messaging/tests/test-unified-host-services.py#L405) | kai enrollment retains mailbox across verified process restart |
-| [T073-C016](../../extensions/messaging/tests/test-unified-host-services.py#L429) | kai cannot be declared as openclaw platform |
+| [T073-C015](../../extensions/messaging/tests/test-unified-host-services.py#L405) | dots enrollment retains mailbox across verified process restart |
+| [T073-C016](../../extensions/messaging/tests/test-unified-host-services.py#L429) | dots cannot be declared as openclaw platform |
 | [T073-C017](../../extensions/messaging/tests/test-unified-host-services.py#L438) | legacy service config remains openclaw |
 | [T073-C018](../../extensions/messaging/tests/test-unified-host-services.py#L455) | duplicate service participant or address rejected before retirement |
 | [T073-C019](../../extensions/messaging/tests/test-unified-host-services.py#L466) | scoped inbox message and ack use authenticated endpoint |
@@ -1829,9 +1829,9 @@ Shellの検査位置 17 件はcase台帳の `T087` を参照。fixture setup/補
 
 Shellの検査位置 4 件はcase台帳の `T088` を参照。fixture setup/補助assertを含む位置一覧であり、独立シナリオ数ではない。
 
-## T089 — test-kai-msg-reload-manifest.sh
+## T089 — test-dots-msg-reload-manifest.sh
 
-[Test source](../../tests/test-kai-msg-reload-manifest.sh) · 14 lines · CI: `not-in-test-workflow` · `reclassify`
+[Test source](../../tests/test-dots-msg-reload-manifest.sh) · 14 lines · CI: `not-in-test-workflow` · `reclassify`
 
 **守るもの:** 配布manifestに必要moduleが列挙される
 

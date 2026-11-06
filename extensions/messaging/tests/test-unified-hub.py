@@ -268,6 +268,55 @@ class HubTest(unittest.TestCase):
 
     def tearDown(self): self.h.close(); self.tmp.cleanup()
     def reg(self,h,t,e,p,pid): return self.h.dispatch({"op":"endpoint_register","host_id":h,"host_token":t,"endpoint_id":e,"participant_id":p,"host_id":h,"session":"s","pane":"0","pid":pid,"pid_start":"x","runtime_id":"r","platform":"test"})
+    def test_receive_claim_recovery_preserves_prepared_output(self):
+        self.send('claimed')
+        req=dict(host_id='b',host_token='tb',endpoint_id='eb',message_id='claimed',claim_id='first',action='claim')
+        first=self.h.receive_work(req)
+        with self.assertRaises(HubError): self.h.receive_work(dict(req,claim_id='second'))
+        prepared=self.h.receive_work(dict(req,action='prepare_reply',body='stable answer'))
+        with self.assertRaises(HubError): self.h.receive_work(dict(req,action='prepare_reply',body='changed'))
+        from unittest.mock import patch
+        with patch.object(self.h, '_now', return_value=first['lease_until']+1):
+            recovered=self.h.receive_work(dict(req,claim_id='second'))
+            self.assertEqual(recovered['reply'],prepared['reply'])
+            with self.assertRaises(HubError): self.h.receive_work(dict(req,action='prepare_reply',body='stable answer'))
+        wrong=dict(host_id='b',host_token='tb',message=dict(message_id='different',sender_endpoint='eb',in_reply_to='claimed',body='stable answer'))
+        with self.assertRaises(HubError): self.h.submit(wrong)
+        wrong['message']['message_id']=prepared['reply']['submission_id']
+        self.h.submit(wrong)
+        self.assertTrue(self.h.submit(wrong)['duplicate'])
+        followup=dict(wrong,message=dict(wrong['message'],message_id='legitimate-followup',body='new progress'))
+        self.assertEqual(self.h.submit(followup)['message_id'], 'legitimate-followup')
+        self.assertEqual(self.h.response_evidence(self.h._row("SELECT * FROM messages WHERE message_id='claimed'"))['recipient_reply_count'], 2)
+        self.h.db.execute("UPDATE messages SET state='presented' WHERE message_id='claimed'")
+        self.h.db.commit()
+        with self.assertRaises(HubError): self.h.receive_finish(dict(req,claim_id='second'))
+
+    def test_no_reply_completion_requires_recipient_ack_and_is_durable(self):
+        self.send('no-reply')
+        req=dict(host_id='b',host_token='tb',endpoint_id='eb',message_id='no-reply')
+        with self.assertRaises(HubError): self.h.receive_finish(req)
+        self.h.db.execute("UPDATE messages SET state='presented' WHERE message_id='no-reply'")
+        self.h.db.commit()
+        with self.assertRaises(HubError):
+            self.h.receive_finish(dict(req,host_id='a',host_token='ta',endpoint_id='ea'))
+        self.assertEqual(self.h.dispatch(dict(req,op='receive_finish'))['decision'], 'no_reply')
+        self.assertEqual(self.h.receive_finish(req)['decision'], 'no_reply')
+        page=self.h.inbox(dict(req,cursor=0,pending_only=True))
+        self.assertEqual(page['messages'], [])
+
+    def test_pending_inbox_keeps_acked_work_until_own_reply(self):
+        self.send('unfinished')
+        req=dict(host_id='b',host_token='tb',endpoint_id='eb',cursor=0,pending_only=True)
+        self.h.db.execute("UPDATE messages SET state='presented' WHERE message_id='unfinished'")
+        self.h.db.commit()
+        self.assertEqual([m['message_id'] for m in self.h.inbox(req)['messages']], ['unfinished'])
+        self.h.submit(dict(host_id='b',host_token='tb',message=dict(
+            message_id='answer',sender_endpoint='eb',in_reply_to='unfinished',body='answer')))
+        self.assertEqual(self.h.inbox(req)['messages'], [])
+        with self.assertRaises(HubError):
+            self.h.inbox(dict(req,pending_only='true'))
+
     def send(self,mid="m1",body="hello",target="cdx"):
         return self.h.dispatch({"op":"submit","host_id":"a","host_token":"ta","message":{"message_id":mid,"thread_id":"t","sender_endpoint":"ea","target":target,"body":body,"kind":"chat"}})
     def test_receipt_transaction_rechecks_cancel_and_retired_owner(self):

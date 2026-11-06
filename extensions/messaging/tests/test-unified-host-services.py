@@ -26,11 +26,40 @@ class UnifiedHostServicesTest(unittest.TestCase):
             host.hub = lambda op, **args: calls.append((op, args)) or {'state': 'queued'}
             scope = ['retired.cdx', 'new.cdx']
             with patch.object(host, 'service_policy', return_value=scope):
-                host.submit({'endpoint_id': 'service-endpoint', 'service_id': 'kai'},
-                    dict(submission_id='stable-redirect', target='retired.cdx', body='read only',
-                         authorized_targets=['arbitrary.cdx']))
+                host.submit({'endpoint_id': 'service-endpoint', 'service_id': 'dots'},
+                    dict(service_id='dots', submission_id='stable-redirect', target='retired.cdx', body='read only',
+                         authorized_targets=['arbitrary.cdx'], service_scope_required=False))
             self.assertEqual(calls[0][1]['authorized_targets'], scope)
+            self.assertIs(calls[0][1]['service_scope_required'], True)
             self.assertEqual(calls[0][1]['message']['target'], 'retired.cdx')
+
+    def test_transferred_claim_preflight_does_not_lock_local_journal(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = str(Path(tmp) / 'journal.db')
+            host = host_mod.Host({'journal': journal}, recover=False)
+            self.addCleanup(host.db.close)
+            ep = {'endpoint_id': 'current', 'platform': 'cdx'}
+            host._current_delivery_endpoint = lambda _: ep
+            message = {'message_id': 'transferred', 'recipient_endpoint': 'previous',
+                       'delivery_actor': {'endpoint_id': 'current'}}
+            def hub(op, **fields):
+                if op == 'claim':
+                    return {'messages': [message], 'next_sequence': 1}
+                self.assertEqual(op, 'query')
+                # While the remote preflight is in progress, an independent
+                # local writer must commit rather than wait for its timeout.
+                with sqlite3.connect(journal, timeout=0.05) as other:
+                    other.execute('INSERT INTO submissions VALUES(?,?,?)',
+                                  ('independent', 'another', '{}'))
+                raise HubError('maintenance', 'fixture remote preflight stopped')
+            host.hub = hub
+            with patch('native_consumer._hook_binding', return_value=({}, None)):
+                with self.assertRaisesRegex(HubError, 'fixture remote preflight stopped'):
+                    host._deliver_endpoint(ep)
+            self.assertIsNotNone(host.db.execute(
+                "SELECT 1 FROM submissions WHERE message_id='independent'").fetchone())
+            self.assertFalse(host.db.in_transaction)
 
     def test_endpoint_failure_cannot_starve_other_recipients(self):
         import time
@@ -221,16 +250,16 @@ class UnifiedHostServicesTest(unittest.TestCase):
     def test_current_host_policy_controls_legacy_and_new_service_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)
-            cfg = host.config['services']['kai']
+            cfg = host.config['services']['dots']
             cfg['allowed_addresses'] = ['voyager.cc']
-            ep = {'endpoint_id': 'kai-endpoint'}
+            ep = {'endpoint_id': 'dots-endpoint'}
             host.service = lambda *a, **k: ep
             calls = []
             def hub(op, **args):
                 calls.append(op)
                 return {'participants': [{'address': 'voyager.cc'}, {'address': 'harbor.cdx'}], 'projects': []}
             host.hub = hub
-            request = {'service_id': 'kai', 'op': 'list'}
+            request = {'service_id': 'dots', 'op': 'list'}
             self.assertEqual([p['address'] for p in host.dispatch(request, 1, os.getuid())['participants']], ['voyager.cc'])
             cfg['allowed_addresses'] = []
             self.assertEqual(host.dispatch(request, 1, os.getuid())['participants'], [])
@@ -243,6 +272,8 @@ class UnifiedHostServicesTest(unittest.TestCase):
             with self.assertRaises(HubError) as error:
                 host.dispatch(request, 1, os.getuid())
             self.assertEqual(error.exception.code, 'configuration_error')
+            cfg['scope_required'] = False
+            self.assertIsNone(host.service_policy(request))
             host.db.close()
 
     def test_read_only_diagnose_uses_persisted_identity_without_registration(self):
@@ -265,7 +296,7 @@ class UnifiedHostServicesTest(unittest.TestCase):
                 if op == 'diagnostic_identity':
                     return {'host_id': 'host-a', 'endpoints': [live], 'endpoint_native': [], 'projects': []}
                 if op == 'diagnose':
-                    return {'message_id': args['message_id'], 'state': 'queued'}
+                    return {'message_id': args['message_id'], 'state': 'queued', 'created_at': 0}
                 raise AssertionError(op)
             host.hub = hub
             with patch.object(host_mod, 'discover_endpoints', return_value=[dict(live)]), \
@@ -295,9 +326,9 @@ class UnifiedHostServicesTest(unittest.TestCase):
     def test_private_snapshot_and_idempotent_scope_migration(self):
         with tempfile.TemporaryDirectory() as tmp:
             host_path, consumer_path = Path(tmp)/'host.json', Path(tmp)/'consumer.json'
-            identity = {'address': 'kai', 'participant_id': 'kai-service', 'binding_generation': 'one'}
-            config = {'services': {'kai': dict(identity, token='fixture-token', launchd_label='com.example.kai')}}
-            consumer = dict(identity, service_id='kai', service_token='fixture-token', allowed_addresses=['voyager.cc'])
+            identity = {'address': 'dots', 'participant_id': 'dots-service', 'binding_generation': 'one'}
+            config = {'services': {'dots': dict(identity, token='fixture-token', launchd_label='com.example.dots')}}
+            consumer = dict(identity, service_id='dots', service_token='fixture-token', allowed_addresses=['voyager.cc'])
             host_path.write_text(__import__('json').dumps(config)); consumer_path.write_text(__import__('json').dumps(consumer))
             self.assertTrue(migrate(host_path, consumer_path)['changed'])
             self.assertFalse(migrate(host_path, consumer_path)['changed'])
@@ -322,12 +353,12 @@ class UnifiedHostServicesTest(unittest.TestCase):
                     "launchd_label": "com.example.openclaw",
                     "platform": "openclaw",
                 },
-                "kai": {
-                    "participant_id": "kai-service",
-                    "address": "kai",
-                    "token": "kai-token",
-                    "launchd_label": "com.example.kai",
-                    "platform": "kai",
+                "dots": {
+                    "participant_id": "dots-service",
+                    "address": "dots",
+                    "token": "dots-token",
+                    "launchd_label": "com.example.dots",
+                    "platform": "dots",
                 },
             },
         }
@@ -404,30 +435,30 @@ class UnifiedHostServicesTest(unittest.TestCase):
             with patch.object(host_mod.subprocess, "run", return_value=self.launchd(os.getpid())), \
                  patch("identity._process_info", return_value={"pid_start": 42}):
                 ep = host.service(os.getpid(), os.getuid(), {
-                    "service_id": "kai", "service_token": "kai-token", "address": "kai"})
-            self.assertEqual(ep["participant_id"], "kai-service")
-            self.assertEqual(ep["platform"], "kai")
-            self.assertEqual(ep["service_id"], "kai")
+                    "service_id": "dots", "service_token": "dots-token", "address": "dots"})
+            self.assertEqual(ep["participant_id"], "dots-service")
+            self.assertEqual(ep["platform"], "dots")
+            self.assertEqual(ep["service_id"], "dots")
             host.db.close()
 
     def test_service_id_prevents_cross_service_token_or_address_confusion(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)
             for req in (
-                {"service_id": "kai", "service_token": "open-token", "address": "kai"},
-                {"service_id": "kai", "service_token": "kai-token", "address": "gate"},
-                {"service_id": "missing", "service_token": "kai-token", "address": "kai"},
+                {"service_id": "dots", "service_token": "open-token", "address": "dots"},
+                {"service_id": "dots", "service_token": "dots-token", "address": "gate"},
+                {"service_id": "missing", "service_token": "dots-token", "address": "dots"},
             ):
                 with self.assertRaises(HubError):
                     host.service(os.getpid(), os.getuid(), req)
             host.db.close()
 
-    def test_kai_enrollment_retains_mailbox_across_verified_process_restart(self):
+    def test_dots_enrollment_retains_mailbox_across_verified_process_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)
-            host.config['services']['kai']['binding_generation'] = 'enrollment-one'
+            host.config['services']['dots']['binding_generation'] = 'enrollment-one'
             host.hub = lambda op, **args: {'endpoints': []} if op == 'endpoints_list' else {}
-            req={'service_id':'kai','service_token':'kai-token','address':'kai','binding_generation':'enrollment-one'}
+            req={'service_id':'dots','service_token':'dots-token','address':'dots','binding_generation':'enrollment-one'}
             endpoints=[]
             for pid,start in ((100,42),(200,55)):
                 with patch.object(host_mod.subprocess,'run',return_value=self.launchd(pid)), \
@@ -450,14 +481,14 @@ class UnifiedHostServicesTest(unittest.TestCase):
         from hub import Hub
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp); self.addCleanup(host.db.close)
-            host.config['services']['kai']['binding_generation'] = 'kai-generation'
+            host.config['services']['dots']['binding_generation'] = 'dots-generation'
             host.config['services']['muse'] = dict(participant_id='muse-service', address='muse',
                 token='muse-token', launchd_label='com.example.muse', platform='muse',
                 binding_generation='muse-generation', allowed_addresses=[], read_only=True)
             hub = Hub(Path(tmp)/'hub.db', dict(admin_token='admin', hosts={'host-a': 'token'}))
             self.addCleanup(hub.close)
             hub.directory_import(dict(admin_token='admin', services=[
-                dict(participant_id=x+'-service', address=x, host_id='host-a', kind=x) for x in ('kai','muse')]))
+                dict(participant_id=x+'-service', address=x, host_id='host-a', kind=x) for x in ('dots','muse')]))
             host.hub = lambda op, **args: hub.dispatch(dict(args, op=op, host_id='host-a', host_token='token'))
             def request(service, generation=None):
                 return dict(service_id=service, service_token=service+'-token', address=service,
@@ -470,12 +501,12 @@ class UnifiedHostServicesTest(unittest.TestCase):
             self.assertEqual(endpoints[0]['incarnation'], endpoints[1]['incarnation'])
             self.assertEqual(endpoints[1]['runtime_id'], 'muse:muse-generation')
             with patch.object(host_mod.subprocess,'run',return_value=self.launchd(200)), patch('identity._process_info',return_value={'pid_start':55}):
-                kai = host.service(200, os.getuid(), request('kai'))
-                self.assertNotEqual(kai['endpoint_id'], endpoints[1]['endpoint_id'])
-                self.assertEqual(kai['runtime_id'], 'kai:kai-generation')
-                for bad in (dict(request('muse'), binding_generation='kai-generation'),
-                            dict(request('muse'), service_token='kai-token'),
-                            dict(request('muse'), address='kai')):
+                dots = host.service(200, os.getuid(), request('dots'))
+                self.assertNotEqual(dots['endpoint_id'], endpoints[1]['endpoint_id'])
+                self.assertEqual(dots['runtime_id'], 'dots:dots-generation')
+                for bad in (dict(request('muse'), binding_generation='dots-generation'),
+                            dict(request('muse'), service_token='dots-token'),
+                            dict(request('muse'), address='dots')):
                     with self.assertRaises(HubError): host.service(200, os.getuid(), bad)
                 for op in ('service_send','service_reply','service_ack','service_begin_present'):
                     with self.assertRaises(HubError) as rejected:
@@ -483,15 +514,15 @@ class UnifiedHostServicesTest(unittest.TestCase):
                     self.assertEqual(rejected.exception.code,'scope_denied')
                 # A writable second service uses the same durable boundary;
                 # revoking its generation must fence queued work, not replay it.
-                host.config['services']['muse'].update(read_only=False, allowed_addresses=['kai'])
+                host.config['services']['muse'].update(read_only=False, allowed_addresses=['dots'])
                 queued = host.dispatch(dict(request('muse'), op='service_send',
-                    target='kai', body='fixture', submission_id='muse-deferred',
+                    target='dots', body='fixture', submission_id='muse-deferred',
                     defer_remote=True), 200, os.getuid())
                 self.assertEqual(queued['receipt_stage'], 'host_journaled')
                 self.assertEqual(queued['hub_acceptance'], 'unconfirmed')
                 host.config['services']['muse']['binding_generation'] = 'rotated-generation'
                 with self.assertRaises(HubError): host.service(200,os.getuid(),request('muse'),query_only=True)
-                self.assertEqual(host.service(200,os.getuid(),request('kai'))['endpoint_id'], kai['endpoint_id'])
+                self.assertEqual(host.service(200,os.getuid(),request('dots'))['endpoint_id'], dots['endpoint_id'])
                 import submission_queue
                 submission_queue.work_once(host)
                 self.assertEqual(host.db.execute('SELECT state FROM submission_work WHERE message_id=?',
@@ -503,7 +534,7 @@ class UnifiedHostServicesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             host_path, client_path = Path(tmp)/'host.json', Path(tmp)/'parent.json'
             identity = dict(address='muse',participant_id='muse-service',binding_generation='fixture-generation')
-            host_cfg = dict(services={'kai':{'unchanged':'keep'},'muse':dict(identity,token='fixture-token')})
+            host_cfg = dict(services={'dots':{'unchanged':'keep'},'muse':dict(identity,token='fixture-token')})
             client = dict(identity,service_id='muse',service_token='fixture-token',allowed_addresses=[])
             host_path.write_text(json.dumps(host_cfg));host_path.chmod(0o600)
             client_path.write_text(json.dumps(client));client_path.chmod(0o600)
@@ -514,18 +545,18 @@ class UnifiedHostServicesTest(unittest.TestCase):
             after=host_path.read_bytes()
             self.assertFalse(migrate(host_path,client_path)['changed'])
             self.assertEqual(host_path.read_bytes(),after)
-            self.assertEqual(json.loads(after)['services']['kai'],{'unchanged':'keep'})
+            self.assertEqual(json.loads(after)['services']['dots'],{'unchanged':'keep'})
             client['binding_generation']='mismatch';client_path.write_text(json.dumps(client));client_path.chmod(0o600)
             with self.assertRaises(HubError):migrate(host_path,client_path)
             self.assertEqual(host_path.read_bytes(),after)
 
-    def test_kai_cannot_be_declared_as_openclaw_platform(self):
+    def test_dots_cannot_be_declared_as_openclaw_platform(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)
-            host.config["services"]["kai"]["platform"] = "openclaw"
+            host.config["services"]["dots"]["platform"] = "openclaw"
             with self.assertRaisesRegex(HubError, "cannot use openclaw"):
                 host.service(os.getpid(), os.getuid(), {
-                    "service_id": "kai", "service_token": "kai-token", "address": "kai"})
+                    "service_id": "dots", "service_token": "dots-token", "address": "dots"})
             host.db.close()
 
     def test_legacy_service_config_remains_openclaw(self):
@@ -548,18 +579,18 @@ class UnifiedHostServicesTest(unittest.TestCase):
     def test_duplicate_service_participant_or_address_rejected_before_retirement(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)
-            host.config["services"]["kai"]["participant_id"] = "gate"
+            host.config["services"]["dots"]["participant_id"] = "gate"
             calls = []
             host.hub = lambda op, **args: calls.append((op, args)) or {"endpoints": []}
             with self.assertRaisesRegex(HubError, "duplicate service participant_id"):
                 host.service(os.getpid(), os.getuid(), {
-                    "service_id": "kai", "service_token": "kai-token", "address": "kai"})
+                    "service_id": "dots", "service_token": "dots-token", "address": "dots"})
             self.assertEqual(calls, [])
 
     def test_scoped_inbox_message_and_ack_use_authenticated_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)
-            ep = {"endpoint_id": "kai-endpoint", "runtime_id": "kai-runtime"}
+            ep = {"endpoint_id": "dots-endpoint", "runtime_id": "dots-runtime"}
             host.service = lambda pid, uid, req: ep
             calls = []
 
@@ -570,9 +601,9 @@ class UnifiedHostServicesTest(unittest.TestCase):
                 return {"messages": [], "next_cursor": 0} if op == "inbox" else {"state": "presented"}
 
             host.hub = hub
-            self.assertEqual(host.dispatch({"op": "service_inbox", "service_id": "kai"}, os.getpid(), os.getuid())["next_cursor"], 0)
-            self.assertEqual(host.dispatch({"op": "service_message", "service_id": "kai", "message_id": "m1"}, os.getpid(), os.getuid())["message_id"], "m1")
-            host.dispatch({"op": "service_ack", "service_id": "kai", "message_id": "m1"}, os.getpid(), os.getuid())
+            self.assertEqual(host.dispatch({"op": "service_inbox", "service_id": "dots"}, os.getpid(), os.getuid())["next_cursor"], 0)
+            self.assertEqual(host.dispatch({"op": "service_message", "service_id": "dots", "message_id": "m1"}, os.getpid(), os.getuid())["message_id"], "m1")
+            host.dispatch({"op": "service_ack", "service_id": "dots", "message_id": "m1"}, os.getpid(), os.getuid())
             self.assertEqual([item[0] for item in calls], ["inbox", "query_local", "query", "receipt"])
             host.db.close()
 

@@ -4,6 +4,39 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'unified'))
 from host import Host
 
 class DiagnosticsTest(unittest.TestCase):
+ def test_notification_diagnostics_preserve_party_and_host_boundaries(self):
+  import time
+  from unittest.mock import patch
+  with tempfile.TemporaryDirectory() as raw:
+   host=Host({'journal':str(Path(raw)/'host.db'), 'host_id':'owner',
+              'services':{'dots':{'participant_id':'dots-party','event_bridge_socket':'bridge','token':'private'}}})
+   self.addCleanup(host.db.close)
+   host.caller_read_only=lambda *args: {'endpoint_id':'sender','project_id':'project'}
+   message={'message_id':'m','sender_endpoint':'sender','recipient_endpoint':'dots-ep',
+            'recipient_host_id':'owner','created_at':time.time()-400,'state':'accepted',
+            'presentation_confirmed':False}
+   def hub(op,**fields):
+    if op=='diagnose': return dict(message)
+    if op=='endpoints_list': return {'endpoints':[{'endpoint_id':'dots-ep','participant_id':'dots-party','host_id':'owner'}]}
+    raise AssertionError(op)
+   host.hub=hub
+   with patch('host.rpc',return_value={'pump':{'status':'ready'},'notifications':[]}) as bridge:
+    result=host.dispatch({'op':'diagnose','message_id':'m'},1,os.getuid())
+    self.assertEqual(result['notification']['status'],'available')
+    self.assertTrue(result['presentation_wait_prolonged'])
+    self.assertEqual(bridge.call_args.kwargs['timeout'],2)
+   with patch('host.rpc',side_effect=TimeoutError):
+    result=host.dispatch({'op':'diagnose','message_id':'m'},1,os.getuid())
+    self.assertEqual(result['state'],'accepted')
+    self.assertEqual(result['notification']['reason'],'bridge_unavailable')
+   for change in ({'recipient_host_id':'remote'},{'sender_endpoint':'someone-else'}):
+    saved=dict(message);message.update(change)
+    with patch('host.rpc') as bridge:
+     result=host.dispatch({'op':'diagnose','message_id':'m'},1,os.getuid())
+     bridge.assert_not_called()
+     self.assertEqual(result['notification']['status'],'unknown')
+    message.clear();message.update(saved)
+
  def test_only_new_uncertainty_gets_evidenced_reason(self):
   with tempfile.TemporaryDirectory() as raw:
    cfg={'journal':str(Path(raw)/'host.db')}
@@ -58,7 +91,7 @@ class DiagnosticsTest(unittest.TestCase):
    host=Host({'journal':str(root/'host.db'),'delivery_enabled':True})
    host.endpoints=[{'endpoint_id':'ep','platform':'cdx','project_path':ep['project_path']}];host.refreshed=time.monotonic()
    calls=[]
-   host.hub=lambda op,**kw: calls.append((op,kw)) or ({'endpoint_native':[{'endpoint_id':'ep','native_kind':'thread_id','native_id':native}]} if op=='diagnostic_identity' else {'messages':[]})
+   host.hub=lambda op,**kw: calls.append((op,kw)) or ({'endpoint_native':[{'endpoint_id':'ep','native_kind':'thread_id','native_id':native}]} if op=='diagnostic_identity' else {'messages':[], 'next_sequence':0})
    host.db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?,?)',('example','ep',json.dumps({'message_id':'example'}),'uncertain',digest,0));host.db.commit()
    with patch('host.codex_transcript_presented',return_value=False):
     host.delivery_tick()

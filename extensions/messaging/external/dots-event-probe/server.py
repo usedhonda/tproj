@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Connection-only MCP Events probe for the KAI Dots conversation.
+"""Connection-only MCP Events probe for the Dots Dots conversation.
 
 This process deliberately has no mailbox adapter. It implements only the MCP
 2.0 discovery/events surface and an operator-triggered synthetic event.
@@ -30,7 +30,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 PROTOCOL_VERSION = "2026-07-28"
-EVENT_NAME = "kai.connection.probe"
+EVENT_NAME = "dots.connection.probe"
 DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
 MAX_BODY = 256 * 1024
 
@@ -40,7 +40,7 @@ class StateError(RuntimeError):
 
 
 def state_path() -> Path:
-    path = Path(os.environ.get("KAI_EVENT_PROBE_STATE", "~/.local/share/tproj/kai-event-probe/subscriptions.json")).expanduser()
+    path = Path(os.environ.get("DOTS_EVENT_PROBE_STATE", "~/.local/share/tproj/dots-event-probe/subscriptions.json")).expanduser()
     if path.parent.exists() and path.parent.is_symlink():
         raise StateError("unsafe state directory")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -222,7 +222,7 @@ class Probe:
         if not isinstance(params, dict):
             return rpc_error(req_id, -32602, "Invalid params")
         if method == "initialize":
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}, "events": {}}, "serverInfo": {"name": "kai-event-probe", "version": "0.1.0"}}}
+            return {"jsonrpc": "2.0", "id": req_id, "result": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}, "events": {}}, "serverInfo": {"name": "dots-event-probe", "version": "0.1.0"}}}
         if method == "ping":
             return {"jsonrpc": "2.0", "id": req_id, "result": {}}
         if method == "server/discover":
@@ -374,7 +374,7 @@ def run_stdio(probe: Probe) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Connection-only KAI MCP Events probe")
+    parser = argparse.ArgumentParser(description="Connection-only Dots MCP Events probe")
     parser.add_argument("--send-event", metavar="SUBSCRIPTION_ID", help="send one synthetic probe event to an existing subscription")
     parser.add_argument("--event-id", help="stable event ID for retry/reconciliation (evt_ prefix)")
     parser.add_argument("--probe", default="operator-one-event", help="synthetic probe label (no mailbox data)")

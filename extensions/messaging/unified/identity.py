@@ -452,6 +452,29 @@ def _process_descendants(root_pid: int) -> list[int]:
     return found
 
 
+def native_storage_status():
+    """Service-local readability only; never a native identity or permission grant."""
+    result = {}
+    for name, path in [('catalog', Path.home() / '.codex/sqlite/codex-dev.db'),
+                       ('sessions', Path.home() / '.codex/sessions')]:
+        try:
+            path.stat()
+            if name == 'catalog':
+                with contextlib.closing(sqlite3.connect(f'file:{path}?mode=ro', uri=True)) as db:
+                    db.execute('SELECT name FROM sqlite_master LIMIT 1').fetchone()
+            else:
+                with os.scandir(path) as entries:
+                    next(entries, None)
+            result[name] = 'readable'
+        except FileNotFoundError:
+            result[name] = 'missing'
+        except PermissionError:
+            result[name] = 'permission_denied'
+        except (OSError, sqlite3.Error):
+            result[name] = 'unavailable'
+    return result
+
+
 def observe_tui_native(endpoint, *, sessions_root=None, inspect_process=_process_info,
                        descendants=_process_descendants, open_files=None):
     """Correlate an existing TUI's open rollout, never its argv's resume hint.
@@ -461,7 +484,9 @@ def observe_tui_native(endpoint, *, sessions_root=None, inspect_process=_process
     """
     if endpoint.get('platform') != 'cdx' or not endpoint.get('pane'):
         raise IdentityError('live TUI surface required')
-    root = Path(sessions_root or Path.home() / '.codex/sessions')
+    # The configured storage root may have moved to another volume. Trust that
+    # root's canonical location, not symlinks inside its dated rollout tree.
+    root = Path(sessions_root or Path.home() / '.codex/sessions').resolve()
     pid = int(endpoint['pid'])
     before = dict(inspect_process(pid))
     if (before.get('uid') != os.getuid()
@@ -485,7 +510,9 @@ def observe_tui_native(endpoint, *, sessions_root=None, inspect_process=_process
                     continue
                 try: relative = path.relative_to(root)
                 except ValueError: continue
-                if len(relative.parts) != 4 or any(p.is_symlink() for p in (path, *path.parents)):
+                if len(relative.parts) != 4 or any(
+                        root.joinpath(*relative.parts[:i]).is_symlink()
+                        for i in range(1, len(relative.parts) + 1)):
                     continue
                 with path.open('rb') as stream:
                     if os.fstat(stream.fileno()).st_uid != os.getuid(): continue

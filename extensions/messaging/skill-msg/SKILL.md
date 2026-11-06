@@ -85,12 +85,13 @@ Cloud surface では、catalog に実在する次の MCP tools **だけ**を呼�
 | `cc` / `cdx` | 自分と同じプロジェクトの相方 |
 | `<project>.cc` / `<project>.cdx` | 指定プロジェクトの AI ペイン |
 | `gate` | 設定済み OpenClaw main participant |
-| `kai` | 設定済み KAI 接続（AIペインとは別） |
+| `<service-address>` | 登録済み外部サービスの宛先（Dots等。AIペインとは別） |
 
-`kai` は AI ペインではなく外部サービス（Dots 上の KAI）の宛先。画面に出ていないので
+`<service-address>` は一覧に返る設定済みのaddressを使う。製品名Dotsは固定宛先ではない。
+外部サービスはAIペインとは別である。画面に出ていないので
 `--read` も `--status` の画面確認も使えない。やりとりは返信の自動提示
-（`[from:kai]`）、`tproj-msg message <ID>`（自分が当事者の1通）、`inbox` の3つで読む。
-KAI 側の会話画面そのものは tproj からは読めない。`kai` あての受付状態が
+（`[from:<service-address>]`）、`tproj-msg message <ID>`（自分が当事者の1通）、`inbox` の3つで読む。
+Dots 側の会話画面そのものは tproj からは読めない。外部サービス宛ての受付状態が
 `accepted` のまま変わらなくても、返信が届いたなら読まれている。
 `accepted` はハブのメールボックス受付であり、通知の受理・受信者への提示・受信者の消費・
 実質的な回答とは別の段階である。ACK が見えないことだけでは、画面に出ていない・多忙・失敗とは
@@ -168,7 +169,7 @@ exact ID への1回の peer 返信、ユーザーに見える進捗説明、元�
 直接観測、受信後の進捗説明は互いを証明しない。receipt だけで「ユーザーが見た」や
 「進捗を説明した」と報告しない。
 
-この契約は既存 native CLI の受信後行動だけを定める。KAI の既存通常 MSG と
+この契約は既存 native CLI の受信後行動だけを定める。Dots の既存通常 MSG と
 ChatGPT の既存失敗通知は変更しない。ChatGPT への全 MSG fanout、通知対象の拡大、
 新たな enrollment・role・ledger は作らない。
 

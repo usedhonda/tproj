@@ -190,6 +190,8 @@ tag_pane() {
 }
 initialize_role_metadata() {
   local pane=$1 option default current
+  # Only tproj on this host owns termination of these agent sessions.
+  tmux_run set-option -t "$pane" @tproj true
   for option in active_model model_tier orchestration_role role_epoch; do
     case "$option" in
       active_model|model_tier) default=unknown ;;
@@ -408,6 +410,8 @@ separate_pair() {
   tmux_run move-window -s "=$shared:dev" -t "=$cc_session:1" || die 'could not move CC window'
   tmux_run kill-window -t "=$cc_session:0"
   tmux_run kill-window -t "=$cdx_session:0"
+  initialize_role_metadata "$cc_pane"
+  initialize_role_metadata "$cdx_pane"
   tmux_run set-option -t "$cc_session" status off
   tmux_run set-option -t "$cdx_session" status off
   tmux_run set-option -t "$cc_session" mouse on

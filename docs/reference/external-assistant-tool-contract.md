@@ -16,7 +16,7 @@ as caller text. In particular, callers cannot pass `role`, `as`, `session`, a
 conversation selector, endpoint/PID/host data, or a receiver override.
 
 Send/status inputs accept a qualified project address such as `alpha.cc` or
-`alpha.cdx`, or an exact registered service address such as `kai`, only when
+`alpha.cdx`, or an exact registered service address such as `dots`, only when
 that address is present in the authenticated context's `allowed_addresses`.
 Bare native aliases `cc` and `cdx` are rejected here: they are local sender
 shortcuts, not service addresses or allowlist grants. Message views may show a
@@ -155,7 +155,7 @@ The connection/authentication lifecycle is owned by
 [external-assistant-connection.md](external-assistant-connection.md), which is
 being specified separately. This document does not claim that transport,
 custom MCP registration, trusted metadata, provider events, or an original
-cloud-conversation return path has been proven. KAI's confirmed connected-
+cloud-conversation return path has been proven. Dots confirmed connected-
 computer tasks and Slack capability do not establish any of those missing
 surfaces. No claim is made for Dots original-thread return, shared `codex
 app-server` conversations, tasks, role handoff, shell execution, or a new

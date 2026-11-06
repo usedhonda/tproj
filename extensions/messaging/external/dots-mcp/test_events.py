@@ -29,7 +29,7 @@ class EventTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.authorizer = Authorizer()
         self.path = Path(self.directory.name) / "state.json"
-        self.delivery = events.KAIEventDelivery(self.authorizer, self.path)
+        self.delivery = events.DotsEventDelivery(self.authorizer, self.path)
         self.secret = "whsec_" + base64.b64encode(b"x" * 24).decode()
         self.addCleanup(patch.stopall)
         patch.object(events._secure, "public_https", return_value=True).start()
@@ -38,8 +38,28 @@ class EventTests(unittest.TestCase):
     def subscribe(self):
         return self.delivery.subscribe("https://callback.example/event?route=one", self.secret)["id"]
 
+    def test_configured_event_name_preserves_subscription_and_pending_payload(self):
+        name = "existing.mailbox.message"
+        self.delivery = events.DotsEventDelivery(self.authorizer, self.path, event_name=name)
+        self.delivery._post = lambda url, eid, secret, payload, *rest: (True, {"challenge": payload.get("challenge")})
+        sid = self.subscribe()
+        self.delivery._post = lambda *args: (False, {}, 503, 'http_error')
+        self.delivery.pump_once()
+        before = self.delivery._load()
+        restarted = events.DotsEventDelivery(self.authorizer, self.path, event_name=name)
+        self.assertEqual(restarted.definition()['name'], name)
+        self.assertEqual(restarted._sid("https://callback.example/event?route=one", restarted._binding()), sid)
+        self.assertEqual(next(iter(before['outbox'].values()))['payload']['name'], name)
+        sent = []
+        restarted._post = lambda url, eid, secret, payload, *rest: (sent.append(payload) or (True, {}, 200, None))
+        with patch.object(events.time, 'time', return_value=time.time() + 10):
+            restarted.pump_once()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]['name'], name)
+        self.assertEqual(sent[0]['eventId'], next(iter(before['outbox'])))
+
     def test_missing_auth_and_invalid_page_fail_before_send(self):
-        denied = events.KAIEventDelivery(None, self.path)
+        denied = events.DotsEventDelivery(None, self.path)
         with self.assertRaises(RuntimeError):
             denied.pump_once()
         with self.assertRaises(RuntimeError):
@@ -48,8 +68,70 @@ class EventTests(unittest.TestCase):
         self.subscribe()
         self.authorizer.reader = lambda cursor: {"messages": [{"message_id": "one"}], "next_cursor": -1}
         self.delivery._post = lambda *args: self.fail("invalid cursor caused a post")
-        with self.assertRaises(RuntimeError):
+        self.assertEqual(self.delivery.pump_once(), 0)
+        state = self.delivery._load()
+        self.assertEqual(state['pump']['status'], 'discovery_blocked')
+        self.assertEqual(state['cursor'], {})
+        self.authorizer.reader = lambda cursor: {
+            'messages': [{'message_id': 'recovered'}], 'next_cursor': 1}
+        self.delivery._post = lambda *args: (True, {})
+        self.assertEqual(self.delivery.pump_once(), 1)
+        self.assertEqual(self.delivery._load()['pump']['status'], 'ready')
+
+    def test_pump_diagnostics_survive_restart_and_do_not_expose_subscription_secrets(self):
+        self.subscribe()
+        self.delivery.pump_once()
+        self.assertTrue(self.delivery.record_pump_failure())
+        restarted = events.DotsEventDelivery(self.authorizer, self.path)
+        result = restarted.diagnostic('message-one')
+        self.assertEqual(result['pump']['status'], 'blocked')
+        self.assertEqual(result['notifications'][0]['status'], 'sent')
+        self.assertNotIn(self.secret, str(result))
+        self.assertNotIn('callback.example', str(result))
+        self.authorizer.reader = lambda cursor: {'messages': [], 'next_cursor': cursor}
+        restarted.pump_once()
+        self.assertEqual(restarted.diagnostic('message-one')['pump']['status'], 'ready')
+
+    def test_invalid_discovery_does_not_starve_persisted_outbox(self):
+        sid = self.subscribe()
+        self.delivery._post = lambda *args: (False, {}, 503, 'http_error')
+        self.delivery.pump_once()
+        before = self.delivery._load()
+        eid = next(iter(before['outbox']))
+        self.authorizer.reader = lambda cursor: {
+            'messages': [{'message_id': 'valid'}, {'body': 'invalid'}], 'next_cursor': 3}
+        sent = []
+        self.delivery._post = lambda *args: (sent.append(args[1]) or (True, {}, 200, None))
+        with patch.object(events.time, 'time', return_value=time.time() + 10):
             self.delivery.pump_once()
+        state = self.delivery._load()
+        self.assertEqual(sent, [eid])
+        self.assertEqual(state['cursor'][sid], before['cursor'][sid])
+        self.assertEqual(len(state['outbox']), 1)
+        self.assertEqual(state['pump']['status'], 'discovery_blocked')
+
+    def test_blocked_subscription_does_not_starve_another_and_storage_failure_is_reported(self):
+        sid = self.subscribe()
+        state = self.delivery._load()
+        other = sid + '-second'
+        state['subscriptions'][other] = dict(state['subscriptions'][sid], id=other)
+        state['cursor'][other] = 100
+        self.delivery._save(state)
+        self.authorizer.reader = lambda cursor: (
+            {'messages': [{'message_id': 'healthy'}], 'next_cursor': 101}
+            if cursor == 100 else {'messages': [{'body': 'invalid'}], 'next_cursor': 1})
+        sent = []
+        self.delivery._post = lambda *args: (sent.append(args[3]['data']['messageId']) or (True, {}, 200, None))
+        self.assertEqual(self.delivery.pump_once(), 1)
+        state = self.delivery._load()
+        self.assertEqual(sent, ['healthy'])
+        self.assertNotIn(sid, state['cursor'])
+        self.assertEqual(state['cursor'][other], 101)
+        self.assertEqual(state['pump']['subscriptions'][sid]['status'], 'discovery_blocked')
+        with patch.object(self.delivery, '_save', side_effect=OSError('private-storage-path')):
+            self.assertFalse(self.delivery.record_pump_failure())
+        with patch.object(self.delivery, '_load', side_effect=ValueError('private-corruption')):
+            self.assertFalse(self.delivery.record_pump_failure())
 
     def test_post_crash_recovers_exact_persisted_id_and_payload(self):
         sid = self.subscribe()
@@ -68,7 +150,7 @@ class EventTests(unittest.TestCase):
         self.delivery._post = crash_after_accept
         with self.assertRaisesRegex(RuntimeError, "process crashed"):
             self.delivery.pump_once()
-        restarted = events.KAIEventDelivery(self.authorizer, self.path)
+        restarted = events.DotsEventDelivery(self.authorizer, self.path)
         restarted._post = lambda url, eid, secret, payload, subscription: (sent.append((eid, copy.deepcopy(payload), subscription)) or (True, {}))
         future = time.time() + 10
         with patch.object(events.time, "time", return_value=future):
@@ -85,7 +167,7 @@ class EventTests(unittest.TestCase):
             with self.subTest(operation=operation):
                 path = Path(self.directory.name) / (operation + ".json")
                 auth = Authorizer()
-                delivery = events.KAIEventDelivery(auth, path)
+                delivery = events.DotsEventDelivery(auth, path)
                 delivery._post = lambda url, eid, secret, payload, *rest: (True, {"challenge": payload.get("challenge")})
                 sid = delivery.subscribe("https://callback.example/event", self.secret)["id"]
                 delivery._post = lambda *args: (False, {})
@@ -155,7 +237,7 @@ class EventTests(unittest.TestCase):
                 pass
 
         with patch.object(events._secure, "validated_address", return_value=(type("Parsed", (), {"hostname": "callback.example", "netloc": "callback.example", "port": 443, "path": "/event", "query": ""})(), "203.0.113.10")), patch.object(events._secure, "PinnedHTTPSConnection", Connection):
-            self.delivery._post = events.KAIEventDelivery._post.__get__(self.delivery)
+            self.delivery._post = events.DotsEventDelivery._post.__get__(self.delivery)
             self.delivery.pump_once()
 
         item = next(iter(self.delivery._load()["outbox"].values()))
@@ -166,7 +248,7 @@ class EventTests(unittest.TestCase):
         self.assertEqual(item["subscription"], sid)
 
     def test_post_exception_is_classified_without_exception_text(self):
-        self.delivery._post = events.KAIEventDelivery._post.__get__(self.delivery)
+        self.delivery._post = events.DotsEventDelivery._post.__get__(self.delivery)
 
         class Connection:
             def __init__(self, *args):
@@ -185,7 +267,7 @@ class EventTests(unittest.TestCase):
         self.assertNotIn("secret timeout details", str(result))
 
     def test_successful_http_response_keeps_legacy_body_tolerance(self):
-        self.delivery._post = events.KAIEventDelivery._post.__get__(self.delivery)
+        self.delivery._post = events.DotsEventDelivery._post.__get__(self.delivery)
         parsed = type("Parsed", (), {"hostname": "callback.example", "netloc": "callback.example", "port": 443, "path": "/event", "query": ""})()
         for status, body in ((204, b""), (200, b"not-json"), (200, b"[1, 2, 3]")):
             with self.subTest(status=status, body=body):

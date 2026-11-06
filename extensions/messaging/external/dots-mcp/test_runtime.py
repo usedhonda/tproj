@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import errno
 import json
 import socket
@@ -12,12 +13,25 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("kai_runtime", ROOT / "runtime.py")
+spec = importlib.util.spec_from_file_location("dots_runtime", ROOT / "runtime.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
 class RuntimeTest(unittest.TestCase):
+    def test_event_diagnostic_requires_credential_and_returns_only_event_metadata(self):
+        runtime = mock.Mock()
+        runtime.binding.token = 'private-token'
+        runtime.events.return_value.diagnostic.return_value = {'pump': {'status': 'ready'}, 'notifications': []}
+        with self.assertRaises(module.RuntimeConfigError):
+            module._bridge_request(runtime, dict(op='event_diagnostic',
+                message_id='one', service_token='wrong'))
+        runtime.events.assert_not_called()
+        result = module._bridge_request(runtime, dict(op='event_diagnostic',
+            message_id='one', service_token='private-token'))
+        self.assertEqual(result['pump']['status'], 'ready')
+        runtime.events.return_value.diagnostic.assert_called_once_with('one')
+
     def test_transport_failure_distinguishes_absence_and_lost_accepted_response(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'bridge.sock'
@@ -79,7 +93,7 @@ class RuntimeTest(unittest.TestCase):
 
     def config(self, directory):
         return {
-            "service_id": "kai", "address": "kai", "participant_id": "kai.service",
+            "service_id": "dots", "address": "dots", "participant_id": "dots.service",
             "service_token": "secret", "allowed_addresses": ["voyager.cc"],
             "binding_generation": "gen-1",
             "host_socket": str(Path(directory) / "host.sock"),
@@ -90,24 +104,24 @@ class RuntimeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             runtime = module.ServiceRuntime(self.config(directory))
             runtime._request = lambda req: {
-                "endpoint_id": "ep-1", "participant_id": "kai.service",
-                "address": "kai", "incarnation": "inc-1", "service_id": "kai",
+                "endpoint_id": "ep-1", "participant_id": "dots.service",
+                "address": "dots", "incarnation": "inc-1", "service_id": "dots",
                 "binding_generation": "gen-1", "allowed_addresses": ["voyager.cc"],
                 "policy_state": "valid", "policy_revision": "bedae4adef88af75695c8b54b827ac939cdf0d321c13358e3681c2e2734d30b1",
             } if req["op"] == "service_whoami" else {"messages": [], "next_cursor": req.get("cursor", 0)}
             observed = runtime._attest()
-            self.assertEqual(observed["binding_id"], "kai.service")
+            self.assertEqual(observed["binding_id"], "dots.service")
             self.assertEqual(observed["allowed_addresses"], ["voyager.cc"])
             self.assertEqual(runtime.server().tools.authorizer("tproj_list", {})["incarnation"], "inc-1")
-            self.assertEqual(runtime.events()._binding().binding_id, "kai.service:gen-1")
+            self.assertEqual(runtime.events()._binding().binding_id, "dots.service:gen-1")
 
     def test_runtime_server_tool_call_uses_mocked_authenticated_host(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime = module.ServiceRuntime(self.config(directory))
             def host(req):
                 if req["op"] == "service_whoami":
-                    return {"endpoint_id": "ep-1", "participant_id": "kai.service",
-                            "address": "kai", "incarnation": "inc-1", "service_id": "kai",
+                    return {"endpoint_id": "ep-1", "participant_id": "dots.service",
+                            "address": "dots", "incarnation": "inc-1", "service_id": "dots",
                             "binding_generation": "gen-1", "allowed_addresses": ["voyager.cc"],
                             "policy_state": "valid", "policy_revision": "bedae4adef88af75695c8b54b827ac939cdf0d321c13358e3681c2e2734d30b1"}
                 if req["op"] == "service_list":
@@ -122,7 +136,7 @@ class RuntimeTest(unittest.TestCase):
     def test_mismatched_host_service_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime = module.ServiceRuntime(self.config(directory))
-            runtime._request = lambda req: {"participant_id": "other", "address": "kai", "incarnation": "inc"}
+            runtime._request = lambda req: {"participant_id": "other", "address": "dots", "incarnation": "inc"}
             with self.assertRaises(module.ConnectionBindingError):
                 runtime.server().tools.authorizer("tproj_list", {})
 
@@ -241,6 +255,8 @@ class RuntimeTest(unittest.TestCase):
         boundary = b"x" * module.BRIDGE_FRAME_LIMIT + b"\n"
         self.assertEqual(module._read_bridge_frame(Chunks(boundary)), boundary)
         self.assertEqual(module._read_bridge_frame(Chunks(b"{}\n")), b"{}\n")
+        self.assertEqual(module._read_bridge_frame(Chunks(b'{"op":"who', b'ami"}', b"\n")),
+                         b'{"op":"whoami"}\n')
 
     def test_bridge_frame_reader_uses_total_monotonic_deadline_for_trickle(self):
         class Trickle:
@@ -270,7 +286,7 @@ class RuntimeTest(unittest.TestCase):
                 def __init__(self, _config):
                     self.binding = mock.Mock(token="token")
                 def _attest(self):
-                    return {"service_id": "kai"}
+                    return {"service_id": "dots"}
                 def events(self):
                     return Events()
 
@@ -282,6 +298,8 @@ class RuntimeTest(unittest.TestCase):
 
             def dispatch(_runtime, request):
                 dispatches.append(request)
+                if request.get('op') == 'call':
+                    raise module.MailboxToolError(request['fixture_code'], 'private-error-text')
                 return {"accepted": True}
 
             def serve():
@@ -345,6 +363,22 @@ class RuntimeTest(unittest.TestCase):
                 response = request(b'{"op":"whoami"}\n')
                 self.assertTrue(json.loads(response)["ok"])
                 self.assertEqual(len(dispatches), 1)
+                # Rejections are distinguishable from transport failure without
+                # recording request data or arbitrary remote error strings.
+                for operation, code, expected_op, expected_code in (
+                    ('service_message', 'not_found', 'service_message', 'not_found'),
+                    ('private-operation', 'private-code', 'unknown', 'other'),
+                ):
+                    frame = dict(op='call', fixture_code=code, request=dict(
+                        op=operation, body='private-body', service_token='private-token'))
+                    with mock.patch.object(module.sys, 'stderr', new_callable=io.StringIO) as log:
+                        reply = json.loads(request(json.dumps(frame).encode() + b'\n'))
+                    self.assertFalse(reply['ok'])
+                    row = json.loads(log.getvalue())
+                    self.assertEqual(row['event'], 'dispatch_failure')
+                    self.assertEqual(row['operation'], expected_op)
+                    self.assertEqual(row['error_code'], expected_code)
+                    self.assertNotIn('private-', log.getvalue())
                 trickle.close()
                 sender.join(timeout=1)
                 listeners[0].close()
@@ -368,7 +402,7 @@ class RuntimeTest(unittest.TestCase):
                 def __init__(self, _config):
                     self.binding = mock.Mock(token="token")
                 def _attest(self):
-                    return {"service_id": "kai"}
+                    return {"service_id": "dots"}
                 def events(self):
                     return Events()
 
@@ -424,7 +458,7 @@ class RuntimeTest(unittest.TestCase):
                 def __init__(self, _config):
                     self.binding = mock.Mock(token="token")
                 def _attest(self):
-                    return {"service_id": "kai"}
+                    return {"service_id": "dots"}
                 def events(self):
                     return Events()
 
@@ -437,7 +471,6 @@ class RuntimeTest(unittest.TestCase):
             def dispatch(_runtime, _request):
                 dispatches.append(True)
                 return {"payload": "x" * (8 * 1024 * 1024)}
-
             def serve():
                 try:
                     module.bridge(config)
@@ -488,7 +521,7 @@ class RuntimeTest(unittest.TestCase):
                 def __init__(self, _config):
                     self.binding = mock.Mock(token="token")
                 def _attest(self):
-                    return {"service_id": "kai"}
+                    return {"service_id": "dots"}
                 def events(self):
                     return Events()
 
@@ -565,7 +598,7 @@ class RuntimeTest(unittest.TestCase):
                 def __init__(self, _config):
                     self.binding = mock.Mock(token="token")
                 def _attest(self):
-                    return {"service_id": "kai"}
+                    return {"service_id": "dots"}
                 def events(self):
                     return Events()
 
@@ -618,10 +651,10 @@ class RuntimeTest(unittest.TestCase):
                 client = real_socket(socket.AF_UNIX)
                 client.settimeout(3)
                 client.connect(str(path))
-                client.sendall(b'{"op":"who')
-                time.sleep(0.15)
-                client.sendall(b'ami"}\n')
-                time.sleep(0.1)
+                # The wrapper above supplies the near-deadline receive state.
+                # Sleeping against a real 0.2s deadline tests scheduler load,
+                # not whether both response encodes get a fresh send timeout.
+                client.sendall(b'{"op":"whoami"}\n')
                 response = bytearray()
                 while not response.endswith(b"\n"):
                     chunk = client.recv(65_536)

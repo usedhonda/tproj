@@ -24,7 +24,7 @@ tproj               # launch workspace
 - **Multi-project workspace** — column-based layout across multiple projects from `workspace.yaml`
 - **Native macOS GUI** — SwiftUI app with session management, memory monitoring, Ghostty snap
 - **AI Persona system** — deterministic personality, profession, era, and character type per project
-- **Pane backgrounds** — AI-generated character art (Gemini) for each CC/Cdx pane
+- **Pane backgrounds** — AI-generated character art (GPT Image or Gemini) for each CC/Cdx pane
 - **Inter-AI messaging** — `tproj-msg` for CC ↔ Cdx ↔ cross-project communication
 - **Crew** — Claude Code Crew pane management with auto-reflow
 - **Remote SSH** — launch the same layout on a remote host
@@ -52,7 +52,7 @@ features degrade gracefully ("fail open") when their component is missing:
 | Real-time inbox monitor | `sqlite3` | monitor disabled, sending still works |
 | WebSocket idle detection | `websocat` + `timeout`/`gtimeout` | falls back to tmux prompt heuristic |
 | Native GUI app | built `tproj.app` | CLI workspace continues without it |
-| Pane backgrounds | `project-bootstrap` + Gemini API key | no background art |
+| Pane backgrounds | `project-bootstrap` + Python 3 + a configured image provider (Codex login, Gemini API key, or Vertex AI credentials) | no new background art; core workspace still starts |
 | Voice alerts | VOICEVOX / `say` | silent |
 | Gate / Chi bridge | ClawGate at `localhost:8765` | only the `gate` target is affected |
 
@@ -121,16 +121,31 @@ Verify your environment anytime:
 tproj --check
 ```
 
-### Optional: Gemini API key for pane backgrounds
+### Optional: pane background image provider
 
-Pane background art (the persona portraits) is generated via Google's Gemini API.
-To enable it, get a key from <https://aistudio.google.com/apikey> and export it:
+Pane background art (the persona portraits) can use GPT Image or Gemini. The
+default selects GPT Image when the local Codex authentication file contains an
+access token; it otherwise selects Gemini. This credential check does not verify
+that the account can generate images, and provider errors are reported by the
+background helper.
+
+To select Gemini explicitly, install its Python SDK and configure either
+Vertex AI credentials or a Gemini API key.
+For the API-key route, get a key from <https://aistudio.google.com/apikey> and
+export it in your shell profile:
 
 ```bash
+python3 -m pip install google-genai
+export TPROJ_PANE_BG_IMAGE_PROVIDER="gemini"
 export GEMINI_API_KEY="your-key-here"   # add to your shell profile (~/.zshrc, etc.)
 ```
 
-Without a key, tproj runs normally — panes just have no background art (fail-open).
+The Gemini route tries configured Vertex AI credentials first, then the API key
+when available. Keep credentials in local configuration, never in the repository.
+Background generation is optional: an unavailable provider does not prevent the
+core workspace from starting. Existing cached portraits are reused until their
+inputs change or you explicitly request a refresh.
+
 The art style defaults to a generic hand-drawn anime look; to customize it, create
 `~/.config/tproj/pane-bg.local` and set `TPROJ_PANE_BG_STYLE_REF_EN` / `_REF_JP` /
 `_AUTHOR_JP` (machine-local, never committed).

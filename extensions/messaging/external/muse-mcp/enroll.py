@@ -98,7 +98,7 @@ def prepare(home, host_path, root, scope):
     if existing is not None and existing != candidate:
         raise EnrollmentError('existing Muse enrollment differs; nothing changed')
     source = Path(__file__).resolve().parent
-    expected = {root/'lib/kai-mcp'/name:(source.parent/'kai-mcp'/name).read_bytes()
+    expected = {root/'lib/dots-mcp'/name:(source.parent/'dots-mcp'/name).read_bytes()
                 for name in SHARED_FILES}
     expected[root/'lib/muse-mcp/muse.py'] = (source/'muse.py').read_bytes()
     child = {key:parent[key] for key in ('service_id','address','participant_id','bridge_socket','read_only')}

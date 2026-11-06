@@ -293,7 +293,7 @@ class TelegramIngressJournal:
 
     This is only a local submission journal, not the authoritative mailbox.
     A binding-generation change must be fenced by the future host integration.
-    No method executes a network effect or marks a KAI recipient as presented.
+    No method executes a network effect or marks a Dots recipient as presented.
     """
 
     def __init__(self, path: str):
@@ -407,13 +407,13 @@ class TelegramMailboxRelay:
     """
 
     def __init__(self, authority, journal, binding_provider, submit, send_text,
-                 *, kai_endpoint):
+                 *, assistant_endpoint):
         self.authority = authority
         self.journal = journal
         self.binding_provider = binding_provider
         self.submit = submit
         self.send_text = send_text
-        self.kai_endpoint = _text(kai_endpoint)
+        self.assistant_endpoint = _text(assistant_endpoint)
 
     def _active(self, now):
         current = self.binding_provider()
@@ -446,14 +446,14 @@ class TelegramMailboxRelay:
     def deliver_reply(self, reply, *, now):
         """Called ONLY with a message read through authenticated mailbox query.
 
-        Preserve the exact KAI text. Continuing outputs may each reference the
+        Preserve the exact Dots text. Continuing outputs may each reference the
         same original request but must have their own mailbox message ID.
         """
         self._active(now)
         if not isinstance(reply, Mapping):
             raise TelegramIngressError("invalid_reply")
         original = self.journal.intent(reply.get("in_reply_to"))
-        if (not original or reply.get("sender_endpoint") != self.kai_endpoint
+        if (not original or reply.get("sender_endpoint") != self.assistant_endpoint
                 or reply.get("thread_id") != original["message_id"]):
             raise TelegramIngressError("reply_not_authorized")
         mid = _text(reply.get("message_id"))

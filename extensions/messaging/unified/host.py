@@ -77,9 +77,9 @@ def paste_parts(platform, header, body):
     return ('', header + body) if platform == 'cdx' else (header, body)
 
 
-def rpc(path, request):
+def rpc(path, request, timeout=55):
     with socket.socket(socket.AF_UNIX) as sock:
-        sock.settimeout(55)
+        sock.settimeout(timeout)
         sock.connect(str(path))
         sock.sendall((json.dumps(request, ensure_ascii=False) + '\n').encode())
         with sock.makefile('rb') as stream:
@@ -611,9 +611,16 @@ class Host:
                 break
         return ep
 
+    def service_scope_required(self, req):
+        service_id, cfg = self._service_binding(req)
+        required = cfg.get('scope_required', service_id != 'openclaw')
+        if type(required) is not bool:
+            raise HubError('configuration_error', 'invalid service scope requirement')
+        return required
+
     def service_policy(self, req, target=None):
         service_id, cfg = self._service_binding(req)
-        if service_id != 'kai' and 'allowed_addresses' not in cfg:
+        if not self.service_scope_required(req) and 'allowed_addresses' not in cfg:
             return None  # Preserve the independent legacy OpenClaw contract.
         if cfg.get('messaging_scope') == 'workspace':
             return None  # Enrolled development peers share ordinary MSG destinations.
@@ -670,6 +677,7 @@ class Host:
         try:
             fields = {}
             if not reply and ep.get('service_id'):
+                fields['service_scope_required'] = self.service_scope_required(req)
                 scope = self.service_policy(req)
                 if scope is not None: fields['authorized_targets'] = scope
                 elif self._service_binding(req)[1].get('messaging_scope') == 'workspace':
@@ -686,26 +694,35 @@ class Host:
         except HubError:
             return None
 
-    def _retry_event(self, caller, message_id):
-        """Retry one live KAI event through the enrolled local bridge only."""
+    def _event_service(self, recipient_endpoint):
+        endpoints = self.hub('endpoints_list', active_only=True)['endpoints']
+        recipient = next((ep for ep in endpoints if ep['endpoint_id'] == recipient_endpoint
+                          and not ep.get('retired') and ep.get('host_id') == self.config['host_id']), None)
         services = self.config.get('services') or {}
-        cfg = services.get('kai') if isinstance(services, dict) else None
-        if not isinstance(cfg, dict) or not cfg.get('event_bridge_socket'):
-            raise HubError('unavailable', 'KAI event bridge unavailable')
+        matches = [cfg for cfg in services.values() if isinstance(cfg, dict)
+                   and recipient and cfg.get('participant_id') == recipient['participant_id']
+                   and cfg.get('event_bridge_socket')]
+        return matches[0] if len(matches) == 1 else {}
+
+    def _retry_event(self, caller, message_id):
+        """Retry one live Dots event through the enrolled local bridge only."""
+        message = self.hub('query', endpoint_id=caller['endpoint_id'], message_id=message_id)
+        cfg = self._event_service(message.get('recipient_endpoint'))
+        if not cfg:
+            raise HubError('unavailable', 'Dots event bridge unavailable')
         endpoints = self.hub('endpoints_list', active_only=True)['endpoints']
         directory = self.hub('directory_list')['participants']
         if not any(p.get('participant_id') == cfg.get('participant_id')
                    and p.get('address') == cfg.get('address')
                    and p.get('host_id') == self.config['host_id'] for p in directory):
-            raise HubError('identity_rejected', 'KAI participant is not locally configured')
+            raise HubError('identity_rejected', 'Dots participant is not locally configured')
         matches = [ep for ep in endpoints
                    if not ep.get('retired') and ep.get('host_id') == self.config['host_id']
                    and ep.get('participant_id') == cfg.get('participant_id')]
         if len(matches) != 1:
-            raise HubError('identity_rejected', 'KAI endpoint is not uniquely enrolled')
-        message = self.hub('query', endpoint_id=caller['endpoint_id'], message_id=message_id)
+            raise HubError('identity_rejected', 'Dots endpoint is not uniquely enrolled')
         if message.get('recipient_endpoint') != matches[0].get('endpoint_id'):
-            raise HubError('identity_rejected', 'message is not addressed to current KAI')
+            raise HubError('identity_rejected', 'message is not addressed to current Dots')
         if message.get('state') not in ('accepted', 'queued', 'adapter_received'):
             raise HubError('ineligible', 'message is not eligible for event retry')
         request = {'op': 'retry_event', 'message_id': message_id,
@@ -714,15 +731,15 @@ class Host:
         try:
             result = rpc(cfg['event_bridge_socket'], request)
         except OSError:
-            raise HubError('unknown', 'KAI event retry outcome unknown')
+            raise HubError('unknown', 'Dots event retry outcome unknown')
         except ValueError:
-            raise HubError('unavailable', 'KAI event retry unavailable')
+            raise HubError('unavailable', 'Dots event retry unavailable')
         except HubError as exc:
             if exc.code == 'unavailable':
-                raise HubError('unknown', 'KAI event retry outcome unknown')
-            raise HubError(exc.code, 'KAI event retry rejected')
+                raise HubError('unknown', 'Dots event retry outcome unknown')
+            raise HubError(exc.code, 'Dots event retry rejected')
         if not isinstance(result, dict):
-            raise HubError('unavailable', 'KAI event retry unavailable')
+            raise HubError('unavailable', 'Dots event retry unavailable')
         allowed = {'message_id', 'event_id', 'status', 'attempts', 'total_attempts', 'status_code', 'error_class'}
         return {key: result[key] for key in allowed if key in result}
 
@@ -823,7 +840,11 @@ class Host:
         if uid != os.getuid():
             raise HubError('identity_rejected', 'local UID mismatch')
         if op == 'diagnostic_identity':
-            return self.hub('diagnostic_identity', **{key: req[key] for key in ('active_only', 'endpoint_ids') if key in req})
+            result = self.hub('diagnostic_identity', **{key: req[key] for key in ('active_only', 'endpoint_ids') if key in req})
+            if req.get('native_storage') is True:
+                from identity import native_storage_status
+                result['native_storage'] = native_storage_status()
+            return result
         # Legacy service consumers must not take the public operator branch.
         if op in ('list', 'status', 'send_targets') and ('service_id' in req or 'service_token' in req):
             op = 'service_list' if op == 'send_targets' else 'service_' + op
@@ -987,7 +1008,33 @@ class Host:
             if not isinstance(req.get('message_id'),str) or not req['message_id']:
                 raise HubError('invalid_message','message ID required')
             operator = ep.get('project_id') in self.config.get('diagnostic_projects',[])
-            return self.hub('diagnose',endpoint_id=ep['endpoint_id'],message_id=req['message_id'],operator_diagnostic=operator)
+            result = self.hub('diagnose', endpoint_id=ep['endpoint_id'],
+                              message_id=req['message_id'], operator_diagnostic=operator)
+            result['notification'] = {'status': 'unknown', 'reason': 'not_local_or_not_supported'}
+            cfg = (self._event_service(result.get('recipient_endpoint'))
+                   if ep['endpoint_id'] in (result.get('sender_endpoint'), result.get('recipient_endpoint'))
+                   and result.get('recipient_host_id') == self.config['host_id'] else {})
+            # Bridge state belongs to its owner Host. Operator diagnosis must
+            # not expand access to service notification state beyond parties.
+            if (cfg.get('event_bridge_socket')
+                    and result.get('recipient_host_id') == self.config['host_id']
+                    and ep['endpoint_id'] in (result.get('sender_endpoint'), result.get('recipient_endpoint'))
+                    and cfg.get('event_bridge_socket')):
+                endpoints = self.hub('endpoints_list', active_only=True)['endpoints']
+                if any(e['endpoint_id'] == result.get('recipient_endpoint')
+                       and e['participant_id'] == cfg.get('participant_id') for e in endpoints):
+                    try:
+                        detail = rpc(cfg['event_bridge_socket'], {
+                            'op': 'event_diagnostic', 'message_id': req['message_id'],
+                            'service_token': cfg.get('token')}, timeout=2)
+                        result['notification'] = {'status': 'available', **detail}
+                    except (OSError, ValueError, HubError):
+                        result['notification'] = {'status': 'unknown', 'reason': 'bridge_unavailable'}
+            result['presentation_wait_prolonged'] = (
+                result.get('state') in ('accepted', 'queued', 'adapter_received', 'dispatching', 'uncertain')
+                and not result.get('presentation_confirmed')
+                and time.time() - result['created_at'] >= 300)
+            return result
         if op == 'cancel':
             if not isinstance(req.get('message_id'), str) or not req['message_id']:
                 raise HubError('invalid_message', 'message ID required')
@@ -1007,7 +1054,8 @@ class Host:
                             state=req['state'], evidence=json.dumps(req.get('evidence', {})))
         if op in ('inbox', 'service_inbox'):
             return self.hub('inbox', endpoint_id=ep['endpoint_id'],
-                            cursor=req.get('cursor', 0), limit=req.get('limit', 100))
+                            cursor=req.get('cursor', 0), limit=req.get('limit', 100),
+                            pending_only=req.get('pending_only', False))
         if op == 'inbox_notice':
             # Metadata-only safe-point read. It never claims or presents rows;
             # the helper owns local notice deduplication.
@@ -1019,6 +1067,11 @@ class Host:
                 pending = local_view(self, ep, req['message_id'])
                 if pending is not None: return pending
             return self.hub('query_local' if is_service else 'query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
+        if op == 'service_receive_work':
+            return self.hub('receive_work', endpoint_id=ep['endpoint_id'],
+                **{k: req[k] for k in ('message_id','action','claim_id','body') if k in req})
+        if op == 'service_receive_finish':
+            return self.hub('receive_finish', endpoint_id=ep['endpoint_id'], message_id=req['message_id'], claim_id=req.get('claim_id'))
         if op in ('ack', 'service_ack'):
             message = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
             if message['recipient_endpoint'] != ep['endpoint_id']:
@@ -1114,6 +1167,20 @@ class Host:
         for pending in self.db.execute("SELECT envelope,message_id FROM deliveries WHERE endpoint_id=? AND state IN ('dispatching','uncertain')", (ep['endpoint_id'],)):
             if pending['message_id'] not in claimed_ids:
                 claims.append(json.loads(pending['envelope']))
+        # Native/Hub preflight may wait on another process or host. Complete
+        # it before the first journal write, so unrelated callers can commit.
+        actor_bindings = {}
+        for msg in claims:
+            if not msg.get('delivery_actor'):
+                continue
+            saved = self.db.execute('SELECT endpoint_id,state FROM deliveries WHERE message_id=?',
+                                    (msg['message_id'],)).fetchone()
+            if saved and saved['endpoint_id'] == ep['endpoint_id'] and saved['state'] != 'received':
+                continue
+            from native_consumer import _hook_binding
+            native, _ = _hook_binding(self, ep)
+            current = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=msg['message_id'])
+            actor_bindings[msg['message_id']] = (native, current)
         # Journal the bounded claim page before starting its first native
         # child, so a fast hook can coalesce the whole already-claimed set.
         for msg in claims:
@@ -1125,10 +1192,11 @@ class Host:
                 (msg['message_id'], origin, json.dumps(msg), 'received', None, time.time()))
             saved = self.db.execute('SELECT endpoint_id,state FROM deliveries WHERE message_id=?', (msg['message_id'],)).fetchone()
             if transferred and (saved['endpoint_id'] != ep['endpoint_id'] or saved['state'] == 'received'):
-                from native_consumer import _hook_binding
                 from native_notice import bind_actor
-                native, _ = _hook_binding(self, ep)
-                current = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=msg['message_id'])
+                binding = actor_bindings.get(msg['message_id'])
+                if binding is None:
+                    raise HubError('reconciliation_required', 'delivery actor changed during preflight')
+                native, current = binding
                 bind_actor(self.db, ep, native, current, reconcile_rejected=(saved['state'] == 'uncertain'))
         self.db.commit()
         for msg in claims:
