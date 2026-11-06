@@ -20,7 +20,7 @@
     {
       "name": "tproj_capabilities",
       "title": "Diagnose MSG connection capability",
-      "description": "Check registered messaging tools and trusted service authorization without sending or reading messages. Service-principal authentication does not establish isolated ChatGPT conversation authority or automatic resumption.",
+      "description": "Check registered messaging tools and trusted service authorization without sending or reading messages. Reports the served catalog fingerprint and process-local discovery counts, not the calling conversation's available function definitions. Service-principal authentication does not establish isolated ChatGPT conversation authority or automatic resumption.",
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
