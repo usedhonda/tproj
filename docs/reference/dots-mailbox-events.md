@@ -141,8 +141,12 @@ rejected until expiry. `prepare_reply` requires the live claim and stores an
 immutable body with a server-generated submission_id. A replacement claim
 inherits that output. Send its exact body and ID through tproj_reply; an unknown
 send result is reconciled using that ID, never regenerated. Once work has been
-claimed, Hub rejects replies that do not match its checkpoint. This prevents
-duplicate mailbox replies, not arbitrary external business side effects.
+claimed, Hub rejects replies that do not match its checkpoint until that output
+is authoritatively committed. The same submission ID remains immutable and
+idempotent after commitment; legitimate later progress or answers can still use
+the normal reply API with their own stable IDs. A receive claim must not become
+a permanent one-reply-per-thread restriction. This prevents replay of the
+checkpointed output, not arbitrary external business side effects.
 
 `tproj_receive_finish(message_id, claim_id?)` records an explicit no-reply
 judgment only after actual reading and ACK. If a claim exists, its live owner
@@ -182,9 +186,14 @@ default to `dots.mailbox.message`. This does not rename an existing mailbox.
 
 Host event diagnostics and retries select the bridge by the original message's
 recipient endpoint and configured participant, not by a fixed service alias.
-`scope_required` is an explicit service policy flag; an event bridge implies it
-by default. Alias redirects require a current Host scope for external service
-platforms, independently of their configured name.
+`scope_required` is an explicit service policy flag, defaulting to true for
+registered external services and false for legacy OpenClaw. It is independent
+of event or polling transport. The Host forwards its own decision as the private
+`service_scope_required` field in synchronous and deferred submissions; public
+client fields cannot select it. Redirects use that decision rather than platform
+names. Old Hosts retain project/native and legacy OpenClaw behavior; other
+external senders without scope evidence require a current Host. An explicitly
+unscoped current enrollment can retain that behavior without a product exception.
 
 Optional bridge activation reads `runtime_bridges` (`label`, `manifest`) from
 the private Host configuration, and also recognizes registered service labels.

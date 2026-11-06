@@ -134,11 +134,24 @@ class Hub:
         msg = req.get("message") or {}; target = msg.get("target")
         new = self._redirect_target(target) if isinstance(target, str) and target else None
         if not new: return self.submit(req)
-        sender = self._row('SELECT platform FROM endpoints WHERE endpoint_id=?', (msg.get('sender_endpoint'),))
-        self._redirect_scope(req, new, scope_required=bool(sender and sender['platform'] not in ('cc', 'cdx', 'openclaw')))
+        sender = self._row('SELECT participant_id FROM endpoints WHERE endpoint_id=?', (msg.get('sender_endpoint'),))
+        self._redirect_scope(req, new, scope_required=self._service_scope_required(req, sender))
         # Rewrite before hashing so a retry of the same ID with the old name stays the same message.
         out = self.submit(dict(req, message=dict(msg, target=new)))
         return dict(out, renamed_from=target, renamed_to=new) if isinstance(out, dict) else out
+    def _service_scope_required(self, req, sender):
+        if 'service_scope_required' in req:
+            required = req['service_scope_required']
+            if type(required) is not bool:
+                raise HubError('invalid_request', 'invalid Host scope requirement')
+            return required
+        # Old Hosts can still send native/project and legacy OpenClaw messages.
+        # Other external senders need current Host policy evidence; do not infer
+        # it from a product-specific endpoint platform name.
+        party = self._row('SELECT project_id,kind FROM participants WHERE participant_id=?',
+                          (sender['participant_id'],)) if sender else None
+        return bool(party and party['project_id'] is None and party['kind'] != 'openclaw')
+
     @staticmethod
     def _redirect_scope(req, destination, *, scope_required=False):
         scope = req.get('authorized_targets')
@@ -559,7 +572,10 @@ class Hub:
                 ('receive_work:' + original['recipient_endpoint'] + ':' + original['message_id'],))
             if work_row:
                 prepared = json.loads(work_row['value']).get('reply')
-                if not prepared or prepared['submission_id'] != mid or prepared['body'] != body:
+                committed = prepared and self._row(
+                    'SELECT 1 FROM messages WHERE message_id=? AND in_reply_to=? AND body=?',
+                    (prepared['submission_id'], original['message_id'], prepared['body']))
+                if not committed and (not prepared or prepared['submission_id'] != mid or prepared['body'] != body):
                     raise HubError('id_conflict', 'claimed work requires its immutable prepared reply')
             recipient = self._reply_endpoint(original["sender_endpoint"])
             if not recipient or recipient["retired"]:

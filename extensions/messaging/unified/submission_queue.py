@@ -143,6 +143,7 @@ def work_once(host,*,now=None,limit=4):
    submitted=True
    result=host.hub('submit',message=envelope,authorized_targets=permitted,
                    messaging_scope='workspace' if permitted is None else 'restricted',
+                   service_scope_required=host.service_scope_required({'service_id':row['service_id']}),
                    defer_flush=True,pending_deadline=row['expires_at'])
    # An RPC result alone is not substituted for a matching durable message.
    status=host.hub('submission_status',endpoint_id=row['endpoint_id'],message=envelope)

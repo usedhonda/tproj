@@ -285,6 +285,9 @@ class HubTest(unittest.TestCase):
         wrong['message']['message_id']=prepared['reply']['submission_id']
         self.h.submit(wrong)
         self.assertTrue(self.h.submit(wrong)['duplicate'])
+        followup=dict(wrong,message=dict(wrong['message'],message_id='legitimate-followup',body='new progress'))
+        self.assertEqual(self.h.submit(followup)['message_id'], 'legitimate-followup')
+        self.assertEqual(self.h.response_evidence(self.h._row("SELECT * FROM messages WHERE message_id='claimed'"))['recipient_reply_count'], 2)
         self.h.db.execute("UPDATE messages SET state='presented' WHERE message_id='claimed'")
         self.h.db.commit()
         with self.assertRaises(HubError): self.h.receive_finish(dict(req,claim_id='second'))

@@ -27,9 +27,10 @@ class UnifiedHostServicesTest(unittest.TestCase):
             scope = ['retired.cdx', 'new.cdx']
             with patch.object(host, 'service_policy', return_value=scope):
                 host.submit({'endpoint_id': 'service-endpoint', 'service_id': 'dots'},
-                    dict(submission_id='stable-redirect', target='retired.cdx', body='read only',
-                         authorized_targets=['arbitrary.cdx']))
+                    dict(service_id='dots', submission_id='stable-redirect', target='retired.cdx', body='read only',
+                         authorized_targets=['arbitrary.cdx'], service_scope_required=False))
             self.assertEqual(calls[0][1]['authorized_targets'], scope)
+            self.assertIs(calls[0][1]['service_scope_required'], True)
             self.assertEqual(calls[0][1]['message']['target'], 'retired.cdx')
 
     def test_transferred_claim_preflight_does_not_lock_local_journal(self):
@@ -250,7 +251,6 @@ class UnifiedHostServicesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)
             cfg = host.config['services']['dots']
-            cfg['scope_required'] = True
             cfg['allowed_addresses'] = ['voyager.cc']
             ep = {'endpoint_id': 'dots-endpoint'}
             host.service = lambda *a, **k: ep
@@ -272,6 +272,8 @@ class UnifiedHostServicesTest(unittest.TestCase):
             with self.assertRaises(HubError) as error:
                 host.dispatch(request, 1, os.getuid())
             self.assertEqual(error.exception.code, 'configuration_error')
+            cfg['scope_required'] = False
+            self.assertIsNone(host.service_policy(request))
             host.db.close()
 
     def test_read_only_diagnose_uses_persisted_identity_without_registration(self):

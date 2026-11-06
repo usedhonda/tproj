@@ -1640,3 +1640,7 @@ unrelated local submissions. The existing local actor binding, immutable
 notice/reference fields and authoritative begin-present gate remain unchanged.
 If the local actor changed after preflight, the tick fails closed and retries
 normal discovery; it does not re-present an uncertain delivery.
+
+Preflight evidence is not a cross-process transaction: an actor changed during
+the preflight window is still rejected by authoritative native reservation and
+begin-present checks before presentation.

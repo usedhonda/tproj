@@ -611,9 +611,16 @@ class Host:
                 break
         return ep
 
+    def service_scope_required(self, req):
+        service_id, cfg = self._service_binding(req)
+        required = cfg.get('scope_required', service_id != 'openclaw')
+        if type(required) is not bool:
+            raise HubError('configuration_error', 'invalid service scope requirement')
+        return required
+
     def service_policy(self, req, target=None):
         service_id, cfg = self._service_binding(req)
-        if not cfg.get('scope_required', bool(cfg.get('event_bridge_socket'))) and 'allowed_addresses' not in cfg:
+        if not self.service_scope_required(req) and 'allowed_addresses' not in cfg:
             return None  # Preserve the independent legacy OpenClaw contract.
         if cfg.get('messaging_scope') == 'workspace':
             return None  # Enrolled development peers share ordinary MSG destinations.
@@ -670,6 +677,7 @@ class Host:
         try:
             fields = {}
             if not reply and ep.get('service_id'):
+                fields['service_scope_required'] = self.service_scope_required(req)
                 scope = self.service_policy(req)
                 if scope is not None: fields['authorized_targets'] = scope
                 elif self._service_binding(req)[1].get('messaging_scope') == 'workspace':

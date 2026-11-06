@@ -80,6 +80,12 @@ class FederationTests(unittest.TestCase):
         with self.assertRaises(HubError) as raised: owner.submit(req)
         self.assertEqual(raised.exception.code, 'unsupported')
         self.assertIsNone(owner._row("SELECT * FROM messages WHERE message_id='old-host'"))
+        # A current owner Host can explicitly preserve an unscoped service,
+        # irrespective of a product/platform name. The public client cannot
+        # supply this owner-to-Hub field through Host.submit.
+        req['service_scope_required'] = False
+        req['message']['message_id'] = 'explicit-unscoped'
+        self.assertEqual(owner.submit(req)['message_id'], 'explicit-unscoped')
 
     def test_redirect_chain_or_competing_owner_is_rejected(self):
         self.retire_alias('a', successor='middle')
