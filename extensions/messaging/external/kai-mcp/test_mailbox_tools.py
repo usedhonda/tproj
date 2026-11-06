@@ -16,6 +16,12 @@ connection_spec.loader.exec_module(connection)
 
 
 class MailboxToolsTest(unittest.TestCase):
+    def test_pending_inbox_is_explicit_and_boolean(self):
+        self.tools.dispatch('tproj_inbox', {'pending_only': True, 'metadata_only': True})
+        self.assertTrue(self.calls[-1]['pending_only'])
+        with self.assertRaises(module.MailboxToolError):
+            self.tools.dispatch('tproj_inbox', {'pending_only': 'true'})
+
     def test_metadata_inbox_never_reserves_or_returns_a_body(self):
         seen = []
         def host(req):

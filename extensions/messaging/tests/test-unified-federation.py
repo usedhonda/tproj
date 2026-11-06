@@ -358,6 +358,24 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(self.calls,[])
         self.assertIsNotNone(self.hubs['a']._row('SELECT * FROM messages WHERE message_id="local"'))
         self.assertIsNone(self.hubs['b']._row('SELECT * FROM messages WHERE message_id="local"'))
+    def test_claimed_remote_reply_uses_single_checkpointed_submission(self):
+        self.send('a','claimed-remote','b.cc')
+        owner=self.hubs['b']
+        req=dict(host_id='b',host_token='b-token',endpoint_id='bcc',
+                 message_id='claimed-remote',claim_id='receiver-one',action='claim')
+        owner.receive_work(req)
+        prepared=owner.receive_work(dict(req,action='prepare_reply',body='durable response'))['reply']
+        replacement=self.rotate_native('a')
+        with self.assertRaises(HubError):
+            self.send('b','unprepared',reply='claimed-remote',body='durable response')
+        self.send('b',prepared['submission_id'],reply='claimed-remote',body=prepared['body'])
+        self.send('b',prepared['submission_id'],reply='claimed-remote',body=prepared['body'])
+        self.assertEqual(self.hubs['a']._row(
+            "SELECT COUNT(*) AS n FROM messages WHERE in_reply_to='claimed-remote'")['n'],1)
+        self.assertEqual(owner.inbox(dict(req,cursor=0,pending_only=True))['messages'], [])
+        self.assertEqual(self.hubs['a']._row('SELECT recipient_endpoint FROM messages WHERE message_id=?',
+            (prepared['submission_id'],))['recipient_endpoint'],replacement)
+
     def test_remote_reply_receipt_and_no_foreign_directory(self):
         self.send('a','out','b.cc')
         self.assertEqual(self.hubs['b']._row('SELECT sender_endpoint FROM messages WHERE message_id="out"')[0],'acc')

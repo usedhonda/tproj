@@ -125,3 +125,48 @@ own reply, an explicit no-reply decision, or authoritative terminal state.
 Reuse saved reply submission IDs after uncertain results. Periodic wake and
 single-consumer persistence require evidence from the actual receiving surface;
 without those capabilities, no bounded automatic recovery guarantee is made.
+
+## Authoritative unfinished-work recovery
+
+`tproj_inbox(pending_only=true)` lists live unfinished messages, including
+presented/ACKed messages without an own reply or explicit no-reply completion.
+Each recovery sweep starts at cursor zero and pages with next_cursor only for
+that sweep; saved discovery cursors must not hide older unfinished work. Normal
+inbox behavior is unchanged. Expired/terminal messages are not actionable work.
+
+`tproj_receive_work(message_id, action, claim_id, body?)` is recipient-only.
+A client generates and retains a stable random claim_id before claiming. A
+claim lasts five minutes; repeating that ID renews it, while a different ID is
+rejected until expiry. `prepare_reply` requires the live claim and stores an
+immutable body with a server-generated submission_id. A replacement claim
+inherits that output. Send its exact body and ID through tproj_reply; an unknown
+send result is reconciled using that ID, never regenerated. Once work has been
+claimed, Hub rejects replies that do not match its checkpoint. This prevents
+duplicate mailbox replies, not arbitrary external business side effects.
+
+`tproj_receive_finish(message_id, claim_id?)` records an explicit no-reply
+judgment only after actual reading and ACK. If a claim exists, its live owner
+must supply the claim_id and no prepared reply may exist. Completion is durable
+and idempotent; ACK by itself is not completion. A completed no-reply message
+cannot subsequently be claimed or replied to through this recovery protocol.
+
+Receiver procedure: on each actual startup or event, sweep unfinished work;
+claim one message, read it, ACK after consumption, then either prepare/send a
+reply, explicitly finish without reply, or retain unfinished work. Renew a claim
+before five minutes if still working. After interruption, reacquire and reuse
+any saved output. Do not infer isolated conversation identity from this shared
+service binding. Catalog availability and actual receiver adoption must be
+verified separately. This protocol adds no daemon and cannot manufacture a
+periodic cloud wake; a no-wake latency bound remains unverified.
+
+Recovery sweeps target the current exact service endpoint only. Historical
+same-native rows remain accessible through the ordinary inbox contract, but are
+not advertised as claimable work by this API. Reply completion uses original
+message ID and recipient-as-reply-sender, not the original sender endpoint pin:
+a sender restart may legitimately move the reply destination.
+
+`tproj_reply` can durably queue work before Hub validation. `queued` is not
+proof that its checkpoint passed: use tproj_reconcile for the same submission ID
+until the Hub acceptance or fixed rejection is known. Checkpoint/no-reply
+conflicts retain `id_conflict` in deferred-work diagnostics. Do not change IDs
+after a held result. The Hub transaction remains the final authority.

@@ -552,6 +552,15 @@ class Hub:
             original = self._row("SELECT * FROM messages WHERE message_id=?", (msg["in_reply_to"],))
             if not original or not self._authorize_reply_sender(sender, original, msg):
                 raise HubError("identity_rejected", "reply sender is not original recipient")
+            if self._row('SELECT 1 FROM metadata WHERE key=?',
+                         ('receive_finished:' + original['recipient_endpoint'] + ':' + original['message_id'],)):
+                raise HubError('id_conflict', 'message completed without reply')
+            work_row = self._row('SELECT value FROM metadata WHERE key=?',
+                ('receive_work:' + original['recipient_endpoint'] + ':' + original['message_id'],))
+            if work_row:
+                prepared = json.loads(work_row['value']).get('reply')
+                if not prepared or prepared['submission_id'] != mid or prepared['body'] != body:
+                    raise HubError('id_conflict', 'claimed work requires its immutable prepared reply')
             recipient = self._reply_endpoint(original["sender_endpoint"])
             if not recipient or recipient["retired"]:
                 raise HubError("no_recipient", "original sender endpoint is unavailable")
@@ -579,8 +588,23 @@ class Hub:
             (ep['participant_id'], ep['host_id'], ep['platform']))
             if self._same_native_party(ep, row['endpoint_id']))
         placeholders = ','.join('?' for _ in parties)
-        rows = self.db.execute("SELECT rowid AS sequence,* FROM messages WHERE recipient_endpoint IN (" + placeholders +
-            ") AND rowid>? ORDER BY rowid LIMIT ?", (*parties, cursor, limit)).fetchall()
+        pending_only = req.get('pending_only', False)
+        if type(pending_only) is not bool:
+            raise HubError('invalid_request', 'pending_only must be boolean')
+        if pending_only:
+            # Discovery cursors are not unread watermarks. Recover unfinished
+            # work from the authoritative rows, including ACKed-but-unanswered.
+            rows = self.db.execute(
+                "SELECT m.rowid AS sequence,m.* FROM messages m WHERE m.recipient_endpoint=? "
+                "AND m.rowid>? AND m.expires_at>? "
+                "AND m.state IN ('accepted','queued','adapter_received','dispatching','presented','uncertain') "
+                "AND NOT EXISTS (SELECT 1 FROM metadata done WHERE done.key='receive_finished:' || m.recipient_endpoint || ':' || m.message_id) "
+                "AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.in_reply_to=m.message_id "
+                "AND r.sender_endpoint=m.recipient_endpoint) "
+                "ORDER BY m.rowid LIMIT ?", (ep['endpoint_id'], cursor, self._now(), limit)).fetchall()
+        else:
+            rows = self.db.execute("SELECT rowid AS sequence,* FROM messages WHERE recipient_endpoint IN (" + placeholders +
+                ") AND rowid>? ORDER BY rowid LIMIT ?", (*parties, cursor, limit)).fetchall()
         errors = []
         out = self.message_views(rows, response_kind="inbox", errors=errors)
         advanced = [m['sequence'] for m in out] + [e['sequence'] for e in errors]
@@ -588,6 +612,82 @@ class Hub:
         result.update(self._page_errors(errors))
         self._check_message_response(result)
         return result
+
+    def receive_work(self, req):
+        """Durable per-message claim and immutable reply checkpoint."""
+        host = self._auth(req)
+        action = req.get('action')
+        token = req.get('claim_id')
+        if action not in ('claim', 'prepare_reply') or not isinstance(token, str) or not 1 <= len(token) <= 128:
+            raise HubError('invalid_request', 'action and stable claim_id required')
+        self._tx()
+        try:
+            ep = self._host_endpoint(host, req.get('endpoint_id'))
+            msg = self._row('SELECT * FROM messages WHERE message_id=?', (req.get('message_id'),))
+            if not msg or msg['recipient_endpoint'] != ep['endpoint_id']:
+                raise HubError('identity_rejected', 'recipient required')
+            if msg['expires_at'] <= self._now() or msg['state'] not in ('accepted','queued','adapter_received','dispatching','presented','uncertain'):
+                raise HubError('expired', 'message no longer eligible')
+            if self._row('SELECT 1 FROM metadata WHERE key=?',
+                         ('receive_finished:' + ep['endpoint_id'] + ':' + msg['message_id'],)):
+                raise HubError('invalid_request', 'work already completed without reply')
+            key = 'receive_work:' + ep['endpoint_id'] + ':' + msg['message_id']
+            saved = self._row('SELECT value FROM metadata WHERE key=?', (key,))
+            work = json.loads(saved['value']) if saved else {}
+            if work.get('claim_id') != token and work.get('lease_until', 0) > self._now():
+                raise HubError('busy', 'message processing already claimed')
+            if action == 'claim':
+                work.update(claim_id=token, lease_until=self._now()+300)
+            else:
+                if work.get('claim_id') != token or work.get('lease_until', 0) <= self._now():
+                    raise HubError('stale_session', 'processing claim expired')
+                body = req.get('body')
+                if (not isinstance(body, str) or not body or len(body.encode()) > MAX_REQUEST//2
+                        or any(ord(c) < 32 and c not in '\n\t' for c in body) or '\x7f' in body):
+                    raise HubError('invalid_message', 'bounded reply body required')
+                if 'reply' in work and work['reply']['body'] != body:
+                    raise HubError('id_conflict', 'prepared reply is immutable')
+                work.setdefault('reply', {'body': body, 'submission_id': str(uuid.uuid4())})
+            self.db.execute('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)', (key,json.dumps(work)))
+            self._commit()
+            return dict(message_id=msg['message_id'], **work)
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def receive_finish(self, req):
+        """Persist an explicit no-reply decision; ACK alone never completes work."""
+        host = self._auth(req)
+        self._tx()
+        try:
+            ep = self._host_endpoint(host, req.get('endpoint_id'))
+            msg = self._row('SELECT * FROM messages WHERE message_id=?', (req.get('message_id'),))
+            if not msg or msg['recipient_endpoint'] != ep['endpoint_id']:
+                raise HubError('identity_rejected', 'recipient required')
+            if msg['state'] != 'presented':
+                raise HubError('invalid_request', 'read and acknowledge before no-reply completion')
+            if self._row('SELECT 1 FROM messages WHERE in_reply_to=? AND sender_endpoint=?',
+                         (msg['message_id'], msg['recipient_endpoint'])):
+                raise HubError('id_conflict', 'message already has a recipient reply')
+            saved = self._row('SELECT value FROM metadata WHERE key=?',
+                ('receive_work:' + ep['endpoint_id'] + ':' + msg['message_id'],))
+            finished_key = 'receive_finished:' + ep['endpoint_id'] + ':' + msg['message_id']
+            if self._row('SELECT 1 FROM metadata WHERE key=?', (finished_key,)):
+                self._commit()
+                return {'message_id': msg['message_id'], 'decision': 'no_reply'}
+            if saved:
+                work = json.loads(saved['value'])
+                if (work.get('reply') or work.get('claim_id') != req.get('claim_id')
+                        or work.get('lease_until', 0) <= self._now()):
+                    raise HubError('busy', 'active owner without a prepared reply required')
+            key = 'receive_finished:' + ep['endpoint_id'] + ':' + msg['message_id']
+            self.db.execute('INSERT OR IGNORE INTO metadata(key,value) VALUES(?,?)',
+                            (key, json.dumps({'decision': 'no_reply', 'at': self._now()})))
+            self._commit()
+            return {'message_id': msg['message_id'], 'decision': 'no_reply'}
+        except Exception:
+            self.db.rollback()
+            raise
 
     def submission_status(self, req):
         """Sender-only, immutable-envelope check; never performs remote I/O."""
@@ -1190,6 +1290,8 @@ class Hub:
             return {"endpoints": [dict(x) for x in self.db.execute(sql, (host,))]}
         if op=="directory_retire": return self.directory_retire(req)
         if op=="submit": return self._submit_redirected(req)
+        if op=='receive_work': return self.receive_work(req)
+        if op=='receive_finish': return self.receive_finish(req)
         if op=='submission_status': return self.submission_status(req)
         if op=='query_local': return Hub.dispatch(self,dict(req,op='query'))
         if op=='diagnose_local': return self.diagnose(dict(req,op='diagnose'))

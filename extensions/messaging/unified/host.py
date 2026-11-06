@@ -1035,7 +1035,8 @@ class Host:
                             state=req['state'], evidence=json.dumps(req.get('evidence', {})))
         if op in ('inbox', 'service_inbox'):
             return self.hub('inbox', endpoint_id=ep['endpoint_id'],
-                            cursor=req.get('cursor', 0), limit=req.get('limit', 100))
+                            cursor=req.get('cursor', 0), limit=req.get('limit', 100),
+                            pending_only=req.get('pending_only', False))
         if op == 'inbox_notice':
             # Metadata-only safe-point read. It never claims or presents rows;
             # the helper owns local notice deduplication.
@@ -1047,6 +1048,11 @@ class Host:
                 pending = local_view(self, ep, req['message_id'])
                 if pending is not None: return pending
             return self.hub('query_local' if is_service else 'query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
+        if op == 'service_receive_work':
+            return self.hub('receive_work', endpoint_id=ep['endpoint_id'],
+                **{k: req[k] for k in ('message_id','action','claim_id','body') if k in req})
+        if op == 'service_receive_finish':
+            return self.hub('receive_finish', endpoint_id=ep['endpoint_id'], message_id=req['message_id'], claim_id=req.get('claim_id'))
         if op in ('ack', 'service_ack'):
             message = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=req['message_id'])
             if message['recipient_endpoint'] != ep['endpoint_id']:
