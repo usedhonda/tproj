@@ -3,14 +3,20 @@ import json
 import sqlite3
 import os
 import subprocess
+import sys
 import tempfile
 from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
-guard = SourceFileLoader("formal_guard", str(ROOT / "hooks/tproj-formal-task-guard")).load_module()
+loader = SourceFileLoader("formal_guard", str(ROOT / "hooks/tproj-formal-task-guard"))
+spec = spec_from_loader(loader.name, loader)
+guard = module_from_spec(spec)
+sys.modules[loader.name] = guard
+loader.exec_module(guard)
 
 class FormalGuardTest(unittest.TestCase):
     def test_existing_hook_entrypoints_call_formal_evaluator(self):

@@ -19,7 +19,11 @@ spec.loader.exec_module(notice)
 
 class InboxNoticeTest(unittest.TestCase):
     def test_codex_posttool_notice_uses_hook_specific_output_shape(self):
-        guard = SourceFileLoader("completion_guard", str(Path(__file__).resolve().parents[2] / "hooks/tproj-completion-guard")).load_module()
+        loader = SourceFileLoader("completion_guard", str(Path(__file__).resolve().parents[2] / "hooks/tproj-completion-guard"))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        guard = importlib.util.module_from_spec(spec)
+        sys.modules[loader.name] = guard
+        loader.exec_module(guard)
         with tempfile.TemporaryDirectory() as raw:
             helper = Path(raw) / "helper.py"
             helper.write_text("print('{\"additionalContext\":\"Pending message metadata\"}')\n")
