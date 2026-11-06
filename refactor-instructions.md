@@ -107,7 +107,7 @@ ClawGate(localhost:8765) / VOICEVOX。オプション依存は欠如時 fail-ope
 ## 6. Baseline Commands（Phase 0 で記録し、以後の各フェーズ末で再実行）
 
 ```bash
-git -C /Users/usedhonda/projects/claude/tproj status -s        # クリーンであること
+git status -s                                                # リポジトリのルートで実行。クリーンであること
 bash extensions/messaging/tests/test-sendability-gate.sh      # PASS=13 FAIL=0 PENDING=0
 bash extensions/hooks/tests/test-inbox-check.sh               # 緑
 cd apps/tproj && ./dev-app.sh                                 # debug ビルド成功 + GUI 起動
