@@ -38,7 +38,7 @@ class RuntimeTest(unittest.TestCase):
             intent = authority.admit(json.dumps(update).encode(), config['ingress_secret'], now=1000)
             reply = {'message_id': 'kai-reply-1', 'thread_id': intent.message_id,
                      'in_reply_to': intent.message_id, 'sender_endpoint': 'kai-ep',
-                     'body': 'KAI original answer'}
+                     'body': 'Dots original answer'}
             host_calls, api_calls = [], []
             inbox = []
             def host(_socket, req):
@@ -74,7 +74,7 @@ class RuntimeTest(unittest.TestCase):
             runtime.receive_once()
             runtime.replies_once()
             sends = [payload for method, payload in api_calls if method == 'sendMessage']
-            self.assertEqual(sends, [{'chat_id': 202, 'text': 'KAI original answer',
+            self.assertEqual(sends, [{'chat_id': 202, 'text': 'Dots original answer',
                                       'reply_parameters': {'message_id': 30,
                                         'allow_sending_without_reply': False}}])
             self.assertEqual(len([r for r in host_calls if r['op'] == 'service_telegram_ingress']), 1)

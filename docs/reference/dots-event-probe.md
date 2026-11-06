@@ -1,7 +1,7 @@
-# KAI MCP Events connection-only probe
+# Dots MCP Events connection-only probe
 
 This probe is an isolated stdio MCP 2.0 server for checking event delivery to
-an existing KAI Dots conversation. It has no mailbox connector and never reads
+an existing Dots Dots conversation. It has no mailbox connector and never reads
 or imports mailbox data.
 
 ## Surface
@@ -17,7 +17,7 @@ or imports mailbox data.
   persists the exact payload and rejects reuse with different data. This is an
   explicit operator command; it is not wired to a mailbox or tproj runtime.
 
-Subscriptions are stored at `~/.local/share/tproj/kai-event-probe/` (or
+Subscriptions are stored at `~/.local/share/tproj/dots-event-probe/` (or
 `$KAI_EVENT_PROBE_STATE`) with directory mode `0700` and file mode `0600`.
 Secrets are never printed. Callback validation requires HTTPS and rejects
 private, loopback, link-local, reserved, multicast, and unspecified addresses;
@@ -35,7 +35,7 @@ metadata remains absent/unverified.
 ## Launch
 
 ```bash
-python3 extensions/messaging/external/kai-event-probe/server.py
+python3 extensions/messaging/external/dots-event-probe/server.py
 ```
 
 The stdio process is suitable for an existing Secure MCP Tunnel client. The
@@ -50,7 +50,7 @@ Observation or shared-tunnel environment settings. It never creates a tunnel
 or cloud resource and never reads the credential contents.
 
 ```bash
-python3 extensions/messaging/external/kai-event-probe/runtime.py \
+python3 extensions/messaging/external/dots-event-probe/runtime.py \
   --binary /absolute/path/to/tunnel-client \
   --tunnel-id tnl_example \
   --base-dir /absolute/path/to/private/kai-probe-runtime \
@@ -71,10 +71,10 @@ starting it is an explicit operator action outside this preparation step.
 ## Verification
 
 ```bash
-python3 -m py_compile extensions/messaging/external/kai-event-probe/server.py
-python3 -m unittest extensions/messaging/external/kai-event-probe/test_server.py
-python3 -m unittest extensions/messaging/external/kai-event-probe/test_runtime.py
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"server/discover"}' | python3 extensions/messaging/external/kai-event-probe/server.py
+python3 -m py_compile extensions/messaging/external/dots-event-probe/server.py
+python3 -m unittest extensions/messaging/external/dots-event-probe/test_server.py
+python3 -m unittest extensions/messaging/external/dots-event-probe/test_runtime.py
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"server/discover"}' | python3 extensions/messaging/external/dots-event-probe/server.py
 ```
 
 The discovery command is discovery-only and should report `supportedVersions` as

@@ -293,7 +293,7 @@ class TelegramIngressJournal:
 
     This is only a local submission journal, not the authoritative mailbox.
     A binding-generation change must be fenced by the future host integration.
-    No method executes a network effect or marks a KAI recipient as presented.
+    No method executes a network effect or marks a Dots recipient as presented.
     """
 
     def __init__(self, path: str):
@@ -446,7 +446,7 @@ class TelegramMailboxRelay:
     def deliver_reply(self, reply, *, now):
         """Called ONLY with a message read through authenticated mailbox query.
 
-        Preserve the exact KAI text. Continuing outputs may each reference the
+        Preserve the exact Dots text. Continuing outputs may each reference the
         same original request but must have their own mailbox message ID.
         """
         self._active(now)

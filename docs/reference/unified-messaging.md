@@ -115,7 +115,7 @@ freeze; ignored notes are supplemental, not a new ledger or authority.
 Keep bound exact-prompt acceptance, TUI rendering, direct human observation, and
 the receiver's progress explanation separate in evidence and reports. A receipt
 alone proves neither that the human saw the message nor that progress was explained.
-This contract changes only existing native CLI receiver behavior. Existing KAI
+This contract changes only existing native CLI receiver behavior. Existing Dots
 normal MSG delivery and existing ChatGPT failure notifications remain unchanged;
 it adds no all-MSG ChatGPT fanout, notification expansion, enrollment, role change,
 or ledger.
@@ -326,7 +326,7 @@ A project's alias is its address (`<alias>.cc`, `<alias>.cdx`). Rules:
   support. Unknown aliases, redirect chains and competing owners are rejected;
   directory names, grants and historical reply pins are never changed.
 - The Host passes its fresh service send scope as private authenticated metadata.
-  `service_alias_scope_v1` identifies the loaded Host support. A KAI redirect
+  `service_alias_scope_v1` identifies the loaded Host support. A Dots redirect
   without current Host scope metadata fails closed as `unsupported` during a
   mixed-version upgrade; ordinary canonical-address traffic remains usable.
   A renamed successor must also be in that scope before Hub message/outbox
@@ -391,7 +391,7 @@ This correlates trusted local conversations; it is not provider-signed identity
 or an isolation boundary against malicious same-UID code. See
 [conversation identity](unified-conversation-identity.md) for the current contract.
 
-Generation-bound external services, including KAI and Muse, use separate
+Generation-bound external services, including Dots and Muse, use separate
 enrolled service principals. Every service call still checks
 the private credential and current launchd main PID/start. Its mailbox endpoint
 is stable for the operator-owned enrollment generation, so an MSG bridge restart
@@ -400,7 +400,7 @@ old enrollment endpoints are not forwarded to the new enrollment. This continuit
 not borrow OpenClaw identity or attest a cloud persona.
 
 The stable runtime ID is {service_id}:{binding_generation}, preserving the
-KAI representation. Non-legacy services with a configured generation use this
+Dots representation. Non-legacy services with a configured generation use this
 same contract. Services without one, including legacy OpenClaw, retain their
 prior PID-bound behavior. The service_generation_v1 capability identifies
 loaded Host support. Configured generations must be nonempty bounded strings.
@@ -471,7 +471,7 @@ accepted work remains uncertain and is never replayed. Policy revocation at host
 admission rejects an unissued send, but cannot retroactively cancel an issued
 request whose outcome is unknown.
 
-The private KAI bridge admits only a bounded number of connections and handles
+The private Dots bridge admits only a bounded number of connections and handles
 each admitted connection independently. A slow host RPC therefore cannot hold
 the serial accept loop hostage; once capacity is full, a new caller receives a
 structured `unavailable` response and is not dispatched. Frame receive and
@@ -599,7 +599,7 @@ message bodies and never resends. The group says where the recipient lives, beca
 that decides how far the sender-side state can be trusted: for a recipient on this
 Mac the state is authoritative; for another Mac or a service the sender's hub holds
 only the hand-off record, and `tproj-msg message <ID>` asks the owning side. A
-service recipient (such as KAI) shows as presented only after the service
+service recipient (such as Dots) shows as presented only after the service
 acknowledges, which the external tool descriptions now ask it to do once it has read
 a message. Until then, the sender-side view cannot distinguish delayed consumption
 from an absent, busy, or failed screen. Keep the original ID, use authorized
@@ -705,7 +705,7 @@ Host discovery, service attestation and event retry lookup request the
 authenticated host-local `endpoints_list` with `active_only: true`. Retired
 endpoint history remains stored and available to the unfiltered diagnostic
 query, but is not serialized into live discovery responses. Historical growth
-must not prevent current KAI attestation by exceeding the wire frame limit.
+must not prevent current Dots attestation by exceeding the wire frame limit.
 The filter does not revive endpoints, extend liveness, change enrollment or
 relax caller authentication.
 
@@ -745,7 +745,7 @@ checks still apply. A conflicting thread in the same project is not replaced.
 ### Delivery summary without rewriting evidence
 
 Exact message/query and metadata-only diagnose return the same optional
-`delivery_summary` object; the KAI message projection preserves it. It is a
+`delivery_summary` object; the Dots message projection preserves it. It is a
 read-only projection, not a delivery action or a new authorization gate. Existing
 `state`, receipt/ACK evidence and authenticated recipient reply evidence remain
 unchanged. Older consumers may ignore this additive field.
@@ -878,7 +878,7 @@ the consumer durably transitions the original local delivery from `received` to
 `dispatching` before requesting `native_begin_present`. Only an exact successful
 reservation binding permits returning the original body as JSON external-peer
 additional context. Neither this context nor its storage as a provider developer
-record is a direct user approval or new grant; existing authenticated KAI carries
+record is a direct user approval or new grant; existing authenticated Dots carries
 keep their independent stated scope. No body is silently truncated.
 
 Claude Code channel events are native user-role records marked `isMeta: true`.
@@ -886,7 +886,7 @@ Such metadata records are not direct owner approval evidence, including when
 their exact body matches a requested scope or ordered evidence hash. They also
 consume a pending proposed-plan confirmation boundary. An independently recorded
 direct owner instruction remains valid; receiving peer data does not revoke that
-instruction or a separately authenticated KAI carry. This approval-source rule
+instruction or a separately authenticated Dots carry. This approval-source rule
 does not attest channel registration, model receipt, or production activation.
 
 A lost response or failure after local reservation leaves `uncertain`; subsequent
@@ -1152,7 +1152,7 @@ a provider signature.
 
 Every result explicitly has `execution_authorized=false`. Operation-specific
 scope, exact current Goal target and latest cancellation must still be checked
-at use, including KAI carry and external effects. The public task approval
+at use, including Dots carry and external effects. The public task approval
 path is unchanged: it must not persist this reader output as a permanent grant
 without current-setter revocation checks. Production native ingress remains
 off until that integration is proved without blocking valid existing carry.
@@ -1229,7 +1229,7 @@ These optional diagnostic writes cannot block publication on transport failure.
 Only the authenticated recipient-native `native_pending` view returns
 `oldest_pending_age_seconds` over its existing raw pending candidate set; empty
 is null. It is not presentation permission and is not returned to an original's
-sender as cross-message metadata. CLI and KAI preserve the same per-original
+sender as cross-message metadata. CLI and Dots preserve the same per-original
 summary; schemas admit its additive age/observation fields. Hub generation 2
 identifies this projection; existing native feature flags remain unchanged.
 
@@ -1623,8 +1623,8 @@ listener (Host also checks its Hub). Loaded-but-unresponsive services report
 presentation and substantive replies still require their own message evidence.
 
 After core readiness, activation also restores already-configured allowlisted
-KAI tunnel/mailbox and Muse mailbox LaunchAgents, using the same single-domain
-rule. KAI manifests live in `~/Library/LaunchAgents`; the Muse enrollment
+Dots tunnel/mailbox and Muse mailbox LaunchAgents, using the same single-domain
+rule. Dots manifests live in `~/Library/LaunchAgents`; the Muse enrollment
 manifest lives at `~/.local/share/tproj/muse-mailbox/muse-mailbox.plist` and must
 not be skipped merely because no Library copy exists. Missing bridge manifests are skipped. `bridge_process_*` reports only
 launchd running-state/PID evidence, not a working remote transport or message

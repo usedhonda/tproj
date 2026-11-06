@@ -1,4 +1,4 @@
-"""Standard MCP stdio dispatcher for the inert KAI mailbox adapter.
+"""Standard MCP stdio dispatcher for the inert Dots mailbox adapter.
 
 This file only supplies protocol plumbing.  A trusted runtime must inject a
 ``MailboxTools`` instance; the command-line entrypoint intentionally has no
@@ -233,7 +233,7 @@ def run_stdio(server: MCPServer, stdin: TextIO = sys.stdin, stdout: TextIO = sys
                 # binding; MCP request handling must remain available.
                 continue
 
-    worker = threading.Thread(target=deliver, name="kai-event-pump", daemon=True)
+    worker = threading.Thread(target=deliver, name="dots-event-pump", daemon=True)
     if callable(pump) and getattr(server, "event_pump_enabled", True):
         worker.start()
     try:

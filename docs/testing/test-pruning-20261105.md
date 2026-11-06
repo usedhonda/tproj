@@ -46,7 +46,7 @@ count. No time-saving percentage or coverage percentage is claimed.
 - **Transport:** mocked frame/deadline tests and actual socket/SDK subprocess
   tests guard different layers. Keep durable acceptance versus lost response,
   exactly-once attempts, schema decoding and later local reconciliation.
-- **Telegram/Muse/KAI:** ingress, poller, Host authorization and integrated bridge
+- **Telegram/Muse/Dots:** ingress, poller, Host authorization and integrated bridge
   checks are not interchangeable. Group/private origin and revoked binding
   cases retain separate expected effects.
 - **Remote lifecycle:** local Stop/drop/pane-close must preserve remote PID and

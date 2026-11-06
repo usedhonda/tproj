@@ -1,8 +1,8 @@
 # Repo write service (specification)
 
-Status: **first slice implemented** (`repo_write`, `repo_revert`; panes use `tproj-repo put|write|revert`, KAI uses `tproj_repo_write|revert`). It extends the repo read service
+Status: **first slice implemented** (`repo_write`, `repo_revert`; panes use `tproj-repo put|write|revert`, Dots uses `tproj_repo_write|revert`). It extends the repo read service
 (`repo-read-service.md`) so an authenticated participant (an AI pane on any
-enrolled Mac, or KAI) can change files in a project it has been granted write
+enrolled Mac, or Dots) can change files in a project it has been granted write
 access to, through the messaging host. It creates no grant.
 
 ## Model
@@ -86,11 +86,11 @@ bytes written, and the grant revision. Contents and absolute paths are never
 stored. The previous contents needed for `repo_revert` are kept in an owner-local
 ignored state file for a limited time and are never returned to a caller.
 
-## Cross-host and KAI
+## Cross-host and Dots
 
 The call forwards to the owning host exactly as reads do (`repo_peer` ->
 `peer_repo`, with the writer's attested principal); a response over the byte cap
-is an error. KAI gets two MCP tools, `tproj_repo_write` and `tproj_repo_revert`,
+is an error. Dots gets two MCP tools, `tproj_repo_write` and `tproj_repo_revert`,
 flagged as **write** class in the external catalog; without a write grant they
 return `not_granted` and change nothing.
 

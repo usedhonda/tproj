@@ -3,7 +3,7 @@ import sys
 sys.dont_write_bytecode = True
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'unified'))
-sys.path.append(str(Path(__file__).resolve().parents[1]/'external/kai-mcp'))
+sys.path.append(str(Path(__file__).resolve().parents[1]/'external/dots-mcp'))
 import unittest, tempfile, json, socket, subprocess, importlib.util, copy, os, sqlite3, time
 from dataclasses import replace, asdict
 import telegram_ingress as ingress
@@ -321,7 +321,7 @@ class AgentsTests(unittest.TestCase):
 # Exercise the existing adapter/bridge/Host/Hub path with fixture transports.
 fixture_module = sys.modules[__name__]
 _kai_spec = importlib.util.spec_from_file_location('integrated_kai_runtime',
-    Path(__file__).resolve().parents[1]/'external/kai-mcp/runtime.py')
+    Path(__file__).resolve().parents[1]/'external/dots-mcp/runtime.py')
 kai_runtime = importlib.util.module_from_spec(_kai_spec); _kai_spec.loader.exec_module(kai_runtime)
 from connection import FixedConnectionAuthorizer
 from mailbox_tools import MailboxTools, MailboxToolError
@@ -335,8 +335,8 @@ class IntegratedFlow(unittest.TestCase):
         self.host,self.hub,self.hub_calls=f.real_submit_fixture(legacy=True)
         telegram=self.host.config['services']['telegram']
         telegram.update(token='FAKE',address='telegram',participant_id='telegram-principal')
-        self.host.config['services']['kai']={'token':'FAKE-KAI','address':'kai',
-            'participant_id':'kai-principal','binding_generation':'KAI-GENERATION','allowed_addresses':['telegram']}
+        self.host.config['services']['kai']={'token':'FAKE-Dots','address':'kai',
+            'participant_id':'kai-principal','binding_generation':'Dots-GENERATION','allowed_addresses':['telegram']}
         def authenticated_fixture_service(pid,uid,req,**kw):
             ident,cfg=self.host._service_binding(req)
             if (req.get('service_token')!=cfg['token'] or req.get('address')!=cfg['address']
@@ -356,8 +356,8 @@ class IntegratedFlow(unittest.TestCase):
             if method=='getMe' else original_api(method,payload))
         self.patch=patch.object(kai_runtime,'socket_rpc',side_effect=transport);self.patch.start();self.addCleanup(self.patch.stop)
         kai_config={'service_id':'kai','address':'kai',
-            'participant_id':'kai-principal','service_token':'FAKE-KAI',
-            'binding_generation':'KAI-GENERATION','allowed_addresses':['telegram'],
+            'participant_id':'kai-principal','service_token':'FAKE-Dots',
+            'binding_generation':'Dots-GENERATION','allowed_addresses':['telegram'],
             'host_socket':str(Path(f.tmp.name)/'never-host.sock'),
             'event_state':str(Path(f.tmp.name)/'unused-events.json')}
         self.parent=kai_runtime.ServiceRuntime(kai_config)
@@ -370,7 +370,7 @@ class IntegratedFlow(unittest.TestCase):
         self.bridge_patch.start();self.addCleanup(self.bridge_patch.stop)
         self.kai=kai_runtime.ServiceRuntime(dict(kai_config,bridge_socket=str(Path(f.tmp.name)/'never-bridge.sock')))
         auth=FixedConnectionAuthorizer(self.kai.binding,self.kai._attest)
-        self.tools=MailboxTools(service_id='kai',service_address='kai',service_token='FAKE-KAI',
+        self.tools=MailboxTools(service_id='kai',service_address='kai',service_token='FAKE-Dots',
             authorizer=auth.authorize,host_call=self.kai._request)
         self.server=MCPServer(tools=self.tools)
         self.host.db.execute('CREATE TABLE deliveries(message_id TEXT PRIMARY KEY,endpoint_id TEXT,envelope TEXT,state TEXT,prompt_hash TEXT,updated REAL)')
@@ -391,7 +391,7 @@ class IntegratedFlow(unittest.TestCase):
             self.assertIs(view['origin_binding_active'],True)
             self.assertEqual(view['external_origin']['version'],1 if index==0 else 2)
             self.assertFalse(self.call('tproj_ack',{'message_id':mid}).get('isError',False))
-            reply=self.call('tproj_reply',{'message_id':mid,'body':'fixture KAI response',
+            reply=self.call('tproj_reply',{'message_id':mid,'body':'fixture Dots response',
                 'submission_id':'fixture-response-'+str(index)})
             self.assertFalse(reply.get('isError',False),reply)
         __import__('submission_queue').work_once(self.host)
@@ -496,10 +496,10 @@ class IntegratedFlow(unittest.TestCase):
             self.assertTrue(bad.get('isError',False))
         real=self.kai._attest;self.kai._attest=lambda:dict(real(),participant_id='OTHER')
         auth=FixedConnectionAuthorizer(self.kai.binding,self.kai._attest)
-        denied=MailboxTools(service_id='kai',service_address='kai',service_token='FAKE-KAI',authorizer=auth.authorize,host_call=self.kai._request)
+        denied=MailboxTools(service_id='kai',service_address='kai',service_token='FAKE-Dots',authorizer=auth.authorize,host_call=self.kai._request)
         for name in ('tproj_reconcile','tproj_cancel_submission'):
             with self.assertRaises(MailboxToolError):denied.dispatch(name,{'submission_id':'unknown'})
-        req={'op':'service_reconcile','service_id':'kai','service_token':'WRONG','address':'kai','binding_generation':'KAI-GENERATION','submission_id':'unknown'}
+        req={'op':'service_reconcile','service_id':'kai','service_token':'WRONG','address':'kai','binding_generation':'Dots-GENERATION','submission_id':'unknown'}
         with self.assertRaises(HubError):self.host.dispatch(req,123,__import__('os').getuid())
 
 

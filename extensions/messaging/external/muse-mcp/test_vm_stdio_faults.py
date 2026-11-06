@@ -67,7 +67,7 @@ for line in sys.stdin:
 class StdioFaultTests(unittest.TestCase):
     def test_already_dispatching_message_can_be_read_with_published_schema(self):
         client = Path(__file__).with_name('vm_client.py')
-        catalog = json.loads(client.parent.parent.joinpath('kai-mcp/external-assistant-tools.json').read_text())
+        catalog = json.loads(client.parent.parent.joinpath('dots-mcp/external-assistant-tools.json').read_text())
         schema = next(t['outputSchema'] for t in catalog['tools'] if t['name'] == 'tproj_message')
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1,10 +1,10 @@
 # Repo read service (specification)
 
 Status: **specification agreed in review with the messaging owner (tproj.cdx)
-and the primary consumer (KAI). First slice implemented: `repo_list`, `repo_tree`,
+and the primary consumer (Dots). First slice implemented: `repo_list`, `repo_tree`,
 `repo_read`, `repo_search` (log and diff are not yet implemented).** It describes a
 read-only way for an authenticated participant (an AI pane on any enrolled Mac,
-or an external service such as KAI) to read a project owned by a conversation
+or an external service such as Dots) to read a project owned by a conversation
 partner through the tproj messaging host. It does not approve implementation,
 deployment, new grants, or restarting any session.
 
@@ -12,7 +12,7 @@ deployment, new grants, or restarting any session.
 
 Goal: a partner's code is readable by project handle, with the exact version
 and consistency of every answer attached, so a reviewer can cite and re-check
-it. KAI is the primary consumer; the interface is typed, structured, and
+it. Dots is the primary consumer; the interface is typed, structured, and
 paginated for a cloud assistant calling MCP tools.
 
 Non-goals: writing, building, running, or listing anything outside a granted
@@ -39,7 +39,7 @@ resolve to exactly one granted project, `repo_id` is required.
 
 ## Operations
 
-Six typed tools (host service ops, exposed to KAI as MCP tools
+Six typed tools (host service ops, exposed to Dots as MCP tools
 `tproj_repo_list|tree|read|search|log|diff`; panes use the same ops as
 `repo_*`). One implementation serves both surfaces. All are read-only.
 
@@ -123,7 +123,7 @@ never includes a path's existence, size, or any secret-looking value.
 ## Authorization and grants
 
 - The caller is authenticated exactly like `send` (kernel peer credentials,
-  live ancestry, endpoint incarnation) or, for KAI, by its fixed service
+  live ancestry, endpoint incarnation) or, for Dots, by its fixed service
   binding. A caller whose ancestry reaches a shared `codex app-server` is
   rejected as for messaging; this feature never relaxes that or infers another
   identity.
@@ -165,10 +165,10 @@ owner CLI reads the audit.
 
 `unified/host.py` keeps authentication and dispatch only. `unified/repo_access.py`
 resolves targets, applies the single policy, and performs the safe read.
-`unified/repo_access_policy.py` manages the owner-local grants. KAI's MCP adapter
-(`external/kai-mcp/`) adds the six tools next to the seven mailbox tools. The
+`unified/repo_access_policy.py` manages the owner-local grants. Dots MCP adapter
+(`external/dots-mcp/`) adds the six tools next to the seven mailbox tools. The
 external catalog should expose a `catalog_version` so a consumer can see when the
-tool set changed; KAI today has no refresh action, and the owner restarting KAI
+tool set changed; Dots today has no refresh action, and the owner restarting Dots
 is the known way to pick up new tools.
 
 ## Acceptance (when implemented)
@@ -179,7 +179,7 @@ Two concurrent readers cannot cross-read; with no grant every reader gets
 files and content are withheld on read, search, log and diff; a remote read
 returns the owner's actual HEAD, dirty state and snapshot; the byte cap stops an
 oversized remote response; a changed working tree yields `snapshot_expired` or
-`consistent: false`; KAI lists, trees, reads and searches a granted project and
+`consistent: false`; Dots lists, trees, reads and searches a granted project and
 cites `repo@sha:path:Lx-Ly`; the audit exists and holds no contents.
 
 ## Implementation map (first slice)
@@ -190,7 +190,7 @@ cites `repo@sha:path:Lx-Ly`; the audit exists and holds no contents.
 | Owner-local grants and audit | `extensions/messaging/unified/repo_access_policy.py`, operator CLI `tproj-repo-access` |
 | Host routing and cross-host forwarding | `unified/host.py` (`_repo`), `unified/federation.py` (`repo_peer`, `peer_repo`, `remote_bounded`) |
 | Pane command | `tproj-repo list\|tree\|read\|search` |
-| KAI MCP tools | `tproj_repo_list\|tree\|read\|search` in `external/kai-mcp/` |
+| Dots MCP tools | `tproj_repo_list\|tree\|read\|search` in `external/dots-mcp/` |
 
 Deviations and limits worth knowing: only tracked files are served, so untracked
 files are never returned (`untracked_included` is always false); the call-rate

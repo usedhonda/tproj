@@ -19,7 +19,7 @@ class ConnectionAuthorizerTest(unittest.TestCase):
             "binding_generation": "gen-1", "policy_state": "valid",
         }
         self.observed["policy_revision"] = hashlib.sha256(json.dumps(["voyager.cc"], separators=(",", ":")).encode()).hexdigest()
-        binding = module.KaiServiceBinding("kai", "kai", "kai.service", "secret", ("voyager.cc",), "gen-1")
+        binding = module.DotsServiceBinding("kai", "kai", "kai.service", "secret", ("voyager.cc",), "gen-1")
         self.authorizer = module.FixedConnectionAuthorizer(binding, lambda: dict(self.observed))
 
     def test_workspace_policy_is_not_exposed_as_an_empty_allowlist(self):

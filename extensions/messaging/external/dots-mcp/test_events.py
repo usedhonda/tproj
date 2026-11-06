@@ -29,7 +29,7 @@ class EventTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.authorizer = Authorizer()
         self.path = Path(self.directory.name) / "state.json"
-        self.delivery = events.KAIEventDelivery(self.authorizer, self.path)
+        self.delivery = events.DotsEventDelivery(self.authorizer, self.path)
         self.secret = "whsec_" + base64.b64encode(b"x" * 24).decode()
         self.addCleanup(patch.stopall)
         patch.object(events._secure, "public_https", return_value=True).start()
@@ -39,7 +39,7 @@ class EventTests(unittest.TestCase):
         return self.delivery.subscribe("https://callback.example/event?route=one", self.secret)["id"]
 
     def test_missing_auth_and_invalid_page_fail_before_send(self):
-        denied = events.KAIEventDelivery(None, self.path)
+        denied = events.DotsEventDelivery(None, self.path)
         with self.assertRaises(RuntimeError):
             denied.pump_once()
         with self.assertRaises(RuntimeError):
@@ -62,7 +62,7 @@ class EventTests(unittest.TestCase):
         self.subscribe()
         self.delivery.pump_once()
         self.assertTrue(self.delivery.record_pump_failure())
-        restarted = events.KAIEventDelivery(self.authorizer, self.path)
+        restarted = events.DotsEventDelivery(self.authorizer, self.path)
         result = restarted.diagnostic('message-one')
         self.assertEqual(result['pump']['status'], 'blocked')
         self.assertEqual(result['notifications'][0]['status'], 'sent')
@@ -130,7 +130,7 @@ class EventTests(unittest.TestCase):
         self.delivery._post = crash_after_accept
         with self.assertRaisesRegex(RuntimeError, "process crashed"):
             self.delivery.pump_once()
-        restarted = events.KAIEventDelivery(self.authorizer, self.path)
+        restarted = events.DotsEventDelivery(self.authorizer, self.path)
         restarted._post = lambda url, eid, secret, payload, subscription: (sent.append((eid, copy.deepcopy(payload), subscription)) or (True, {}))
         future = time.time() + 10
         with patch.object(events.time, "time", return_value=future):
@@ -147,7 +147,7 @@ class EventTests(unittest.TestCase):
             with self.subTest(operation=operation):
                 path = Path(self.directory.name) / (operation + ".json")
                 auth = Authorizer()
-                delivery = events.KAIEventDelivery(auth, path)
+                delivery = events.DotsEventDelivery(auth, path)
                 delivery._post = lambda url, eid, secret, payload, *rest: (True, {"challenge": payload.get("challenge")})
                 sid = delivery.subscribe("https://callback.example/event", self.secret)["id"]
                 delivery._post = lambda *args: (False, {})
@@ -217,7 +217,7 @@ class EventTests(unittest.TestCase):
                 pass
 
         with patch.object(events._secure, "validated_address", return_value=(type("Parsed", (), {"hostname": "callback.example", "netloc": "callback.example", "port": 443, "path": "/event", "query": ""})(), "203.0.113.10")), patch.object(events._secure, "PinnedHTTPSConnection", Connection):
-            self.delivery._post = events.KAIEventDelivery._post.__get__(self.delivery)
+            self.delivery._post = events.DotsEventDelivery._post.__get__(self.delivery)
             self.delivery.pump_once()
 
         item = next(iter(self.delivery._load()["outbox"].values()))
@@ -228,7 +228,7 @@ class EventTests(unittest.TestCase):
         self.assertEqual(item["subscription"], sid)
 
     def test_post_exception_is_classified_without_exception_text(self):
-        self.delivery._post = events.KAIEventDelivery._post.__get__(self.delivery)
+        self.delivery._post = events.DotsEventDelivery._post.__get__(self.delivery)
 
         class Connection:
             def __init__(self, *args):
@@ -247,7 +247,7 @@ class EventTests(unittest.TestCase):
         self.assertNotIn("secret timeout details", str(result))
 
     def test_successful_http_response_keeps_legacy_body_tolerance(self):
-        self.delivery._post = events.KAIEventDelivery._post.__get__(self.delivery)
+        self.delivery._post = events.DotsEventDelivery._post.__get__(self.delivery)
         parsed = type("Parsed", (), {"hostname": "callback.example", "netloc": "callback.example", "port": 443, "path": "/event", "query": ""})()
         for status, body in ((204, b""), (200, b"not-json"), (200, b"[1, 2, 3]")):
             with self.subTest(status=status, body=body):

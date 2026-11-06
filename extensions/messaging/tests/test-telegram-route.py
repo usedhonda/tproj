@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'unified'))
-sys.path.insert(0, str(ROOT / 'external/kai-mcp'))
+sys.path.insert(0, str(ROOT / 'external/dots-mcp'))
 from host import Host
 from hub import Hub
 from protocol import HubError
@@ -50,7 +50,7 @@ class RouteTest(unittest.TestCase):
             host.service = lambda *_: {'endpoint_id': 'telegram-ep'}
             update = {'update_id': 12, 'message': {'message_id': 30,
                 'from': {'id': 202, 'is_bot': False},
-                'chat': {'id': 202, 'type': 'private'}, 'text': 'ask KAI directly'}}
+                'chat': {'id': 202, 'type': 'private'}, 'text': 'ask Dots directly'}}
             req = {'op': 'service_telegram_ingress', 'service_id': 'telegram',
                    'verified_bot_id': 101, 'raw_update': json.dumps(update)}
             accepted = host.dispatch(req, 1, os.getuid())
@@ -60,7 +60,7 @@ class RouteTest(unittest.TestCase):
             projected = MailboxTools._view(message)
             self.assertTrue(projected['origin_binding_active'])
             self.assertEqual(projected['external_origin']['owner_id'], 'owner-fixture')
-            self.assertEqual(projected['body'], 'ask KAI directly')
+            self.assertEqual(projected['body'], 'ask Dots directly')
             self.assertEqual(hub.db.execute('SELECT count(*) FROM messages').fetchone()[0], 1)
             with self.assertRaises(HubError):
                 host.submit({'endpoint_id': 'telegram-ep'}, {'submission_id': 'forged',

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare an isolated Secure MCP Tunnel runtime for the KAI probe.
+"""Prepare an isolated Secure MCP Tunnel runtime for the Dots probe.
 
 Preparation is intentionally inert: it writes local launch artifacts and may
 run the official client's ``init`` command when the referenced key file is
@@ -24,7 +24,7 @@ from pathlib import Path
 
 
 DEFAULT_LABEL = "local.tproj.kai-probe-tunnel"
-DEFAULT_PROFILE = "kai-event-probe"
+DEFAULT_PROFILE = "dots-event-probe"
 SERVER = Path(__file__).with_name("server.py").resolve()
 MANIFEST = "runtime.json"
 
@@ -195,7 +195,7 @@ def prepare(args: argparse.Namespace) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Prepare an inert isolated KAI tunnel runtime")
+    parser = argparse.ArgumentParser(description="Prepare an inert isolated Dots tunnel runtime")
     parser.add_argument("--binary", required=True)
     parser.add_argument("--tunnel-id", required=True)
     parser.add_argument("--base-dir", required=True)

@@ -1,4 +1,4 @@
-"""Production wiring for the enrolled KAI service principal.
+"""Production wiring for the enrolled Dots service principal.
 
 The launchd-owned process is the only process that authenticates to the
 unified host. A tunnel-spawned MCP child may use the private bridge socket;
@@ -21,11 +21,11 @@ import sys
 from typing import Any, Mapping
 
 try:
-    from .connection import FixedConnectionAuthorizer, KaiServiceBinding, ConnectionBindingError
+    from .connection import FixedConnectionAuthorizer, DotsServiceBinding, ConnectionBindingError
     from .mailbox_tools import MailboxTools, socket_rpc, MailboxToolError, transport_failure
     from .server import MCPServer, run_stdio
 except ImportError:
-    from connection import FixedConnectionAuthorizer, KaiServiceBinding, ConnectionBindingError
+    from connection import FixedConnectionAuthorizer, DotsServiceBinding, ConnectionBindingError
     from mailbox_tools import MailboxTools, socket_rpc, MailboxToolError, transport_failure
     from server import MCPServer, run_stdio
 
@@ -58,7 +58,7 @@ class ServiceRuntime:
     def __init__(self, config: Mapping[str, Any], *, events_enabled: bool = True):
         self.config = dict(config)
         self.events_enabled = events_enabled
-        binding = KaiServiceBinding(
+        binding = DotsServiceBinding(
             _required(config.get("service_id"), "service_id"),
             _required(config.get("address"), "address"),
             _required(config.get("participant_id"), "participant_id"),
@@ -112,19 +112,19 @@ class ServiceRuntime:
         server.event_pump_enabled = self.events_enabled and self.bridge_socket is None
         return server
 
-    def events(self, authorizer: FixedConnectionAuthorizer | None = None) -> KAIEventDelivery:
+    def events(self, authorizer: FixedConnectionAuthorizer | None = None) -> DotsEventDelivery:
         if not self.events_enabled:
             raise RuntimeConfigError("events are disabled for this service")
         if self._events is None:
             try:
-                from .events import KAIEventDelivery
+                from .events import DotsEventDelivery
             except ImportError:
-                from events import KAIEventDelivery
+                from events import DotsEventDelivery
             if authorizer is None:
                 authorizer = FixedConnectionAuthorizer(self.binding, self._attest)
             event_auth = authorizer.event_authorizer(
                 lambda cursor: self._request({"op": "service_inbox", "cursor": cursor, "limit": 100}))
-            self._events = KAIEventDelivery(event_auth, self.state_path)
+            self._events = DotsEventDelivery(event_auth, self.state_path)
         return self._events
 
     def retry_event(self, message_id: str, actor_endpoint: str) -> dict[str, Any]:
@@ -139,7 +139,7 @@ class ServiceRuntime:
             raise MailboxToolError("identity_rejected", "service endpoint unavailable")
         original = self._request({"op": "service_message", "message_id": message_id})
         if not isinstance(original, Mapping) or original.get("recipient_endpoint") != endpoint_id:
-            raise MailboxToolError("identity_rejected", "message is not addressed to current KAI")
+            raise MailboxToolError("identity_rejected", "message is not addressed to current Dots")
         if actor_endpoint not in (original.get("sender_endpoint"), original.get("recipient_endpoint")):
             raise MailboxToolError("identity_rejected", "actor is not a message party")
         expiry = original.get("expires_at")
@@ -387,7 +387,7 @@ def bridge(config: Mapping[str, Any], *, runtime_factory=None) -> int:
                         persisted = events.record_pump_failure()
                         _bridge_audit('event_pump_failure', error=RuntimeConfigError(
                             'pump_failure' if persisted else 'state_unavailable'))
-            worker = threading.Thread(target=pump, name="kai-bridge-event-pump", daemon=True)
+            worker = threading.Thread(target=pump, name="dots-bridge-event-pump", daemon=True)
             worker.start()
         else:
             # Metadata-only liveness for polling services, not an event pump.
@@ -481,7 +481,7 @@ def bridge(config: Mapping[str, Any], *, runtime_factory=None) -> int:
                 reject_busy(conn)
                 continue
             handler = threading.Thread(target=handle_connection, args=(conn,),
-                                        name="kai-bridge-connection", daemon=True)
+                                        name="dots-bridge-connection", daemon=True)
             with handlers_lock:
                 handlers.add(handler)
             try:
@@ -514,7 +514,7 @@ def bridge(config: Mapping[str, Any], *, runtime_factory=None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the enrolled KAI MCP service")
+    parser = argparse.ArgumentParser(description="Run the enrolled Dots MCP service")
     parser.add_argument("--config", required=True)
     parser.add_argument("--bridge", action="store_true", help="serve the launchd-owned private bridge")
     args = parser.parse_args(argv)
@@ -524,7 +524,7 @@ def main(argv: list[str] | None = None) -> int:
             return bridge(config)
         return run_stdio(ServiceRuntime(config).server())
     except (RuntimeConfigError, ConnectionBindingError, MailboxToolError) as exc:
-        print(f"kai runtime failed: {exc}", file=os.sys.stderr)
+        print(f"Dots runtime failed: {exc}", file=os.sys.stderr)
         return 2
 
 

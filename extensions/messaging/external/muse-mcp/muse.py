@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import sys
 
-SHARED = Path(__file__).resolve().parent.parent / 'kai-mcp'
+SHARED = Path(__file__).resolve().parent.parent / 'dots-mcp'
 sys.path.insert(0, str(SHARED))
 import runtime as common
 from connection import ServiceIdentity, FixedConnectionAuthorizer, ConnectionBindingError

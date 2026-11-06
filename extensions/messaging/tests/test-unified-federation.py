@@ -68,7 +68,7 @@ class FederationTests(unittest.TestCase):
             req['authorized_targets'].append('b.cdx')
             self.assertEqual(self.hubs[sender].dispatch(req)['message_id'], 'denied-'+sender)
 
-        # New Hub + old Host must not make a KAI redirect bypass canonical scope.
+        # New Hub + old Host must not make a Dots redirect bypass canonical scope.
         owner = self.hubs['b']
         owner.directory_import(dict(admin_token='admin', services=[dict(participant_id='service',
             address='service', host_id='b', kind='kai')]))

@@ -1,4 +1,4 @@
-"""Focused transport contract checks; no live Telegram or KAI claim."""
+"""Focused transport contract checks; no live Telegram or Dots claim."""
 from dataclasses import replace
 import json
 from pathlib import Path

@@ -1,4 +1,4 @@
-"""Inert KAI MCP mailbox adapter.
+"""Inert Dots MCP mailbox adapter.
 
 The module is deliberately not an MCP server or a service launcher.  A caller
 must inject a trusted host-side authorizer and a host RPC function.  Until the

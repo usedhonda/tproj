@@ -155,7 +155,7 @@ The connection/authentication lifecycle is owned by
 [external-assistant-connection.md](external-assistant-connection.md), which is
 being specified separately. This document does not claim that transport,
 custom MCP registration, trusted metadata, provider events, or an original
-cloud-conversation return path has been proven. KAI's confirmed connected-
+cloud-conversation return path has been proven. Dots confirmed connected-
 computer tasks and Slack capability do not establish any of those missing
 surfaces. No claim is made for Dots original-thread return, shared `codex
 app-server` conversations, tasks, role handoff, shell execution, or a new

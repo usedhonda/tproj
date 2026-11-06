@@ -20,15 +20,15 @@ extensions/hooks/tests/test-inbox-record-peer-outbox.sh	unchanged	retain		記録
 extensions/hooks/tests/test-install-tproj-hooks-metadata.py	unchanged	retain		hook matcher移行・custom保持・platform別failure・metadata検証	46ee98e1c205faa681d3b6fbd3277e02fc076406c24f226b712020469e240314
 extensions/hooks/tests/test-mutation-guard.sh	unchanged	retain		frozen legacy taskの書込抑止・read-only/報告/解除の範囲	9ee5d20519eb32b42ce1f40777af480ac68a2d60dcd05ed2299ebf670bf0de40
 extensions/hooks/tests/test-task-lifecycle.sh	unchanged	retain		ACK/DONE/verify/report/cancel/freezeのlegacy履歴保全	38399e014b96c9b6f45ade305e835355e984297e61a2634e668d678930e79459
-extensions/messaging/external/kai-event-probe/test_runtime.py	unchanged	retain		probeのoffline準備・秘密ファイル権限・設定衝突・冪等	2fb3fd0b7516ffb60584ec02c9afcc635f81069180cc1f5a7ae42254590ca89d
-extensions/messaging/external/kai-event-probe/test_server.py	unchanged	retain		probe subscription/expiry/id衝突・digestのみ返却	26e3ffd585b7cbd03081821943a9c32ed3af4297dc983fb9c3d8ff0ff550cfca
-extensions/messaging/external/kai-mcp/test_connection.py	changed	retain		principal/scope/incarnationの結合とエラー秘匿	aa671a17a65060e0736d328f2929d018a3f0aef1375356ed5fbc1bdeca978ce4
-extensions/messaging/external/kai-mcp/test_conversation.py	unchanged	retain		conversation分離・revocation/expiry・永続reload・同時enroll・ID namespace	ef76adee2d50a4c3bc3905e3b414716e3c69d7b75f35c6a1506ba3304af79651
-extensions/messaging/external/kai-mcp/test_events.py	unchanged	retain		event outbox crash回復・同ID再試行・期限/取消・body非送出	a5e7ba79af201c3a8b1c2d9f8e0f10167d8bcf6834c5d829a58f7da6c4d89431
-extensions/messaging/external/kai-mcp/test_mailbox_tools.py	changed	retain		tool引数/認証・exact reply・query投影・cancel後本文非返却	9b67742ecb60e5880272048ca573f171d313d349f386c114badc4ab74c14ec49
-extensions/messaging/external/kai-mcp/test_retry_event_route.py	unchanged	retain		既存event再試行のactor/token/party境界	328657c6e9b292b781547af4b57e36958f945bac39da0ba6258aba91f921f54e
-extensions/messaging/external/kai-mcp/test_runtime.py	changed	retain		bridge frame/byte/deadline/slot・失敗後socket保全・private binding	76e340fa1e259dfd6d932392cdb6390db8ab83cb6d1db4d9732b5d86f7607ac0
-extensions/messaging/external/kai-mcp/test_server.py	unchanged	retain		MCP catalog/schema/stdio・identity選択・event capability非偽装	8407874a96854c0024c05b74d1a0a6c2237aeb05a685bf8ed63bf2ead4aa7e3b
+extensions/messaging/external/dots-event-probe/test_runtime.py	unchanged	retain		probeのoffline準備・秘密ファイル権限・設定衝突・冪等	2fb3fd0b7516ffb60584ec02c9afcc635f81069180cc1f5a7ae42254590ca89d
+extensions/messaging/external/dots-event-probe/test_server.py	unchanged	retain		probe subscription/expiry/id衝突・digestのみ返却	26e3ffd585b7cbd03081821943a9c32ed3af4297dc983fb9c3d8ff0ff550cfca
+extensions/messaging/external/dots-mcp/test_connection.py	changed	retain		principal/scope/incarnationの結合とエラー秘匿	aa671a17a65060e0736d328f2929d018a3f0aef1375356ed5fbc1bdeca978ce4
+extensions/messaging/external/dots-mcp/test_conversation.py	unchanged	retain		conversation分離・revocation/expiry・永続reload・同時enroll・ID namespace	ef76adee2d50a4c3bc3905e3b414716e3c69d7b75f35c6a1506ba3304af79651
+extensions/messaging/external/dots-mcp/test_events.py	unchanged	retain		event outbox crash回復・同ID再試行・期限/取消・body非送出	a5e7ba79af201c3a8b1c2d9f8e0f10167d8bcf6834c5d829a58f7da6c4d89431
+extensions/messaging/external/dots-mcp/test_mailbox_tools.py	changed	retain		tool引数/認証・exact reply・query投影・cancel後本文非返却	9b67742ecb60e5880272048ca573f171d313d349f386c114badc4ab74c14ec49
+extensions/messaging/external/dots-mcp/test_retry_event_route.py	unchanged	retain		既存event再試行のactor/token/party境界	328657c6e9b292b781547af4b57e36958f945bac39da0ba6258aba91f921f54e
+extensions/messaging/external/dots-mcp/test_runtime.py	changed	retain		bridge frame/byte/deadline/slot・失敗後socket保全・private binding	76e340fa1e259dfd6d932392cdb6390db8ab83cb6d1db4d9732b5d86f7607ac0
+extensions/messaging/external/dots-mcp/test_server.py	unchanged	retain		MCP catalog/schema/stdio・identity選択・event capability非偽装	8407874a96854c0024c05b74d1a0a6c2237aeb05a685bf8ed63bf2ead4aa7e3b
 extensions/messaging/external/muse-mcp/test_muse.py	new	retain		parent-only credentials, tool catalog and service installation policy	0b7fff429927f081ce19e4d1b85ef41b1a0d31f39739a5c38a839a1aefc37e4c
 extensions/messaging/external/muse-mcp/test_vm.py	new	retain		VM poll cursor, unknown-send retention, outage and secret-minimal subprocess environment	dde65ef60c18f62970ecd444ea5952fada70a7eaaab1a8ace180559c18f8105c
 extensions/messaging/external/muse-mcp/test_vm_stdio_faults.py	new	retain		real pinned SDK subprocess schema and lost response; not replaced by mock client tests	20b7bfc42554ac7f19694cdf5d02ce1da1e58710b083b1e58bf46b821174de02
@@ -100,7 +100,7 @@ extensions/persona/test-tproj-pane-bg-sync-coalescing.sh	changed	retain		full re
 tests/smoke-bin.sh	changed	prune checks; retain suite	P05	bin構文・代表help/status・column上限拒否	c0b32acd8317bf64813a451ecfe615674b15a99b4327fd6a37b8ed5ac0c587bc
 tests/test-install-check-persona.sh	unchanged	retain		installerが配布personaの欠落/差分を報告する	d56a4d83783a4f538cffc57c8aa5f1aa2481c45f9738d33c9ea6d917382b42e5
 tests/test-install-standalone.sh	unchanged	retain		sibling無しpublic checkoutのdry-run fail-open	38c8de1c575e4fa32eaec0b78b969c2a7893684debf2e0ac74543216414c829f
-tests/test-kai-msg-reload-manifest.sh	changed	retain		配布manifestに必要moduleが列挙される	02ed0f7b9088fabc09d5221222b50ee9ec5189ba4b7ea893595e2e681d4226b4
+tests/test-dots-msg-reload-manifest.sh	changed	retain		配布manifestに必要moduleが列挙される	02ed0f7b9088fabc09d5221222b50ee9ec5189ba4b7ea893595e2e681d4226b4
 tests/test-local-codex-update.py	unchanged	retain		agent updateとlaunchの排他・failure fail-open	2652f732329a4356da1eb9e47fbbf1e7292e7d9bb2f93d87f1e2968bc028e5dc
 tests/test-msg-reload-help.sh	unchanged	retain		helpはdeploy依存無しで動作・unknown option拒否	9ddfa28617dd52810aeb01222d4966cc97b13fec3c9c26a2a1db045e78e198d8
 tests/test-msg-runtime.py	unchanged	retain		setupのlocal性・dry-run・冪等・旧enrollment移行拒否	deea91911cea3392995b4ea45b0bebeeeb7ad2b498a68768915857a87842549f

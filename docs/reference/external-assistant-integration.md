@@ -203,7 +203,7 @@ can carry correlation data, but a client-provided value alone does **not**
 authenticate the caller or establish conversation ownership. It must be
 combined with an authenticated adapter context and endpoint incarnation.
 
-Dots/KAI capability and any native API that could provide that trusted mapping
+Dots/Dots capability and any native API that could provide that trusted mapping
 remain unproven in this investigation. A successful connection, an event
 receipt, or a self-reported session identifier is therefore insufficient live
 evidence.

@@ -4,9 +4,9 @@
 guide.** Its statements below about absent installation and proposed identity
 requirements describe the original discovery checkpoint, not current runtime
 state. The adapter tooling is documented in
-[the mailbox tool contract](kai-mailbox-tools.md); the approved
+[the mailbox tool contract](dots-mailbox-tools.md); the approved
 connection-principal boundary and remaining live acceptance requirements are
-recorded in [the execution plan](kai-msg-execution-plan.md).
+recorded in [the execution plan](dots-msg-execution-plan.md).
 
 The current connection authorizer authenticates a dedicated enrolled service,
 not a provider-attested cloud conversation or model persona. Do not interpret

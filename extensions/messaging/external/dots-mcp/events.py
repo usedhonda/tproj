@@ -19,8 +19,8 @@ import tempfile
 import time
 from typing import Any
 
-PROBE = Path(__file__).parents[1] / "kai-event-probe" / "server.py"
-SPEC = importlib.util.spec_from_file_location("kai_probe_secure", PROBE)
+PROBE = Path(__file__).parents[1] / "dots-event-probe" / "server.py"
+SPEC = importlib.util.spec_from_file_location("dots_probe_secure", PROBE)
 _secure = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(_secure)
 EVENT_NAME = "kai.mailbox.message"
@@ -53,7 +53,7 @@ def _iso(timestamp):
     return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-class KAIEventDelivery:
+class DotsEventDelivery:
     def __init__(self, authorizer: Any, state_path: str | Path):
         self.authorizer = authorizer
         self.path = Path(state_path).expanduser()
@@ -314,7 +314,7 @@ class KAIEventDelivery:
         """Manually retry one stored terminal event exactly once.
 
         The caller must have already authenticated the original message and
-        current KAI recipient.  This method only enforces the enrolled event
+        current Dots recipient.  This method only enforces the enrolled event
         binding, callback subscription, and durable event record invariants.
         """
         if not isinstance(message_id, str) or not message_id:

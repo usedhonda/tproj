@@ -1,7 +1,7 @@
 # Deferred service submissions
 
 An enrolled writable service may opt a new send/reply into `defer_remote`.
-KAI does so by default. Authentication and original reply-party checks still
+Dots does so by default. Authentication and original reply-party checks still
 precede enqueue. Host persistence atomically records the immutable envelope
 and work fence, returning `state=journaled`, `receipt_stage=host_journaled`,
 `hub_acceptance=unconfirmed`. This is not Hub acceptance or recipient delivery.

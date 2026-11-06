@@ -164,7 +164,7 @@ that ingress, not on a new user approval. Existing participants are unchanged.
 The MCP dispatcher now has an optional runtime-injected conversation resolver.
 When configured, each `tools/call` must resolve one owner-enrolled binding from
 the trusted ingress attestor and receives tools built for that exact binding;
-denial never falls back to fixed KAI tools. Request `_meta` and arguments are
+denial never falls back to fixed Dots tools. Request `_meta` and arguments are
 correlation context only and cannot grant identity. This is a unit-tested
 dispatch boundary, not live ChatGPT acceptance: production still needs a real
 provider attestor and runtime wiring.
@@ -179,7 +179,7 @@ claimed to roll back an already-started host operation. Attestation is captured
 once per request; revalidation never trusts request metadata or re-attests model
 arguments.
 
-Resolver-enabled MCP dispatch does not advertise or route the fixed KAI event
+Resolver-enabled MCP dispatch does not advertise or route the fixed Dots event
 and subscription handlers. Event delivery remains a fixed-service capability;
 ordinary conversation binding is limited to explicitly dispatched mailbox
 operations and does not grant access to fixed subscription state.

@@ -17,7 +17,7 @@ class RuntimeTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.binary = self.root / "tunnel-client"
-        self.binary.write_text("#!/bin/sh\nmkdir -p \"$5\"\nprintf '{}' > \"$5/kai-event-probe.yaml\"\n")
+        self.binary.write_text("#!/bin/sh\nmkdir -p \"$5\"\nprintf '{}' > \"$5/dots-event-probe.yaml\"\n")
         self.binary.chmod(0o700)
 
     def tearDown(self):
@@ -26,7 +26,7 @@ class RuntimeTests(unittest.TestCase):
     def args(self, base, key):
         return type("Args", (), {"binary": str(self.binary), "tunnel_id": "tnl_test",
                                   "base_dir": str(base), "credential_file": str(key),
-                                  "profile": "kai-event-probe", "label": MODULE.DEFAULT_LABEL,
+                                  "profile": "dots-event-probe", "label": MODULE.DEFAULT_LABEL,
                                   "mcp_command": "python3 server.py"})()
 
     def test_offline_prepare_is_inert_and_isolated(self):
@@ -51,7 +51,7 @@ class RuntimeTests(unittest.TestCase):
         base = self.root / "runtime"
         key = self.root / "secret"
         MODULE.prepare(self.args(base, key))
-        profile = base / "profiles" / "kai-event-probe.yaml"
+        profile = base / "profiles" / "dots-event-probe.yaml"
         profile.write_text("unexpected")
         with self.assertRaises(MODULE.RuntimeError_):
             MODULE.prepare(self.args(base, key))
@@ -73,7 +73,7 @@ class RuntimeTests(unittest.TestCase):
         key.chmod(0o600)
         result = MODULE.prepare(self.args(base, key))
         self.assertTrue(result["profileInitialized"])
-        self.assertTrue((base / "profiles" / "kai-event-probe.yaml").exists())
+        self.assertTrue((base / "profiles" / "dots-event-probe.yaml").exists())
 
     def test_offline_then_key_init_keeps_runner_idempotent(self):
         base = self.root / "runtime"

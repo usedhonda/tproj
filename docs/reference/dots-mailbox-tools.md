@@ -1,11 +1,11 @@
-# KAI mailbox tool adapter
+# Dots mailbox tool adapter
 
-`extensions/messaging/external/kai-mcp/mailbox_tools.py` contains the local
+`extensions/messaging/external/dots-mcp/mailbox_tools.py` contains the local
 adapter for the reviewed tool shapes: `tproj_list`,
 `tproj_status`, `tproj_send`, `tproj_inbox`, `tproj_message`, `tproj_reply`,
 `tproj_ack`, and metadata-only `tproj_diagnose(submission_id)`.
 
-`extensions/messaging/external/kai-mcp/server.py` adds standard MCP stdio
+`extensions/messaging/external/dots-mcp/server.py` adds standard MCP stdio
 plumbing (`initialize`, `tools/list`, `tools/call`, `ping`, and notification
 handling). It loads the reviewed machine-readable catalog for exact schemas
 and annotations. The command-line entrypoint deliberately constructs no
@@ -24,7 +24,7 @@ MCP event name, empty arguments, webhook mode, and delivery URL shape.
 
 ## Production runtime wiring
 
-`extensions/messaging/external/kai-mcp/runtime.py --config CONFIG` is the
+`extensions/messaging/external/dots-mcp/runtime.py --config CONFIG` is the
 service entrypoint. The launchd-owned process calls the unified host's
 `service_whoami` with the configured service ID, address, and credential, then
 constructs the tools and mailbox event dispatcher from that live endpoint
@@ -43,7 +43,7 @@ The private config contains `service_id`, `address`, `participant_id`,
 local-only and must be owner-readable. A launchd manifest should execute:
 
 ```text
-python3 /path/to/extensions/messaging/external/kai-mcp/runtime.py --config /private/kai.json --bridge
+python3 /path/to/extensions/messaging/external/dots-mcp/runtime.py --config /private/kai.json --bridge
 ```
 
 The tunnel child uses the same config with `bridge_socket` and omits
@@ -59,7 +59,7 @@ reviewed catalog, so a standalone deployment does not depend on the repository
 `docs/` tree. The server validates that all expected names are present;
 it never logs catalog contents, credentials, or callback secrets.
 
-The supported `bin/tproj-msg-reload` path distributes the complete KAI MCP
+The supported `bin/tproj-msg-reload` path distributes the complete Dots MCP
 module closure in one tar stream: `mailbox_tools.py`, `connection.py`,
 `conversation.py`, `events.py`, `runtime.py`, `server.py`, and the sibling
 `external-assistant-tools.json` catalog. Keeping these files together is
@@ -69,7 +69,7 @@ modules, while server dispatch also imports the conversation resolver.
 The adapter is not an MCP server, does not register cloud tools, and does not
 start a daemon. A host integration injects a host-socket call and a
 `FixedConnectionAuthorizer` from `connection.py`. That authorizer represents
-the enrolled KAI **service principal** (not a cryptographically asserted
+the enrolled Dots **service principal** (not a cryptographically asserted
 model persona): every call revalidates the host-derived service identity,
 endpoint incarnation, and current host-derived policy revision. Outbound scope
 is authoritative at the host service list/status/send operations. Missing,
@@ -95,7 +95,7 @@ of enrollment, cloud conversation identity, delivery, or presentation.
 Inbox projections and direct message views hide host envelopes whose durable
 state is `cancelled`, `canceled`, `expired`, `terminal`, `rejected`, or
 `stale_session`; those states are
-never offered to KAI as new work. Before returning any message body, the
+never offered to Dots as new work. Before returning any message body, the
 adapter calls the host's atomic `service_begin_present` gate; cancellation,
 expiry, rejection, stale-session, or unauthorized results suppress that item,
 while unrelated host failures remain errors. The host remains responsible for
@@ -110,15 +110,15 @@ incarnation while retaining that generation and its one callback subscription;
 explicit reenrollment or revocation must rotate the generation. The host
 attestor must return the matching binding and live incarnation; an address or
 token never selects a different service. The unified host remains responsible for the exact
-launchd PID and kernel process-start check. The adapter does not infer KAI
+launchd PID and kernel process-start check. The adapter does not infer Dots
 conversation identity from `_meta`, display names, or model-supplied values.
 
 ## Evidence boundary
 
 The implementation remains unexposed until trusted host-side service
-enrollment and the KAI route are enabled. The fixed connection principal does
+enrollment and the Dots route are enabled. The fixed connection principal does
 not prove original Dots conversation identity. Original Dots event delivery,
-shared app-server conversation authentication, cloud registration, live KAI
+shared app-server conversation authentication, cloud registration, live Dots
 enrollment, and end-to-end mailbox receipts remain unproven and are not
 claimed by this module.
 
@@ -131,9 +131,9 @@ identity, queries the message as that party, and requires the current local
 `services.kai` endpoint to be the exact recipient. Canceled, expired, presented,
 retired, foreign, or otherwise ineligible messages fail closed.
 
-The host then calls the already configured KAI bridge through
+The host then calls the already configured Dots bridge through
 `services.kai.event_bridge_socket`, sending only the message ID, authenticated
-actor endpoint, and the existing KAI service token. The private bridge verifies
+actor endpoint, and the existing Dots service token. The private bridge verifies
 that token in constant time, re-attests the launchd-owned service, rechecks the
 current recipient and original message parties, and invokes the durable
 `retry_once` event operation. Retry responses contain only stable IDs, status,
@@ -144,8 +144,8 @@ is reported as unknown and is not automatically repeated.
 Focused verification:
 
 ```bash
-python3 -m unittest extensions/messaging/external/kai-mcp/test_mailbox_tools.py
-python3 -m unittest extensions/messaging/external/kai-mcp/test_server.py
+python3 -m unittest extensions/messaging/external/dots-mcp/test_mailbox_tools.py
+python3 -m unittest extensions/messaging/external/dots-mcp/test_server.py
 ```
 
 Diagnosis bypasses mutating service_whoami preauthorization and authenticates on

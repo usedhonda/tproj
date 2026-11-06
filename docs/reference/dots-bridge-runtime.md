@@ -1,6 +1,6 @@
-# KAI bridge runtime contract
+# Dots bridge runtime contract
 
-The private KAI bridge is a single Unix-domain listener owned by the launchd
+The private Dots bridge is a single Unix-domain listener owned by the launchd
 service process. Startup validates the complete service configuration before
 creating directories, taking the startup lock, removing a stale socket, or
 binding a new listener. A missing or invalid setting therefore cannot destroy
@@ -59,4 +59,4 @@ for example, `not_found` and `scope_denied` must remain distinguishable from
 counts have no success denominator and must not be reported as failure rates.
 This is diagnostic-only: no replay, admission, credential, scope or response
 semantics change; no per-success traffic logging is added. The common bridge
-implementation serves both KAI and Muse.
+implementation serves both Dots and Muse.

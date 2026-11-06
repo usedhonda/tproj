@@ -164,7 +164,7 @@ class MailboxToolsTest(unittest.TestCase):
         self.assertNotIn("body", result)
 
     def test_nested_transport_unavailable_is_not_identity_rejection(self):
-        binding = connection.KaiServiceBinding("kai", "kai", "kai.service", "secret", ("voyager.cc",), "gen-1")
+        binding = connection.DotsServiceBinding("kai", "kai", "kai.service", "secret", ("voyager.cc",), "gen-1")
         authorizer = connection.FixedConnectionAuthorizer(
             binding, lambda: (_ for _ in ()).throw(OSError("credential=secret socket unavailable")))
         tools = module.MailboxTools(service_id="kai", service_address="kai", service_token="private",

@@ -1,8 +1,8 @@
-# KAI mailbox events
+# Dots mailbox events
 
 `KAIEventDelivery` is an isolated, fail-closed mailbox event adapter. A trusted
 authorizer must return a fixed enrollment binding/incarnation and a scoped reader; no
-metadata or request arguments are treated as identity. The production KAI
+metadata or request arguments are treated as identity. The production Dots
 route uses `FixedConnectionAuthorizer.event_authorizer()` so event delivery
 shares the enrolled service principal and exact participant scope used by
 mailbox tools. Without that authorizer, subscription and pump operations fail
@@ -66,7 +66,7 @@ acknowledges mailbox consumption.
 `retry_once(message_id, actor_endpoint=...)` is the sole manual reconciliation
 path for one stored terminal event. The runtime must first authenticate the
 original message, verify that it is not cancelled or expired, and verify the
-exact current KAI recipient; the event adapter does not perform actor
+exact current Dots recipient; the event adapter does not perform actor
 authentication. Under the private file lock the adapter requires exactly one
 matching stored event, an active subscription with the same enrolled binding
 and incarnation, and an unexpired callback whose persisted ID and URL binding
@@ -93,7 +93,7 @@ acceptance requirements, not outcomes demonstrated by these local tests.
 Focused verification:
 
 ```bash
-python3 -m unittest discover -s extensions/messaging/external/kai-mcp -p 'test_events.py'
+python3 -m unittest discover -s extensions/messaging/external/dots-mcp -p 'test_events.py'
 ```
 
 ## Discovery isolation and pump diagnostics
@@ -112,7 +112,7 @@ The private authenticated `event_diagnostic` bridge operation returns pump state
 and a specified message's notification status, attempts and existing safe HTTP
 classification. It does not read message bodies, acknowledge, or resend. The
 owner Host adds this information to `diagnose` only for a pinned message party
-and the locally configured KAI recipient. Remote notification diagnostics are
+and the locally configured Dots recipient. Remote notification diagnostics are
 explicitly unknown; Hub delivery diagnostics remain available. Bridge failure
 or a two-second timeout affects only notification diagnostics. A five-minute
 wait without presentation confirmation is a diagnostic flag, not proof of an

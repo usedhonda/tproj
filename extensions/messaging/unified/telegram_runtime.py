@@ -315,7 +315,7 @@ class TelegramRuntime:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Run a separately enrolled Telegram-to-KAI transport')
+    parser = argparse.ArgumentParser(description='Run a separately enrolled Telegram-to-Dots transport')
     parser.add_argument('--config', required=True)
     args = parser.parse_args()
     runtime = None

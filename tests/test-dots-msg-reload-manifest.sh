@@ -30,6 +30,6 @@ required = {'mailbox_tools.py', 'connection.py', 'conversation.py', 'events.py',
 assert len(entries) == len(set(entries))
 assert set(entries) == required, entries
 for name in entries:
-    assert (Path(sys.argv[2]) / 'extensions/messaging/external/kai-mcp' / name).is_file()
+    assert (Path(sys.argv[2]) / 'extensions/messaging/external/dots-mcp' / name).is_file()
 PY
-printf '%s\n' "kai-msg actual reload archive entries: PASS (no service or remote activation)"
+printf '%s\n' "Dots MSG actual reload archive entries: PASS (no service or remote activation)"
