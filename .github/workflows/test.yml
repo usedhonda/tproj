@@ -31,7 +31,7 @@ jobs:
       - name: Lost-response transport contract with real SDK
         run: python extensions/messaging/external/muse-mcp/test_vm_stdio_faults.py -v
   shell-suites:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Install real tmux for remote-host lifecycle tests
