@@ -5,7 +5,7 @@ Local persona bootstrap, explicit shared instruction setup, and pane background 
 ## What's included
 
 - **project-bootstrap** -- local persona/voice bootstrap plus explicit shared instruction initialization and migration
-- **tproj-pane-bg** -- Generates AI artwork for tmux pane backgrounds using Gemini
+- **tproj-pane-bg** -- Generates AI artwork for tmux pane backgrounds using GPT Image or Gemini
 
 ## How it works
 
@@ -52,13 +52,45 @@ bash extensions/persona/test-project-bootstrap-contract.sh
 
 ## Pane backgrounds
 
-tproj-pane-bg generates character artwork using Google's Gemini image models, driven by the persona traits. Images are cached per-project in `.local/tproj-pane-bg/`.
+`tproj-pane-bg` generates character artwork from the persona traits. Images are
+cached per project in `.local/tproj-pane-bg/`.
+
+The default route prefers `gpt-image-2` when the local Codex auth file contains an
+access token. Otherwise it uses Gemini. Set
+`TPROJ_PANE_BG_IMAGE_PROVIDER=gemini` to select Gemini explicitly. Token presence
+selects the GPT Image route; it does not guarantee that the provider will accept
+the request.
+
+The Gemini route uses `gemini-3-pro-image` for new images and explicit
+`--refresh` requests. It tries Vertex with Application Default Credentials when
+`GOOGLE_CLOUD_PROJECT` is configured, then a Gemini API key when one is available.
+The default Vertex location is `global`. The fallback to
+`gemini-3.1-flash-image` handles an unavailable Pro model and supported transient
+image failures; permanent authentication failures stop retries.
+
+An otherwise-valid wallpaper generated with `gemini-3-pro-image-preview` or
+`gemini-2.5-flash-image` remains cached. Its original model, prompt, schema, and
+hash are used to validate it; upgrading the model alone does not overwrite the
+image or sidecar. An explicit `--refresh` or a genuine cache miss uses the current
+generation model.
+
+The provider and cache migration contracts can be checked without live image
+generation:
+
+```bash
+bash extensions/persona/test-tproj-pane-bg-provider-contract.sh
+bash tests/test-pane-bg-style-layers.sh
+```
 
 ## Requirements
 
 - `jq` (required by project-bootstrap)
-- `python3` + `google-genai` (optional, for image generation)
-- `GEMINI_API_KEY` exported in your shell profile (optional, for image generation; see the root README)
+- `python3` (optional, for image generation)
+- A local Codex login for GPT Image, or Google credentials for Gemini (optional;
+  image generation is independent of core tmux startup)
+- `google-genai` (Gemini only), with either Vertex Application Default Credentials
+  and `GOOGLE_CLOUD_PROJECT`, or a `GEMINI_API_KEY` / `GOOGLE_API_KEY` (see the root
+  README)
 - VOICEVOX (optional, for TTS voice synthesis via cc-status-bar)
 
 
