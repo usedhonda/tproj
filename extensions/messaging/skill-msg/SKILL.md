@@ -85,12 +85,13 @@ Cloud surface では、catalog に実在する次の MCP tools **だけ**を呼�
 | `cc` / `cdx` | 自分と同じプロジェクトの相方 |
 | `<project>.cc` / `<project>.cdx` | 指定プロジェクトの AI ペイン |
 | `gate` | 設定済み OpenClaw main participant |
-| `dots` | 設定済み Dots 接続（AIペインとは別） |
+| `<service-address>` | 登録済み外部サービスの宛先（Dots等。AIペインとは別） |
 
-`dots` は AI ペインではなく外部サービス（Dots の設定済みアシスタント）の宛先。画面に出ていないので
+`<service-address>` は一覧に返る設定済みのaddressを使う。製品名Dotsは固定宛先ではない。
+外部サービスはAIペインとは別である。画面に出ていないので
 `--read` も `--status` の画面確認も使えない。やりとりは返信の自動提示
-（`[from:dots]`）、`tproj-msg message <ID>`（自分が当事者の1通）、`inbox` の3つで読む。
-Dots 側の会話画面そのものは tproj からは読めない。`dots` あての受付状態が
+（`[from:<service-address>]`）、`tproj-msg message <ID>`（自分が当事者の1通）、`inbox` の3つで読む。
+Dots 側の会話画面そのものは tproj からは読めない。外部サービス宛ての受付状態が
 `accepted` のまま変わらなくても、返信が届いたなら読まれている。
 `accepted` はハブのメールボックス受付であり、通知の受理・受信者への提示・受信者の消費・
 実質的な回答とは別の段階である。ACK が見えないことだけでは、画面に出ていない・多忙・失敗とは
