@@ -19,6 +19,19 @@ spec.loader.exec_module(module)
 
 
 class RuntimeTest(unittest.TestCase):
+    def test_event_diagnostic_requires_credential_and_returns_only_event_metadata(self):
+        runtime = mock.Mock()
+        runtime.binding.token = 'private-token'
+        runtime.events.return_value.diagnostic.return_value = {'pump': {'status': 'ready'}, 'notifications': []}
+        with self.assertRaises(module.RuntimeConfigError):
+            module._bridge_request(runtime, dict(op='event_diagnostic',
+                message_id='one', service_token='wrong'))
+        runtime.events.assert_not_called()
+        result = module._bridge_request(runtime, dict(op='event_diagnostic',
+            message_id='one', service_token='private-token'))
+        self.assertEqual(result['pump']['status'], 'ready')
+        runtime.events.return_value.diagnostic.assert_called_once_with('one')
+
     def test_transport_failure_distinguishes_absence_and_lost_accepted_response(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'bridge.sock'

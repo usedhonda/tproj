@@ -77,9 +77,9 @@ def paste_parts(platform, header, body):
     return ('', header + body) if platform == 'cdx' else (header, body)
 
 
-def rpc(path, request):
+def rpc(path, request, timeout=55):
     with socket.socket(socket.AF_UNIX) as sock:
-        sock.settimeout(55)
+        sock.settimeout(timeout)
         sock.connect(str(path))
         sock.sendall((json.dumps(request, ensure_ascii=False) + '\n').encode())
         with sock.makefile('rb') as stream:
@@ -991,7 +991,31 @@ class Host:
             if not isinstance(req.get('message_id'),str) or not req['message_id']:
                 raise HubError('invalid_message','message ID required')
             operator = ep.get('project_id') in self.config.get('diagnostic_projects',[])
-            return self.hub('diagnose',endpoint_id=ep['endpoint_id'],message_id=req['message_id'],operator_diagnostic=operator)
+            result = self.hub('diagnose', endpoint_id=ep['endpoint_id'],
+                              message_id=req['message_id'], operator_diagnostic=operator)
+            result['notification'] = {'status': 'unknown', 'reason': 'not_local_or_not_supported'}
+            cfg = (self.config.get('services') or {}).get('kai', {})
+            # Bridge state belongs to its owner Host. Operator diagnosis must
+            # not expand access to service notification state beyond parties.
+            if (cfg.get('event_bridge_socket')
+                    and result.get('recipient_host_id') == self.config['host_id']
+                    and ep['endpoint_id'] in (result.get('sender_endpoint'), result.get('recipient_endpoint'))
+                    and cfg.get('event_bridge_socket')):
+                endpoints = self.hub('endpoints_list', active_only=True)['endpoints']
+                if any(e['endpoint_id'] == result.get('recipient_endpoint')
+                       and e['participant_id'] == cfg.get('participant_id') for e in endpoints):
+                    try:
+                        detail = rpc(cfg['event_bridge_socket'], {
+                            'op': 'event_diagnostic', 'message_id': req['message_id'],
+                            'service_token': cfg.get('token')}, timeout=2)
+                        result['notification'] = {'status': 'available', **detail}
+                    except (OSError, ValueError, HubError):
+                        result['notification'] = {'status': 'unknown', 'reason': 'bridge_unavailable'}
+            result['presentation_wait_prolonged'] = (
+                result.get('state') in ('accepted', 'queued', 'adapter_received', 'dispatching', 'uncertain')
+                and not result.get('presentation_confirmed')
+                and time.time() - result['created_at'] >= 300)
+            return result
         if op == 'cancel':
             if not isinstance(req.get('message_id'), str) or not req['message_id']:
                 raise HubError('invalid_message', 'message ID required')

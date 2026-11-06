@@ -95,3 +95,33 @@ Focused verification:
 ```bash
 python3 -m unittest discover -s extensions/messaging/external/kai-mcp -p 'test_events.py'
 ```
+
+## Discovery isolation and pump diagnostics
+
+Discovery validates an entire page before adding any of its events. A malformed
+page, cursor, message, or failed reader blocks that subscription's discovery
+without advancing its cursor. Its existing valid outbox and other subscriptions
+continue delivery. No invalid row is silently skipped. The persisted `pump`
+metadata records subscription discovery status and timestamps. A corrected page
+recovers on the next successful cycle. Whole-state or persistence errors block
+the pump; a best-effort failure record and fixed stderr classification expose
+that condition without logging exception text. A state file that cannot be read
+or written cannot itself hold the failure report; stderr remains the fallback.
+
+The private authenticated `event_diagnostic` bridge operation returns pump state
+and a specified message's notification status, attempts and existing safe HTTP
+classification. It does not read message bodies, acknowledge, or resend. The
+owner Host adds this information to `diagnose` only for a pinned message party
+and the locally configured KAI recipient. Remote notification diagnostics are
+explicitly unknown; Hub delivery diagnostics remain available. Bridge failure
+or a two-second timeout affects only notification diagnostics. A five-minute
+wait without presentation confirmation is a diagnostic flag, not proof of an
+unread message or a new resend policy.
+
+Receiver recovery must distinguish discovery progress, actual reading, and
+business completion. A discovery cursor is not an unread watermark. Persist
+unfinished IDs before advancing it; retain acknowledged work until a matching
+own reply, an explicit no-reply decision, or authoritative terminal state.
+Reuse saved reply submission IDs after uncertain results. Periodic wake and
+single-consumer persistence require evidence from the actual receiving surface;
+without those capabilities, no bounded automatic recovery guarantee is made.

@@ -188,6 +188,28 @@ class KAIEventDelivery:
                     item["status"] = "revoked"
             self._save(state)
 
+    def diagnostic(self, message_id):
+        with self._lock():
+            state = self._load()
+            notifications = []
+            for item in state['outbox'].values():
+                if item.get('payload', {}).get('data', {}).get('messageId') == message_id:
+                    notifications.append({key: item[key] for key in
+                        ('status', 'attempts', 'last_http_status', 'last_error_class') if key in item})
+            return {'pump': state.get('pump', {}), 'notifications': notifications}
+
+    def record_pump_failure(self):
+        """Best-effort durable classification; never expose exception contents."""
+        try:
+            with self._lock():
+                state = self._load()
+                state.setdefault("pump", {}).update(status="blocked",
+                    error_class="pump_failure", error_at=time.time())
+                self._save(state)
+            return True
+        except Exception:
+            return False
+
     def pump_once(self, limit=MAX_BATCH):
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_BATCH:
             raise RuntimeError("invalid batch limit")
@@ -206,13 +228,27 @@ class KAIEventDelivery:
                             item["status"] = "revoked"
                     self._save(state)
                 cursor = state["cursor"].get(sid, 0)
-                page = binding.reader(cursor)
-                if not isinstance(page, dict) or not isinstance(page.get("messages"), list):
-                    raise RuntimeError("invalid mailbox page")
-                next_cursor = page.get("next_cursor")
-                messages = page["messages"]
-                if isinstance(next_cursor, bool) or not isinstance(next_cursor, int) or next_cursor < cursor or len(messages) > limit - queued:
-                    raise RuntimeError("invalid mailbox cursor or batch")
+                try:
+                    page = binding.reader(cursor)
+                    if not isinstance(page, dict) or not isinstance(page.get("messages"), list):
+                        raise ValueError("invalid page")
+                    next_cursor = page.get("next_cursor")
+                    messages = page["messages"]
+                    if (isinstance(next_cursor, bool) or not isinstance(next_cursor, int)
+                            or next_cursor < cursor or len(messages) > limit - queued):
+                        raise ValueError("invalid cursor")
+                    if any(not isinstance(m, dict) or not isinstance(m.get("message_id"), str)
+                           or not m["message_id"] for m in messages):
+                        raise ValueError("invalid message")
+                except Exception:
+                    state.setdefault("pump", {}).setdefault("subscriptions", {})[sid] = {
+                        "status": "discovery_blocked", "error_class": "discovery_failure",
+                        "error_at": time.time(),
+                    }
+                    continue
+                state.setdefault("pump", {}).setdefault("subscriptions", {})[sid] = {
+                    "status": "ready", "last_discovery_success_at": time.time(),
+                }
                 for message in messages:
                     mid = message.get("message_id") if isinstance(message, dict) else None
                     if not isinstance(mid, str) or not mid:
@@ -266,6 +302,12 @@ class KAIEventDelivery:
                 posts += 1
                 item["status"] = "sent" if ok else ("terminal" if status in (410, 413) or item["attempts"] >= MAX_ATTEMPTS else "unknown")
                 self._save(state)
+            state.setdefault("pump", {}).update(
+                status="discovery_blocked" if any(
+                    v.get("status") == "discovery_blocked"
+                    for v in state.get("pump", {}).get("subscriptions", {}).values()) else "ready",
+                last_cycle_success_at=time.time())
+            self._save(state)
         return queued
 
     def retry_once(self, message_id, *, actor_endpoint):

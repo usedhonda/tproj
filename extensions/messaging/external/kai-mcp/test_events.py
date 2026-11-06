@@ -48,8 +48,47 @@ class EventTests(unittest.TestCase):
         self.subscribe()
         self.authorizer.reader = lambda cursor: {"messages": [{"message_id": "one"}], "next_cursor": -1}
         self.delivery._post = lambda *args: self.fail("invalid cursor caused a post")
-        with self.assertRaises(RuntimeError):
+        self.assertEqual(self.delivery.pump_once(), 0)
+        state = self.delivery._load()
+        self.assertEqual(state['pump']['status'], 'discovery_blocked')
+        self.assertEqual(state['cursor'], {})
+        self.authorizer.reader = lambda cursor: {
+            'messages': [{'message_id': 'recovered'}], 'next_cursor': 1}
+        self.delivery._post = lambda *args: (True, {})
+        self.assertEqual(self.delivery.pump_once(), 1)
+        self.assertEqual(self.delivery._load()['pump']['status'], 'ready')
+
+    def test_pump_diagnostics_survive_restart_and_do_not_expose_subscription_secrets(self):
+        self.subscribe()
+        self.delivery.pump_once()
+        self.assertTrue(self.delivery.record_pump_failure())
+        restarted = events.KAIEventDelivery(self.authorizer, self.path)
+        result = restarted.diagnostic('message-one')
+        self.assertEqual(result['pump']['status'], 'blocked')
+        self.assertEqual(result['notifications'][0]['status'], 'sent')
+        self.assertNotIn(self.secret, str(result))
+        self.assertNotIn('callback.example', str(result))
+        self.authorizer.reader = lambda cursor: {'messages': [], 'next_cursor': cursor}
+        restarted.pump_once()
+        self.assertEqual(restarted.diagnostic('message-one')['pump']['status'], 'ready')
+
+    def test_invalid_discovery_does_not_starve_persisted_outbox(self):
+        sid = self.subscribe()
+        self.delivery._post = lambda *args: (False, {}, 503, 'http_error')
+        self.delivery.pump_once()
+        before = self.delivery._load()
+        eid = next(iter(before['outbox']))
+        self.authorizer.reader = lambda cursor: {
+            'messages': [{'message_id': 'valid'}, {'body': 'invalid'}], 'next_cursor': 3}
+        sent = []
+        self.delivery._post = lambda *args: (sent.append(args[1]) or (True, {}, 200, None))
+        with patch.object(events.time, 'time', return_value=time.time() + 10):
             self.delivery.pump_once()
+        state = self.delivery._load()
+        self.assertEqual(sent, [eid])
+        self.assertEqual(state['cursor'][sid], before['cursor'][sid])
+        self.assertEqual(len(state['outbox']), 1)
+        self.assertEqual(state['pump']['status'], 'discovery_blocked')
 
     def test_post_crash_recovers_exact_persisted_id_and_payload(self):
         sid = self.subscribe()

@@ -236,6 +236,13 @@ def _bridge_request(runtime: ServiceRuntime, request: Mapping[str, Any]) -> Any:
         raise RuntimeConfigError("invalid bridge request")
     if request.get("op") == "whoami":
         return runtime._attest()
+    if request.get("op") == "event_diagnostic":
+        if (set(request) != {"op", "message_id", "service_token"}
+                or not hmac.compare_digest(str(request.get("service_token", "")), runtime.binding.token)
+                or not isinstance(request.get("message_id"), str)
+                or not 1 <= len(request["message_id"]) <= 128):
+            raise RuntimeConfigError("invalid diagnostic request")
+        return runtime.events().diagnostic(request["message_id"])
     if request.get("op") == "retry_event":
         if set(request) != {"op", "message_id", "actor_endpoint", "service_token"}:
             raise RuntimeConfigError("invalid retry request")
@@ -377,7 +384,9 @@ def bridge(config: Mapping[str, Any], *, runtime_factory=None) -> int:
                     try:
                         events.pump_once()
                     except Exception:
-                        continue
+                        persisted = events.record_pump_failure()
+                        _bridge_audit('event_pump_failure', error=RuntimeConfigError(
+                            'pump_failure' if persisted else 'state_unavailable'))
             worker = threading.Thread(target=pump, name="kai-bridge-event-pump", daemon=True)
             worker.start()
         else:

@@ -265,7 +265,7 @@ class UnifiedHostServicesTest(unittest.TestCase):
                 if op == 'diagnostic_identity':
                     return {'host_id': 'host-a', 'endpoints': [live], 'endpoint_native': [], 'projects': []}
                 if op == 'diagnose':
-                    return {'message_id': args['message_id'], 'state': 'queued'}
+                    return {'message_id': args['message_id'], 'state': 'queued', 'created_at': 0}
                 raise AssertionError(op)
             host.hub = hub
             with patch.object(host_mod, 'discover_endpoints', return_value=[dict(live)]), \
