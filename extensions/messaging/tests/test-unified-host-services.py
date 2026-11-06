@@ -32,6 +32,34 @@ class UnifiedHostServicesTest(unittest.TestCase):
             self.assertEqual(calls[0][1]['authorized_targets'], scope)
             self.assertEqual(calls[0][1]['message']['target'], 'retired.cdx')
 
+    def test_transferred_claim_preflight_does_not_lock_local_journal(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = str(Path(tmp) / 'journal.db')
+            host = host_mod.Host({'journal': journal}, recover=False)
+            self.addCleanup(host.db.close)
+            ep = {'endpoint_id': 'current', 'platform': 'cdx'}
+            host._current_delivery_endpoint = lambda _: ep
+            message = {'message_id': 'transferred', 'recipient_endpoint': 'previous',
+                       'delivery_actor': {'endpoint_id': 'current'}}
+            def hub(op, **fields):
+                if op == 'claim':
+                    return {'messages': [message], 'next_sequence': 1}
+                self.assertEqual(op, 'query')
+                # While the remote preflight is in progress, an independent
+                # local writer must commit rather than wait for its timeout.
+                with sqlite3.connect(journal, timeout=0.05) as other:
+                    other.execute('INSERT INTO submissions VALUES(?,?,?)',
+                                  ('independent', 'another', '{}'))
+                raise HubError('maintenance', 'fixture remote preflight stopped')
+            host.hub = hub
+            with patch('native_consumer._hook_binding', return_value=({}, None)):
+                with self.assertRaisesRegex(HubError, 'fixture remote preflight stopped'):
+                    host._deliver_endpoint(ep)
+            self.assertIsNotNone(host.db.execute(
+                "SELECT 1 FROM submissions WHERE message_id='independent'").fetchone())
+            self.assertFalse(host.db.in_transaction)
+
     def test_endpoint_failure_cannot_starve_other_recipients(self):
         import time
         import sqlite3

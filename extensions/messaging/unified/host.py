@@ -1159,6 +1159,20 @@ class Host:
         for pending in self.db.execute("SELECT envelope,message_id FROM deliveries WHERE endpoint_id=? AND state IN ('dispatching','uncertain')", (ep['endpoint_id'],)):
             if pending['message_id'] not in claimed_ids:
                 claims.append(json.loads(pending['envelope']))
+        # Native/Hub preflight may wait on another process or host. Complete
+        # it before the first journal write, so unrelated callers can commit.
+        actor_bindings = {}
+        for msg in claims:
+            if not msg.get('delivery_actor'):
+                continue
+            saved = self.db.execute('SELECT endpoint_id,state FROM deliveries WHERE message_id=?',
+                                    (msg['message_id'],)).fetchone()
+            if saved and saved['endpoint_id'] == ep['endpoint_id'] and saved['state'] != 'received':
+                continue
+            from native_consumer import _hook_binding
+            native, _ = _hook_binding(self, ep)
+            current = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=msg['message_id'])
+            actor_bindings[msg['message_id']] = (native, current)
         # Journal the bounded claim page before starting its first native
         # child, so a fast hook can coalesce the whole already-claimed set.
         for msg in claims:
@@ -1170,10 +1184,11 @@ class Host:
                 (msg['message_id'], origin, json.dumps(msg), 'received', None, time.time()))
             saved = self.db.execute('SELECT endpoint_id,state FROM deliveries WHERE message_id=?', (msg['message_id'],)).fetchone()
             if transferred and (saved['endpoint_id'] != ep['endpoint_id'] or saved['state'] == 'received'):
-                from native_consumer import _hook_binding
                 from native_notice import bind_actor
-                native, _ = _hook_binding(self, ep)
-                current = self.hub('query', endpoint_id=ep['endpoint_id'], message_id=msg['message_id'])
+                binding = actor_bindings.get(msg['message_id'])
+                if binding is None:
+                    raise HubError('reconciliation_required', 'delivery actor changed during preflight')
+                native, current = binding
                 bind_actor(self.db, ep, native, current, reconcile_rejected=(saved['state'] == 'uncertain'))
         self.db.commit()
         for msg in claims:

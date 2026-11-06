@@ -1630,3 +1630,13 @@ not be skipped merely because no Library copy exists. Missing bridge manifests a
 launchd running-state/PID evidence, not a working remote transport or message
 consumption. Bridge failure is separate from the core activation exit status;
 actual mailbox availability and exact-ID message outcomes remain authoritative.
+
+### Local journal isolation during native claim transfer
+
+An owner Host prepares same-native claim-transfer evidence (native attestation
+and authoritative Hub query) before opening its local journal write transaction.
+A slow or unavailable Hub must not retain the Host journal writer and stall
+unrelated local submissions. The existing local actor binding, immutable
+notice/reference fields and authoritative begin-present gate remain unchanged.
+If the local actor changed after preflight, the tick fails closed and retries
+normal discovery; it does not re-present an uncertain delivery.
