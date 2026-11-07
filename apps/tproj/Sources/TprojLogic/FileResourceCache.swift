@@ -54,10 +54,11 @@ public final class FileResourceCache<Value> {
     }
 
     private func fileRevision(atPath path: String) -> Revision? {
-        // One stat follows image symlinks without walking the path in user space
+        // One fstatat follows image symlinks without walking the path in user space
         // or allocating an attribute dictionary on every geometry poll.
         var info = stat()
-        guard Darwin.stat(path, &info) == 0 else { return nil }
+        let result = path.withCString { Darwin.fstatat(AT_FDCWD, $0, &info, 0) }
+        guard result == 0 else { return nil }
         return Revision(
             modificationSeconds: info.st_mtimespec.tv_sec,
             modificationNanoseconds: info.st_mtimespec.tv_nsec,
