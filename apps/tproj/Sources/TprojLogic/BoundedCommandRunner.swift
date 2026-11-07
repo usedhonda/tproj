@@ -13,6 +13,12 @@ public struct BoundedCommandRunner: Sendable {
     }
 
     public func run(_ launchPath: String, _ args: [String], env extra: [String: String] = [:]) -> CommandResult {
+        // NSTask raises (and aborts the app) on a non-file URL. A relative or
+        // empty path becomes one whenever the working directory cannot be
+        // resolved, so fail the command instead of trusting the caller.
+        guard launchPath.hasPrefix("/") else {
+            return CommandResult(exitCode: 1, stdout: "", stderr: "launch path must be absolute: '\(launchPath)'")
+        }
         let p = Process(); p.executableURL = URL(fileURLWithPath: launchPath); p.arguments = args
         var env = ProcessInfo.processInfo.environment; extra.forEach { env[$0.key] = $0.value }; p.environment = env
         let out = Pipe(), err = Pipe(); p.standardOutput = out; p.standardError = err

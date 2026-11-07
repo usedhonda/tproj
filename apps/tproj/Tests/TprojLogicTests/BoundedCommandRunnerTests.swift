@@ -49,6 +49,12 @@ final class BoundedCommandRunnerTests: XCTestCase {
         XCTAssertEqual(openFifos(), baseline)
     }
 
+    func testEmptyLaunchPathFailsInsteadOfRaising() {
+        let r = BoundedCommandRunner(timeout: 2).run("", ["cache-status"])
+        XCTAssertEqual(r.exitCode, 1)
+        XCTAssertTrue(r.stderr.contains("absolute"))
+    }
+
     func testMalformedByteDoesNotEraseSurroundingDiagnostics() {
         let r = BoundedCommandRunner(timeout: 2).run(
             "/bin/sh", ["-c", "printf 'before\\377after'; printf 'before\\377after' >&2"])
