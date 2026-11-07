@@ -235,6 +235,7 @@ private struct PaneBackgroundManifest: Decodable, Equatable {
 
 private struct PaneBackgroundUnderlayView: View {
     let manifest: PaneBackgroundManifest
+    let images: [String: NSImage]
     private let imageBrightness = 0.025
     private let imageSaturation = 1.04
     private let imageContrast = 0.95
@@ -314,7 +315,7 @@ private struct PaneBackgroundUnderlayView: View {
                 ForEach(manifest.panes) { pane in
                     let rect = paneRect(for: pane, in: geo.size)
                     ZStack {
-                        if let image = NSImage(contentsOfFile: pane.imagePath) {
+                        if let image = images[pane.imagePath] {
                         Image(nsImage: image)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
@@ -402,12 +403,14 @@ private struct PaneBackgroundUnderlayView: View {
 @MainActor
 final class PaneBackgroundUnderlayController: ObservableObject {
     private let manifestPath = "/tmp/tproj-pane-bg/current.json"
-    private let fileManager = FileManager.default
+    private let manifestCache = FileResourceCache<PaneBackgroundManifest> { path in
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        return try? JSONDecoder().decode(PaneBackgroundManifest.self, from: data)
+    }
+    private let imageCache = FileResourceCache<NSImage> { NSImage(contentsOfFile: $0) }
     private weak var hostWindow: NSWindow?
     private var underlayWindow: NSWindow?
     private var pollTimer: DispatchSourceTimer?
-    private var lastManifestDate: Date?
-    private var cachedManifest: PaneBackgroundManifest?
     private var appliedManifest: PaneBackgroundManifest?
     private var lastGhosttyWindowNumber: Int?
     private var manifestWatch: DispatchSourceFileSystemObject?
@@ -424,7 +427,8 @@ final class PaneBackgroundUnderlayController: ObservableObject {
     func detach() {
         stopWatchingManifest()
         stopPolling()
-        hideUnderlay()
+        hideUnderlay(clearContent: true)
+        manifestCache.removeAll()
         hostWindow = nil
     }
 
@@ -495,12 +499,22 @@ final class PaneBackgroundUnderlayController: ObservableObject {
 
     private func tick() {
         guard hostWindow != nil else {
-            hideUnderlay()
+            hideUnderlay(clearContent: true)
             return
         }
 
         guard GhosttyTheme.current.backgroundOpacity < 1.0 else {
-            hideUnderlay()
+            hideUnderlay(clearContent: true)
+            return
+        }
+
+        // Observe removal even while Ghostty is absent, so an unused manifest
+        // cannot leave its portraits retained by the hosting view indefinitely.
+        guard let manifest = loadManifest(),
+              manifest.windowCells.width > 0,
+              manifest.windowCells.height > 0,
+              !manifest.panes.isEmpty else {
+            hideUnderlay(clearContent: true)
             return
         }
 
@@ -520,18 +534,13 @@ final class PaneBackgroundUnderlayController: ObservableObject {
             return
         }
 
-        guard let manifest = loadManifest(),
-              manifest.windowCells.width > 0,
-              manifest.windowCells.height > 0 else {
-            hideUnderlay()
-            return
-        }
-
+        let imagePaths = Set(manifest.panes.map(\.imagePath).filter { !$0.isEmpty })
+        let imagesChanged = imageCache.refresh(paths: imagePaths)
         let usablePanes = manifest.panes.filter {
-            $0.isConversationMain || (!$0.imagePath.isEmpty && fileManager.fileExists(atPath: $0.imagePath))
+            $0.isConversationMain || imageCache.containsFile(atPath: $0.imagePath)
         }
         guard !usablePanes.isEmpty else {
-            hideUnderlay()
+            hideUnderlay(clearContent: true)
             return
         }
 
@@ -548,7 +557,7 @@ final class PaneBackgroundUnderlayController: ObservableObject {
         if window.frame != ghosttyInfo.frame {
             window.setFrame(ghosttyInfo.frame, display: true)
         }
-        if appliedManifest != filteredManifest {
+        if appliedManifest != filteredManifest || imagesChanged {
             updateContent(of: window, manifest: filteredManifest)
             appliedManifest = filteredManifest
         }
@@ -562,27 +571,8 @@ final class PaneBackgroundUnderlayController: ObservableObject {
     }
 
     private func loadManifest() -> PaneBackgroundManifest? {
-        guard let attrs = try? fileManager.attributesOfItem(atPath: manifestPath),
-              let modifiedAt = attrs[.modificationDate] as? Date else {
-            cachedManifest = nil
-            lastManifestDate = nil
-            return nil
-        }
-
-        if let cachedManifest, let lastManifestDate, lastManifestDate == modifiedAt {
-            return cachedManifest
-        }
-
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: manifestPath)),
-              let manifest = try? JSONDecoder().decode(PaneBackgroundManifest.self, from: data) else {
-            cachedManifest = nil
-            lastManifestDate = modifiedAt
-            return nil
-        }
-
-        cachedManifest = manifest
-        lastManifestDate = modifiedAt
-        return manifest
+        manifestCache.refresh(paths: [manifestPath])
+        return manifestCache.value(atPath: manifestPath)
     }
 
     private func ensureUnderlayWindow() -> NSWindow {
@@ -607,7 +597,10 @@ final class PaneBackgroundUnderlayController: ObservableObject {
     }
 
     private func updateContent(of window: NSWindow, manifest: PaneBackgroundManifest) {
-        let view = PaneBackgroundUnderlayView(manifest: manifest)
+        let images = Dictionary(uniqueKeysWithValues: Set(manifest.panes.map(\.imagePath)).compactMap { path in
+            imageCache.value(atPath: path).map { (path, $0) }
+        })
+        let view = PaneBackgroundUnderlayView(manifest: manifest, images: images)
         if let hosting = window.contentView as? NSHostingView<PaneBackgroundUnderlayView> {
             hosting.rootView = view
         } else {
@@ -618,10 +611,15 @@ final class PaneBackgroundUnderlayController: ObservableObject {
         }
     }
 
-    private func hideUnderlay() {
-        cachedManifest = nil
-        appliedManifest = nil
-        lastManifestDate = nil
+    private func hideUnderlay(clearContent: Bool = false) {
+        // A Space/fullscreen/visibility change does not invalidate image data.
+        // Release both owners on removal or detach: the SwiftUI root also retains
+        // NSImages, so clearing only the cache would not release unused portraits.
+        if clearContent {
+            imageCache.removeAll()
+            appliedManifest = nil
+            underlayWindow?.contentView = nil
+        }
         lastGhosttyWindowNumber = nil
         if let underlayWindow, underlayWindow.isVisible {
             underlayWindow.orderOut(nil)
@@ -665,6 +663,8 @@ final class GhosttyWindowTracker: ObservableObject {
     var suspendDriftDetection = false
 
     private var pollTimer: DispatchSourceTimer?
+    private var pollingCadence = WindowFollowPollingCadence()
+    private var pollingIntervalMilliseconds: Int?
     private weak var appWindow: NSWindow?
     private var resizeProxy: SnapResizeProxy?
 
@@ -673,6 +673,7 @@ final class GhosttyWindowTracker: ObservableObject {
     private let snapGap: CGFloat = 2
     private var snapEdge: SnapEdge = .right
     private var lastGhosttyFrame: CGRect?
+    private var lastFollowerFrame: CGRect?
     // After detach, suppress re-snap for a short period
     private var detachCooldownUntil: Date?
 
@@ -699,6 +700,7 @@ final class GhosttyWindowTracker: ObservableObject {
         appWindow = nil
         isSnapped = false
         lastGhosttyFrame = nil
+        lastFollowerFrame = nil
         detachCooldownUntil = nil
     }
 
@@ -709,6 +711,7 @@ final class GhosttyWindowTracker: ObservableObject {
         window.setFrameOrigin(target.origin)
         snapEdge = target.side
         lastGhosttyFrame = ghosttyFrame
+        lastFollowerFrame = window.frame
     }
 
     deinit {
@@ -718,8 +721,12 @@ final class GhosttyWindowTracker: ObservableObject {
     // MARK: Polling
 
     private func startPolling() {
+        guard pollTimer == nil else { return }
+        pollingCadence = WindowFollowPollingCadence()
+        pollingIntervalMilliseconds = WindowFollowPollingCadence.idleMilliseconds
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(100))
+        timer.schedule(deadline: .now(), repeating: .milliseconds(WindowFollowPollingCadence.idleMilliseconds),
+                       leeway: .milliseconds(10))
         timer.setEventHandler { [weak self] in
             MainActor.assumeIsolated {
                 self?.tick()
@@ -732,19 +739,30 @@ final class GhosttyWindowTracker: ObservableObject {
     private func stopPolling() {
         pollTimer?.cancel()
         pollTimer = nil
+        pollingIntervalMilliseconds = nil
     }
 
-    private func updatePollingInterval() {
+    private func updatePollingInterval(targetFrame: CGRect?, followerFrame: CGRect) {
         guard let timer = pollTimer else { return }
-        let ms: Int
-        if isSnapped {
-            ms = 16      // 60 fps – smooth follow
-        } else if lastGhosttyFrame != nil {
-            ms = 100     // Ghostty visible – snap detection
-        } else {
-            ms = 500     // Ghostty absent – minimal resource
-        }
-        timer.schedule(deadline: .now() + .milliseconds(ms), repeating: .milliseconds(ms))
+        let suspended = suspendDriftDetection || isDragSuspended
+        // A button-state query does not require Accessibility permission. The
+        // first idle observation of a drag starts fast follow, even before a
+        // frame change has become visible to the WindowServer query.
+        let dragging = targetFrame != nil && !suspended &&
+            CGEventSource.buttonState(.combinedSessionState, button: .left) &&
+            (NSApp.isActive || NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.mitchellh.ghostty")
+        let ms = pollingCadence.intervalMilliseconds(
+            targetFrame: targetFrame,
+            followerFrame: followerFrame,
+            isSnapped: isSnapped,
+            isDragging: dragging,
+            isSuspended: suspended,
+            now: ProcessInfo.processInfo.systemUptime
+        )
+        guard ms != pollingIntervalMilliseconds else { return }
+        pollingIntervalMilliseconds = ms
+        timer.schedule(deadline: .now() + .milliseconds(ms), repeating: .milliseconds(ms),
+                       leeway: .milliseconds(ms == WindowFollowPollingCadence.movingMilliseconds ? 2 : 10))
     }
 
     private func visibleUnionFrame() -> CGRect? {
@@ -801,6 +819,14 @@ final class GhosttyWindowTracker: ObservableObject {
 
     private func tick() {
         guard let window = appWindow else { return }
+        var targetFrame: CGRect? = nil
+        // Every exit must update cadence: initial absence, reappearance,
+        // cooldown and suspended drags used to leave the previous rate stuck.
+        defer {
+            updatePollingInterval(targetFrame: targetFrame, followerFrame: window.frame)
+            lastFollowerFrame = window.frame
+        }
+        guard window.isVisible, !window.isMiniaturized, !NSApp.isHidden else { return }
         let currentOrigin = window.frame.origin
         let guardedOrigin = clampedOrigin(currentOrigin, windowSize: window.frame.size)
         if !nearlyEqual(currentOrigin, guardedOrigin) {
@@ -808,14 +834,12 @@ final class GhosttyWindowTracker: ObservableObject {
         }
 
         guard let ghosttyFrame = findGhosttyFrame() else {
-            let changed = isSnapped || lastGhosttyFrame != nil
             if isSnapped { isSnapped = false }
             lastGhosttyFrame = nil
-            if changed { updatePollingInterval() }
             return
         }
 
-        let prevSnapped = isSnapped
+        targetFrame = ghosttyFrame
         let currentFrame = window.frame
         let target = anchoredOrigin(
             for: ghosttyFrame,
@@ -840,23 +864,23 @@ final class GhosttyWindowTracker: ObservableObject {
                 }
             }
 
-            // Detach by X-only (Y movement never triggers detach)
-            let xDrift = abs(currentOrigin.x - target.origin.x)
-            let ghostMotion: CGFloat
-            if let last = lastGhosttyFrame {
-                ghostMotion = hypot(ghosttyFrame.origin.x - last.origin.x,
-                                    ghosttyFrame.origin.y - last.origin.y)
-            } else {
-                ghostMotion = 0
-            }
-
-            if xDrift >= snapThreshold * 2 && ghostMotion < 2 {
+            // Sparse idle observations can see a whole resize/drag at once.
+            // Distinguish target geometry changes from deliberate sidebar drift.
+            let follow = SnappedWindowFollowDecision(
+                targetFrame: ghosttyFrame,
+                previousTargetFrame: lastGhosttyFrame,
+                followerFrame: currentFrame,
+                previousFollowerFrame: lastFollowerFrame,
+                anchoredOrigin: target.origin,
+                detachDistance: snapThreshold * 2,
+                topAlignmentDistance: snapYAlignThreshold
+            )
+            if follow.shouldDetach {
                 isSnapped = false
                 detachCooldownUntil = Date().addingTimeInterval(0.4)
             } else {
                 snapEdge = target.side
-                let topGap = abs(currentFrame.maxY - ghosttyFrame.maxY)
-                let snapY = (topGap <= snapYAlignThreshold)
+                let snapY = follow.shouldAlignTop
                     ? target.origin.y       // top-align
                     : currentOrigin.y       // keep current Y
                 let followOrigin = CGPoint(x: target.origin.x, y: snapY)
@@ -878,9 +902,6 @@ final class GhosttyWindowTracker: ObservableObject {
         }
 
         lastGhosttyFrame = ghosttyFrame
-        if isSnapped != prevSnapped {
-            updatePollingInterval()
-        }
     }
 
     // MARK: Snap logic
@@ -918,6 +939,7 @@ final class GhosttyWindowTracker: ObservableObject {
             : CGPoint(x: target.origin.x, y: window.frame.origin.y)
         window.setFrameOrigin(followOrigin)
         snapEdge = target.side
+        lastFollowerFrame = window.frame
     }
 
     // MARK: Ghostty window discovery
