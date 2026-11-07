@@ -34,6 +34,21 @@ final class BoundedCommandRunnerTests: XCTestCase {
         XCTAssertEqual(r.stderr, "prefix日本\u{FFFD}")
     }
 
+    func testRunsDoNotLeakPipeDescriptors() {
+        // The GUI polls helpers for hours. Two leaked FIFO ends per run exhaust
+        // the descriptor limit and the next launch aborts inside NSTask.
+        func openFifos() -> Int {
+            ((try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd")) ?? []).filter { name in
+                var st = stat(); return fstat(Int32(name) ?? -1, &st) == 0 && (st.st_mode & S_IFMT) == S_IFIFO
+            }.count
+        }
+        let runner = BoundedCommandRunner(timeout: 2)
+        _ = runner.run("/usr/bin/true", [])
+        let baseline = openFifos()
+        for _ in 0..<10 { _ = runner.run("/usr/bin/true", []) }
+        XCTAssertEqual(openFifos(), baseline)
+    }
+
     func testMalformedByteDoesNotEraseSurroundingDiagnostics() {
         let r = BoundedCommandRunner(timeout: 2).run(
             "/bin/sh", ["-c", "printf 'before\\377after'; printf 'before\\377after' >&2"])

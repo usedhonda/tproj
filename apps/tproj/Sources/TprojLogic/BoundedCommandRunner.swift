@@ -40,6 +40,10 @@ public struct BoundedCommandRunner: Sendable {
             kill(p.processIdentifier, SIGKILL)
             p.waitUntilExit()
         }
+        // Process keeps the pipes referenced after exit, so the read ends are
+        // not released with the locals. Close them here or every run leaks two
+        // descriptors until the GUI hits its descriptor limit.
+        try? out.fileHandleForReading.close(); try? err.fileHandleForReading.close()
         // maxOutput bounds captured bytes, which may end inside a UTF-8 scalar.
         // Repair only malformed sequences instead of discarding the entire stream.
         return CommandResult(exitCode: p.terminationStatus,
