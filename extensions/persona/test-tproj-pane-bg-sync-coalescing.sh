@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPT="$SCRIPT_DIR/tproj-pane-bg"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/tproj-pane-bg-coalesce.XXXXXX")"
+# Project resolution uses physical paths; macOS temporary roots can be symlinks.
+WORK="$(cd "$WORK" && pwd -P)"
 BIN="$WORK/bin"
 ROOT="$WORK/state"
 mkdir -p "$BIN" "$ROOT/lock.demo"
