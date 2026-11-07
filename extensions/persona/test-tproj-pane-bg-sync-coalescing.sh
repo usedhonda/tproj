@@ -156,54 +156,23 @@ command jq -e --arg path "$ROOT/fallback-cc.png" \
 echo "PASS: fast sync reuses artwork and leaves missing fallback creation to full sync"
 
 
-# Force two real publications to overlap after copying their output but before
-# either rename. FIFO handshakes establish the order without timing sleeps.
+# Finish B's real publication between A's copy and rename. This deterministic
+# interleaving exposes a shared temporary path without process timing or FIFOs.
 (
-  publish_a=""
-  publish_b=""
-  cleanup_publishers() {
-    local pid
-    for pid in "$publish_a" "$publish_b"; do
-      [[ -n "$pid" ]] || continue
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-    done
-  }
-  trap cleanup_publishers EXIT
   printf '[]\n' > "$WORK/publication-panes.json"
-  mkfifo "$WORK/publish-ready" "$WORK/release-a" "$WORK/release-b"
-  exec 7<>"$WORK/publish-ready" 8<>"$WORK/release-a" 9<>"$WORK/release-b"
   cp() {
     command cp "$@"
     case "$1" in
       "$ROOT/publish-a.json")
-        printf 'a\n' >&7
-        IFS= read -r -t 10 token <&8
-        ;;
-      "$ROOT/publish-b.json")
-        printf 'b\n' >&7
-        IFS= read -r -t 10 token <&9
+        write_manifest publish-b "$ROOT/publish-b.json" "$WORK/publication-panes.json" dev layout-b 100 20
+        command jq -e '.session == "publish-b" and .window_cells == {width:100,height:20} and .panes == []' "$CURRENT_MANIFEST" >/dev/null
         ;;
     esac
   }
-  write_manifest publish-a "$ROOT/publish-a.json" "$WORK/publication-panes.json" dev layout-a 120 30 &
-  publish_a=$!
-  IFS= read -r -t 10 ready <&7
-  test "$ready" = a
-  write_manifest publish-b "$ROOT/publish-b.json" "$WORK/publication-panes.json" dev layout-b 100 20 &
-  publish_b=$!
-  IFS= read -r -t 10 ready <&7
-  test "$ready" = b
-  printf 'release\n' >&8
-  wait "$publish_a"
-  publish_a=""
+  write_manifest publish-a "$ROOT/publish-a.json" "$WORK/publication-panes.json" dev layout-a 120 30
   if ! command jq -e '.session == "publish-a" and .window_cells == {width:120,height:30} and .panes == []' "$CURRENT_MANIFEST" >/dev/null; then
-    printf 'FAIL: overlapping publication replaced session A with session B before its own publish\n' >&2
+    printf 'FAIL: session A did not publish its own snapshot after session B\n' >&2
     exit 1
   fi
-  printf 'release\n' >&9
-  wait "$publish_b"
-  publish_b=""
-  command jq -e '.session == "publish-b" and .window_cells == {width:100,height:20} and .panes == []' "$CURRENT_MANIFEST" >/dev/null
 )
 echo "PASS: overlapping session publications retain separate complete snapshots"
