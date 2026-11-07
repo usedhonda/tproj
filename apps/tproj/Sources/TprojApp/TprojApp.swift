@@ -1961,7 +1961,7 @@ final class AppViewModel: ObservableObject {
     private func stagedRuntimeScriptsMatch() -> Bool {
         guard let manifest = Bundle.main.url(forResource: "tproj-runtime-critical", withExtension: "json"),
               let data = try? Data(contentsOf: manifest),
-              let hashes = try? JSONDecoder().decode([String: String].self, from: data), hashes.count == 4 else { return false }
+              let hashes = try? JSONDecoder().decode([String: String].self, from: data), !hashes.isEmpty else { return false }
         for (name, expected) in hashes {
             guard let content = try? Data(contentsOf: stagedRuntimeRootURL.appendingPathComponent(name)),
                   SHA256.hash(data: content).map({ String(format: "%02x", $0) }).joined() == expected else { return false }
