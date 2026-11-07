@@ -48,6 +48,10 @@ jobs:
           grep -q -F 'Immediately before final output or publish' AGENTS.md
       - name: Smoke
         run: bash tests/smoke-bin.sh
+      - name: Pane background synchronization
+        run: |
+          bash extensions/persona/test-tproj-pane-bg-sync-coalescing.sh
+          bash tests/test-pane-bg-remote-main.sh
       - name: Shutdown and runtime publication contracts
         run: |
           python3 tests/test-stop-dispatch.py

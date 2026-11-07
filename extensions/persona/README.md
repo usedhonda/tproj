@@ -74,6 +74,19 @@ hash are used to validate it; upgrading the model alone does not overwrite the
 image or sidecar. An explicit `--refresh` or a genuine cache miss uses the current
 generation model.
 
+Focus and resize hooks use `sync --fast` to refresh pane geometry and roles.
+This path reuses existing project artwork, a currently displayed image, or an
+existing runtime fallback; it never creates artwork. If none is available, the
+manifest temporarily has no image for that pane. A full sync prepares fallback
+images and can generate the portrait, while core workspace startup remains
+independent of optional image generation.
+
+Manifest assembly batches all pane records into one JSON encoding operation.
+Each session keeps its existing coalescing lock and full-sync priority. Publishing
+the shared current manifest uses a unique temporary sibling per writer and an
+atomic rename; the last completed publication wins without consuming another
+session's pending snapshot.
+
 The provider and cache migration contracts can be checked without live image
 generation:
 

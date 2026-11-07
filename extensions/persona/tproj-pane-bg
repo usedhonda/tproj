@@ -3466,6 +3466,7 @@ resolve_placeholder_background() {
   local project="$1"
   local role="$2"
   local pane_id="${3:-}"
+  local sync_mode="${4:-full}"
   local candidate=""
 
   if [[ -n "$pane_id" ]]; then
@@ -3494,6 +3495,9 @@ resolve_placeholder_background() {
     return 0
   fi
 
+  # Resize/focus hooks reuse existing artwork only. Building the blurred fallback
+  # can be expensive too; leave its creation to full syncs, just like provider art.
+  [[ "$sync_mode" != "fast" ]] || return 1
   if candidate="$(ensure_runtime_placeholder "$role" 2>/dev/null)"; then
     [[ -n "$candidate" && -s "$candidate" ]] || return 1
     printf '%s\n' "$candidate"
@@ -3639,6 +3643,40 @@ read_ghostty_padding() {
   printf '%s\t%s\n' "$px" "$py"
 }
 
+# Encode all recognized panes in one process. Each record has 15 NUL-terminated
+# fields in sync_session order, so empty fields and the final empty pane set survive.
+write_manifest_panes() {
+  local pane_fields_file="$1"
+  jq -Rs --arg opacity "$DEFAULT_OPACITY" '
+    split("\u0000") | .[:-1]
+    | [range(0; length; 15) as $offset
+      | .[$offset:$offset + 15] as [
+          $pane_id, $tmux_role, $role, $alias, $column, $pane_cwd, $project,
+          $conversation_main, $image_path, $meta_path, $pane_active,
+          $left, $top, $width, $height
+        ]
+      | {
+          pane_id: $pane_id,
+          tmux_role: $tmux_role,
+          role: $role,
+          alias: (if $alias == "" then null else $alias end),
+          column: (if $column == "" then null else $column end),
+          pane_cwd: $pane_cwd,
+          project: (if $project == "" then null else $project end),
+          conversation_main: ($conversation_main != "" and $conversation_main == $role),
+          left: ($left | tonumber),
+          top: ($top | tonumber),
+          width: ($width | tonumber),
+          height: ($height | tonumber),
+          image_path: (if $image_path == "" then null else $image_path end),
+          image_meta_path: (if $meta_path == "" then null else $meta_path end),
+          opacity: ($opacity | tonumber),
+          active: ($pane_active == "1")
+        }
+      ]
+  ' "$pane_fields_file"
+}
+
 write_manifest() {
   local session="$1"
   local manifest_path="$2"
@@ -3649,7 +3687,7 @@ write_manifest() {
   local window_height="$7"
   local client_width="${8:-$window_width}"
   local client_height="${9:-$window_height}"
-  local manifest_tmp="" pad_x="" pad_y="" pad_pair=""
+  local manifest_tmp="" current_tmp="" pad_x="" pad_y="" pad_pair=""
 
   pad_pair="$(read_ghostty_padding)"
   IFS=$'\t' read -r pad_x pad_y <<< "$pad_pair"
@@ -3697,8 +3735,10 @@ write_manifest() {
       panes: $panes[0]
     }' > "$manifest_tmp"
   mv "$manifest_tmp" "$manifest_path"
-  cp "$manifest_path" "${CURRENT_MANIFEST}.tmp"
-  mv "${CURRENT_MANIFEST}.tmp" "$CURRENT_MANIFEST"
+  # Different sessions hold different sync locks but publish to the same path.
+  current_tmp="$(mktemp "${CURRENT_MANIFEST}.tmp.XXXXXX")"
+  cp "$manifest_path" "$current_tmp"
+  mv "$current_tmp" "$CURRENT_MANIFEST"
 }
 
 prepare_promoted_full_sync() {
@@ -3724,7 +3764,7 @@ sync_session() {
   local lock_dir=""
   local pending_file=""
   local tmp_dir=""
-  local panes_jsonl=""
+  local pane_fields_file=""
   local panes_array_file=""
   local pane_rows_file=""
   local pending_generate_file=""
@@ -3818,11 +3858,11 @@ sync_session() {
     fi
 
     tmp_dir="$(mktemp -d)"
-    panes_jsonl="${tmp_dir}/panes.jsonl"
+    pane_fields_file="${tmp_dir}/pane-fields.bin"
     panes_array_file="${tmp_dir}/panes-array.json"
     pane_rows_file="${tmp_dir}/pane-rows.txt"
     pending_generate_file="${tmp_dir}/pending-generate.txt"
-    : > "$panes_jsonl"
+    : > "$pane_fields_file"
     : > "$pending_generate_file"
     dims="$(tmux display-message -p -t "$target" '#{window_width}	#{window_height}	#{window_name}	#{window_layout}	#{client_width}	#{client_height}')"
     IFS=$'\t' read -r window_width window_height window_name window_layout client_width client_height <<< "$dims"
@@ -3882,7 +3922,7 @@ sync_session() {
             printf '%s|%s|%s\n' "$pane_id" "$project" "$role" >> "$pending_generate_file"
           fi
         else
-          if placeholder_path="$(resolve_placeholder_background "$project" "$role" "$pane_id" 2>/dev/null)"; then
+          if placeholder_path="$(resolve_placeholder_background "$project" "$role" "$pane_id" "$sync_mode" 2>/dev/null)"; then
             image_path="$placeholder_path"
           fi
           if [[ "$sync_mode" != "fast" ]]; then
@@ -3892,44 +3932,16 @@ sync_session() {
       else
         warn "could not resolve project for pane ${pane_id}"
       fi
-      jq -n \
-        --arg pane_id "$pane_id" \
-        --arg tmux_role "$tmux_role" \
-        --arg role "$role" \
-        --arg alias "$pane_alias" \
-        --arg column "$pane_column" \
-        --arg pane_cwd "$pane_cwd" \
-        --arg project "${project:-}" \
-        --arg conversation_main "${conversation_main:-}" \
-        --arg image_path "${image_path:-}" \
-        --arg meta_path "${meta_path:-}" \
-        --arg opacity "$DEFAULT_OPACITY" \
-        --arg pane_active "${pane_active:-0}" \
-        --argjson left "$pane_left" \
-        --argjson top "$pane_top" \
-        --argjson width "$pane_width" \
-        --argjson height "$pane_height" \
-        '{
-          pane_id: $pane_id,
-          tmux_role: $tmux_role,
-          role: $role,
-          alias: (if $alias == "" then null else $alias end),
-          column: (if $column == "" then null else $column end),
-          pane_cwd: $pane_cwd,
-          project: (if $project == "" then null else $project end),
-          conversation_main: ($conversation_main != "" and $conversation_main == $role),
-          left: $left,
-          top: $top,
-          width: $width,
-          height: $height,
-          image_path: (if $image_path == "" then null else $image_path end),
-          image_meta_path: (if $meta_path == "" then null else $meta_path end),
-          opacity: ($opacity | tonumber),
-          active: ($pane_active == "1")
-        }' >> "$panes_jsonl"
+      # NUL cannot occur in shell/tmux fields; unlike TSV it preserves tabs,
+      # quotes and backslashes without starting a JSON encoder for every pane.
+      printf '%s\0' \
+        "$pane_id" "$tmux_role" "$role" "$pane_alias" "$pane_column" \
+        "$pane_cwd" "${project:-}" "${conversation_main:-}" \
+        "${image_path:-}" "${meta_path:-}" "${pane_active:-0}" \
+        "$pane_left" "$pane_top" "$pane_width" "$pane_height" >> "$pane_fields_file"
     done 3< "$pane_rows_file"
 
-    jq -s '.' "$panes_jsonl" > "$panes_array_file"
+    write_manifest_panes "$pane_fields_file" > "$panes_array_file"
     write_manifest "$session" "$manifest_path" "$panes_array_file" "$window_name" "$window_layout" "$window_width" "$window_height" "$client_width" "$client_height"
     tmux set-environment -t "$session" TPROJ_PANE_BG_ENABLE 1
     tmux set-environment -t "$session" TPROJ_PANE_BG_MANIFEST "$manifest_path"
