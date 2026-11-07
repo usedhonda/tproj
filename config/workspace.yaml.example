@@ -77,7 +77,7 @@ projects:
 #   codex:
 #     args:
 #       - -m
-#       - gpt-5.3-codex
+#       - gpt-6-sol
 #
 # --- tmux UI overrides ---
 #
