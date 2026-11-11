@@ -1644,3 +1644,21 @@ normal discovery; it does not re-present an uncertain delivery.
 Preflight evidence is not a cross-process transaction: an actor changed during
 the preflight window is still rejected by authoritative native reservation and
 begin-present checks before presentation.
+
+### Telegram peer-origin projection (adapter compatibility)
+
+The Dots mailbox adapter accepts the host's strict version 3 Telegram group
+peer-bot provenance without treating it as owner authority. Version 3 replaces
+`owner_id` with `binding_owner_id` and requires `sender_role=peer_bot`,
+`owner_authenticated=false`, `content_trust=untrusted`, and
+`grants_authority=false`. A binding owner identifies the routing configuration,
+not the author of the message. Unknown versions, missing or extra fields,
+authority-bearing values, invalid group identities, and mismatching message or
+body hashes fail closed. Version 1 private-owner and version 2 group-owner
+validation remains unchanged. The host's `origin_binding_active` boolean is
+preserved, including false; structural validation never activates a binding.
+
+This reader compatibility change does not enroll any sender, alter grants,
+replay or acknowledge stored messages, or authorize actions requested in peer
+content. Source tests do not establish that a long-lived adapter has reloaded;
+installation, loaded behavior and exact-ID results require separate evidence.
