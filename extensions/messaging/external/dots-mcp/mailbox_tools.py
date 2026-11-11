@@ -438,8 +438,11 @@ class MailboxTools:
             valid = isinstance(origin, dict) and type(item.get('origin_binding_active')) is bool
             if valid:
                 version = origin.get('version')
-                expected = fields | ({'chat_type'} if version == 2 else set())
-                valid = (type(version) is int and version in (1, 2) and set(origin) == expected
+                expected = fields | ({'chat_type'} if version in (2, 3) else set())
+                if version == 3:
+                    expected = (expected - {'owner_id'}) | {'binding_owner_id', 'sender_role',
+                        'owner_authenticated', 'content_trust', 'grants_authority'}
+                valid = (type(version) is int and version in (1, 2, 3) and set(origin) == expected
                     and origin.get('channel') == 'telegram' and origin.get('kind') == 'chat'
                     and origin.get('mailbox_message_id') == item['message_id']
                     and origin.get('target') == item['target_address']
@@ -452,7 +455,8 @@ class MailboxTools:
                     valid = valid and type(value) is int and 1 <= value <= 2**53-1
                 value = origin.get('update_id')
                 valid = valid and type(value) is int and 0 <= value <= 2**53-1
-                for key in ('binding_id', 'owner_id'):
+                owner_key = 'binding_owner_id' if version == 3 else 'owner_id'
+                for key in ('binding_id', owner_key):
                     value = origin.get(key)
                     valid = valid and isinstance(value, str) and 0 < len(value) <= 128
                 chat = origin.get('chat_id')
@@ -462,6 +466,12 @@ class MailboxTools:
                 else:
                     valid = (valid and -(2**53-1) <= chat < 0
                              and origin.get('chat_type') in ('group', 'supergroup'))
+            if valid and version == 3:
+                # Transport-authenticated peers never carry owner authority.
+                valid = (origin.get('sender_role') == 'peer_bot'
+                         and origin.get('owner_authenticated') is False
+                         and origin.get('content_trust') == 'untrusted'
+                         and origin.get('grants_authority') is False)
             if valid:
                 stable = json.dumps({'bot': origin['bot_id'], 'update': origin['update_id'],
                     'binding': origin['binding_id'], 'generation': origin['generation']},
