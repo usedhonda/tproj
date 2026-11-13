@@ -20,3 +20,16 @@ command-availability fallback so an absent helper does not prevent startup.
 The guarantee applies only to launches that use one of these wrappers.
 Unmanaged `codex` processes still require adoption of the same protocol before
 they can claim this race-free behavior.
+
+## Codex's built-in startup updater
+
+On a host where tproj centrally manages Codex updates, set the native user
+configuration `check_for_update_on_startup = false` in `~/.codex/config.toml`.
+Otherwise Codex can offer its own npm update after the managed launcher starts,
+bypassing these locks and exiting with a request to restart. That independent
+package replacement can also disrupt other sessions using the shared install.
+The setting disables only Codex's startup update check; tproj's serialized update
+path remains enabled. Do not disable model, authentication, or permission checks.
+Existing running clients are not restarted by changing this setting.
+
+Reference: [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference).
