@@ -61,6 +61,10 @@ access token. Otherwise it uses Gemini. Set
 selects the GPT Image route; it does not guarantee that the provider will accept
 the request.
 
+The Responses parent and face-location requests use `gpt-6.1-sol`; the image
+generation tool remains `gpt-image-2`. A retired or account-unsupported parent
+can stop generation even when GPT Image itself is available.
+
 The Gemini route uses `gemini-3-pro-image` for new images and explicit
 `--refresh` requests. It tries Vertex with Application Default Credentials when
 `GOOGLE_CLOUD_PROJECT` is configured, then a Gemini API key when one is available.

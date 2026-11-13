@@ -1752,6 +1752,7 @@ cache_is_fresh() {
 # response is rewritten into the same shape the Gemini path produces, so everything
 # downstream (base64 extraction, face crop, refinement) stays untouched.
 GPT_IMAGE_MODEL_NAME="gpt-image-2"
+GPT_IMAGE_RESPONSE_MODEL="gpt-6.1-sol"
 # Render on a large square canvas rather than straight into the tall target frame.
 # Asked for a tall portrait, the model reliably fills it with a face; given a square
 # it composes a waist-up figure with room around it, and the existing centre crop
@@ -1840,7 +1841,7 @@ request_gpt_image() {
   python3 - "$prompt" "$negative_prompt" "$response_file" "$error_file" \
     "$GPT_IMAGE_AUTH_FILE" "$GPT_IMAGE_MODEL_NAME" "$REQUEST_TIMEOUT_SECONDS" \
     "$(reference_image_for_persona)" "$GPT_IMAGE_SIZE" \
-    "$([[ -n "${FACE_STOCK_REFERENCE_PATH:-}" ]] && printf 1 || printf 0)" <<'PY'
+    "$([[ -n "${FACE_STOCK_REFERENCE_PATH:-}" ]] && printf 1 || printf 0)" "$GPT_IMAGE_RESPONSE_MODEL" <<'PY'
 import base64
 import json
 import os
@@ -1849,6 +1850,7 @@ import urllib.error
 import urllib.request
 
 prompt, negative_prompt, response_path, error_path, auth_path, model_name, request_timeout, reference_path, image_size, stock_reference = sys.argv[1:11]
+response_model = sys.argv[11]
 request_timeout = int(request_timeout)
 
 # gpt-image takes no separate negative prompt, so the avoid-list is folded into the
@@ -1893,7 +1895,7 @@ if reference_path and os.path.isfile(reference_path):
         pass  # a missing reference must never block generation
 
 body = {
-    "model": "gpt-5.5",
+    "model": response_model,
     "input": [{"role": "user", "content": content}],
     "instructions": "You are an image generation assistant.",
     "tools": [{"type": "image_generation", "model": model_name, "size": image_size}],
@@ -2309,7 +2311,7 @@ gpt_face_box_norm() {
   local image_path="$1"
 
   gpt_image_available || return 1
-  python3 - "$image_path" "$GPT_IMAGE_AUTH_FILE" "$REQUEST_TIMEOUT_SECONDS" <<'PY'
+  python3 - "$image_path" "$GPT_IMAGE_AUTH_FILE" "$REQUEST_TIMEOUT_SECONDS" "$GPT_IMAGE_RESPONSE_MODEL" <<'PY'
 import base64
 import json
 import re
@@ -2317,7 +2319,7 @@ import sys
 import urllib.error
 import urllib.request
 
-image_path, auth_path, request_timeout = sys.argv[1:4]
+image_path, auth_path, request_timeout, response_model = sys.argv[1:5]
 request_timeout = int(request_timeout)
 
 try:
@@ -2350,7 +2352,7 @@ ask = (
 )
 
 body = {
-    "model": "gpt-5.5",
+    "model": response_model,
     "input": [{"role": "user", "content": [
         {"type": "input_text", "text": ask},
         {"type": "input_image", "image_url": f"data:image/png;base64,{encoded}", "detail": "auto"},
