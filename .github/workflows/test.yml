@@ -56,6 +56,7 @@ jobs:
         run: |
           python3 tests/test-stop-dispatch.py
           python3 tests/test-runtime-chain.py
+          python3 tests/test-role-query.py
       - name: Messaging sendability
         run: bash extensions/messaging/tests/test-sendability-gate.sh
       - name: Target resolution and liveness hardening

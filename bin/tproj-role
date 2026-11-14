@@ -132,7 +132,7 @@ if $segment; then
   # once, exactly the right behaviour: the segment describes the project you are
   # looking at.
   seg_project=$(tmux display-message -p '#{@project}' 2>/dev/null)
-  seg_json=$("$router" mode --json ${seg_project:+--project "$seg_project"} 2>/dev/null)
+  seg_json=$("$(dirname "$0")/tproj-role-query" --router "$router" --project "${seg_project:-$PWD}" 2>/dev/null)
   mode=$(printf '%s' "$seg_json" | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   lead=$(printf '%s' "$seg_json" | sed -n 's/.*"lead"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   if [ -n "$mode" ] && [ "$mode" != collab ]; then
@@ -177,7 +177,7 @@ if [ -n "$value" ] || [ -n "$main_side" ]; then
 fi
 
 if $json; then
-  "$router" mode --json ${project:+--project "$project"}
+  "$(dirname "$0")/tproj-role-query" --router "$router" --project "${project:-$PWD}"
 else
   "$router" mode ${project:+--project "$project"}
 fi

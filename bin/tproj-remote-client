@@ -52,7 +52,10 @@ fi
 if [[ "$action" == shell ]]; then
   printf -v path_arg '%q' "$remote_path"
   remote_command="cd $path_arg && exec \"\$SHELL\" -l"
-elif [[ "$action" == mode-status || "$action" == mode-set ]]; then
+elif [[ "$action" == mode-status ]]; then
+  printf -v path_arg '%q' "$remote_path"
+  remote_command='exec "$HOME/bin/tproj-role-query" --project '"$path_arg"
+elif [[ "$action" == mode-set ]]; then
   printf -v path_arg '%q' "$remote_path"
   remote_command='PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" "$HOME/bin/model-role-router" mode'
   if [[ "$action" == mode-set ]]; then

@@ -1811,7 +1811,8 @@ final class AppViewModel: ObservableObject {
     // (tilde-expanded) project path. Absent key == collab with no lead. Derived by
     // `model-role-router mode --json`, which owns `<project>/.local/role-mode.json`.
     @Published var roleModeStatuses: [String: RoleModeStatus] = [:]
-    private var lastRemoteRolePollAt: Date = .distantPast
+    private var roleQuerySchedule = RoleQuerySchedule()
+    @Published var staleRoleModeKeys: Set<String> = []
     private var remoteCacheRefreshTokens: [String: UUID] = [:]
     @Published var weeklyPaceSnapshots: [String: WeeklyPaceSnapshot] = [:]
     @Published var ccSessionSnapshot: WeeklyPaceSnapshot?
@@ -4596,52 +4597,52 @@ final class AppViewModel: ObservableObject {
     // path and a light poll so an external `tproj-role` change surfaces within a
     // few seconds.
     private func loadRoleModes() async {
-        let pollRemote = Date().timeIntervalSince(lastRemoteRolePollAt) >= 15
-        if pollRemote { lastRemoteRolePollAt = Date() }
         var requests: [String: (path: String, host: String?)] = [:]
-        for project in workspaceProjects {
-            let trimmed = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
+        for project in workspaceProjects where project.enabled {
+            let path = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !path.isEmpty else { continue }
             let host = project.type == "remote" ? project.host : nil
-            if host == nil || pollRemote {
-                requests[roleModeKey(trimmed, host: host)] = (trimmed, host)
-            }
+            requests[roleModeKey(path, host: host)] = (path, host)
         }
+        // A live column is still eligible even if its saved enabled flag is false.
         for column in liveColumns where !column.projectPath.isEmpty {
             let host = column.hostLabel.hasPrefix("remote@")
                 ? String(column.hostLabel.dropFirst("remote@".count)) : nil
-            if host == nil || pollRemote {
-                requests[roleModeKey(column.projectPath, host: host)] = (column.projectPath, host)
-            }
+            requests[roleModeKey(column.projectPath, host: host)] = (column.projectPath, host)
         }
-
-        let router = roleModeRouterPath
-        guard fileManager.isExecutableFile(atPath: router) else { return }
-
-        var statuses: [String: RoleModeStatus] = pollRemote ? [:] : roleModeStatuses.filter { $0.key.hasPrefix("remote|") }
-        await withTaskGroup(of: (String, RoleModeStatus).self) { group in
-            for (key, request) in requests {
+        let query = NSHomeDirectory() + "/bin/tproj-role-query"
+        guard fileManager.isExecutableFile(atPath: query) else { return }
+        // Reserve each key before suspending: watcher/manual refreshes cannot
+        // start the same query while a periodic batch is awaiting its children.
+        let due = requests.filter { roleQuerySchedule.begin($0.key) }
+        let previousStatuses = roleModeStatuses
+        await withTaskGroup(of: (String, RoleModeStatus?).self) { group in
+            for (key, request) in due {
                 group.addTask { [weak self] in
-                    guard let self else { return (key, RoleModeStatus(mode: .collab, lead: "")) }
+                    guard let self else { return (key, nil) }
                     let result: CommandResult
                     if let host = request.host, !host.isEmpty {
                         result = await self.runCommandAsync(NSHomeDirectory() + "/bin/tproj-remote-client",
                                                             ["mode-status", host, request.path])
                     } else {
-                        result = await self.runCommandAsync(router, ["mode", "--json", "--project", request.path])
+                        result = await self.runCommandAsync(query, ["--project", request.path])
                     }
-                    let data = result.exitCode == 0 ? Data(result.stdout.utf8) : nil
-                    return (key, RoleMode.parseStatus(data))
+                    guard result.exitCode == 0 else { return (key, nil) }
+                    return (key, RoleMode.parseStatus(Data(result.stdout.utf8)))
                 }
             }
             for await (key, status) in group {
-                if status.mode != .collab || !status.lead.isEmpty || !status.main.isEmpty {
-                    statuses[key] = status
+                roleQuerySchedule.finish(key, succeeded: status != nil,
+                                         interval: due[key]?.host == nil ? 3 : 15)
+                if let status {
+                    staleRoleModeKeys.remove(key)
+                    roleModeStatuses[key] = status
+                } else {
+                    staleRoleModeKeys.insert(key)
                 }
             }
         }
-        if statuses != roleModeStatuses {
-            roleModeStatuses = statuses
+        if previousStatuses != roleModeStatuses {
             // The pane backgrounds mark the main side, and nothing else notices when
             // this file changes: the pane-bg hooks are all tmux geometry events, and a
             // mode declared from the CLI or by an agent fires none of them. setRoleMode
@@ -4650,6 +4651,14 @@ final class AppViewModel: ObservableObject {
             // that follows it sees no difference and does not sync twice.
             await syncPaneBackgrounds()
         }
+    }
+
+    func roleQueryHasValue(path: String, host: String? = nil) -> Bool {
+        roleModeStatuses[roleModeKey(path, host: host)] != nil
+    }
+
+    func roleQueryIsStale(path: String, host: String? = nil) -> Bool {
+        staleRoleModeKeys.contains(roleModeKey(path, host: host))
     }
 
     private func syncPaneBackgrounds() async {
@@ -6745,14 +6754,25 @@ struct ContentView: View {
                     }
                 }
             } label: {
-                workspaceModePill(mode, dimmed: true)
+                HStack(spacing: 3) {
+                    if vm.roleQueryHasValue(path: projectPath, host: host) {
+                        workspaceModePill(mode, dimmed: true)
+                    } else {
+                        Text("Role ?").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if vm.roleQueryIsStale(path: projectPath, host: host) {
+                        Image(systemName: "exclamationmark.circle").foregroundStyle(.secondary)
+                    }
+                }
             }
             // .button + .plain keeps the custom pill; borderlessButton redraws it as plain text.
             .menuStyle(.button)
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help(roleModeBadgeLabel(mode: mode, main: main))
+            .help(vm.roleQueryIsStale(path: projectPath, host: host)
+                  ? "Role query unavailable; showing last known state, or unknown if never loaded"
+                  : roleModeBadgeLabel(mode: mode, main: main))
         } else {
             workspaceModePill(.collab, dimmed: true)
                 .opacity(0.5)

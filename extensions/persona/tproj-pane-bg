@@ -464,7 +464,9 @@ conversation_main_for_project() {
   else
     [[ -x "$router" ]] || router="$(command -v model-role-router 2>/dev/null || true)"
     if [[ -x "$router" ]]; then
-      mode_json="$("$router" mode --json --project "$project" 2>/dev/null || true)"
+      local query="${TPROJ_ROLE_QUERY:-$HOME/bin/tproj-role-query}"
+    [[ -x "$query" ]] || query="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/bin/tproj-role-query"
+    mode_json="$("$query" --display-cache --router "$router" --project "$project" 2>/dev/null || true)"
     fi
   fi
   if [[ -n "$mode_json" ]]; then

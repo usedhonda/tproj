@@ -22,6 +22,7 @@ awk '/^load_conversation_main\(\)/{copy=1} /^translate_gender\(\)/{exit} copy{pr
   "$repo/extensions/persona/tproj-pane-bg" > "$tmp/functions.sh"
 export HOME="$tmp"
 MODEL_ROLE_ROUTER="$tmp/bin/router"
+export TPROJ_ROLE_QUERY="$repo/bin/tproj-role-query"
 WORK_ROOT="$tmp/work"
 safe_name() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
 CONVERSATION_MAIN_CACHE=$'\n'

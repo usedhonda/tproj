@@ -77,7 +77,10 @@ usage_resolve_main() {
   router="${TPROJ_USAGE_ROUTER:-$HOME/bin/model-role-router}"
   [[ -x "$router" ]] || router="$(command -v model-role-router 2>/dev/null || true)"
   [[ -x "$router" ]] || return 1
-  mode_json="$("$router" mode --json --project "$project" 2>/dev/null || true)"
+  local query="${TPROJ_ROLE_QUERY:-$HOME/bin/tproj-role-query}"
+  [[ -x "$query" ]] || query="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/bin/tproj-role-query"
+  if ! mode_json="$("$query" --router "$router" --project "$project" 2>/dev/null)"; then return 1; fi
+  [[ -n "$mode_json" ]] || return 1
   main="$(printf '%s' "$mode_json" | jq -r '
     if (.main == "cc" or .main == "cdx") then .main
     elif (.lead == "cc" or .lead == "cdx") then .lead

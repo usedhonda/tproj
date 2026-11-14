@@ -301,3 +301,36 @@ requires user approval before out-of-scope work resumes.
   behavior and the invariant that no consultation or reflection state blocks work.
 - `general/system/intent-guard/test-intent-guard.sh` — the task run identity is
   stamped by `start`, left alone by `check`, and refreshed by the next `start`.
+
+
+## Bounded display queries
+
+Automatic GUI, pane-background, inbox-usage and tmux-status JSON queries use
+`tproj-role-query`, on the machine that runs the project. It invokes only the
+canonical router and validates its mode/main/lead values; it does not derive
+role, identity or permissions itself.
+One nonblocking lock per host-local router/project spelling prevents overlapping
+execution across callers. Paths are normalized lexically without accessing the
+project volume; different symlink spellings have distinct keys, not guessed
+filesystem equivalence. Successful JSON is cached for three seconds; failures
+return nonzero and suppress further execution for thirty seconds. Last successful
+display data is retained separately, never promoted to fresh success on failure.
+GUI failure keeps its prior display and marks it stale. Unstarted disabled
+projects are not polled; live columns remain eligible. GUI polling reserves each
+key before awaiting and uses normal three-second local/fifteen-second remote
+intervals only after success.
+
+The helper starts a dedicated process group for its read-only query, bounds it to
+four seconds (outside the router's own three-second deadline), kills remaining
+owned group members and allows at most another half second to reap its child
+before closing pipes and releasing the lock. Group signals are sent only while
+the helper still owns an unreaped leader; a normally completed and reaped PID
+is never used as a later signal target. The canonical read-only router is not
+a launcher for detached background jobs. A timeout or incomplete cleanup
+always returns failure, even if the leader had exited zero. SIGTERM,
+SIGINT and SIGHUP use the same cleanup. Remote mode-status execs this helper;
+SSH disconnect does not remove the remote deadline. SIGKILL of the supervisor or
+an OS syscall that cannot complete signal handling cannot be guaranteed cleaned
+up; the canonical router's independent deadline remains the backstop. No global
+process-name kill, agent-session termination or role mutation is involved.
+Normal mode writes and their immediate readback remain unchanged.

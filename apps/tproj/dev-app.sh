@@ -80,6 +80,10 @@ if ! kill -0 "$local_pid" 2>/dev/null; then
   echo "GUI process (pid $local_pid) not detected; check $TPROJ_GUI_LOG" >&2
   exit 1
 fi
+if [[ "${APP_ARGUMENTS[0]:-}" == "--server" ]]; then
+  # ServerModeView uses installed host commands, not AppViewModel's client seed.
+  python3 "$SCRIPT_DIR/verify-runtime.py" "$APP_BUNDLE"
+else
 # Wait for this seed to be consumed by the GUI, then verify the actual scripts.
 # A saved marker alone does not prove the staged files still match the bundle.
 staged_runtime="$HOME/Library/Application Support/tproj/runtime/current"
@@ -97,6 +101,7 @@ if [[ "$ready" != true ]]; then
   exit 1
 fi
 python3 "$SCRIPT_DIR/verify-runtime.py" "$APP_BUNDLE" "$staged_runtime"
+fi
 retire_previous_gui "$local_pid"
 retire_stale_gui_variants "$local_pid"
 echo "Done: $APP_BUNDLE (pid $local_pid)"
