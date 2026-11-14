@@ -55,6 +55,15 @@ bash extensions/persona/test-project-bootstrap-contract.sh
 `tproj-pane-bg` generates character artwork from the persona traits. Images are
 cached per project in `.local/tproj-pane-bg/`.
 
+For requested art-direction changes, follow the visual-reference contract in
+the root `AGENTS.md`. Establish the scene's activity before choosing equipment:
+a podcast host speaking or listening with a microphone and show notes is not a
+DJ operating faders, even if both scenes involve audio. Borrow composition and
+character visibility from a reference without copying an unrelated occupation.
+Check whether the image communicates the target activity without a caption.
+Retain rejection reasons in the local art-direction record and replace the
+contradictory prompt directions so later regeneration does not restore them.
+
 The default route prefers `gpt-image-2` when the local Codex auth file contains an
 access token. Otherwise it uses Gemini. Set
 `TPROJ_PANE_BG_IMAGE_PROVIDER=gemini` to select Gemini explicitly. Token presence

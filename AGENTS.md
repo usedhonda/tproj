@@ -141,6 +141,27 @@ A change is complete when all of the following hold:
 5. Contract-sensitive changes (startup, installer, messaging, runtime
    contracts) include their focused test updates in the same commit.
 
+## Visual References and Background Artwork
+
+- When a user names existing artwork as a reference, view the actual image and
+  read the target project's purpose before generating. Text descriptions alone
+  do not establish visual-reference compliance.
+- Separate transferable visual principles (style, framing, character scale,
+  readability, and scene balance) from domain-specific activity and equipment.
+  Derive actions, gestures, and props from the target project, not the reference's
+  subject. Preserve established character identity and gender.
+- "Background, not portrait" does not imply a distant figure or an empty wide
+  room. Match the requested reference's character presence while depicting a
+  meaningful project-specific scene.
+- Inspect the generated image against both the reference and the target activity
+  before applying it. Carry corrections forward cumulatively; remove rejected
+  directions from subsequent prompts rather than merely adding contrary words.
+- Distinguish generated, applied, visibly verified, and user-adopted results.
+  Applying an image does not establish user approval or prove the displayed pixels.
+
+For background-specific guidance, see
+[Pane backgrounds](extensions/persona/README.md#pane-backgrounds).
+
 ## Handoff
 
 Work must be resumable from the local worktree state plus the handoff note,
