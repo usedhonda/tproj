@@ -26,6 +26,22 @@ HOST_BACKEND_VERSION = 14
 WIRE_LIMIT = 262144
 
 
+def role_display_hint(project_path):
+    """Optional project-file access must not stall identity refresh or delivery."""
+    try:
+        result = subprocess.run(
+            [sys.executable, '-c',
+             'import sys; f=open(sys.argv[1], "rb"); sys.stdout.buffer.write(f.read(4097))',
+             str(Path(project_path) / '.local/role-mode.json')],
+            capture_output=True, timeout=1)
+        if result.returncode or len(result.stdout) > 4096:
+            return None
+        mode = json.loads(result.stdout)
+        return mode.get('main') if isinstance(mode, dict) and mode.get('main') in ('cc', 'cdx') else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
 def load_config_snapshot(path, strict=False):
     """Validate and read the same opened private configuration object."""
     fd = None
@@ -269,11 +285,9 @@ class Host:
         registered_endpoints = []
         for ep in discovered:
             profile = dict(ep.get('directory_profile') or {})
-            try:
-                mode = json.loads((Path(ep['project_path']) / '.local/role-mode.json').read_text())
-                if isinstance(mode, dict) and mode.get('main') in ('cc', 'cdx'): profile['main_side'] = mode['main']
-            except (OSError, ValueError, KeyError):
-                pass
+            main_side = role_display_hint(ep['project_path'])
+            if main_side:
+                profile['main_side'] = main_side
             ep['directory_profile'] = profile
             try:
                 registered = self.hub('endpoint_register', **ep)

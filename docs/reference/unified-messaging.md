@@ -735,6 +735,12 @@ Pane fallback discovery skips shell executables even when their `-c` arguments
 mention Claude or Codex. A launcher wrapper is not an agent endpoint; discovery
 continues to its live same-UID agent descendants with their own PID incarnation.
 
+Optional project role-display metadata is read in a short-lived child with a
+one-second deadline and a 4 KiB limit. A blocked filesystem open, unreadable file
+or invalid hint omits only that display hint; it cannot hold the Host identity
+refresh lock indefinitely or prevent independent endpoint heartbeats. This does
+not alter role authority, native authentication, recipient selection or replay.
+
 Registry process ancestry does not prove a Codex thread belongs to a pane's
 project: a shared daemon may retain the launching pane's environment. When
 host-local native thread metadata contradicts a registry record's project,

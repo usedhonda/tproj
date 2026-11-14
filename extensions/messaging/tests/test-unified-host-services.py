@@ -18,6 +18,16 @@ from service_policy_migrate import migrate
 
 
 class UnifiedHostServicesTest(unittest.TestCase):
+    def test_optional_role_display_open_cannot_stall_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            role = Path(tmp) / '.local/role-mode.json'
+            role.parent.mkdir()
+            role.write_text('{"main":"cdx"}')
+            self.assertEqual(host_mod.role_display_hint(tmp), 'cdx')
+            role.unlink()
+            os.mkfifo(role)
+            self.assertIsNone(host_mod.role_display_hint(tmp))
+
     def test_service_send_scope_is_fresh_host_metadata_not_public_input(self):
         with tempfile.TemporaryDirectory() as tmp:
             host = self.host(tmp)
