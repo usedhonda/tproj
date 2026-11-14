@@ -16,6 +16,12 @@ memory-guard runs as a macOS launchd daemon (always-on background process). This
 
 ## Usage
 
+Aggregate-memory notifications occur once on entering a warning episode and
+once if it escalates to critical. Oscillation between warning and critical does
+not repeat notifications until usage falls below the warning threshold. Logs,
+monitoring frequency and process-termination policy are unchanged. Restarting
+the daemon begins a new notification episode.
+
 ```bash
 cc-mem              # interactive memory monitor
 cc-mem --watch      # continuous watch mode

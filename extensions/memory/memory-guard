@@ -326,29 +326,43 @@ kill_orphaned_claude() {
 }
 
 # --- Claude aggregate check ---
+aggregate_notice_level=0
+
 check_claude_aggregate() {
   local total_mb
   total_mb=$(calc_total_mb)
 
-  [[ "$total_mb" -le "$WARN_MB" ]] && return 0
+  if [[ "$total_mb" -le "$WARN_MB" ]]; then
+    aggregate_notice_level=0
+    return 0
+  fi
 
   # Recheck after 10s to exclude transient spikes
   sleep 10
   local total_mb2
   total_mb2=$(calc_total_mb)
 
-  [[ "$total_mb2" -le "$WARN_MB" ]] && return 0
+  if [[ "$total_mb2" -le "$WARN_MB" ]]; then
+    aggregate_notice_level=0
+    return 0
+  fi
 
   # WARNING level
   if [[ "$total_mb2" -le "$CRIT_MB" ]]; then
     log "WARNING: Claude processes using ${total_mb2}MB (threshold: ${WARN_MB}MB)"
-    osascript -e "display notification \"Claude processes: ${total_mb2}MB / ${WARN_MB}MB warning\" with title \"Memory Guard\" subtitle \"Consider closing idle sessions\"" 2>/dev/null || true
+    if [[ "$aggregate_notice_level" -lt 1 ]]; then
+      osascript -e "display notification \"Claude processes: ${total_mb2}MB / ${WARN_MB}MB warning\" with title \"Memory Guard\" subtitle \"Memory usage elevated\"" 2>/dev/null || true
+      aggregate_notice_level=1
+    fi
     return 0
   fi
 
   # CRITICAL level - kill idle agents
   log "CRITICAL: Claude processes using ${total_mb2}MB (threshold: ${CRIT_MB}MB)"
-  osascript -e "display notification \"Claude processes: ${total_mb2}MB - killing idle agents\" with title \"Memory Guard\" subtitle \"CRITICAL\"" 2>/dev/null || true
+  if [[ "$aggregate_notice_level" -lt 2 ]]; then
+    osascript -e "display notification \"Claude processes: ${total_mb2}MB - checking idle agents\" with title \"Memory Guard\" subtitle \"CRITICAL\"" 2>/dev/null || true
+    aggregate_notice_level=2
+  fi
 
   local killed=0
   while IFS=' ' read -r rss pane_pid pane_id role; do
