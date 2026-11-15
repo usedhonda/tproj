@@ -24,6 +24,14 @@ peer AI との通信に使う。host 内部 subagent の親報告は native coll
 スキル本文が見えていることは、呼び出せるツール、接続、認証、会話束縛の
 証拠ではない。最初に**実際の surface**を分類する。
 
+判別するのは実行中のクライアントであり、モデル名や見えているMCPツール名ではない。
+native Codex / Claude CodeにもCloud用コネクターが見える場合があるが、その
+`service_principal_valid` / `conversation_isolation` はnative CLIの束縛状態を示さない。
+native実行環境では、送信前に自分の `tproj-msg whoami` / `doctor` で確認する。
+これらの本人診断は束縛が未確認でも実行でき、成功した自分のnative経路を使うために
+別のCloudコネクターの会話分離設定を待つ必要はない。拒否された場合はその実エラーを
+調査し、別identityへ切り替えない。Cloudチャットからshellを使う許可ではない。
+
 | Surface | 使ってよい経路 | 使ってはいけない代替 |
 |---|---|---|
 | Cloud ChatGPT conversation | 接続済み・認証済みの MCP catalog にある `tproj_*` callable tools | shell、`tproj-msg`、ユーザー代理リレー、Issue/Slack、別 identity |

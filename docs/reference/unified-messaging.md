@@ -721,6 +721,13 @@ actually new agent process still follows normal authenticated discovery.
 
 ### Disconnected broker clients
 
+Native Codex/Claude clients may also expose Cloud connector tools. Cloud service
+authentication and conversation-isolation metadata do not describe the native
+caller's binding. Diagnose that caller with its own `tproj-msg whoami` / `doctor`;
+these diagnostic commands do not require a prior successful send. A successful
+native binding does not depend on configuring a separate Cloud connector. This
+does not authorize shell transport from Cloud chats or borrowing another identity.
+
 Each concurrent socket request releases its processing slot even if closing the
 buffered response stream fails after a client disconnect. Repeated disconnects
 must not leave a live broker permanently rejecting all new connections. This
