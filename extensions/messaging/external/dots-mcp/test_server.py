@@ -27,6 +27,13 @@ class MCPServerTest(unittest.TestCase):
                 "principal": "dots-service", "conversation_id": "self-reported"},
             host_call=lambda request: calls.append(request))
         bound = server.MCPServer(tools).handle(request)["result"]["structuredContent"]
+        for instance in (server.MCPServer(), server.MCPServer(tools)):
+            response = instance.handle(request)["result"]
+            self.assertEqual(json.loads(response["content"][0]["text"]), response["structuredContent"])
+            hint = response["content"][1]["text"]
+            self.assertIn("this Cloud connector only", hint)
+            self.assertIn("tproj-msg whoami", hint)
+            self.assertIn("tproj-msg doctor", hint)
         self.assertEqual(bound["binding"], "service_principal_valid")
         self.assertEqual(bound["conversation_isolation"], "not_configured")
         self.assertEqual(bound["operation"], "not_attempted")

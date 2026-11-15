@@ -28,6 +28,19 @@ SERVER_INFO = {"name": "dots-mailbox", "version": "0.1.0"}
 TOOL_NAMES = set(MailboxTools.TOOLS)
 
 
+def _tool_content(name, text):
+    content = [{"type": "text", "text": text}]
+    if name == "tproj_capabilities":
+        content.append({"type": "text", "text": (
+            "Diagnostic scope: this Cloud connector only. These binding and "
+            "conversation-isolation results do not diagnose native Codex/Claude "
+            "Code sessions. In a native client use its own tproj-msg whoami and "
+            "tproj-msg doctor; a valid native binding does not require changing "
+            "this Cloud connector. This does not authorize shell use from Cloud chats."
+        )})
+    return content
+
+
 def _catalog() -> list[dict[str, Any]]:
     paths = [Path(__file__).resolve().parents[4] / "docs" / "reference" / "external-assistant-tools.json",
              Path(__file__).with_name("external-assistant-tools.json")]
@@ -187,7 +200,7 @@ class MCPServer:
                 and self.conversation_resolver is None and not arguments):
             result = self._capability_catalog(name, disconnected_capabilities())
             return {"jsonrpc": "2.0", "id": req_id, "result": {
-                "content": [{"type": "text", "text": json.dumps(result, sort_keys=True)}],
+                "content": _tool_content(name, json.dumps(result, sort_keys=True)),
                 "structuredContent": result,
             }}
         exc = None
@@ -205,7 +218,7 @@ class MCPServer:
                 summary = result.pop("_summary", None) if isinstance(result, dict) else None
                 text = summary if isinstance(summary, str) else json.dumps(result, ensure_ascii=False, sort_keys=True)
                 return {"jsonrpc": "2.0", "id": req_id, "result": {
-                    "content": [{"type": "text", "text": text}],
+                    "content": _tool_content(name, text),
                     "structuredContent": result,
                 }}
         else:
@@ -222,7 +235,7 @@ class MCPServer:
                     summary = result.pop("_summary", None) if isinstance(result, dict) else None
                     text = summary if isinstance(summary, str) else json.dumps(result, ensure_ascii=False, sort_keys=True)
                     return {"jsonrpc": "2.0", "id": req_id, "result": {
-                        "content": [{"type": "text", "text": text}],
+                        "content": _tool_content(name, text),
                         "structuredContent": result,
                     }}
         if exc is None:
