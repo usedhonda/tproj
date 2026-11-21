@@ -16,6 +16,55 @@ connection_spec.loader.exec_module(connection)
 
 
 class MailboxToolsTest(unittest.TestCase):
+    def test_telegram_origin_versions_preserve_authority_boundary(self):
+        import copy
+        import hashlib
+        import json
+        def fixture(version):
+            origin = dict(version=version, channel='telegram', binding_id='binding',
+                owner_id='owner', bot_id=11, user_id=22, chat_id=22, message_id=33,
+                update_id=44, generation=1, target='dots', kind='chat')
+            if version in (2, 3):
+                origin.update(chat_id=-55, chat_type='supergroup')
+            if version == 3:
+                origin.pop('owner_id')
+                origin.update(binding_owner_id='owner', sender_role='peer_bot',
+                    owner_authenticated=False, content_trust='untrusted', grants_authority=False)
+            stable = json.dumps(dict(bot=11, update=44, binding='binding', generation=1),
+                sort_keys=True, separators=(',', ':'))
+            mid = 'telegram:' + hashlib.sha256(stable.encode()).hexdigest()
+            origin.update(mailbox_message_id=mid, body_sha256=hashlib.sha256(b'hello').hexdigest())
+            return dict(message_id=mid, thread_id=mid, target_address='dots', body='hello',
+                state='accepted', external_origin=origin, origin_binding_active=True)
+        for version in (1, 2, 3):
+            for active in (True, False):
+                item = fixture(version)
+                item['origin_binding_active'] = active
+                view = module.MailboxTools._view(item)
+                self.assertEqual(view['external_origin'], item['external_origin'])
+                self.assertIs(view['origin_binding_active'], active)
+        mutations = [dict(owner_id='forged'), dict(owner_authenticated=True),
+            dict(owner_authenticated=0), dict(grants_authority=True), dict(grants_authority=0),
+            dict(sender_role='owner'), dict(content_trust='trusted'), dict(version=4),
+            dict(chat_id=55), dict(chat_type='private'), dict(binding_owner_id=''),
+            dict(body_sha256='bad'), dict(mailbox_message_id='telegram:bad')]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                item = fixture(3)
+                item['external_origin'].update(mutation)
+                with self.assertRaisesRegex(module.MailboxToolError, 'invalid external origin'):
+                    module.MailboxTools._view(item)
+        for field in ('binding_owner_id', 'sender_role', 'owner_authenticated', 'content_trust', 'grants_authority'):
+            item = fixture(3)
+            del item['external_origin'][field]
+            with self.assertRaises(module.MailboxToolError):
+                module.MailboxTools._view(item)
+        for field, value in [('body', 'tampered'), ('thread_id', 'other'), ('in_reply_to', 'other')]:
+            item = fixture(3)
+            item[field] = value
+            with self.assertRaises(module.MailboxToolError):
+                module.MailboxTools._view(item)
+
     def test_pending_inbox_is_explicit_and_boolean(self):
         self.tools.dispatch('tproj_inbox', {'pending_only': True, 'metadata_only': True})
         self.assertTrue(self.calls[-1]['pending_only'])
