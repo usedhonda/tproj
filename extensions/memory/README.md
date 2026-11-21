@@ -7,20 +7,21 @@ Memory monitoring and watchdog daemon for tproj workspaces.
 ## What's included
 
 - **cc-mem** -- Real-time memory monitoring for Claude Code, Codex, MCP servers, and system
-- **memory-guard** -- Background daemon that kills runaway processes and orphaned Claude instances
+- **memory-guard** -- Background daemon that reports high process memory usage
 - **tproj-mem-json** -- JSON memory snapshot exporter for programmatic consumption
 
 ## Why opt-in?
 
-memory-guard runs as a macOS launchd daemon (always-on background process). This requires explicit opt-in since it actively monitors and can terminate processes.
+memory-guard runs as a macOS launchd daemon (always-on background process). This requires explicit opt-in since it continuously monitors process memory and sends notifications.
 
 ## Usage
 
 Aggregate-memory notifications occur once on entering a warning episode and
 once if it escalates to critical. Oscillation between warning and critical does
-not repeat notifications until usage falls below the warning threshold. Logs,
-monitoring frequency and process-termination policy are unchanged. Restarting
-the daemon begins a new notification episode.
+not repeat notifications until usage falls below the warning threshold. Each individual
+process also triggers one alert per threshold crossing. The daemon records
+memory history and sends alerts without terminating processes. Restarting the
+daemon begins a new notification episode.
 
 ```bash
 cc-mem              # interactive memory monitor

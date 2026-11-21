@@ -9,7 +9,6 @@ harness = '''
 WARN_MB=100
 CRIT_MB=150
 notices=0
-checks=0
 calc_total_mb() { echo "$usage"; }
 sleep() { :; }
 log() { :; }
@@ -20,10 +19,8 @@ get_killable_agents() { :; }
 harness += aggregate + '''
 for usage in 110 120 160 170 120 160; do
   check_claude_aggregate
-  [[ "$usage" -gt "$CRIT_MB" ]] && checks=$((checks + 1))
 done
 [[ "$notices" == 2 ]] || exit 1
-[[ "$checks" == 3 ]] || exit 2
 usage=90
 check_claude_aggregate
 usage=120
