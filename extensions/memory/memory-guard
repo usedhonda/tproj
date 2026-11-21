@@ -5,6 +5,9 @@
 # - Checks every 15 seconds for Claude aggregate memory
 # No set -e for a daemon that must never exit on transient errors
 
+# launchd does not inherit the interactive shell's Homebrew paths.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 INTERVAL="${MEMORY_GUARD_INTERVAL:-3}"          # main loop interval (seconds)
 AGGREGATE_EVERY="${MEMORY_GUARD_AGG_EVERY:-5}"   # aggregate check every N loops (5*3=15s)
 
@@ -125,6 +128,58 @@ record_snapshot() {
   fi
 }
 
+# Map monitored PIDs to tproj's project field through the tmux pane's PID.
+# Input rows contain PID and RSS in KiB. Only resolve projects when sending an alert.
+project_usage() {
+  local monitored="$1"
+  {
+    tmux list-panes -a -F 'P #{pane_pid} #{@project}' 2>/dev/null
+    ps -axo pid=,ppid= | awk '{print "T", $1, $2}'
+    printf '%s\n' "$monitored" | awk 'NF >= 2 {print "M", $1, $2}'
+  } | awk '
+    $1 == "P" && NF >= 3 {
+      pid = $2
+      sub(/^P [0-9]+ /, "")
+      project[pid] = $0
+    }
+    $1 == "T" { parent[$2] = $3 }
+    $1 == "M" {
+      pid = $2
+      while (pid > 1 && !(pid in project) && (pid in parent))
+        pid = parent[pid]
+      root = (pid in project) ? project[pid] : ""
+      usage[root] += $3
+    }
+    END {
+      for (root in usage) {
+        name = root
+        sub(/\/+$/, "", name)
+        sub(/^.*\//, "", name)
+        if (name == "") name = "Project unknown"
+        printf "%d %s\n", int(usage[root] / 1024), name
+      }
+    }
+  ' | sort -rn
+}
+
+notify_memory() {
+  osascript -e 'on run argv' \
+    -e 'display notification (item 1 of argv) with title "tproj Memory Guard" subtitle (item 2 of argv)' \
+    -e 'end run' -- "$1" "$2" 2>/dev/null || true
+}
+
+notify_claude_usage() {
+  local total="$1" subtitle="$2" projects
+  projects=$(project_usage "$(get_claude_pids_rss)" | awk '
+    NR <= 3 {
+      mb = $1
+      sub(/^[0-9]+ /, "")
+      printf "%s%s %d MB", (NR == 1 ? "" : ", "), $0, mb
+    }
+  ')
+  notify_memory "Claude total: ${total}MB${projects:+ | $projects}" "$subtitle"
+}
+
 # Notify once per process while it stays above the threshold.
 process_notices=" "
 
@@ -145,9 +200,10 @@ check_large_processes() {
 
     record_snapshot "HIGH_MEMORY: PID $pid ${proc_mb}MB"
     log "HIGH_MEMORY: PID $pid ($short_name) using ${proc_mb}MB (limit: ${PROC_MAX_MB}MB)"
-    osascript -e 'on run argv' \
-      -e 'display notification (item 1 of argv) with title "tproj Memory Guard" subtitle "High process memory"' \
-      -e 'end run' -- "$short_name (PID $pid) is using ${proc_mb}MB" 2>/dev/null || true
+    local project
+    project=$(project_usage "$pid $rss")
+    project=${project#* }
+    notify_memory "$project | $short_name (PID $pid) is using ${proc_mb}MB" "High process memory"
   done < <(ps -eo pid,rss,comm 2>/dev/null)
   process_notices=$current_notices
 }
@@ -178,7 +234,7 @@ check_claude_aggregate() {
   if [[ "$total_mb2" -le "$CRIT_MB" ]]; then
     log "WARNING: Claude processes using ${total_mb2}MB (threshold: ${WARN_MB}MB)"
     if [[ "$aggregate_notice_level" -lt 1 ]]; then
-      osascript -e "display notification \"Claude processes: ${total_mb2}MB / ${WARN_MB}MB warning\" with title \"tproj Memory Guard\" subtitle \"Memory usage elevated\"" 2>/dev/null || true
+      notify_claude_usage "$total_mb2" "Memory usage elevated"
       aggregate_notice_level=1
     fi
     return 0
@@ -187,7 +243,7 @@ check_claude_aggregate() {
   # CRITICAL level
   log "CRITICAL: Claude processes using ${total_mb2}MB (threshold: ${CRIT_MB}MB)"
   if [[ "$aggregate_notice_level" -lt 2 ]]; then
-    osascript -e "display notification \"Claude processes: ${total_mb2}MB\" with title \"tproj Memory Guard\" subtitle \"CRITICAL\"" 2>/dev/null || true
+    notify_claude_usage "$total_mb2" "CRITICAL"
     aggregate_notice_level=2
   fi
 }

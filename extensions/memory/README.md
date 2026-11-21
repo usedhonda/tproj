@@ -21,7 +21,10 @@ once if it escalates to critical. Oscillation between warning and critical does
 not repeat notifications until usage falls below the warning threshold. Each individual
 process also triggers one alert per threshold crossing. The daemon records
 memory history and sends alerts without terminating processes. Restarting the
-daemon begins a new notification episode.
+daemon begins a new notification episode. Alerts use the tproj pane's project
+name when the process can be traced to a pane. Claude totals show the three
+largest memory entries, including an unknown-project entry for processes
+without a matching pane.
 
 ```bash
 cc-mem              # interactive memory monitor

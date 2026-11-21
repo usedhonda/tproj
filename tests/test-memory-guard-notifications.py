@@ -13,7 +13,7 @@ calc_total_mb() { echo "$usage"; }
 sleep() { :; }
 log() { :; }
 logger() { :; }
-osascript() { notices=$((notices + 1)); }
+notify_claude_usage() { notices=$((notices + 1)); }
 get_killable_agents() { :; }
 '''
 harness += aggregate + '''
