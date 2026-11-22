@@ -149,6 +149,11 @@ Normal restart therefore needs no repeated select or historical-read grant.
 A live selected process with a stale heartbeat is not inferred dead. Different
 natives, missing native proof, and multiple unretired same-surface writers do not
 inherit the route. An app-server is not substituted for a selected TUI.
+When the selected incarnation is retired and has no such successor (the selected
+conversation ended, for example after a Codex `/clear`), new messages resolve to
+the participant's only freshly owner-observed TUI candidate. Zero or several such
+candidates fail as `stale_session` with an error that names `recipient
+list/select`; the resolver never chooses between two conversations.
 The original choice/revision remains unchanged; owner acceptance still compares
 both its revision and the exact resolved endpoint. `recipient list` reports the
 resolved endpoint separately. `recipient_native_continuity_v1` advertises this

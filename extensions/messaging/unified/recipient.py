@@ -80,6 +80,24 @@ def _selected_endpoint(h, host, key):
         # The original choice names a native conversation, not a disposable PID.
         # Only owner-attested, unique same-surface continuity may follow retirement.
         successor = h._native_successor(old) if old and old['host_id'] == host else None
+        if successor is None and old and old['host_id'] == host and old['retired']:
+            # The selected conversation ended without continuity (for example a
+            # Codex /clear or a new session). Follow only when the owner Host
+            # freshly observes exactly one verified TUI conversation for the
+            # same participant; never choose between two. The stored choice is
+            # not rewritten, so a later explicit select/clear still applies.
+            live = {}
+            for row in h.db.execute('SELECT candidate FROM recipient_candidates WHERE participant_id=?',
+                                    (c['participant_id'],)).fetchall():
+                try:
+                    _, ep = _candidate(h, host, row['candidate'], fresh=True)
+                except HubError:
+                    continue
+                live[ep['endpoint_id']] = ep
+            if len(live) == 1:
+                return next(iter(live.values()))
+            raise HubError('stale_session', 'selected recipient conversation ended; '
+                           'choose one with tproj-msg recipient list/select')
         if successor is None:
             raise
         return successor

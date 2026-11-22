@@ -132,6 +132,24 @@ class RecipientRecoveryTest(unittest.TestCase):
         self.assertIsNone(self.h._reply_endpoint('tui'))
         self.assertFalse(self.h._same_native_party(self.h._host_endpoint('b','resumed'), 'tui'))
 
+    def test_ended_selection_follows_only_a_sole_fresh_observed_tui(self):
+        self.call('recipient_select', target='project.cdx', candidate=self.candidate, expected_revision=0)
+        pref = dict(self.h._row("SELECT * FROM recipient_preferences WHERE participant_id='p:cdx'"))
+        self.h.dispatch(dict(op='endpoint_retire', host_id='b', host_token='b-token', endpoint_id='tui'))
+        self.register('cleared', 'b', 'p:cdx', '%2')
+        self.attest('cleared', NATIVE)  # new conversation in the same pane, no continuity
+        with self.assertRaisesRegex(HubError, 'recipient list/select'):
+            self.send('unobserved')
+        self.h.dispatch(dict(op='recipient_observe', host_id='b', host_token='b-token', observed_endpoint='cleared'))
+        self.send('followed')
+        self.assertEqual(self.h._row("SELECT recipient_endpoint FROM messages WHERE message_id='followed'")[0], 'cleared')
+        self.assertEqual(dict(self.h._row("SELECT * FROM recipient_preferences WHERE participant_id='p:cdx'")), pref)
+        self.register('second', 'b', 'p:cdx', '%4')
+        self.attest('second', 'third-native')
+        self.h.dispatch(dict(op='recipient_observe', host_id='b', host_token='b-token', observed_endpoint='second'))
+        with self.assertRaisesRegex(HubError, 'recipient list/select'):
+            self.send('two-live')
+
     def test_grant_read_is_exact_native_and_preserves_unknown_cancel_and_expiry(self):
         for state in ('uncertain', 'cancelled', 'expired'):
             with self.subTest(state=state):
