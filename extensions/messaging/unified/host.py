@@ -398,7 +398,13 @@ class Host:
             if req.get('conversation') and (ep.get('thread_id') or ep.get('session_id')):
                 from identity import _conversation_matches
                 if not _conversation_matches(ep, req['conversation']):
-                    raise IdentityError('current native context conflicts with immutable endpoint')
+                    if not direct or direct['endpoint_id'] != ep['endpoint_id']:
+                        raise IdentityError('current native context conflicts with immutable endpoint')
+                    # The caller is this pane's own process (ancestry-bound).
+                    # A new conversation in the same process (Codex /new or
+                    # /clear) is still the same sender; keep the recorded
+                    # native marker and do not reject the process owner.
+                    return ep
             # Native fields come from authenticated registry/catalog adoption,
             # not the public request's selectors. Persist before any messaging.
             kind = 'thread_id' if ep.get('thread_id') else 'session_id'
