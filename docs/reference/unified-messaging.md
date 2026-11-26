@@ -587,6 +587,12 @@ hash; a bound native thread/session ID may identify the prompt even when the
 immutable endpoint retains its earlier bootstrap runtime label. No alias-based
 identity adoption or synthetic acknowledgement is introduced.
 
+A direct TUI caller whose process ancestry binds to its own endpoint stays
+authenticated when it presents a different native conversation (a Codex `/new`
+or `/clear` inside the same process). The endpoint is the process; its recorded
+native marker is kept, not replaced by the new thread. Shared app-server
+ancestry gets no such allowance and still needs a matching native conversation.
+
 Remote resolution preserves the sole authoritative failure (`endpoint_unavailable`,
 `no_recipient`, or another protocol rejection) rather than labeling every failure
 as a host outage. Multiple failing authorities report only fixed error classes.

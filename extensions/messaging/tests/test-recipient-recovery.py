@@ -241,6 +241,36 @@ class RecipientRecoveryTest(unittest.TestCase):
         self.assertEqual(result['thread_id'],OTHER)
         self.assertEqual(self.h._row("SELECT native_id FROM endpoint_native WHERE endpoint_id='app'")[0],NATIVE)
 
+    def test_tui_process_owner_survives_a_new_conversation_in_the_same_process(self):
+        import time
+        from unittest.mock import patch
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'unified'))
+        import host as host_module
+        import identity as identity_module
+        adapter = host_module.Host(dict(journal=str(Path(self.tmp.name)/'journal.db'),
+            host_id='b', host_token='b-token'), recover=False)
+        self.addCleanup(adapter.db.close)
+        project = str(Path(self.tmp.name))
+        adapter.endpoints = [dict(e, pid_start=int(e['pid_start']), project_id='p', project_path=project, address='project.cdx')
+            for e in self.h.dispatch(dict(op='diagnostic_identity',host_id='b',host_token='b-token'))['endpoints']]
+        adapter.refreshed = time.monotonic()
+        adapter.hub = lambda op, **kw: self.h.dispatch(dict(kw, op=op, host_id='b',host_token='b-token'))
+        def process(pid):
+            return dict(uid=os.getuid(),pid_start=1,ppid=1,
+                        command='codex app-server' if pid==100 else 'node codex.js resume --last')
+        fresh = '00000000-0000-4000-8000-000000000003'
+        with patch.object(host_module, 'bind_caller', side_effect=lambda pid, uid, eps, **kw:
+                identity_module.bind_caller(pid,uid,eps,inspect_process=process,**kw)), \
+             patch.object(host_module, 'adopt_native_conversation', side_effect=lambda eps, ctx: [dict(e) for e in eps]):
+            # Codex /new or /clear: the pane's own TUI process presents a new thread.
+            result = adapter.caller(200,os.getuid(),dict(conversation=dict(thread_id=fresh,session_id=fresh,platform='cdx')))
+            self.assertEqual(result['endpoint_id'],'tui')
+            # Shared app-server ancestry still needs a matching native conversation.
+            with self.assertRaisesRegex(host_module.HubError, 'agent ancestor absent'):
+                adapter.caller(100,os.getuid(),dict(conversation=dict(thread_id=fresh,session_id=fresh,platform='cdx')))
+        # The recorded native marker is not replaced by the unverified new thread.
+        self.assertEqual(self.h._row("SELECT native_id FROM endpoint_native WHERE endpoint_id='tui'")[0],OTHER)
+
 
 class TuiObservationTest(unittest.TestCase):
     def test_relocated_root_accepts_real_open_path_but_not_child_symlinks(self):
