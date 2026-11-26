@@ -26,7 +26,7 @@ class UnifiedHostIdentityTest(unittest.TestCase):
                     return {"endpoint_id":"live","incarnation":"new"}
                 return {}
             h.hub=hub
-            entries=[dict(endpoint_id=n,participant_id=n,platform="cc") for n in ("retired","live")]
+            entries=[dict(endpoint_id=n,participant_id=n,platform="cc",project_path=tmp) for n in ("retired","live")]
             with patch.object(host_mod,"discover_endpoints",return_value=entries),patch.object(host_mod,"discover_tmux_endpoints",return_value=[]):h.refresh()
             self.assertEqual([e["endpoint_id"] for e in h.endpoints],["live"])
 
@@ -104,7 +104,7 @@ class UnifiedHostIdentityTest(unittest.TestCase):
             old = {"endpoint_id": "fallback", "participant_id": "demo:cdx", "project_id": "demo",
                    "host_id": "host-a", "address": "demo.cdx", "session": "sess", "pane": "%34",
                    "pid": 101, "pid_start": 77, "runtime_id": "tmux:sess:%34:77", "platform": "cdx",
-                   "retired": 0}
+                   "retired": 0, "project_path": tmp}
             registry = dict(old, endpoint_id="registry", pid=102, pid_start=88,
                             runtime_id="conversation-uuid")
             state = {"registered": [], "retired": []}
