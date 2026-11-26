@@ -70,6 +70,7 @@ jobs:
           python3 extensions/messaging/tests/test-unified-integration.py
           python3 extensions/messaging/tests/test-unified-cli.py
           python3 extensions/messaging/tests/test-unified-identity.py
+          python3 extensions/messaging/tests/test-unified-host-identity.py
           python3 extensions/messaging/tests/test-unified-policy.py
           python3 extensions/messaging/tests/test-unified-pending.py
           python3 extensions/messaging/tests/test-unified-terminal-freshness.py
