@@ -292,10 +292,11 @@ class Host:
             try:
                 registered = self.hub('endpoint_register', **ep)
             except HubError as exc:
-                if exc.code != 'stale_session':
+                if exc.code not in ('stale_session', 'identity_rejected'):
                     raise
-                # A retired identity stays retired, but cannot poison discovery
-                # and authentication for independent live participants.
+                # A retired or conflicting identity stays rejected, but cannot
+                # poison discovery and authentication for independent live
+                # participants (one bad pane must not stop every heartbeat).
                 continue
             if (registered.get('endpoint_id') != ep['endpoint_id'] or
                     not isinstance(registered.get('incarnation'), str) or not registered['incarnation']):

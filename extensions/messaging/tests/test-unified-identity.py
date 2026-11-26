@@ -474,6 +474,23 @@ class UnifiedIdentityTest(unittest.TestCase):
         processes[101]['command'] = 'sh -c codex resume --last'
         self.assertFalse(identity.same_live_process_family(fallback, registry, inspect_process=inspect))
 
+    def test_tmux_endpoint_id_differs_for_processes_started_in_the_same_second(self):
+        # A Codex launcher wrapper and its agent child share a one-second
+        # pid_start. Whichever one discovery binds must not reuse the other's
+        # immutable endpoint ID (that collision stopped every host heartbeat).
+        pane = {"role": "codex-p1", "project": str(self.project), "session": "tproj",
+                "pane": "%3", "pane_pid": 10}
+        def discover(pid):
+            procs = {10: {"ppid": 1, "pid_start": 50, "uid": os.getuid(), "command": "zsh"},
+                     pid: {"ppid": 10, "pid_start": 77, "uid": os.getuid(), "command": "codex resume --last"}}
+            return identity.discover_tmux_endpoints(
+                "host-a", self.projects, panes=lambda: [pane],
+                descendants=lambda root: [pid], inspect_process=lambda p: procs[p])[0]
+        wrapper, child = discover(201), discover(202)
+        self.assertEqual(wrapper["pid_start"], child["pid_start"])
+        self.assertNotEqual(wrapper["endpoint_id"], child["endpoint_id"])
+        self.assertEqual(wrapper["runtime_id"], "tmux:tproj:%3:77")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -609,7 +609,10 @@ def discover_tmux_endpoints(host_id: str, projects: Iterable[Mapping[str, Any]],
             pane_id = str(pane.get("pane", ""))
             runtime = f"tmux:{session}:{pane_id}:{start}"
             found.append({
-                "endpoint_id": _endpoint_id(host_id, runtime, session, start),
+                # pid_start has one-second resolution: a launcher wrapper and
+                # its agent child often share it. Key the ID by PID as well so a
+                # different process never collides with an immutable endpoint.
+                "endpoint_id": _endpoint_id(host_id, f"{runtime}:{pid}", session, start),
                 "participant_id": participant_id, "project_id": str(project.get("project_id")),
                 "host_id": host_id, "address": f"{project.get('alias')}.{platform}",
                 "session": session, "pane": pane_id, "pid": int(pid), "pid_start": start,

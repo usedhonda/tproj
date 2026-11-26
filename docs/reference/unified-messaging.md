@@ -593,6 +593,12 @@ or `/clear` inside the same process). The endpoint is the process; its recorded
 native marker is kept, not replaced by the new thread. Shared app-server
 ancestry gets no such allowance and still needs a matching native conversation.
 
+A tmux-discovered endpoint ID is keyed by PID as well as its one-second
+`pid_start`, because a launcher wrapper and its agent child often start in the
+same second. Host refresh skips a single endpoint whose registration is rejected
+(`stale_session` or `identity_rejected`) and keeps registering and heartbeating
+every other local participant; the rejected identity is not adopted.
+
 Remote resolution preserves the sole authoritative failure (`endpoint_unavailable`,
 `no_recipient`, or another protocol rejection) rather than labeling every failure
 as a host outage. Multiple failing authorities report only fixed error classes.
