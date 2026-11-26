@@ -151,7 +151,10 @@ natives, missing native proof, and multiple unretired same-surface writers do no
 inherit the route. An app-server is not substituted for a selected TUI.
 When the selected incarnation is retired and has no such successor (the selected
 conversation ended, for example after a Codex `/clear`), new messages resolve to
-the participant's only freshly owner-observed TUI candidate. Zero or several such
+the participant's only freshly owner-observed TUI candidate. With no observed
+candidate yet (a restarted Codex has not reported its new conversation), the
+ended choice routes exactly like an unselected participant: the sole current
+endpoint, otherwise `ambiguous_target`/`no_recipient`. Several observed
 candidates fail as `stale_session` with an error that names `recipient
 list/select`; the resolver never chooses between two conversations.
 The original choice/revision remains unchanged; owner acceptance still compares

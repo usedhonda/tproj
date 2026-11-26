@@ -138,8 +138,14 @@ class RecipientRecoveryTest(unittest.TestCase):
         self.h.dispatch(dict(op='endpoint_retire', host_id='b', host_token='b-token', endpoint_id='tui'))
         self.register('cleared', 'b', 'p:cdx', '%2')
         self.attest('cleared', NATIVE)  # new conversation in the same pane, no continuity
-        with self.assertRaisesRegex(HubError, 'recipient list/select'):
+        # Nothing observed yet: the dead choice routes like an unselected target,
+        # which still refuses ambiguity (the app-server endpoint is also live) ...
+        with self.assertRaisesRegex(HubError, 'ambiguous'):
             self.send('unobserved')
+        # ... and reaches the sole current endpoint once it is unambiguous.
+        self.h.dispatch(dict(op='endpoint_retire', host_id='b', host_token='b-token', endpoint_id='app'))
+        self.send('unobserved')
+        self.assertEqual(self.h._row("SELECT recipient_endpoint FROM messages WHERE message_id='unobserved'")[0], 'cleared')
         self.h.dispatch(dict(op='recipient_observe', host_id='b', host_token='b-token', observed_endpoint='cleared'))
         self.send('followed')
         self.assertEqual(self.h._row("SELECT recipient_endpoint FROM messages WHERE message_id='followed'")[0], 'cleared')

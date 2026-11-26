@@ -96,6 +96,13 @@ def _selected_endpoint(h, host, key):
                 live[ep['endpoint_id']] = ep
             if len(live) == 1:
                 return next(iter(live.values()))
+            if not live:
+                # Nothing selectable is observed yet (a restarted Codex has not
+                # reported its new conversation). A dead choice is no choice:
+                # route exactly like an unselected participant, which still
+                # refuses an ambiguous or stale target.
+                return h._endpoint_for_send(h._row('SELECT * FROM participants WHERE participant_id=?',
+                                                   (c['participant_id'],)))
             raise HubError('stale_session', 'selected recipient conversation ended; '
                            'choose one with tproj-msg recipient list/select')
         if successor is None:
