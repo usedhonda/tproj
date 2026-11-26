@@ -393,9 +393,10 @@ class UnifiedHostServicesTest(unittest.TestCase):
             host.hub = hub
             with patch.object(host_mod, 'adopt_native_conversation', return_value=[ep]), \
                  patch.object(host_mod, 'bind_caller', return_value=ep):
-                with self.assertRaises(HubError) as rejected:
-                    host.caller(1, 1, {'conversation': {'thread_id': 'untrusted'}})
-                self.assertEqual(rejected.exception.code, 'identity_rejected')
+                # The ancestry-bound process owner stays authenticated after a
+                # same-process conversation change, but the unverified thread
+                # is never attested over the recorded native marker.
+                self.assertEqual(host.caller(1, 1, {'conversation': {'thread_id': 'untrusted'}}), ep)
                 self.assertNotIn('native_attest', [op for op, _ in calls])
                 calls.clear()
                 self.assertEqual(host.caller(1, 1, {}), ep)
